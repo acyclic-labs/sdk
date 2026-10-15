@@ -198,23 +198,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                 break;
             }
         }
-        let mut index = 0;
-        while index < values.value.len() {
-            let change = values
-                .value
-                .get(index)
-                .ok_or(FsError::DiffAllocationFailed)?;
-            if change.before == change.after {
-                remove_change::<F>(&mut values, index, accounting)?;
-            } else {
-                index += 1;
-            }
-        }
-        while values.value.len() > maximum {
-            truncated = true;
-            let index = values.value.len() - 1;
-            remove_change::<F>(&mut values, index, accounting)?;
-        }
+        truncated |= retain_changes::<F>(&mut values, maximum, accounting)?;
         Ok(truncated)
     }
     .await;
@@ -492,21 +476,47 @@ fn insert_value<F: Format>(
     Ok(())
 }
 
-fn remove_change<F: Format>(
+fn retain_changes<F: Format>(
     values: &mut Changes<F>,
-    index: usize,
+    maximum: usize,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<(), FsError> {
-    let change = values.value.remove(index);
-    let bytes = F::key_owned_bytes(&change.key)
-        .checked_add(change.before.as_ref().map_or(0, F::value_owned_bytes))
-        .ok_or(WorkError::Overflow)?
-        .checked_add(change.after.as_ref().map_or(0, F::value_owned_bytes))
-        .ok_or(WorkError::Overflow)?;
+) -> Result<bool, FsError> {
+    let mut retained = 0;
+    let mut bytes = 0u64;
+    let mut truncated = false;
+    for change in &values.value {
+        if change.before != change.after {
+            if retained < maximum {
+                retained += 1;
+                continue;
+            }
+            truncated = true;
+        }
+        bytes = bytes
+            .checked_add(F::key_owned_bytes(&change.key))
+            .and_then(|bytes| {
+                bytes.checked_add(change.before.as_ref().map_or(0, F::value_owned_bytes))
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(change.after.as_ref().map_or(0, F::value_owned_bytes))
+            })
+            .ok_or(WorkError::Overflow)?;
+    }
+    let remaining_bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+    retained = 0;
+    values.value.retain(|change| {
+        if change.before == change.after || retained == maximum {
+            false
+        } else {
+            retained += 1;
+            true
+        }
+    });
+    // Removed payloads are dropped before their custody is released.
     let allocation = split_allocation(&mut values.allocation, bytes)?;
-    values.bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
-    drop(change);
-    retire_allocation(allocation, bytes, accounting)
+    values.bytes = remaining_bytes;
+    retire_allocation(allocation, bytes, accounting)?;
+    Ok(truncated)
 }
 
 fn allocation_error(error: FsError) -> FsError {

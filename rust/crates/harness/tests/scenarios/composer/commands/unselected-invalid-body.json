@@ -1,0 +1,5 @@
+{
+  "prompt": "/review auth",
+  "seed": {"project/.codex/prompts/unused.md":"\u0000never selected"},
+  "expect": {"result":{"kind":"prompt","text":"Project auth","mentions":[]}}
+}

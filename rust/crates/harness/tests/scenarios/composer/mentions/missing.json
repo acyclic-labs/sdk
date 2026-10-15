@@ -1,0 +1,4 @@
+{
+  "prompt": "@missing",
+  "expect": {"error":"not found"}
+}

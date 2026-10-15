@@ -141,9 +141,97 @@ fn malformed_script_events_are_rejected() {
         json!({"type":"event","kind":"content","delta":"x","typo":true}),
         json!({"type":"error","error":"x","typo":true}),
         json!({"type":"event","kind":"typo"}),
+        json!({"type":"pending","typo":true}),
     ] {
         assert!(serde_json::from_value::<ScriptedEvent>(event).is_err());
     }
+}
+
+#[tokio::test]
+async fn pending_script_signals_recorded_dispatch_and_reconciles_after_drop() -> Result<()> {
+    let prefix = ModelEvent::Content {
+        delta: "partial".into(),
+    };
+    let turns: Vec<ScriptedTurn> = serde_json::from_value(json!([
+        [{"type":"event","kind":"content","delta":"partial"},{"type":"pending"}]
+    ]))
+    .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let provider = std::sync::Arc::new_cyclic(|weak: &std::sync::Weak<ScriptedModelProvider>| {
+        let weak = weak.clone();
+        ScriptedModelProvider::new(turns)
+            .with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![prefix.clone()],
+                continuation: Some(vec![ModelEvent::Completed {
+                    metadata: json!(null),
+                }]),
+            }])
+            .with_dispatch_observer(move |dispatch| {
+                // Reenter the observer accessors to verify the provider unlocked its state.
+                assert_eq!(
+                    weak.upgrade().map(|provider| provider.dispatches()),
+                    Some(vec![dispatch])
+                );
+                assert!(sent.send(dispatch).is_ok());
+            })
+    });
+    let (request, dispatch) = request()?;
+    let mut stream = provider.generate(request, dispatch);
+    assert_eq!(received.try_recv(), Ok(dispatch));
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.remaining(), 0);
+    assert_eq!(stream.next().await.transpose()?, Some(prefix.clone()));
+    assert!(futures::poll!(stream.next()).is_pending());
+    drop(stream);
+    assert!(matches!(provider.reconcile(dispatch, &[prefix]).await?,
+        Some(events) if matches!(events.as_slice(), [ModelEvent::Completed { .. }])));
+    assert_eq!(provider.dispatches(), vec![dispatch]);
+    assert_eq!(provider.reconciliations(), vec![dispatch]);
+    assert_eq!(
+        serde_json::to_value(ScriptedEvent::Pending {})
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+        json!({"type":"pending"})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_or_exhausted_dispatch_does_not_signal() -> Result<()> {
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())])
+        .with_dispatch_observer(move |dispatch| {
+            assert!(sent.send(dispatch).is_ok());
+        });
+    let (request, dispatch) = request()?;
+    let invalid = ModelDispatch {
+        request_digest: [0; 32],
+        ..dispatch
+    };
+    assert!(matches!(
+        provider.generate(request.clone(), invalid).next().await,
+        Some(Err(_))
+    ));
+    assert!(matches!(
+        received.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    provider
+        .generate(request.clone(), dispatch)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(received.try_recv(), Ok(dispatch));
+    assert!(matches!(
+        provider.generate(request, dispatch).next().await,
+        Some(Err(_))
+    ));
+    assert!(matches!(
+        received.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    Ok(())
 }
 
 #[tokio::test]

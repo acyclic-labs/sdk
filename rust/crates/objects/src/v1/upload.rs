@@ -96,12 +96,23 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>) {
                 }
             }
             let size = pending.len().min(65_536);
-            let chunk = pending.slice(..size);
-            pending = pending.slice(size..);
+            let chunk = if size == pending.len() {
+                std::mem::take(&mut pending)
+            } else {
+                let chunk = pending.slice(..size);
+                pending = pending.slice(size..);
+                chunk
+            };
             Ok(Some((chunk, (body, pending, length, state))))
         },
     );
     (chunks.boxed().into(), state)
+}
+
+pub(super) fn body_bytes(chunk: OwnedBytes) -> Vec<u8> {
+    chunk
+        .try_into_ordinary_vec()
+        .unwrap_or_else(|chunk| chunk.to_vec())
 }
 
 pub(super) async fn run<T: Send>(
@@ -128,5 +139,77 @@ pub(super) async fn run<T: Send>(
         Either::Left((Some(error), _)) => Err(error),
         Either::Left((None, request)) => request.await,
         Either::Right((result, _)) => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn request_path_reuses_unique_complete_upload_chunks() -> Result<(), Error> {
+        for length in [1, 65_536] {
+            let data = vec![7; length];
+            let pointer = data.as_ptr();
+            let body = stream::iter([Ok(OwnedBytes::from(data))]).boxed().into();
+            let (mut chunks, state) = chunks(body);
+            let chunk = chunks
+                .next()
+                .await
+                .ok_or(Error::from(wire::ErrorCode::Unavailable))??;
+            let frame = body_bytes(chunk);
+            assert_eq!(frame.as_ptr(), pointer);
+            assert_eq!(frame, vec![7; length]);
+            assert!(chunks.next().await.is_none());
+            assert_eq!(state.finish()?, length as u64);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_path_preserves_shared_and_split_upload_ranges() -> Result<(), Error> {
+        let original = OwnedBytes::from(vec![1; 65_537]);
+        let body = stream::iter([Ok(original.clone())]).boxed().into();
+        let (mut chunks, state) = chunks(body);
+        let first = body_bytes(
+            chunks
+                .next()
+                .await
+                .ok_or(Error::from(wire::ErrorCode::Unavailable))??,
+        );
+        let mut last = body_bytes(
+            chunks
+                .next()
+                .await
+                .ok_or(Error::from(wire::ErrorCode::Unavailable))??,
+        );
+        assert_eq!(first, vec![1; 65_536]);
+        assert_eq!(last, vec![1]);
+        last.fill(2);
+        assert!(original.iter().all(|byte| *byte == 1));
+        assert!(chunks.next().await.is_none());
+        assert_eq!(state.finish()?, 65_537);
+        Ok(())
+    }
+    #[test]
+    #[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
+    fn request_path_measure_upload_frame_conversion() {
+        for reuse in [false, true] {
+            let chunks: Vec<_> = (0..256)
+                .map(|_| OwnedBytes::from(vec![7; 65_536]))
+                .collect();
+            let started = std::time::Instant::now();
+            for chunk in chunks {
+                std::hint::black_box(if reuse {
+                    body_bytes(chunk)
+                } else {
+                    chunk.to_vec()
+                });
+            }
+            eprintln!(
+                "objects frame conversion reuse={reuse} iterations=256 bytes=65536 elapsed_us={}",
+                started.elapsed().as_micros()
+            );
+        }
     }
 }

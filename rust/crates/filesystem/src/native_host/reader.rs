@@ -62,12 +62,10 @@ impl HostStatReader {
                 }
                 #[cfg(windows)]
                 {
-                    stat_windows_name(
-                        &self.directory,
-                        &windows_leaf_name(&name, work)?,
-                        self.volume_serial_number,
-                        work,
-                    )
+                    let name = windows_leaf_name(&name, work)?;
+                    work.attempt_io(READ, || {
+                        stat_windows_name(&self.directory, &name, self.volume_serial_number, false)
+                    })
                 }
             })();
             let stat = match result {

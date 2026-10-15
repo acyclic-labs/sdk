@@ -158,7 +158,7 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     })
 }
 
-pub(super) fn stat_windows_file<W: NativeHostWork>(
+pub(crate) fn stat_windows_file<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     volume: u32,
     work: &mut W,
@@ -169,12 +169,12 @@ pub(super) fn stat_windows_file<W: NativeHostWork>(
     )?)
 }
 
-pub(super) fn stat_windows_name<W: NativeHostWork>(
+pub(crate) fn stat_windows_name(
     directory: &Dir,
     name: &win::UNICODE_STRING,
     volume: u32,
-    work: &mut W,
-) -> Result<Option<HostStat>, W::Error> {
+    include_reparse: bool,
+) -> io::Result<Option<HostStat>> {
     let attributes = windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
         Length: u32::try_from(std::mem::size_of::<
             windows::Wdk::Foundation::OBJECT_ATTRIBUTES,
@@ -187,7 +187,6 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     };
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
-    work.started_io(READ)?;
     // SAFETY: the held directory, name, and fixed-size output outlive the query.
     let status = unsafe {
         nt::NtQueryInformationByName(
@@ -203,9 +202,9 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
         return Ok(None);
     }
     if status.is_err() {
-        return Err(status_error(status).into());
+        return Err(status_error(status));
     }
-    if information.ReparseTag != 0 {
+    if !include_reparse && information.ReparseTag != 0 {
         return Ok(None);
     }
     Ok(Some(HostStat::from_stat_information(&information, volume)?))
@@ -318,11 +317,11 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     })
 }
 
-pub(super) fn set_windows_name<W: NativeHostWork>(
+pub(crate) fn set_windows_name<W: NativeHostWork>(
     file: &File,
     parent: &Dir,
     name: &[u16],
-    replace: bool,
+    flags: u32,
     class: nt::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
@@ -333,7 +332,7 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
             .ok_or(crate::WorkError::Overflow)?,
     );
     work.admit(copied)?;
-    let (packet, allocation, length) = windows_name_packet(parent, name, replace, work)?;
+    let (packet, allocation, length) = windows_name_packet(parent, name, flags, work)?;
     let result = work.record(copied).and_then(|()| {
         work.attempt_io(WRITE, || {
             // SAFETY: initialized aligned storage covers the header and flexible name.

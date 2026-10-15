@@ -46,6 +46,7 @@ type MemoryJournal =
 async fn new_memory_content(
     agent: AgentId,
     maximum_file_bytes: u64,
+    filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
 ) -> Result<(
     Arc<MemoryHost>,
     VolumeRef,
@@ -57,7 +58,7 @@ async fn new_memory_content(
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         Uuid::new_v4().to_string(),
@@ -134,6 +135,7 @@ impl MemoryHarnessStorage {
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
         Tool {
+            hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
                 revision: "2".into(),
@@ -180,7 +182,23 @@ impl MemoryHarnessStorage {
 
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        let (host, volume, memory_store) = new_memory_content(agent, maximum_file_bytes).await?;
+        Self::from_providers(
+            agent,
+            maximum_file_bytes,
+            Fs::memory(),
+            Arc::new(MemoryStream::default()),
+        )
+        .await
+    }
+
+    async fn from_providers(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+        stream: Arc<MemoryStream>,
+    ) -> Result<Self> {
+        let (host, volume, memory_store) =
+            new_memory_content(agent, maximum_file_bytes, filesystem).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
@@ -204,7 +222,6 @@ impl MemoryHarnessStorage {
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
-        let stream = Arc::new(MemoryStream::default());
         let input = FilesystemContentVerifier::new(
             Arc::clone(&host),
             &verifier,
@@ -305,6 +322,12 @@ impl MemoryHarnessStorage {
             })
             .grant(self.read_capability.clone())
             .grant(self.write_capability.clone())
+    }
+
+    /// Borrows the authenticated reader for context and client adapters.
+    #[must_use]
+    pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
+        self.content_verifier.as_ref()
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

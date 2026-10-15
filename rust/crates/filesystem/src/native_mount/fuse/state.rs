@@ -262,6 +262,11 @@ impl ProjectionState {
         let Some(stamp) = stamp else {
             return Ok(false);
         };
+        // While the kernel may hold entries the invalidator could not drop,
+        // nothing new is cached.
+        if self.invalidation.denied {
+            return Ok(false);
+        }
         if file_id.is_some_and(|file_id| !source.reports_changes_to(file_id)) {
             return Ok(false);
         }

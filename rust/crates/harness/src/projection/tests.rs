@@ -318,9 +318,21 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Result<()> {
+    native_manifest_resolution(false).await
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn native_manifest_resolution_rejects_foreign_bytes() -> Result<()> {
+    native_manifest_resolution(true).await
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
     struct NativeResolver {
         ordinary: AtomicUsize,
         native: AtomicUsize,
+        foreign_bytes: bool,
     }
     impl ContentResidencyVerifier for NativeResolver {
         fn supports_read(&self, _: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
@@ -337,12 +349,24 @@ async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Resul
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
         {
             crate::conversation::BoundedContentFuture::new(io, || async move {
-                let counter = if io.is_some_and(|io| io.original_native_work().is_some()) {
+                let work = io.and_then(|io| io.original_native_work());
+                let counter = if work.is_some() {
                     &self.native
                 } else {
                     &self.ordinary
                 };
                 counter.fetch_add(1, Ordering::SeqCst);
+                if !self.foreign_bytes
+                    && let Some(work) = work
+                {
+                    let (mut bytes, custody) = work.copy_bytes(b"[]")?;
+                    return acyclic_stream::OwnedBytes::from_vec_with_guard_in_place(
+                        &mut bytes,
+                        &mut Some(custody),
+                        &work.runtime_meter(),
+                    )
+                    .map_err(|error| work.runtime_error(error).into());
+                }
                 Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
             })
         }
@@ -366,6 +390,7 @@ async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Resul
     let resolver = NativeResolver {
         ordinary: AtomicUsize::new(0),
         native: AtomicUsize::new(0),
+        foreign_bytes,
     };
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
@@ -382,9 +407,14 @@ async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Resul
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let expected = if foreign_bytes {
+        crate::wire::ErrorCode::Unauthorized
+    } else {
+        Invalid
+    };
     assert!(matches!(
         attachments::resolve(&message, &resolver, 1, Some(&io)).await,
-        Err(Error::NativeBoundary { code: Invalid, .. })
+        Err(Error::NativeBoundary { code, .. }) if code == expected
     ));
     assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);

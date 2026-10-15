@@ -1,0 +1,2 @@
+{"max_output_tokens":10,"turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"content",
+  "delta":"trailing"}]],"expect":{"error":"model emitted an event after completion"}}

@@ -192,7 +192,7 @@ where
         Value::Null,
     )?;
     let mut tools = ToolRegistry::default();
-    tools.register((Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
+    tools.register((Tool { hook_names: &[], definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },

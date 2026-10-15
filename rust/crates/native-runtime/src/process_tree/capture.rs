@@ -132,8 +132,15 @@ impl<'a> PendingStdin<'a> {
             self.written += actual;
             progressed |= actual != 0;
             recorded_bytes?;
-            let (_, recorded_operation) = transfer?;
+            let (written, recorded_operation) = transfer?;
             recorded_operation?;
+            if written == Some(0) {
+                if self.terminate_on_completion {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                self.written = self.bytes.len();
+                self.complete = true;
+            }
             if let Some(meter) = meter {
                 meter.check()?;
             }

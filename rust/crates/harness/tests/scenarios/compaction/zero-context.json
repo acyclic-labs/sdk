@@ -1,0 +1,4 @@
+{"capacity":{"context_tokens":0},"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,
+  "retention":{"roles":["system"],"native_media":true}}},"turns":[],
+  "expect":{"error":"selected model capacity is invalid","reconciliation_count":0,"not_events":[{"kind":"model_started",
+  "purpose":"response"}]}}

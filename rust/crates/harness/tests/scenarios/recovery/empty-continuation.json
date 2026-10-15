@@ -1,0 +1,2 @@
+{"prompt":"An empty continuation must not become success.","turns":[[{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[],"continuation":[]}],"expect":{"error":"operation outcome is indeterminate"}}

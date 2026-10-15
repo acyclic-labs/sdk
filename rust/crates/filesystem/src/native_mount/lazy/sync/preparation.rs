@@ -40,7 +40,7 @@ where
         selection: (SelectedPublication<'_>, Option<SelectedImportProof>),
         input: &mut adapter::InputBuffers<'_, '_>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<PreparedPublication<A, O, impl Sized + Send + use<A, O, D, S>>, MountSourceError>
+    ) -> Result<PreparedPublication<'_, A, O, impl Sized + Send + use<A, O, D, S>>, MountSourceError>
     {
         let crate::kernel::KernelAccounting::NativeOriginal { work, .. } = &*accounting else {
             return Err(MountSourceError::OriginalSnapshotUnavailable);

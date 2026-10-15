@@ -121,6 +121,16 @@ impl NativeReadMeter for NativeWorkReservation {
         self.admit_examination(items, copied)?;
         self.record_examination(items, copied)
     }
+    fn reserve_examination(&self, items: u64) -> io::Result<()> {
+        self.reserve(NativeResourceCredit::Items.delta(items))
+    }
+    fn cancel_reserved_examination(&self, items: u64) {
+        self.cancel(NativeResourceCredit::Items.delta(items));
+    }
+    fn record_reserved_examination(&self, items: u64) -> io::Result<()> {
+        let probe = NativeResourceCredit::Items.delta(items);
+        self.complete(Some(probe), probe)
+    }
     fn admit_read(&self, maximum: usize) -> io::Result<()> {
         self.start_transfer(NativeOperationKind::Read, maximum as u64)
     }

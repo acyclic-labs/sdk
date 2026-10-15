@@ -1,0 +1,1 @@
+{"seed":{"AGENTS.md":"bad\u0000text"},"expect":{"error":"instruction is oversized or invalid text"}}

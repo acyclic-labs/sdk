@@ -20,6 +20,12 @@ mod hypothesis;
 pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
+mod commands;
+pub use commands::*;
+mod mentions;
+pub use mentions::*;
+mod notifications;
+pub use notifications::*;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 

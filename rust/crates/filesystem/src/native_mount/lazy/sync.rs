@@ -19,12 +19,12 @@ type CommittedPublication = (
     Option<crate::OperationId>,
 );
 type MountedRecords = BTreeMap<FileId, (FileRecord, FileMetadata)>;
-struct PreparedPublication<A, O, E> {
+struct PreparedPublication<'a, A, O, E> {
     _records: Vec<(FileRecord, FileMetadata)>,
     _effects: E,
     changes: Option<Vec<NamespacePath>>,
     paths: Vec<String>,
-    candidate: CheckoutCandidate<A, O>,
+    candidate: CheckoutCandidate<'a, A, O>,
     operation: crate::OperationId,
 }
 
@@ -201,7 +201,7 @@ where
     ) -> Result<
         (
             crate::OperationId,
-            CheckoutCandidate<A, O>,
+            CheckoutCandidate<'_, A, O>,
             Vec<(FileRecord, FileMetadata)>,
         ),
         MountSourceError,

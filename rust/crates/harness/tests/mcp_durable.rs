@@ -21,7 +21,7 @@ use acyclic_harness::{
     tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
-use futures::future::BoxFuture;
+use futures::{StreamExt as _, future::BoxFuture, stream::FuturesUnordered};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -29,9 +29,51 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+#[path = "support/workspace.rs"]
+mod workspace;
+use workspace::workspace;
+
+fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
+    let (release, wait) = tokio::sync::oneshot::channel::<()>();
+    // Real disk/network readiness must not auto-advance paused protocol deadlines.
+    drop(tokio::task::spawn_blocking(move || {
+        let _ = wait.blocking_recv();
+    }));
+    release
+}
+
+async fn no_more_requests(
+    listener: tokio::net::TcpListener,
+    mut settled: tokio::sync::oneshot::Receiver<()>,
+) -> Result<()> {
+    let mut connections = FuturesUnordered::new();
+    let mut completed = false;
+    loop {
+        if completed && connections.is_empty() {
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            accepted = listener.accept(), if !completed => {
+                let (mut socket, _) = accepted.map_err(|error| Error::Storage(error.to_string()))?;
+                connections.push(async move { request_or_eof(&mut socket).await });
+            }
+            message = connections.next(), if !connections.is_empty() => {
+                if let Some(Some(message)) = message.transpose()? {
+                    return Err(Error::Invalid(format!("unexpected repeated HTTP request: {message}")));
+                }
+            }
+            done = &mut settled, if !completed => {
+                done.map_err(|error| Error::Storage(error.to_string()))?;
+                // Completion closes admission, not the accepted request readers.
+                completed = true;
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fault {
@@ -198,7 +240,7 @@ impl McpToolTransport for ScopedHttp {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxFuture<'a, Result<Value>> {
+    ) -> BoxFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
@@ -213,7 +255,7 @@ impl McpToolTransport for ScopedHttp {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxFuture<'a, Result<Option<Value>>> {
+    ) -> BoxFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
@@ -398,6 +440,12 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
 }
 
 async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
+    request_or_eof(socket)
+        .await?
+        .ok_or_else(|| Error::Invalid("fixture disconnected".into()))
+}
+
+async fn request_or_eof(socket: &mut tokio::net::TcpStream) -> Result<Option<Value>> {
     let mut input = Vec::new();
     let mut buffer = [0_u8; 512];
     loop {
@@ -406,7 +454,13 @@ async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         if count == 0 {
-            return Err(Error::Invalid("fixture disconnected".into()));
+            return if input.is_empty() {
+                Ok(None)
+            } else {
+                Err(Error::Invalid(
+                    "fixture disconnected within a request".into(),
+                ))
+            };
         }
         input.extend(buffer.iter().take(count));
         if input.len() > 8192 {
@@ -433,6 +487,7 @@ async fn request(socket: &mut tokio::net::TcpStream) -> Result<Value> {
                         .get(end + 4..end + 4 + length)
                         .ok_or_else(|| Error::Invalid("fixture body".into()))?,
                 )
+                .map(Some)
                 .map_err(|error| Error::Invalid(error.to_string()));
             }
         }
@@ -451,9 +506,10 @@ async fn serve(
             _ = &mut stop => return Ok(()),
             accepted = listener.accept() => accepted.map_err(|error| Error::Storage(error.to_string()))?,
         };
-        let message = tokio::time::timeout(Duration::from_secs(2), request(&mut socket))
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))??;
+        let message = tokio::select! {
+            message = request(&mut socket) => message?,
+            _ = &mut stop => return Ok(()),
+        };
         assert_eq!(message.get("method"), Some(&json!("tools/call")));
         applied.fetch_add(1, Ordering::SeqCst);
         if fault == Fault::ResponseLost {
@@ -557,8 +613,9 @@ async fn phase(
         .map(|result| result.0)
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn disk_reopen_never_reposts_a_claimed_mcp_call() -> Result<()> {
+    let _clock = hold_io_clock();
     for fault in [
         Fault::None,
         Fault::ClaimBefore,
@@ -568,7 +625,7 @@ async fn disk_reopen_never_reposts_a_claimed_mcp_call() -> Result<()> {
         Fault::TerminalBefore,
         Fault::TerminalAfter,
     ] {
-        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let directory = workspace()?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -619,3 +676,50 @@ mod services_cases;
 #[cfg(feature = "mcp-oauth")]
 #[path = "mcp_cases/oauth.rs"]
 mod oauth_cases;
+
+#[tokio::test]
+async fn replay_oracle_rejects_requests_behind_an_idle_connection() -> Result<()> {
+    for completed in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let _idle = tokio::net::TcpStream::connect(address)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut duplicate = tokio::net::TcpStream::connect(address)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        duplicate
+            .write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let (settled, completion) = tokio::sync::oneshot::channel();
+        if completed {
+            settled.send(()).expect("completion receiver is live");
+        }
+        assert!(matches!(no_more_requests(listener, completion).await,
+        Err(Error::Invalid(message)) if message == "unexpected repeated HTTP request: {}"));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_oracle_drains_idle_connections_after_completion() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let idle = tokio::net::TcpStream::connect(
+        listener
+            .local_addr()
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )
+    .await
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    let (settled, completion) = tokio::sync::oneshot::channel();
+    settled.send(()).expect("completion receiver is live");
+    drop(idle);
+    no_more_requests(listener, completion).await
+}

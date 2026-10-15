@@ -1,18 +1,23 @@
 use super::*;
 
+/// Runs one session control on the source's original meter, which its
+/// callbacks share. A control on any other meter cannot run the invalidator,
+/// so it could never see its changes settle.
 pub(crate) fn with_session_work(
     session: &Mutex<Option<NativeMountSession>>,
-    operation: fn(&NativeMountSession, &NativeMaterializationWork) -> Result<(), NativeMountError>,
+    source: &dyn MountFilesystem,
+    operation: impl FnOnce(
+        &NativeMountSession,
+        &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError>,
 ) -> Result<(), MountLifecycleError> {
     with_live_session(session, |session| {
-        operation(
-            session,
-            &NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .map_err(|(error, _)| NativeMountError::from(error))?,
-        )
+        let work = source
+            .native_original_work()?
+            .ok_or(NativeMountError::Lifecycle(
+                "mounted volume has no original native work",
+            ))?;
+        operation(session, &work)
     })
 }
 

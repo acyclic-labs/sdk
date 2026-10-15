@@ -1,7 +1,7 @@
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     async fn mutate(
         &self,
-        mut candidate: CheckoutCandidate<A, O>,
+        mut candidate: CheckoutCandidate<'_, A, O>,
         change: AuthoredMutation,
         effect: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,

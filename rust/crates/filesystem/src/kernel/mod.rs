@@ -69,6 +69,8 @@ pub(crate) use generation_mutation::{
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
+#[cfg(feature = "native-mount")]
+pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,

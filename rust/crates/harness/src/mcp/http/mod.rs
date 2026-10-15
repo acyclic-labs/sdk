@@ -75,6 +75,31 @@ pub struct HttpMcpTransport {
 }
 
 impl HttpMcpTransport {
+    /// Selects independent tool-exchange bounds after catalog discovery.
+    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+        if maximum_bytes == 0 || timeout_ms == 0 {
+            return Err(Error::Invalid(
+                "MCP request deadline must be positive".into(),
+            ));
+        }
+        self.timeout_ms = timeout_ms;
+        self.maximum_bytes = maximum_bytes;
+        Ok(self)
+    }
+
+    /// Lists one typed catalog page at the transport's validation boundary.
+    pub async fn list_tools(
+        &self,
+        operation: OperationId,
+        cursor: Option<String>,
+    ) -> Result<rmcp::model::ListToolsResult> {
+        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
+        let request = self.request("POST", request(operation, "tools/list", params)?)?;
+        let response = self.provider.exchange(operation, request).await?;
+        serde_json::from_value(self.response(operation, response, None).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
     /// Binds a host-selected endpoint and optional session.
     pub fn new(
         provider: Arc<dyn McpHttpProvider>,
@@ -256,14 +281,7 @@ impl HttpMcpTransport {
         params: Value,
         context: Option<ToolContext>,
     ) -> Result<Value> {
-        if context
-            .as_ref()
-            .is_some_and(|context| context.operation_id() != operation)
-        {
-            return Err(Error::Unauthorized(
-                "MCP task context operation mismatch".into(),
-            ));
-        }
+        super::validate_operation_context(operation, context.as_ref())?;
         super::services::validate_params(method, &params, None)?;
         let request = self.request("POST", request(operation, method, params)?)?;
         let response = self.provider.exchange(operation, request).await?;
@@ -286,15 +304,14 @@ impl McpToolTransport for HttpMcpTransport {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
-            self.rpc(
-                operation,
-                "tools/call",
-                json!({"name":name,"arguments":arguments}),
-                context,
-            )
-            .await
+            super::validate_operation_context(operation, context.as_ref())?;
+            let params = json!({"name":name,"arguments":arguments});
+            super::services::validate_params("tools/call", &params, None)?;
+            let request = self.request("POST", request(operation, "tools/call", params)?)?;
+            let response = self.provider.exchange(operation, request).await?;
+            super::services::tool_result(self.response(operation, response, context).await?)
         })
     }
 
@@ -302,23 +319,14 @@ impl McpToolTransport for HttpMcpTransport {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
-            if context
-                .as_ref()
-                .is_some_and(|context| context.operation_id() != operation)
-            {
-                return Err(Error::Unauthorized(
-                    "MCP task context operation mismatch".into(),
-                ));
-            }
+            super::validate_operation_context(operation, context.as_ref())?;
             match self.provider.reconcile(operation).await? {
-                Some(response) => super::services::validate_result(
-                    "tools/call",
-                    self.response(operation, response, None).await?,
-                    None,
-                )
-                .map(Some),
+                Some(response) => {
+                    super::services::tool_result(self.response(operation, response, None).await?)
+                        .map(Some)
+                }
                 None => Ok(None),
             }
         })

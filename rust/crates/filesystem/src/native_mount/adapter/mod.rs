@@ -171,6 +171,8 @@ include!("source.rs");
 mod source_factory;
 include!("work.rs");
 include!("locks.rs");
+include!("file_leases.rs");
+include!("content_changes.rs");
 include!("view_changes.rs");
 include!("inputs.rs");
 include!("native_names.rs");

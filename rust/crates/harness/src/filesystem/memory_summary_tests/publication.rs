@@ -8,7 +8,7 @@ use super::*;
 async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(5));
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
@@ -43,14 +43,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .run_conversation(&bundle, last, input, Vec::new(), 1)
             .await?;
     }
-    assert_eq!(
-        model
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        3
-    );
+    assert_eq!(model.dispatches().len(), 3);
     {
         let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
@@ -83,6 +76,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     storage
         .run_conversation(&bundle, later, later_input, Vec::new(), 1)
         .await?;
+    assert_eq!(model.remaining(), 0);
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
         storage.journal.as_ref(),
         later,
@@ -688,7 +682,7 @@ async fn assert_summary_child_import(
         )
         .await?,
     );
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(1));
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -700,7 +694,9 @@ async fn assert_summary_child_import(
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_limits(limits);
+    .with_limits(limits)
+    // This fixture checks the frozen prefix before any subsequent child compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = FilesystemExecutionJournal::new(
         storage.stream.clone(),
         storage.host.clone(),
@@ -721,13 +717,23 @@ async fn assert_summary_child_import(
         max_steps: 1,
     };
     let output = executor.execute(input.clone(), &journal).await?;
+    let completed_requests = model.dispatches().len();
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
-    let requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(requests.len(), 1);
-    let request = &requests[0];
+    let mut requests = model.requests();
+    assert_eq!(requests.len(), completed_requests);
+    assert_eq!(model.remaining(), 0);
+    let request = PreparedModelRequest::prepare(
+        requests
+            .pop()
+            .ok_or_else(|| Error::Invalid("child made no model request".into()))?,
+        limits,
+        None,
+    )?;
+    let capacity = model.context_capacity(&request.request().model)?;
+    let input_tokens = model
+        .count_tokens(&request)?
+        .validate(&request, &mut None)?;
+    assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
     assert_eq!(
         request.request().messages.get(..captured.messages.len()),
         Some(captured.messages.as_slice())

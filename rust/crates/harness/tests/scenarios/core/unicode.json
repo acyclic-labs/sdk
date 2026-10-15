@@ -1,0 +1,5 @@
+{
+  "prompt":"你好 👩🏽‍💻 café",
+  "turns":[[{"type":"event","kind":"content","delta":"你"},{"type":"event","kind":"content","delta":"好 👩🏽‍💻 café"},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"text":"你好 👩🏽‍💻 café","requests":[{"messages":[{"role":"user","content":"你好 👩🏽‍💻 café"}]}]}
+}
