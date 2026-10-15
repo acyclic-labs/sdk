@@ -53,11 +53,14 @@ fn corpus(exa: bool) {
         .enable_all()
         .build()
         .unwrap();
-    let corpus =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/search_http_codec");
-    for entry in std::fs::read_dir(corpus).unwrap() {
-        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-        runtime.block_on(support::check(support::fuzz_response(&bytes), exa));
+    for corpus in ["search_http_codec", "search_http_envelope"] {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fuzz/corpus")
+            .join(corpus);
+        for entry in std::fs::read_dir(corpus).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            runtime.block_on(support::check(support::fuzz_response(&bytes), exa));
+        }
     }
     runtime.block_on(support::check(
         support::response(0, 1_047_552, 1, &serde_json::Value::String(String::new())),
