@@ -388,6 +388,47 @@ fn asset_bundle_requires_immutable_digest_and_matching_objects_grant()
 }
 
 #[test]
+fn inbox_scope_uses_s1_whole_segments() -> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let env = &mut manifest.environments[0];
+    env.bindings[0] = Binding::new(
+        "INBOX".into(),
+        "inboxGrant".into(),
+        "streams:/agents/a".into(),
+    )?
+    .into();
+    env.grants[0].grant.0.resource = ResourcePattern {
+        name: "streams:/agents/a".into(),
+        prefix: true,
+    };
+    validate(&manifest)?;
+    let env = &mut manifest.environments[0];
+    env.crons[0].inbox.0.name = "streams:/agents/ab/inbox".into();
+    if let EntryRuntime::Actor {
+        subscriptions,
+        timer_inbox,
+        ..
+    } = &mut env.entries[0].runtime
+    {
+        subscriptions[0] = SubscriptionSpec::new(
+            "inbox".into(),
+            "agents/ab/inbox".into(),
+            acyclic_actors::domain::SubscriptionStart::cursor(0),
+            true,
+        )?
+        .into();
+        if let Some(inbox) = timer_inbox {
+            inbox.stream.0.name = "streams:/agents/ab/inbox".into();
+        }
+    }
+    assert_eq!(
+        validate(&manifest).err().map(|e| e.rule),
+        Some("inbox-authority".into())
+    );
+    Ok(())
+}
+
+#[test]
 fn generated_artifacts_have_no_drift() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     for (path, generated) in [
