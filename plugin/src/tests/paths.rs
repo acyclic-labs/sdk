@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn root_references_match_whole_path_names() {
+    let root = if cfg!(windows) {
+        "c:/work/app"
+    } else {
+        "/work/app"
+    };
+    let denied = [
+        root.to_owned(),
+        format!("{root}/src/lib.rs"),
+        format!("cat {root} && true"),
+        format!("see {root}-docs and {root}/src"),
+        format!("{root}.bak"),
+    ];
+    for text in denied {
+        assert!(
+            reject_original_root_references(&json!({ "content": text }), None, root).is_err(),
+            "{text}"
+        );
+    }
+    for text in [format!("{root}-docs/notes.md"), format!("{root}2/lib.rs")] {
+        reject_original_root_references(&json!({ "content": text }), None, root)
+            .unwrap_or_else(|error| panic!("{text}: {error}"));
+    }
+}
+
+#[test]
 fn patch_paths_are_routed_and_cannot_escape() {
     let fixture = Fixture::new();
     let child = fixture.directory("workspace");
