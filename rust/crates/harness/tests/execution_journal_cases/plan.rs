@@ -188,7 +188,12 @@ async fn assert_publications(
     let (current, bytes) = context
         .read_private_path(last.volume(), "", "plan.md", None)
         .await?;
-    assert_eq!(&current, last);
+    // Journal records advance the volume generation after publishing the plan.
+    assert_ne!(current.version(), last.version());
+    assert_eq!(current.volume(), last.volume());
+    assert_eq!(current.path(), last.path());
+    assert_eq!(current.descriptor(), last.descriptor());
+    assert_eq!(current.display_name(), last.display_name());
     assert_eq!(
         Some(bytes.as_ref()),
         case.markdown.last().map(String::as_bytes)
