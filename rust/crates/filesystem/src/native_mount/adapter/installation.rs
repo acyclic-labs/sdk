@@ -1,7 +1,7 @@
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
     async fn install_change(
         &self,
-        candidate: CheckoutCandidate<A, O>,
+        candidate: CheckoutCandidate<'_, A, O>,
         change: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
@@ -44,16 +44,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         Ok(())
     }
 
-    pub(super) async fn install_candidate(
+    pub(super) async fn install_candidate<'a>(
         &self,
-        candidate: CheckoutCandidate<A, O>,
+        candidate: CheckoutCandidate<'a, A, O>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
         record: impl FnOnce(&mut NativeDemandCarrier<'_>) -> Result<(), MountSourceError>,
         commit: impl FnOnce(
             &mut Checkout<A, O>,
-            CheckoutCandidate<A, O>,
+            CheckoutCandidate<'a, A, O>,
             crate::facade::PreparedCandidateAdoption,
         ) -> Result<bool, MountSourceError>,
     ) -> Result<Option<MountPublication>, MountSourceError> {

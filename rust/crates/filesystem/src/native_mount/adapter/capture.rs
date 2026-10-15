@@ -114,7 +114,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
 
     async fn install_capture(
         &self,
-        candidate: CheckoutCandidate<A, O>,
+        candidate: CheckoutCandidate<'_, A, O>,
         scope: InstallScope<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,

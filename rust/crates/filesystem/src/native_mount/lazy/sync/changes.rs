@@ -182,7 +182,7 @@ where
     }
     pub(super) async fn publication_changes(
         &self,
-        candidate: &CheckoutCandidate<A, O>,
+        candidate: &CheckoutCandidate<'_, A, O>,
         paths: &[String],
         changes: Option<&[NamespacePath]>,
         scratch: &mut adapter::InputBuffers<'_, '_>,
@@ -235,7 +235,7 @@ where
     }
     pub(super) async fn install_publication(
         &self,
-        candidate: CheckoutCandidate<A, O>,
+        candidate: CheckoutCandidate<'_, A, O>,
         installed: &ViewEffect,
         carrier: &mut adapter::NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,

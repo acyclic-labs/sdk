@@ -88,3 +88,4 @@ include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");
 include!("source_limits.rs");
+include!("concurrent.rs");
