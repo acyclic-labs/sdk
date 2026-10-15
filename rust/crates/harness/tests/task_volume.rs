@@ -385,21 +385,15 @@ async fn forked_histories_cannot_reuse_parent_cursors_or_publication_generations
 }
 
 #[tokio::test]
-async fn submit_is_an_idempotent_immutable_request_append() -> Result {
+async fn request_file_writes_are_idempotent_and_immutable() -> Result {
     let (provider, volume) = memory().await?;
-    let task = Component::new("t")?;
-    let request = Component::new("r")?;
-    let bytes = OwnedBytes::from_static(b"run");
-    let first = volume
-        .submit(task.clone(), request.clone(), bytes.clone())
-        .await?;
-    assert_eq!(
-        volume.submit(task.clone(), request.clone(), bytes).await?,
-        first
-    );
+    let initial = volume.snapshot(&Query::Root, 0).await?;
+    let request = write(".tasks/t/requests/r.json", "run")?;
+    let first = volume.append(initial.generation, &request).await?;
+    assert_eq!(volume.append(first, &request).await?, first);
     assert!(matches!(
         volume
-            .submit(task, request, OwnedBytes::from_static(b"different"))
+            .append(first, &write(".tasks/t/requests/r.json", "different")?)
             .await,
         Err(Error::ImmutableConflict(_))
     ));
@@ -434,14 +428,15 @@ async fn exact_file_queries_and_erased_providers_share_the_same_contract() -> Re
     let provider: Arc<dyn StreamProvider> = Arc::new(MemoryStream::default());
     let volume = TaskVolume::open(provider, StreamPath::new("tasks")?).await?;
     let initial = volume.snapshot(&Query::Root, 0).await?;
-    let plan = write(".tasks/t/plan.md", "steps")?;
+    let plan = write("plans/main.md", "steps")?;
+    assert_eq!(plan.key.owner(), Owner::Agent);
     append_all(
         &volume,
         initial.generation,
         &[plan.clone(), write("GOAL.md", "active")?],
     )
     .await?;
-    let query = Query::folder(".tasks/t/plan.md")?;
+    let query = Query::folder("plans/main.md")?;
     assert_eq!(volume.snapshot(&query, 1).await?.files, vec![plan]);
     assert!(
         volume
@@ -466,7 +461,7 @@ async fn each_event_has_its_own_append_and_shared_payload_view() -> Result {
     let initial = volume.snapshot(&Query::Root, 0).await?;
     let writes = [
         write("GOAL.md", "goal-payload")?,
-        write(".tasks/t/plan.md", "plan-payload")?,
+        write("plans/main.md", "plan-payload")?,
     ];
     let generation = append_all(&volume, initial.generation, &writes).await?;
     assert_eq!(generation.position, initial.generation.position + 2);
@@ -520,6 +515,10 @@ async fn invalid_paths_channels_and_snapshot_bounds_are_rejected() -> Result {
         ".volumes/agents/../x",
         ".tasks/t/requests/.json",
         ".tasks/t/turns/0/tools/c/stdout/-1",
+        ".tasks/t/plan.md",
+        "plans/.md",
+        "plans/../main.md",
+        "plans/main.MD",
     ] {
         assert!(FileKey::parse(path).is_err(), "accepted {path}");
     }
@@ -528,6 +527,7 @@ async fn invalid_paths_channels_and_snapshot_bounds_are_rejected() -> Result {
         ".tasks/",
         ".tasks/../turns/0",
         ".tasks/t/turns/00/chunks",
+        "plans/",
     ] {
         assert!(Query::folder(path).is_err(), "accepted {path}");
     }

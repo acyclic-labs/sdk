@@ -7,7 +7,7 @@ use std::sync::Arc;
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -120,8 +120,6 @@ pub enum TaskFile {
         /// Authenticated decision maker.
         principal: Component,
     },
-    /// Ordinary editable Markdown.
-    Plan,
     /// Notification with stable identity.
     Notification(Component),
     /// Pinned instruction and attachment provenance.
@@ -169,7 +167,6 @@ impl TaskFile {
                 request.as_str(),
                 principal.as_str()
             ),
-            Self::Plan => "plan.md".into(),
             Self::Notification(id) => format!("notifications/{}.json", id.as_str()),
             Self::Context(id) => format!("context/{}/manifest.json", id.as_str()),
         }
@@ -181,6 +178,8 @@ impl TaskFile {
 pub enum FileKey {
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
+    /// Ordinary editable Markdown in the private volume's plans folder.
+    Plan(Component),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
     /// Protected task namespace.
@@ -264,6 +263,11 @@ impl FileKey {
         };
         match parts.as_slice() {
             ["GOAL.md"] => return Ok(Self::Goal),
+            ["plans", name] => {
+                return Ok(Self::Plan(id(name
+                    .strip_suffix(".md")
+                    .ok_or(Error::InvalidPath)?)?));
+            }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
         }
@@ -273,7 +277,6 @@ impl FileKey {
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
             ["status.json"] => TaskFile::Status,
-            ["plan.md"] => TaskFile::Plan,
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -322,6 +325,7 @@ impl FileKey {
     pub fn path(&self) -> String {
         match self {
             Self::Goal => "GOAL.md".into(),
+            Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
             Self::Task { task, file } => format!(".tasks/{}/{}", task.as_str(), file.path()),
         }
@@ -330,11 +334,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
-            Self::Goal
-            | Self::Task {
-                file: TaskFile::Plan,
-                ..
-            } => Owner::Agent,
+            Self::Goal | Self::Plan(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -351,8 +351,9 @@ impl FileKey {
         matches!(
             self,
             Self::Goal
+                | Self::Plan(_)
                 | Self::Task {
-                    file: TaskFile::Status | TaskFile::Plan,
+                    file: TaskFile::Status,
                     ..
                 }
         )
@@ -364,6 +365,8 @@ impl FileKey {
 pub enum Query {
     /// Entire private task volume.
     Root,
+    /// Editable Markdown files in the private volume's plans folder.
+    Plans,
     /// All task records.
     Tasks,
     /// One task subtree.
@@ -416,16 +419,8 @@ impl Query {
     pub(super) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
         use std::ops::Bound::{Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
-            (
-                Included(FileKey::Task {
-                    task: task.clone(),
-                    file: first,
-                }),
-                Included(FileKey::Task {
-                    task: task.clone(),
-                    file: last,
-                }),
-            )
+            let bound = |file| Included(FileKey::Task { task: task.clone(), file });
+            (bound(first), bound(last))
         };
         let minimum = Component(Arc::from(""));
         let maximum = Component(Arc::from("\u{10ffff}"));
@@ -455,6 +450,10 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Plans => (
+                Included(FileKey::Plan(minimum)),
+                Included(FileKey::Plan(maximum)),
+            ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),
                 Included(FileKey::Agent(maximum)),
@@ -517,6 +516,7 @@ impl Query {
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
             (Self::Root, _)
+            | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
@@ -615,6 +615,7 @@ impl Query {
         };
         Ok(match parts.as_slice() {
             [""] => Self::Root,
+            ["plans"] => Self::Plans,
             [".volumes", "agents"] => Self::Agents,
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),

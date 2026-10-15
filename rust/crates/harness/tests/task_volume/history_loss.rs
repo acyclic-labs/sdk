@@ -56,7 +56,7 @@ enum Entry {
     Live,
     Append,
     AppendIf,
-    Submit,
+    RequestWrite,
     Open,
     Initialize,
     Observe,
@@ -309,12 +309,17 @@ async fn exercise(
                 )
                 .await?;
         }
-        Entry::Submit => {
+        Entry::RequestWrite => {
+            let initial = volume
+                .snapshot(&Query::Requests(Component::new("t")?), 0)
+                .await?;
             volume
-                .submit(
-                    Component::new("t")?,
-                    Component::new("r")?,
-                    OwnedBytes::from_static(b"request"),
+                .append(
+                    initial.generation,
+                    &Write::new(
+                        FileKey::parse(".tasks/t/requests/r.json")?,
+                        OwnedBytes::from_static(b"request"),
+                    ),
                 )
                 .await?;
         }

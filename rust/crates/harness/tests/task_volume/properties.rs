@@ -21,7 +21,7 @@ fn key() -> impl Strategy<Value = String> {
             13 => format!(".tasks/{name}/turns/{turn}/tools/c/result.json"),
             14 => format!(".tasks/{name}/approvals/a/request.json"),
             15 => format!(".tasks/{name}/approvals/a/decisions/p.json"),
-            16 => format!(".tasks/{name}/plan.md"),
+            16 => format!("plans/{name}.md"),
             17 => format!(".tasks/{name}/notifications/n.json"),
             _ => format!(".tasks/{name}/context/r/manifest.json"),
         },
@@ -85,8 +85,9 @@ proptest! {
         key in key(), position in any::<u64>(), accepted in any::<u64>(), durable in any::<u64>(), identity in any::<[u8;32]>()
     ) {
         let key=FileKey::parse(&key)?;
-        let query = Query::File(key);
-        prop_assert_eq!(serde_json::from_slice::<Query>(&serde_json::to_vec(&query)?)?, query);
+        for query in [Query::File(key), Query::Plans] {
+            prop_assert_eq!(serde_json::from_slice::<Query>(&serde_json::to_vec(&query)?)?, query);
+        }
         let cursor = Cursor { volume: identity,epoch: uuid::Uuid::from_bytes([7;16]),schema: 1,query: identity,position,accepted,durable,commit: identity };
         prop_assert_eq!(serde_json::from_slice::<Cursor>(&serde_json::to_vec(&cursor)?)?, cursor);
     }
@@ -130,7 +131,7 @@ proptest! {
                 let path=match kind {
                     0=>"GOAL.md".into(),
                     1=>format!(".tasks/{}/status.json",task.as_str()),
-                    2=>format!(".tasks/{}/plan.md",task.as_str()),
+                    2=>format!("plans/{}.md",task.as_str()),
                     3=>format!(".tasks/{}/turns/{turn}/chunks/{n}",task.as_str()),
                     4=>format!(".tasks/{}/notifications/n{n}.json",task.as_str()),
                     5=>format!(".tasks/{}/approvals/a{n}/request.json",task.as_str()),
@@ -141,7 +142,7 @@ proptest! {
                 if kind==3 {file.channel=Some(Channel::Text);}
                 generation=volume.append(generation,&file).await?;
                 reference.insert(file.key.clone(),file.clone());
-                let queries=[Query::Root,Query::Tasks,Query::Agents,Query::Task(task.clone()),Query::Requests(task.clone()),Query::Turns(task.clone()),Query::Turn {task:task.clone(),turn},Query::Chunks {task:task.clone(),turn},Query::Tools {task:task.clone(),turn},Query::Approvals(task.clone()),Query::Notifications(task.clone()),Query::File(file.key)];
+                let queries=[Query::Root,Query::Plans,Query::Tasks,Query::Agents,Query::Task(task.clone()),Query::Requests(task.clone()),Query::Turns(task.clone()),Query::Turn {task:task.clone(),turn},Query::Chunks {task:task.clone(),turn},Query::Tools {task:task.clone(),turn},Query::Approvals(task.clone()),Query::Notifications(task.clone()),Query::File(file.key)];
                 for query in queries {
                     let expected=reference.values().filter(|file|query.matches(&file.key)).cloned().collect::<Vec<_>>();
                     assert_eq!(volume.snapshot(&query,100).await?.files,expected,"{query:?}");

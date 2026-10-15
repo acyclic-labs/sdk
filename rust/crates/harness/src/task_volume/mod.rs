@@ -356,38 +356,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             }
         }
     }
-
-    /// Appends one immutable request to the caller-selected inbox stream. A request's
-    /// logical file identity deduplicates retries; provider watermarks confirm persistence.
-    pub async fn submit(
-        &self,
-        task: Component,
-        request: Component,
-        bytes: OwnedBytes,
-    ) -> Result<Generation> {
-        let write = Write::new(
-            FileKey::Task {
-                task,
-                file: TaskFile::Request(request),
-            },
-            bytes,
-        );
-        loop {
-            let generation = {
-                let mut index = self.index.lock().await;
-                self.refresh(&mut index).await?;
-                validate_file(&index, &write)?;
-                if index.files.get(&write.key) == Some(&write) {
-                    return Ok(self.generation(&index));
-                }
-                self.generation(&index)
-            };
-            match self.append(generation, &write).await {
-                Err(Error::Conflict(_)) => continue,
-                result => return result,
-            }
-        }
-    }
 }
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {

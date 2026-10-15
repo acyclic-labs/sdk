@@ -129,19 +129,19 @@
     "folder": "",
     "files": {
       "GOAL.md": "done",
-      ".tasks/t/plan.md": "finished",
+      "plans/main.md": "finished",
       ".tasks/t/notifications/n.json": "ready",
       ".tasks/t/context/v1/manifest.json": "pinned",
       ".volumes/agents/child": "lineage"
     },
     "changes": [
       "GOAL.md",
-      ".tasks/t/plan.md",
+      "plans/main.md",
       ".tasks/t/notifications/n.json",
       ".tasks/t/context/v1/manifest.json",
       ".volumes/agents/child",
       "GOAL.md",
-      ".tasks/t/plan.md"
+      "plans/main.md"
     ],
     "events": [
       {
@@ -149,7 +149,7 @@
         "text": "active"
       },
       {
-        "path": ".tasks/t/plan.md",
+        "path": "plans/main.md",
         "text": "steps"
       },
       {
@@ -169,7 +169,7 @@
         "text": "done"
       },
       {
-        "path": ".tasks/t/plan.md",
+        "path": "plans/main.md",
         "text": "finished"
       }
     ]
@@ -351,6 +351,47 @@
       {
         "path": ".tasks/t/turns/1/completion.json",
         "text": "done"
+      }
+    ]
+  },
+  {
+    "name": "plans are mutable files followed through one bounded folder query",
+    "folder": "plans",
+    "files": {
+      "plans/main.md": "revised",
+      "plans/other.md": "other"
+    },
+    "order": [
+      "plans/main.md",
+      "plans/other.md"
+    ],
+    "changes": [
+      "plans/main.md",
+      null,
+      "plans/other.md",
+      null,
+      "plans/main.md"
+    ],
+    "events": [
+      {
+        "path": "plans/main.md",
+        "text": "initial"
+      },
+      {
+        "path": "GOAL.md",
+        "text": "active"
+      },
+      {
+        "path": "plans/other.md",
+        "text": "other"
+      },
+      {
+        "path": ".tasks/t/status.json",
+        "text": "running"
+      },
+      {
+        "path": "plans/main.md",
+        "text": "revised"
       }
     ]
   }
