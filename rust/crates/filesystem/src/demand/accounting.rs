@@ -148,8 +148,11 @@ impl DemandWork {
         )?)
     }
     pub(crate) fn charge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
+        self.charge_reconciled(delta)
+    }
+    pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
         self.check()?;
         self.admission(delta, 0, |state| {
             Ok(state.work.charge(&delta, &state.budget)?)

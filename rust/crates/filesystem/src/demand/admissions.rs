@@ -208,7 +208,7 @@ impl DemandWork {
         failure: &mut Option<crate::WorkError>,
     ) -> Result<(), crate::WorkError> {
         let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
-            return Ok(());
+            return self.prune_native_mount_admissions();
         };
         if !dirty.load(Ordering::Acquire) || !dirty.swap(false, Ordering::AcqRel) {
             return Ok(());
@@ -257,28 +257,43 @@ impl DemandWork {
         Ok(())
     }
     fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
-        if self.roots.native_mount_admission_pending {
+        if self.roots.native_mount_admission_pending
+            || self.roots.native_mount_admissions.0.is_empty()
+        {
             return Ok(());
         }
-        let (owners, capacity) = &mut self.roots.native_mount_admissions;
-        let Some(first_dead) = owners.iter().position(|entry| entry.1 == 0) else {
-            return Ok(());
-        };
-        let moved = owners[first_dead..]
-            .iter()
-            .filter(|entry| entry.1 != 0)
-            .count();
+        let owners = &self.roots.native_mount_admissions.0;
+        let live = owners.iter().filter(|entry| entry.1 != 0).count();
+        let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
         let copied = WorkCounters {
             bytes_copied: (moved * std::mem::size_of::<(Weak<NativeMountAllocationCustody>, u64)>())
                 as u64,
             ..WorkCounters::UNCHARGED
         };
-        // Compaction is optional when its copies cannot be admitted. Retirement
-        // above is still exact, and a dead tail needs no copies to reclaim.
-        if moved != 0 && self.work.charge(&copied, &self.budget).is_err() {
+        // Retirement is unconditional. Moving survivors requires the current
+        // cancellation, invocation, resource and original-ledger admission.
+        let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
+        let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        while owners.last().is_some_and(|entry| entry.1 == 0) {
+            owners.pop();
+        }
+        if deferred {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                dirty.store(true, Ordering::Release);
+            }
             return Ok(());
         }
-        owners.retain(|entry| entry.1 != 0);
+        let mut index = 0;
+        while index < owners.len() {
+            if owners[index].1 == 0 {
+                owners.swap_remove(index);
+                while owners.last().is_some_and(|entry| entry.1 == 0) {
+                    owners.pop();
+                }
+            } else {
+                index += 1;
+            }
+        }
         if owners.is_empty() {
             let backing = std::mem::take(owners);
             let bytes = std::mem::take(capacity).logical_bytes();
