@@ -28,7 +28,10 @@ impl tonic::service::Interceptor for BearerAuth {
         &mut self,
         mut request: tonic::Request<()>,
     ) -> Result<tonic::Request<()>, tonic::Status> {
-        let authorization = request.extensions_mut().remove::<Self>().unwrap_or_else(|| self.clone());
+        let authorization = request
+            .extensions_mut()
+            .remove::<Self>()
+            .unwrap_or_else(|| self.clone());
         request
             .metadata_mut()
             .insert("authorization", authorization.0);

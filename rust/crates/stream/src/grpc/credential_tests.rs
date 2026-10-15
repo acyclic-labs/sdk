@@ -17,12 +17,21 @@ async fn request_credentials_never_mutate_the_original_client() {
                 prop_assert_eq!(metadata.to_str().unwrap(), format!("Bearer {token}"));
                 prop_assert!(metadata.is_sensitive());
                 let fixed = original.request(());
-                prop_assert_eq!(fixed.metadata().get("authorization").unwrap().to_str().unwrap(), "Bearer fixture");
+                prop_assert_eq!(
+                    fixed
+                        .metadata()
+                        .get("authorization")
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    "Bearer fixture"
+                );
                 for delimiter in ['\r', '\n', '\0'] {
                     let invalid = format!("{token}{delimiter}");
                     prop_assert!(original.with_credential(&invalid).is_err());
                 }
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 }

@@ -190,7 +190,11 @@ impl ActorsClient {
         token: &str,
         signal: Option<JsValue>,
     ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call_with_credential(method, request, token)).await
+        self.run(
+            signal,
+            self.inner.call_with_credential(method, request, token),
+        )
+        .await
     }
 
     /// Execute `CreateActor` with an encoded protobuf request.

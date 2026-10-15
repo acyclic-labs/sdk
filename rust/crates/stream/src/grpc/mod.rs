@@ -31,11 +31,11 @@ use crate::{
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;
+#[cfg(test)]
+mod credential_tests;
 mod server;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod credential_tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);

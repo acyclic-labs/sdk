@@ -22,8 +22,18 @@ impl tonic::server::UnaryService<wire::InvokeActorRequest> for Echo {
     type Future = std::future::Ready<Result<tonic::Response<Self::Response>, tonic::Status>>;
     fn call(&mut self, request: tonic::Request<wire::InvokeActorRequest>) -> Self::Future {
         self.0.fetch_add(1, Ordering::SeqCst);
-        let expected = if request.get_ref().body.first() == Some(&8) { "Bearer renewed" } else { "Bearer fixture" };
-        assert_eq!(request.metadata().get("authorization").and_then(|value| value.to_str().ok()), Some(expected));
+        let expected = if request.get_ref().body.first() == Some(&8) {
+            "Bearer renewed"
+        } else {
+            "Bearer fixture"
+        };
+        assert_eq!(
+            request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected)
+        );
         let request = request.into_inner();
         std::future::ready(Ok(tonic::Response::new(wire::InvokeActorResponse {
             status: 200,
@@ -94,8 +104,16 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             assert_eq!(response.status, 200);
             assert_eq!(response.body, request.body);
         }
-        let renewed = wire::InvokeActorRequest { body: vec![8], ..request.clone() };
-        let response = wire::InvokeActorResponse::decode(client.call_with_credential("InvokeActor", &renewed.encode_to_vec(), "renewed").await?.as_slice())?;
+        let renewed = wire::InvokeActorRequest {
+            body: vec![8],
+            ..request.clone()
+        };
+        let response = wire::InvokeActorResponse::decode(
+            client
+                .call_with_credential("InvokeActor", &renewed.encode_to_vec(), "renewed")
+                .await?
+                .as_slice(),
+        )?;
         assert_eq!(response.body, vec![8]);
         client.call("InvokeActor", &request.encode_to_vec()).await?;
         let invalid = wire::InvokeActorRequest {

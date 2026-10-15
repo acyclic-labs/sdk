@@ -1,4 +1,5 @@
 import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type MessageShape } from "@bufbuild/protobuf";
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
@@ -301,14 +302,20 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
+  readonly authorization: AuthorizationHeaders;
   constructor(
     readonly endpoint: string,
-    readonly authorization: AuthorizationHeaders,
+    authorization: AuthorizationHeaders | CredentialOptions,
     readonly fetcher: typeof fetch = fetch,
     /** UTF-8 ceiling for requests, responses and stream events. */
     readonly maximumMessageBytes = MAXIMUM_HTTP_JSON_BYTES,
     observer?: AcyclicObserver,
   ) {
+    if (typeof authorization === "function") this.authorization = authorization;
+    else {
+      const credential = credentialProvider(authorization);
+      this.authorization = async signal => ({ authorization: `Bearer ${await credential(signal)}` });
+    }
     this.#observer = resolveObserver(observer);
     if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes <= 0) {
       throw new RangeError("maximumMessageBytes must be a positive safe integer byte ceiling");

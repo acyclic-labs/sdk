@@ -441,9 +441,13 @@ impl NativeActorsClient {
         let result = cancellable(
             self.inner.call_with_credential(&method, &request, &token),
             cancellation.map(|value| value.state.clone()),
-        ).await;
+        )
+        .await;
         Ok(match result {
-            Ok(value) => NativeActorsOperationResult { value: Some(value.into()), error: None },
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(value.into()),
+                error: None,
+            },
             Err(error) => NativeActorsOperationResult::failure(error),
         })
     }
