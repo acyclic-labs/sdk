@@ -2,7 +2,5 @@
 
 /**
  * The only valid semantic payload for the current-head selector. The
- * protobuf wire representation remains a bool for descriptor stability,
- * while this type makes `false` unrepresentable after ingress validation.
  */
 export type CurrentHeadMarker = true;

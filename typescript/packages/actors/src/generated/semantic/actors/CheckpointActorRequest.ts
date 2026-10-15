@@ -3,6 +3,5 @@ import type { ActorId } from "./ActorId.js";
 
 /**
  * Checkpoint has no canonical validator yet; only the Actor identity rule is
- * applied and the idempotency key remains an ordinary string.
  */
 export type CheckpointActorRequest = { actorId: ActorId, idempotencyKey: string, };
