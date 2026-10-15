@@ -194,14 +194,14 @@ async fn cancelled_compaction_preserves_retirement_without_copying() -> TestResu
         let first = open(root.path(), &work).await?;
         let second = open(root.path(), &work).await?;
         let (invocation, invocation_cancel) = work.invocation_view()?;
-        drop(first);
-        let before = work.receipt();
-        let retained = work.live_allocation_bytes();
         if cancel_original {
             cancellation.cancel();
         } else {
             invocation_cancel.cancel();
         }
+        drop(first);
+        let before = work.receipt();
+        let retained = work.live_allocation_bytes();
         assert!(invocation.charge(WorkCounters::UNCHARGED).is_err());
         assert_eq!(work.receipt(), before);
         assert_eq!(work.live_allocation_bytes(), retained);
