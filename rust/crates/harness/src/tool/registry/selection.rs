@@ -15,28 +15,31 @@ impl ToolRegistry {
                 ));
             }
             if selected
-                .insert(
-                    definition.name.clone(),
-                    ModelSelection::Revision(definition.revision.clone()),
-                )
+                .insert(definition.name.as_str(), definition.revision.as_str())
                 .is_some()
             {
                 return Err(Error::Conflict("manifest repeats a tool name".into()));
             }
         }
-        self.selected = selected;
+        for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
+            *selection = match selected.get(name.as_str()) {
+                Some(revision) => ModelSelection::Revision((*revision).to_owned()),
+                None => ModelSelection::Hidden,
+            };
+        }
         Ok(())
     }
 
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
         if !self
+            .data
             .versions
             .contains_key(&(name.to_owned(), revision.to_owned()))
         {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        self.selected.insert(
+        Arc::make_mut(&mut self.data).selected.insert(
             name.to_owned(),
             ModelSelection::Revision(revision.to_owned()),
         );
@@ -50,18 +53,20 @@ impl ToolRegistry {
         expected: Option<[u8; 32]>,
         revision: [u8; 32],
     ) -> Result<()> {
-        if self.catalog_revisions.get(namespace).copied() != expected {
+        if self.data.catalog_revisions.get(namespace).copied() != expected {
             return Err(Error::Conflict(
                 "dynamic catalog installation changed".into(),
             ));
         }
-        self.catalog_revisions.insert(namespace.into(), revision);
+        Arc::make_mut(&mut self.data)
+            .catalog_revisions
+            .insert(namespace.into(), revision);
         Ok(())
     }
 
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
-        let selection = self
+        let selection = Arc::make_mut(&mut self.data)
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
@@ -115,16 +120,20 @@ impl ToolRegistry {
             Some(revision) => (name, revision),
             None => match name.rsplit_once('@') {
                 Some(pinned) => pinned,
-                None => match self.selected.get(name) {
+                None => match self.data.selected.get(name) {
                     Some(ModelSelection::Revision(revision)) => (name, revision.as_str()),
                     _ => return Ok(None),
                 },
             },
         };
-        Ok(self.versions.get(&(
-            crate::executor::stock_string_copy(name, io)?,
-            crate::executor::stock_string_copy(revision, io)?,
-        )))
+        Ok(self
+            .data
+            .versions
+            .get(&(
+                crate::executor::stock_string_copy(name, io)?,
+                crate::executor::stock_string_copy(revision, io)?,
+            ))
+            .map(Arc::as_ref))
     }
 
     /// Returns the unambiguous model selection in canonical order.
@@ -132,16 +141,37 @@ impl ToolRegistry {
         &self,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
+        self.definitions_for_names(self.data.selected.keys().map(String::as_str), io)
+    }
+
+    pub(crate) fn definitions_for_grants(
+        &self,
+        grants: &crate::Capabilities,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
+        self.definitions_for_names(
+            grants
+                .iter()
+                .filter_map(|grant| grant.strip_prefix("tool:call:")),
+            io,
+        )
+    }
+
+    fn definitions_for_names<'a>(
+        &self,
+        names: impl Iterator<Item = &'a str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
         }
-        let mut definitions = crate::model::vec_with_capacity(self.selected.len(), io)?;
-        for (name, selection) in &self.selected {
-            let revision = match selection {
-                ModelSelection::Revision(revision) => revision,
-                ModelSelection::Hidden => continue,
-                ModelSelection::Ambiguous => {
+        let mut definitions = Vec::new();
+        for name in names {
+            let revision = match self.data.selected.get(name) {
+                Some(ModelSelection::Revision(revision)) => revision,
+                Some(ModelSelection::Hidden) | None => continue,
+                Some(ModelSelection::Ambiguous) => {
                     return Err(crate::executor::stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
@@ -156,7 +186,8 @@ impl ToolRegistry {
                     "selected tool revision is not registered",
                 )
             })?;
-            definitions.push(crate::model::clone_tool_definition(&tool.definition, io)?);
+            let definition = crate::model::clone_tool_definition(&tool.definition, io)?;
+            crate::executor::stock_vec_push(&mut definitions, definition, io)?;
         }
         Ok(definitions)
     }

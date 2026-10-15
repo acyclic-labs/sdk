@@ -20,10 +20,16 @@ enum ModelSelection {
     Hidden,
 }
 
-/// Retains pinned revisions and one model selection per logical name.
+/// Immutable shared snapshots of pinned revisions and the model selection.
+/// Cloning shares storage; changing a snapshot copies metadata and retains payloads.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
-    versions: BTreeMap<(String, String), Tool>,
+    data: Arc<RegistryData>,
+}
+
+#[derive(Clone, Default)]
+struct RegistryData {
+    versions: BTreeMap<(String, String), Arc<Tool>>,
     selected: BTreeMap<String, ModelSelection>,
     catalog_revisions: BTreeMap<String, [u8; 32]>,
 }
@@ -52,6 +58,17 @@ impl ToolRegistry {
         Ok(self)
     }
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+const REGISTRY_BYTES: usize = std::mem::size_of::<ToolRegistry>()
+    + std::mem::size_of::<RegistryData>()
+    + 2 * std::mem::size_of::<usize>();
+#[cfg(feature = "filesystem")]
+const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
+    + std::mem::size_of::<Arc<Tool>>()
+    + std::mem::size_of::<Tool>()
+    - std::mem::size_of::<ToolDefinition>()
+    + 2 * std::mem::size_of::<usize>();
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
