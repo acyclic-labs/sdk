@@ -1,6 +1,8 @@
 #![no_main]
 
-use acyclic_actors::guest::{AdmittedCaller, Checkpoint, GuestEvent, GuestEventResult};
+use acyclic_actors::guest::{
+    AdmittedCaller, CallerCapability, Checkpoint, GuestEvent, GuestEventResult, RuntimeHandle,
+};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
@@ -12,6 +14,23 @@ fuzz_target!(|input: &[u8]| {
         );
     }
     if let Ok(caller) = serde_json::from_slice::<AdmittedCaller>(input) {
+        if let Some(capability) = &caller.capability {
+            let _ = CallerCapability::new(capability.version, capability.handle.clone());
+            let _ = RuntimeHandle::new(capability.version, capability.handle.clone());
+        }
+        if let Ok(expiry) = caller.expires_at_ms.parse() {
+            if let Ok(constructed) = AdmittedCaller::new(
+                caller.account_id.clone(),
+                caller.org_id.clone(),
+                caller.principal.clone(),
+                caller.credential_id.clone(),
+                caller.actor_id.clone(),
+                expiry,
+            ) {
+                assert_eq!(constructed.principal, caller.principal);
+                assert_eq!(constructed.expires_at_ms, expiry.to_string());
+            }
+        }
         let encoded = serde_json::to_vec(&caller).expect("caller projection must encode");
         assert_eq!(
             serde_json::from_slice::<AdmittedCaller>(&encoded).expect("caller round trip"),

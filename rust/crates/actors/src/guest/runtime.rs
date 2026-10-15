@@ -1,6 +1,25 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// Invalid host metadata representation; never includes credential or handle values.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("invalid guest metadata field: {0}")]
+pub struct GuestMetadataError(pub &'static str);
+
+fn identity(value: &str, field: &'static str) -> Result<(), GuestMetadataError> {
+    if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+        return Err(GuestMetadataError(field));
+    }
+    Ok(())
+}
+
+fn handle(version: u32, value: &str) -> Result<(), GuestMetadataError> {
+    if version == 0 {
+        return Err(GuestMetadataError("version"));
+    }
+    identity(value, "handle")
+}
+
 /// Opaque host capability handle, reserved for S1 forwarding/attenuation.
 /// This is neither a bearer token nor a second capability-chain representation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -11,6 +30,17 @@ pub struct CallerCapability {
     pub version: u32,
     /// Invocation-scoped host handle, interpreted only by the host.
     pub handle: String,
+}
+
+impl CallerCapability {
+    /// Construct an opaque versioned handle. S1, not this constructor, admits authority.
+    pub fn new(version: u32, value: String) -> Result<Self, GuestMetadataError> {
+        handle(version, &value)?;
+        Ok(Self {
+            version,
+            handle: value,
+        })
+    }
 }
 
 /// Identity admitted by the host, never inferred from customer request headers.
@@ -34,6 +64,51 @@ pub struct AdmittedCaller {
     pub capability: Option<CallerCapability>,
 }
 
+impl AdmittedCaller {
+    /// Construct the host's admitted projection with a nonzero Unix-ms expiry.
+    /// Authentication, audience and expiry-at-delivery checks remain host obligations.
+    pub fn new(
+        account_id: String,
+        org_id: String,
+        principal: String,
+        credential_id: String,
+        actor_id: String,
+        expires_at_ms: u64,
+    ) -> Result<Self, GuestMetadataError> {
+        for (value, field) in [
+            (&account_id, "accountId"),
+            (&org_id, "orgId"),
+            (&principal, "principal"),
+            (&credential_id, "credentialId"),
+            (&actor_id, "actorId"),
+        ] {
+            identity(value, field)?;
+        }
+        if expires_at_ms == 0 {
+            return Err(GuestMetadataError("expiresAtMs"));
+        }
+        Ok(Self {
+            account_id,
+            org_id,
+            principal,
+            credential_id,
+            actor_id,
+            expires_at_ms: expires_at_ms.to_string(),
+            capability: None,
+        })
+    }
+
+    /// Attach an S1 handle after checking its representation.
+    pub fn with_capability(
+        mut self,
+        capability: CallerCapability,
+    ) -> Result<Self, GuestMetadataError> {
+        handle(capability.version, &capability.handle)?;
+        self.capability = Some(capability);
+        Ok(self)
+    }
+}
+
 /// Versioned runtime-owned extension handle. Feature contracts add operations to
 /// the handle; these names never enter the manifest binding namespace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -44,6 +119,17 @@ pub struct RuntimeHandle {
     pub version: u32,
     /// Scoped runtime handle identity.
     pub handle: String,
+}
+
+impl RuntimeHandle {
+    /// Construct a runtime extension handle; unknown nonzero versions remain opaque.
+    pub fn new(version: u32, value: String) -> Result<Self, GuestMetadataError> {
+        handle(version, &value)?;
+        Ok(Self {
+            version,
+            handle: value,
+        })
+    }
 }
 
 /// Runtime namespace reserved independently of manifest env bindings and secrets.

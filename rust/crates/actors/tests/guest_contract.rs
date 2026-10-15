@@ -21,6 +21,28 @@ fn codec(version: &str, readable: Vec<CodecIdentity>) -> CheckpointCodec<Vec<u8>
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
+    /// Constructors accept exactly nonempty, trimmed, control-free identities
+    /// and nonzero versions/expiries, preserving all admitted values verbatim.
+    #[test]
+    fn host_metadata_construction_preserves_valid_input(value in ".{0,128}", version in any::<u32>(), expiry in any::<u64>()) {
+        let valid = !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
+        let capability = CallerCapability::new(version, value.clone());
+        let runtime = RuntimeHandle::new(version, value.clone());
+        prop_assert_eq!(capability.is_ok(), valid && version != 0);
+        prop_assert_eq!(runtime.is_ok(), valid && version != 0);
+        if let Ok(capability) = capability {
+            prop_assert_eq!(&capability.handle, &value);
+            prop_assert_eq!(capability.version, version);
+        }
+        let caller = AdmittedCaller::new(value.clone(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
+        prop_assert_eq!(caller.is_ok(), valid && expiry != 0);
+        if let Ok(caller) = caller {
+            prop_assert_eq!(&caller.principal, &value);
+            prop_assert_eq!(&caller.expires_at_ms, &expiry.to_string());
+            prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
+        }
+    }
+
     #[test]
     fn artifact_codec_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
         let codec = codec("1", vec![identity("1")]);
@@ -116,6 +138,65 @@ proptest! {
             prop_assert_eq!(serde_json::from_slice::<GuestEvent>(&serde_json::to_vec(&event)?)?, event);
         }
     }
+}
+
+#[test]
+fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std::error::Error>> {
+    let capability = CallerCapability::new(1, "invocation-capability".into())?;
+    let caller = AdmittedCaller::new(
+        "account".into(),
+        "org".into(),
+        "principal".into(),
+        "credential".into(),
+        "actor".into(),
+        u64::MAX,
+    )?
+    .with_capability(capability)?;
+    let mut actor = ActorRuntime::default();
+    actor.alarms = Some(RuntimeHandle::new(2, "alarm-handle".into())?);
+    let context = GuestContext::builder((), Box::new(|| 1))
+        .admitted_identity(caller)
+        .actor(actor)
+        .build();
+    assert_eq!(
+        context
+            .admitted_identity
+            .as_ref()
+            .map(|v| v.expires_at_ms.as_str()),
+        Some("18446744073709551615")
+    );
+    assert_eq!(context.actor.alarms.as_ref().map(|v| v.version), Some(2));
+    for invalid in ["", " ", " leading", "trailing ", "nul\0", "line\nfeed"] {
+        assert!(CallerCapability::new(1, invalid.into()).is_err());
+        assert!(RuntimeHandle::new(1, invalid.into()).is_err());
+        for field in 0..5 {
+            let mut fields = ["a", "o", "p", "c", "i"];
+            fields[field] = invalid;
+            assert!(
+                AdmittedCaller::new(
+                    fields[0].into(),
+                    fields[1].into(),
+                    fields[2].into(),
+                    fields[3].into(),
+                    fields[4].into(),
+                    1
+                )
+                .is_err()
+            );
+        }
+    }
+    let mut invalid_capability = CallerCapability::new(1, "cap".into())?;
+    invalid_capability.version = 0;
+    let caller = AdmittedCaller::new(
+        "a".into(),
+        "o".into(),
+        "p".into(),
+        "c".into(),
+        "i".into(),
+        1,
+    )?;
+    assert!(caller.with_capability(invalid_capability).is_err());
+    Ok(())
 }
 
 proptest! {

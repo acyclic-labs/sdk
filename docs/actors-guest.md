@@ -13,6 +13,8 @@ unsupported versions without changing the installed boundary, and project only
 events defined by the negotiated version. Inbound structures ignore added fields;
 unknown event discriminants decode to `Unknown` and may be ignored by old guests.
 The event/socket enums and context are non-exhaustive Rust APIs.
+SocketCloseInitiator and SocketTransport have closed v1 value sets; new values
+require a new negotiated ABI. Hosts must project supported values for v1 guests.
 
 The artifact exports its codec identity (name/version), readable identities and
 encode/decode hooks as `actor.codec`. It is absent from context. Checkpoints carry
@@ -26,8 +28,10 @@ boundary atomically. Public CheckpointActor requests a capture, not a codec chan
 Every hook uses `GuestContext<Bindings>`: manifest-owned `env`, an injected clock
 (Rust u64/TS bigint Unix milliseconds), stable nullable deliveryId, retryKey(effect),
 host-supplied admittedIdentity, and a separate runtime-owned `actor` namespace.
-Construct Rust contexts through `GuestContext::builder`. The identity projection
-contains accountId, orgId, principal, credentialId, actorId, expiry and an optional
+Construct Rust contexts through `GuestContext::builder`. Host metadata
+uses `AdmittedCaller::new`, `CallerCapability::new` and `RuntimeHandle::new` for
+validated construction without serde. These check representation, not authority.
+The identity projection contains accountId, orgId, principal, credentialId, actorId, expiry and an optional
 versioned opaque capability handle for S1 forwarding/attenuation. It is neither
 a bearer token nor a second auth chain. The host authenticates it; public request
 headers cannot install it. It is null for Stream, timer, restore and checkpoint.
@@ -51,7 +55,9 @@ heap and restores the committed boundary.
 One event union covers Stream, Invoke, fetch, timer and app-only sockets. Stream
 fields retain the Cloud projection: decimal u64 sequence/time, base64 record value
 and hex commit ID. Retry keys length-prefix the UTF-8 stable delivery identity;
-lifecycle hooks without a delivery cannot derive keys. Arbitrary external effects
+lifecycle hooks without a delivery cannot derive keys. Rust returns errors; TS
+retryKey throws for a missing delivery (restore/checkpoint)
+or an empty effect name. Arbitrary external effects
 still require service-specific idempotency. Timer fires are inbox appends keyed by
 timer ID, never Invoke. The harness uses StreamProvider and fs/volume only.
 
