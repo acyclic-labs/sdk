@@ -343,7 +343,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn replica(
+    pub(super) fn replica(
         &self,
         mut dependencies: DependencyLedger,
         mode: CheckoutMode,

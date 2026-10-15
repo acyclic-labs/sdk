@@ -39,7 +39,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 &mut carrier,
                 cancellation,
                 Some(&self.cancellation),
-                |carrier| {
+                |carrier, stamp| {
+                    self.checkout.ledger.check_change_since(
+                        &ViewChange::Bound(&path),
+                        stamp,
+                        carrier,
+                    )?;
                     self.with_capture_observer_dispatch(|| {
                         record_view_change(
                             &self.checkout.ledger,

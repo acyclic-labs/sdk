@@ -73,6 +73,8 @@ pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
 };
+#[cfg(feature = "native-mount")]
+pub(crate) use merge::{merge_file_tables_with_accounting, resolve_three};
 pub(crate) use persistent_diff::{
     ValueChange, diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };

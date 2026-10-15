@@ -14,7 +14,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
-                |carrier| record_view_change(&self.ledger, &change, carrier),
+                |carrier, stamp| {
+                    self.ledger.check_change_since(&change, stamp, carrier)?;
+                    record_view_change(&self.ledger, &change, carrier)
+                },
                 |checkout, candidate, prepared| {
                     cancellation
                         .commit_if_both_live(lifetime, || {
@@ -50,7 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
-        record: impl FnOnce(&mut NativeDemandCarrier<'_>) -> Result<(), MountSourceError>,
+        record: impl FnOnce(&mut NativeDemandCarrier<'_>, ViewStamp) -> Result<(), MountSourceError>,
         commit: impl FnOnce(
             &mut Checkout<A, O>,
             CheckoutCandidate<'a, A, O>,
@@ -58,12 +61,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         ) -> Result<bool, MountSourceError>,
     ) -> Result<Option<MountPublication>, MountSourceError> {
         carrier.check(cancellation, lifetime)?;
-        if self.view_gate.generation() != candidate.epoch || self.ledger.stamp() != candidate.stamp
-        {
+        if self.view_gate.generation() != candidate.epoch {
             return Ok(None);
         }
         // Observers may reenter the source, so dispatch before taking its write lease.
-        record(carrier)?;
+        record(carrier, candidate.stamp)?;
         let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
         if self.view_gate.generation() != candidate.epoch
             || state.publication_operation.is_some()
@@ -76,6 +78,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        let CheckoutCandidate {
+            base,
+            checkout,
+            operation,
+            epoch,
+            stamp,
+            _publication,
+        } = candidate;
+        let Some((base, checkout)) = state
+            .checkout
+            .rebase_native_candidate(
+                base,
+                checkout,
+                MAXIMUM_EXACT_INSTALL_CHANGES,
+                &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
+                cancellation,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let candidate = CheckoutCandidate {
+            base,
+            checkout,
+            operation,
+            epoch,
+            stamp,
+            _publication,
+        };
         let prepared = state.checkout.prepare_candidate_adoption(
             &candidate.base,
             &candidate.checkout,

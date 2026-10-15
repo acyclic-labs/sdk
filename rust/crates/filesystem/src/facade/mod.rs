@@ -128,6 +128,8 @@ mod attributes;
 mod authored_compile;
 mod authored_model;
 mod authored_records;
+#[cfg(feature = "native-mount")]
+mod candidate_rebase;
 mod candidates;
 mod checkout;
 mod collection;

@@ -1,7 +1,7 @@
 /// Serialization and publication boundary for a canonical checkout.
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
-    mutation: tokio::sync::Mutex<()>,
+    publication_fence: tokio::sync::RwLock<()>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     publishing: AtomicBool,
@@ -48,7 +48,7 @@ impl<A, O> SharedCheckout<A, O> {
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let ledger = Arc::new(ViewLedger::default());
         Self {
-            mutation: tokio::sync::Mutex::new(()),
+            publication_fence: tokio::sync::RwLock::new(()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -81,7 +81,7 @@ impl<A, O> SharedCheckout<A, O> {
         let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
         Ok(Arc::new(Self {
-            mutation: tokio::sync::Mutex::new(()),
+            publication_fence: tokio::sync::RwLock::new(()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -168,7 +168,13 @@ impl<A, O> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let mutation = await_lock(self.mutation.lock(), carrier, cancellation, lifetime).await?;
+        let publication = await_lock(
+            self.publication_fence.read(),
+            carrier,
+            cancellation,
+            lifetime,
+        )
+        .await?;
         let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
@@ -183,7 +189,7 @@ impl<A, O> SharedCheckout<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         Ok(CheckoutCandidate {
-            _mutation: mutation,
+            _publication: publication,
             base: state
                 .checkout
                 .private_candidate(

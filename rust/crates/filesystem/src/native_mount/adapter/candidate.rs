@@ -4,8 +4,7 @@ pub(super) struct CheckoutCandidate<'a, A, O> {
     pub(super) operation: Option<OperationId>,
     pub(super) epoch: u64,
     pub(super) stamp: ViewStamp,
-    // A candidate replaces the whole root; sibling callbacks must start after its adoption.
-    _mutation: tokio::sync::MutexGuard<'a, ()>,
+    _publication: tokio::sync::RwLockReadGuard<'a, ()>,
 }
 
 #[derive(Clone, Copy)]

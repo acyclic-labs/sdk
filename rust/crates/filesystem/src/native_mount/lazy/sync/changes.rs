@@ -248,7 +248,12 @@ where
                 carrier,
                 cancellation,
                 Some(self.authored.cancellation()),
-                |carrier| {
+                |carrier, stamp| {
+                    self.authored.shared_checkout().ledger.check_change_since(
+                        &ViewChange::Effect(installed),
+                        stamp,
+                        carrier,
+                    )?;
                     adapter::record_view_change(
                         &self.authored.shared_checkout().ledger,
                         &ViewChange::Effect(installed),

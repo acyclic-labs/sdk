@@ -1,7 +1,35 @@
 use super::*;
 
+mod overlap;
+
+async fn staged_write<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &'a SharedCheckout<A, O>,
+    file: FileId,
+    bytes: &'static [u8],
+    work: &crate::NativeMaterializationWork,
+) -> Result<CheckoutCandidate<'a, A, O>, MountSourceError> {
+    let mut carrier = NativeDemandCarrier::Native(work);
+    let mut candidate = checkout
+        .candidate(None, &mut carrier, work.cancellation(), None)
+        .await?;
+    candidate
+        .checkout
+        .change_content(
+            file,
+            ContentChange::Write {
+                offset: 0,
+                bytes: Bytes::from_static(bytes).into(),
+            },
+            ContentTimes::Preserve,
+            work,
+            work.cancellation(),
+        )
+        .await?;
+    Ok(candidate)
+}
+
 #[test]
-fn native_candidates_wait_for_adoption_and_cancel_without_blocking_successors()
+fn native_candidates_merge_disjoint_changes_and_cancel_without_blocking_successors()
 -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
         FilesystemProfile::Portable,
@@ -14,45 +42,33 @@ fn native_candidates_wait_for_adoption_and_cancel_without_blocking_successors()
     let second = source.create_file(&paths[1], metadata(), None, &work)?;
     let handles = [source.open_file(&paths[0])?, source.open_file(&paths[1])?];
     source.runtime.wait(|| async {
-        let mut first_carrier = NativeDemandCarrier::Native(&work);
-        let mut first_candidate = source
-            .checkout
-            .candidate(
-                None,
-                &mut first_carrier,
-                work.cancellation(),
-                Some(source.cancellation()),
-            )
-            .await?;
-        first_candidate
-            .checkout
-            .change_content(
-                first.node.file_id,
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"first").into(),
-                },
-                ContentTimes::Preserve,
-                &work,
-                work.cancellation(),
-            )
-            .await?;
+        let first_candidate =
+            staged_write(&source.checkout, first.node.file_id, b"first", &work).await?;
         let cancelled = CancellationToken::new();
         let waiting_work = capture_meter(BOUNDARY_BUDGET, &cancelled)?;
-        let mut carrier = NativeDemandCarrier::Native(&waiting_work);
-        let waiting = source
-            .checkout
-            .candidate(None, &mut carrier, &cancelled, None);
+        let abandoned = staged_write(
+            &source.checkout,
+            second.node.file_id,
+            b"cancelled",
+            &waiting_work,
+        )
+        .await?;
+        let held = source.checkout.lock().await;
+        let waiting = source.checkout.install_change(
+            abandoned,
+            ViewChange::Node(second.node.file_id),
+            &waiting_work,
+            &cancelled,
+            None,
+        );
         tokio::pin!(waiting);
         assert!(futures::poll!(waiting.as_mut()).is_pending());
         cancelled.cancel();
         assert!(matches!(waiting.await, Err(MountSourceError::Cancelled)));
-        let mut carrier = NativeDemandCarrier::Native(&work);
-        let successor = source
-            .checkout
-            .candidate(None, &mut carrier, work.cancellation(), None);
-        tokio::pin!(successor);
-        assert!(futures::poll!(successor.as_mut()).is_pending());
+        drop(held);
+        assert!(handles[1].read_up_to(0, 64)?.is_empty());
+        let successor =
+            staged_write(&source.checkout, second.node.file_id, b"second", &work).await?;
         source
             .checkout
             .install_change(
@@ -61,20 +77,6 @@ fn native_candidates_wait_for_adoption_and_cancel_without_blocking_successors()
                 &work,
                 source.cancellation(),
                 None,
-            )
-            .await?;
-        let mut successor = successor.await?;
-        successor
-            .checkout
-            .change_content(
-                second.node.file_id,
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"second").into(),
-                },
-                ContentTimes::Preserve,
-                &work,
-                work.cancellation(),
             )
             .await?;
         source
@@ -101,56 +103,135 @@ fn native_publication_waits_for_in_flight_candidate() -> Result<(), Box<dyn std:
     let created = source.create_file(&path, metadata(), None, &work)?;
     let file = source.open_created(&path, &created)?;
     source.runtime.wait(|| async {
-        let mut carrier = NativeDemandCarrier::Native(&work);
-        let mut candidate = source
-            .checkout
-            .candidate(None, &mut carrier, work.cancellation(), None)
-            .await?;
-        candidate
-            .checkout
-            .change_content(
-                created.node.file_id,
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: Bytes::from_static(b"published").into(),
-                },
-                ContentTimes::Preserve,
-                &work,
-                work.cancellation(),
-            )
-            .await?;
+        let candidate =
+            staged_write(&source.checkout, created.node.file_id, b"published", &work).await?;
         let publication = source.sync_async(crate::PublicationPermit::Unrestricted);
         tokio::pin!(publication);
         assert!(futures::poll!(publication.as_mut()).is_pending());
-        // Install directly: the queued sync is the publication for this mutation.
         source
             .checkout
-            .install_candidate(
+            .install_change(
                 candidate,
-                &mut carrier,
-                work.cancellation(),
+                ViewChange::Node(created.node.file_id),
+                &work,
+                source.cancellation(),
                 None,
-                |carrier| {
-                    record_view_change(
-                        &source.checkout.ledger,
-                        &ViewChange::Node(created.node.file_id),
-                        carrier,
-                    )
-                },
-                |checkout, candidate, prepared| {
-                    Ok(checkout.adopt_prepared_candidate(
-                        &candidate.base,
-                        candidate.checkout,
-                        prepared,
-                    ))
-                },
             )
-            .await?
-            .ok_or(MountSourceError::Stale)?;
+            .await?;
         publication.await
     })?;
     assert_eq!(file.read_up_to(0, 64)?.as_ref(), b"published");
     assert!(!checkout_state(&source).1);
+    Ok(())
+}
+
+#[test]
+fn overlapping_native_writes_remain_fenced() -> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = sources(
+        FilesystemProfile::Portable,
+        ConsistencyMode::Pinned,
+        MountPublication::Manual,
+    )?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let path = native_test_path("overlap");
+    let file = source
+        .create_file(&path, metadata(), None, &work)?
+        .node
+        .file_id;
+    source.runtime.wait(|| async {
+        let first = staged_write(&source.checkout, file, b"first", &work).await?;
+        let second = staged_write(&source.checkout, file, b"other", &work).await?;
+        source
+            .checkout
+            .install_change(
+                first,
+                ViewChange::Node(file),
+                &work,
+                source.cancellation(),
+                None,
+            )
+            .await?;
+        assert!(matches!(
+            source
+                .checkout
+                .install_change(
+                    second,
+                    ViewChange::Node(file),
+                    &work,
+                    source.cancellation(),
+                    None
+                )
+                .await,
+            Err(MountSourceError::Stale)
+        ));
+        Ok(())
+    })?;
+    assert_eq!(
+        source.open_file(&path)?.read_up_to(0, 64)?.as_ref(),
+        b"first"
+    );
+    Ok(())
+}
+
+#[test]
+fn overlapping_native_creates_never_coalesce_file_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = sources(
+        FilesystemProfile::Portable,
+        ConsistencyMode::Pinned,
+        MountPublication::Manual,
+    )?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let path = native_test_path("same-name");
+    let namespace = source.path(&path)?;
+    source.runtime.wait(|| async {
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        let mut first = source
+            .checkout
+            .candidate(None, &mut carrier, work.cancellation(), None)
+            .await?;
+        let mut second = source
+            .checkout
+            .candidate(None, &mut carrier, work.cancellation(), None)
+            .await?;
+        for candidate in [&mut first, &mut second] {
+            apply_authored(
+                &mut candidate.checkout,
+                &AuthoredMutation::CreateFile {
+                    path: namespace.clone(),
+                    metadata: metadata(),
+                    bytes: OwnedBytes::new(),
+                },
+                &work,
+            )
+            .await?;
+        }
+        source
+            .checkout
+            .install_change(
+                first,
+                ViewChange::Bound(&namespace),
+                &work,
+                source.cancellation(),
+                None,
+            )
+            .await?;
+        assert!(matches!(
+            source
+                .checkout
+                .install_change(
+                    second,
+                    ViewChange::Bound(&namespace),
+                    &work,
+                    source.cancellation(),
+                    None
+                )
+                .await,
+            Err(MountSourceError::Stale)
+        ));
+        Ok(())
+    })?;
+    assert!(source.lookup(&path)?.is_some());
     Ok(())
 }
 

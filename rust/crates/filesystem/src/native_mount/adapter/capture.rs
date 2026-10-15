@@ -134,7 +134,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 carrier,
                 cancellation,
                 Some(&self.cancellation),
-                |carrier| {
+                |carrier, stamp| {
+                    self.checkout.ledger.check_change_since(
+                        &ViewChange::Effect(&effect),
+                        stamp,
+                        carrier,
+                    )?;
                     self.with_capture_observer_dispatch(|| {
                         self.checkout
                             .ledger

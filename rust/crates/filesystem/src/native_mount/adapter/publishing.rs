@@ -43,9 +43,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             return Err((E::from(MountSourceError::OriginalSnapshotUnavailable), None));
         };
         let mut carrier = NativeDemandCarrier::Native(work);
-        let _mutation = await_lock(self.mutation.lock(), &mut carrier, cancellation, lifetime)
-            .await
-            .map_err(|error| (E::from(error), None))?;
+        let _publication = await_lock(
+            self.publication_fence.write(),
+            &mut carrier,
+            cancellation,
+            lifetime,
+        )
+        .await
+        .map_err(|error| (E::from(error), None))?;
         let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
             .await
             .map_err(|error| (E::from(error), None))?;

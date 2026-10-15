@@ -103,6 +103,22 @@ impl CheckoutRoots {
         }
     }
 
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn set_file_table(&mut self, table: ObjectId) {
+        self.working.file_table = table;
+        if let Some(hold) = &self.hold {
+            let mut holds = hold.collection.holds();
+            let slot = &mut holds.slots[hold.id];
+            assert!(
+                matches!(slot, Slot::Occupied(Held::Checkout { .. })),
+                "owned checkout registration"
+            );
+            if let Slot::Occupied(Held::Checkout { working, .. }) = slot {
+                working.file_table = table;
+            }
+        }
+    }
+
     /// Installs admitted roots, retiring each old buffer before its guard.
     pub(crate) fn set(
         &mut self,
