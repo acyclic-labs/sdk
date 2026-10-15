@@ -84,7 +84,8 @@ proptest! {
         for host in [format!("*.{name}"), format!("prefix.{name}")] {
             prop_assert!(!valid_rule(&host));
             prop_assert!(!valid_dns_name(host.strip_prefix("*.").unwrap_or(&host)));
-            prop_assert!(SocketHostRule::try_from(SocketHostRuleProto { host, ports: vec![] }).is_err());
+            let decoded = SocketHostRule::try_from(SocketHostRuleProto { host, ports: vec![] });
+            prop_assert!(decoded.is_err());
         }
     }
 
@@ -107,9 +108,9 @@ proptest! {
         let name = mapped.to_string();
         let grant = WebsocketConnectGrant { rules: vec![SocketHostRule { host: name.clone(), ports: vec![] }] };
         prop_assert!(!valid_dns_name(&name));
-        prop_assert!(!allows(&grant, Destination { host: Host::Dns(&name), port: 443 }));
-        prop_assert!(allows(&grant, Destination { host: Host::Ip(IpAddr::V6(mapped)), port: 443 }));
-        prop_assert!(!allows(&grant, Destination { host: Host::Ip(IpAddr::V4(Ipv4Addr::from(ip))), port: 443 }));
+        prop_assert!(!allows(&grant, Destination { host: Host::Dns(&name), port: 443 }), "DNS facts cannot authorize a mapped IP");
+        prop_assert!(allows(&grant, Destination { host: Host::Ip(IpAddr::V6(mapped)), port: 443 }), "explicit IPv6 must match");
+        prop_assert!(!allows(&grant, Destination { host: Host::Ip(IpAddr::V4(Ipv4Addr::from(ip))), port: 443 }), "IP families must not collapse");
     }
 }
 
