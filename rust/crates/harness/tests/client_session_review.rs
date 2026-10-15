@@ -89,6 +89,7 @@ async fn incoming_model_and_tool_streams_update_session_owned_views() {
         let record = record?;
         Ok(ViewUpdate::Model {
             authority: owner(),
+            turn: acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
             event: serde_json::from_slice(&record.value)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         })
@@ -177,6 +178,7 @@ async fn incoming_model_and_tool_streams_update_session_owned_views() {
         state
             .model_event(
                 &untracked,
+                acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
                 ModelEvent::Content {
                     delta: "bad".into()
                 }
@@ -331,4 +333,146 @@ fn rehydration_accepts_a_page_crossing_the_durable_cursor_without_duplication() 
             .len(),
         2
     );
+}
+
+#[test]
+fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
+    for suffix in ["lock", "checkpoint"] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state");
+        let sidecar = directory.path().join(format!("state.{suffix}"));
+        let mut writer = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
+        writer.queue(command()).unwrap();
+        assert!(matches!(
+            FileClientState::open(&sidecar),
+            Err(Error::Invalid(_))
+        ));
+        if suffix == "checkpoint" {
+            // A caller-owned file at the former temp name must never be truncated.
+            std::fs::write(&sidecar, b"another journal's committed command").unwrap();
+        }
+        let before = std::fs::read(&sidecar).unwrap();
+        writer.checkpoint().unwrap();
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before);
+        assert!(matches!(
+            FileClientState::open(&path),
+            Err(Error::Conflict(_))
+        ));
+        drop(writer);
+        let recovered = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            recovered.pending().cloned().collect::<Vec<_>>(),
+            [command()]
+        );
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state");
+    let lock = directory.path().join("state.lock");
+    std::fs::write(&lock, b"a pre-existing journal").unwrap();
+    assert!(FileClientState::open(&path).is_err());
+    assert_eq!(std::fs::read(lock).unwrap(), b"a pre-existing journal");
+}
+
+#[test]
+fn historical_assistant_replay_preserves_the_current_turn_tail() {
+    use acyclic_harness::model::ModelEvent;
+    let mut state = session();
+    let current = acyclic_harness::OperationId::from_bytes(2u128.to_be_bytes());
+    for event in [
+        ModelEvent::Content {
+            delta: "current text".into(),
+        },
+        ModelEvent::Reasoning {
+            delta: "current reasoning".into(),
+        },
+    ] {
+        state.model_event(&owner(), current, event).unwrap();
+    }
+    state
+        .receive(frame(turn_delivery(
+            0,
+            acyclic_harness::OperationId::from_bytes(1u128.to_be_bytes()),
+        )))
+        .unwrap();
+    let tail = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
+    assert_eq!(tail.streaming_turn, Some(current));
+    assert_eq!(tail.streaming_text, "current text");
+    assert_eq!(tail.reasoning, "current reasoning");
+    assert_eq!(tail.messages.len(), 1);
+    state.receive(frame(turn_delivery(1, current))).unwrap();
+    let tail = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
+    assert!(tail.streaming_turn.is_none());
+    assert!(tail.streaming_text.is_empty());
+    assert!(tail.reasoning.is_empty());
+    assert_eq!(tail.messages.len(), 2);
+}
+
+proptest::proptest! {
+    // Property: replay only removes the tail whose canonical message is committed.
+    #[test]
+    fn replay_clears_only_the_matching_streaming_turn(
+        current in 1u128..64, previous in 1u128..64,
+        text in ".{0,64}", reasoning in ".{0,64}",
+    ) {
+        use acyclic_harness::model::ModelEvent;
+        let mut state = session();
+        let id = acyclic_harness::OperationId::from_bytes(current.to_be_bytes());
+        state.model_event(&owner(), id, ModelEvent::Content { delta: text.clone() }).unwrap();
+        state.model_event(&owner(), id, ModelEvent::Reasoning { delta: reasoning.clone() }).unwrap();
+        let mut commit = message_delivery(0);
+        let mut payload: EventPayload = serde_json::from_slice(&commit.events[0].canonical_payload_json).unwrap();
+        if let EventPayload::ConversationMessageAppended { message } = &mut payload {
+            message.id = acyclic_harness::conversation::assistant_message_id(acyclic_harness::OperationId::from_bytes(previous.to_be_bytes()));
+        }
+        commit.events[0].canonical_payload_json = serde_json::to_vec(&payload).unwrap();
+        state.receive(frame(commit)).unwrap();
+        let view = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
+        let matches = current == previous;
+        proptest::prop_assert_eq!(&view.streaming_text, if matches { "" } else { &text });
+        proptest::prop_assert_eq!(&view.reasoning, if matches { "" } else { &reasoning });
+        proptest::prop_assert_eq!(view.streaming_turn, if matches { None } else { Some(id) });
+    }
+
+    // Property: all portable spellings of reserved suffixes fail before creating files.
+    #[test]
+    fn journal_reserved_suffixes_are_case_and_alias_independent(
+        name in "[a-zA-Z0-9_-]{1,24}", upper in proptest::collection::vec(proptest::bool::ANY, 11),
+        checkpoint in proptest::bool::ANY, trailing in proptest::sample::select(vec!["", ".", " ", ". "]),
+    ) {
+        let suffix = if checkpoint { ".checkpoint" } else { ".lock" };
+        let suffix: String = suffix.chars().zip(upper).map(|(ch, upper)| if upper { ch.to_ascii_uppercase() } else { ch }).collect();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(format!("{name}{suffix}{trailing}"));
+        proptest::prop_assert!(matches!(FileClientState::open(&path), Err(Error::Invalid(_))));
+        proptest::prop_assert!(!path.exists());
+    }
+
+    // Property: file framing and canonical protobuf JSON preserve every admitted field.
+    #[test]
+    fn client_frame_and_journal_record_roundtrip(
+        id in ".{0,32}", generation in ".{0,32}", revision in proptest::num::u64::ANY,
+        kind in 0i32..6,
+    ) {
+        let request = wire::ClientFrame { frame: Some(wire::client_frame::Frame::Acknowledge(wire::Acknowledge {
+            authority: Some(wire::Authority { kind, id }), generation, through_revision: revision,
+        })) };
+        let json = jsonl::client_frame(&request).unwrap();
+        proptest::prop_assert_eq!(jsonl::parse_client_frame(&json).unwrap(), request.clone());
+        let record = SessionRecord { request: Some(request), response: None, checkpoint: None };
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = FileClientState::open(&directory.path().join("state")).unwrap();
+        store.append(&record).unwrap();
+        proptest::prop_assert_eq!(store.load().unwrap(), vec![record]);
+    }
+}
+
+fn turn_delivery(revision: u64, turn: acyclic_harness::OperationId) -> wire::Delivery {
+    let mut delivery = message_delivery(revision);
+    let mut payload: EventPayload =
+        serde_json::from_slice(&delivery.events[0].canonical_payload_json).unwrap();
+    if let EventPayload::ConversationMessageAppended { message } = &mut payload {
+        message.id = acyclic_harness::conversation::assistant_message_id(turn);
+    }
+    delivery.events[0].canonical_payload_json = serde_json::to_vec(&payload).unwrap();
+    delivery
 }

@@ -18,6 +18,8 @@ pub enum ViewUpdate {
     Model {
         /// Conversation owning the event.
         authority: wire::Authority,
+        /// Admitted turn identity from the model dispatch.
+        turn: crate::OperationId,
         /// Exact provider-neutral item.
         event: ModelEvent,
     },
@@ -37,7 +39,9 @@ pub enum ViewUpdate {
 pub struct TranscriptView {
     /// Immutable content references in conversation order.
     pub messages: Vec<ConversationMessage>,
-    /// Text received since the last committed assistant message.
+    /// Admitted turn owning the current streaming tail.
+    pub streaming_turn: Option<crate::OperationId>,
+    /// Text received for the current assistant message.
     pub streaming_text: String,
     /// Provider-exposed reasoning for the current step.
     pub reasoning: String,
@@ -112,9 +116,14 @@ impl ClientViews {
             }
             EventPayload::ConversationMessageAppended { message } => {
                 let transcript = self.transcripts.entry(key.clone()).or_default();
-                if message.kind == crate::conversation::MessageKind::Assistant {
+                if message.kind == crate::conversation::MessageKind::Assistant
+                    && transcript.streaming_turn.is_some_and(|turn| {
+                        crate::conversation::assistant_message_id(turn) == message.id
+                    })
+                {
                     transcript.streaming_text.clear();
                     transcript.reasoning.clear();
+                    transcript.streaming_turn = None;
                 }
                 if let Some(call_id) = &message.tool_call_id {
                     let tool = self
@@ -148,8 +157,29 @@ impl ClientViews {
     }
 
     /// Adds a model stream event to the same state that committed replay updates.
-    pub fn model_event(&mut self, authority: &wire::Authority, event: ModelEvent) -> Result<()> {
+    pub fn model_event(
+        &mut self,
+        authority: &wire::Authority,
+        turn: crate::OperationId,
+        event: ModelEvent,
+    ) -> Result<()> {
+        if turn.into_bytes() == [0; 16] {
+            return Err(crate::Error::Invalid(
+                "streaming turn identity is nil".into(),
+            ));
+        }
         let key = authority_key(authority);
+        if matches!(
+            &event,
+            ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }
+        ) {
+            let transcript = self.transcripts.entry(key.clone()).or_default();
+            if transcript.streaming_turn != Some(turn) {
+                transcript.streaming_text.clear();
+                transcript.reasoning.clear();
+                transcript.streaming_turn = Some(turn);
+            }
+        }
         match event {
             ModelEvent::Content { delta } => self
                 .transcripts

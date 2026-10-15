@@ -15,25 +15,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-fn owner() -> wire::Authority {
-    wire::Authority {
-        kind: wire::AggregateKind::Task as i32,
-        id: "task".into(),
-    }
-}
-fn command() -> wire::CommandEnvelope {
-    wire::CommandEnvelope {
-        protocol: Some(current_protocol()),
-        authority: Some(owner()),
-        operation: Some(wire::OperationIdentity {
-            operation_id: "00000000-0000-0000-0000-000000000001".into(),
-            idempotency_key: "submit-1".into(),
-        }),
-        action_type: "transition_lifecycle".into(),
-        canonical_action_json: b"{}".to_vec(),
-        ..Default::default()
-    }
-}
+#[path = "support/client_command.rs"]
+mod client_command;
+use client_command::{command, owner};
+
 fn session() -> ClientSession<MemoryClientState> {
     let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
     session
@@ -580,17 +565,23 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     views
         .model_event(
             &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
             ModelEvent::Content {
                 delta: "hel".into(),
             },
         )
         .unwrap();
     views
-        .model_event(&owner(), ModelEvent::Content { delta: "lo".into() })
+        .model_event(
+            &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
+            ModelEvent::Content { delta: "lo".into() },
+        )
         .unwrap();
     views
         .model_event(
             &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
             ModelEvent::Reasoning {
                 delta: "thinking".into(),
             },
@@ -600,6 +591,7 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     views
         .model_event(
             &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
             ModelEvent::ToolCall {
                 call_id: "call".into(),
                 name: "bash".into(),
@@ -612,6 +604,7 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     views
         .model_event(
             &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
             ModelEvent::Completed {
                 metadata: usage.clone(),
             },
@@ -632,7 +625,11 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     assert_eq!(views.tools["AGGREGATE_KIND_TASK:task"]["call"].name, "bash");
     assert_eq!(views.usage["AGGREGATE_KIND_TASK:task"], usage);
     views
-        .model_event(&owner(), ModelEvent::Completed { metadata: usage })
+        .model_event(
+            &owner(),
+            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
+            ModelEvent::Completed { metadata: usage },
+        )
         .unwrap();
     assert_eq!(
         views.usage["AGGREGATE_KIND_TASK:task"],

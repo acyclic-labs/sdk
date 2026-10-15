@@ -240,9 +240,10 @@ impl<S: ClientStateStore> HarnessClient<S> {
     pub fn model_event(
         &mut self,
         authority: &wire::Authority,
+        turn: crate::OperationId,
         event: crate::model::ModelEvent,
     ) -> Result<()> {
-        self.session.model_event(authority, event)
+        self.session.model_event(authority, turn, event)
     }
 
     /// Feeds one tool output chunk from the followed task records into shared views.
@@ -265,7 +266,11 @@ impl<S: ClientStateStore> HarnessClient<S> {
             return Ok(false);
         };
         match update {
-            super::ViewUpdate::Model { authority, event } => self.model_event(&authority, event)?,
+            super::ViewUpdate::Model {
+                authority,
+                turn,
+                event,
+            } => self.model_event(&authority, turn, event)?,
             super::ViewUpdate::ToolOutput {
                 authority,
                 call_id,

@@ -32,6 +32,10 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client_journal_model"
+path = "tests/client_journal_model.rs"
+
+[[test]]
 name = "client_session"
 path = "tests/client_session.rs"
 
@@ -161,6 +165,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 allocation-counter = "=0.8.1"
+loom = "=0.7.2"
 tracing-subscriber.workspace = true
 proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }

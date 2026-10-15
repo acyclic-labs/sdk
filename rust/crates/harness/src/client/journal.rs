@@ -27,6 +27,7 @@ impl FileClientState {
     /// Locks a stable sibling `.lock` file before opening the journal data.
     /// Keep the lock file in place across checkpoint replacement and client exit.
     pub fn open(path: &Path) -> Result<Self> {
+        reserve_sidecars(path)?;
         let absolute = std::path::absolute(path).map_err(storage)?;
         let path = match absolute.canonicalize() {
             Ok(path) => path,
@@ -46,6 +47,7 @@ impl FileClientState {
             }
             Err(error) => return Err(storage(error)),
         };
+        reserve_sidecars(&path)?;
         #[cfg(unix)]
         if let Ok(metadata) = path.metadata() {
             use std::os::unix::fs::MetadataExt;
@@ -55,12 +57,38 @@ impl FileClientState {
         }
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
-        let lock = open_file(Path::new(&lock_path))?;
+        let lock_path = Path::new(&lock_path);
+        let lock = match open_file(lock_path, true) {
+            Ok(lock) => lock,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_path
+                    .symlink_metadata()
+                    .map_err(storage)?
+                    .file_type()
+                    .is_symlink()
+                {
+                    return Err(storage("journal lock cannot be a symlink"));
+                }
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(lock_path)
+                    .map_err(storage)?
+            }
+            Err(error) => return Err(storage(error)),
+        };
+        // Only one nonblocking writer lock is held; there are no nested blocking
+        // acquisitions or wakeups. Checkpoint replacement never replaces this inode.
+        #[cfg(test)]
+        super::journal_schedule();
         lock.try_lock()
             .map_err(|error| Error::Conflict(format!("client journal is locked: {error}")))?;
+        if lock.metadata().map_err(storage)?.len() != 0 {
+            return Err(storage("journal lock contains data"));
+        }
         // Open the data only after acquiring the stable lock: a paused opener must
         // see the current inode after a checkpoint replaces the data file.
-        let file = open_file(&path)?;
+        let file = open_file(&path, false).map_err(storage)?;
         let mut state = Self {
             file,
             _lock: lock,
@@ -150,29 +178,66 @@ impl ClientStateStore for FileClientState {
 
     fn replace(&mut self, checkpoint: &SessionRecord) -> Result<()> {
         self.check()?;
+        let bytes = encode_record(checkpoint)?;
         let mut temporary = self.path.as_os_str().to_owned();
-        temporary.push(".checkpoint");
+        temporary.push(format!(".{}.checkpoint", uuid::Uuid::new_v4()));
         let temporary = PathBuf::from(temporary);
-        let mut file = open_file(&temporary)?;
-        file.set_len(0).map_err(storage)?;
-        file.write_all(&encode_record(checkpoint)?)
-            .map_err(storage)?;
-        file.sync_all().map_err(storage)?;
-        std::fs::rename(&temporary, &self.path).map_err(storage)?;
+        let mut file = open_file(&temporary, true).map_err(storage)?;
+        if let Err(error) = file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| std::fs::rename(&temporary, &self.path))
+        {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err(storage(error));
+        }
+        #[cfg(test)]
+        super::journal_schedule();
         self.file = file;
         self.sync_parent()
     }
 }
 
-fn open_file(path: &Path) -> Result<File> {
+// Reserved case-insensitively, including Windows' trailing-dot/space aliases.
+fn reserve_sidecars(path: &Path) -> Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| storage("journal name missing"))?
+        .as_encoded_bytes();
+    let end = name
+        .iter()
+        .rposition(|byte| !matches!(byte, b'.' | b' '))
+        .map_or(0, |index| index + 1);
+    let name = &name[..end];
+    if [b".lock".as_slice(), b".checkpoint".as_slice()]
+        .iter()
+        .any(|suffix| {
+            name.len() >= suffix.len()
+                && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+        })
+    {
+        return Err(crate::Error::Invalid(
+            "journal sidecar suffix is reserved".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn open_file(path: &Path, exclusive: bool) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
+    options
+        .read(true)
+        .write(true)
+        .create(!exclusive)
+        .create_new(exclusive)
+        .truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path).map_err(storage)
+    options.open(path)
 }
 
 fn encode_record(record: &SessionRecord) -> Result<Vec<u8>> {

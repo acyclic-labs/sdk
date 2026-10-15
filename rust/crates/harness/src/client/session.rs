@@ -228,10 +228,11 @@ impl<S: ClientStateStore> ClientSession<S> {
     pub fn model_event(
         &mut self,
         authority: &wire::Authority,
+        turn: crate::OperationId,
         event: crate::model::ModelEvent,
     ) -> Result<()> {
         self.require_tracked(authority)?;
-        self.views.model_event(authority, event)
+        self.views.model_event(authority, turn, event)
     }
 
     /// Folds an incoming tool chunk without a separate renderer-owned registry.

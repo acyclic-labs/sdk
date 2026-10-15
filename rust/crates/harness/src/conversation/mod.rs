@@ -499,3 +499,7 @@ pub fn validate_content_path(
     }
     Ok(())
 }
+
+mod identity;
+pub use identity::assistant_message_id;
+pub(crate) use identity::derived_operation_id;
