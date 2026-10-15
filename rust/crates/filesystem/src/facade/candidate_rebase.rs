@@ -5,6 +5,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         mut base: Self,
         mut candidate: Self,
+        rename: Option<[&NamespacePath; 2]>,
         maximum_changes: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -31,6 +32,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             || candidate.prepared_merge_parent != base.prepared_merge_parent
             || candidate.mode != base.mode
             || self.mode != base.mode
+        {
+            return Ok(None);
+        }
+        if let Some(paths) = rename
+            && !self
+                .rename_bindings_unchanged(&mut base, paths, accounting, cancellation)
+                .await?
         {
             return Ok(None);
         }

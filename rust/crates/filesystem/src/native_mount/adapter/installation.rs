@@ -8,9 +8,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError> {
         let cancellation = work.cancellation();
+        let rename = match &change {
+            ViewChange::Moved { from, to, .. } => Some([*from, *to]),
+            _ => None,
+        };
         let publication = self
             .install_candidate(
-                candidate,
+                (candidate, rename),
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
@@ -46,7 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
 
     pub(super) async fn install_candidate<'a, N: FnOnce()>(
         &self,
-        candidate: CheckoutCandidate<'a, A, O>,
+        (candidate, rename): (CheckoutCandidate<'a, A, O>, Option<[&NamespacePath; 2]>),
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
@@ -94,6 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 .rebase_native_candidate(
                     base,
                     checkout,
+                    rename,
                     MAXIMUM_EXACT_INSTALL_CHANGES,
                     &mut crate::kernel::allocation::KernelAccounting::native(
                         &original,

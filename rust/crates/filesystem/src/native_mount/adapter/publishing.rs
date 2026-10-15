@@ -1,6 +1,7 @@
 struct Publication<'a, A, O> {
     shared: &'a SharedCheckout<A, O>,
     original: Option<SharedCheckoutState<A, O>>,
+    fence: Option<tokio::sync::RwLockWriteGuard<'a, ()>>,
 }
 
 impl<A, O> Drop for Publication<'_, A, O> {
@@ -16,6 +17,9 @@ impl<A, O> Drop for Publication<'_, A, O> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(original);
         self.shared.publishing.store(false, Ordering::Release);
+        // Restore canonical state before releasing publishers and candidates.
+        // Observers can start either, including when this future is cancelled.
+        drop(self.fence.take());
         self.shared.publication_changed.notify_waiters();
         if changed {
             self.shared.ledger.notify_everything();
@@ -69,6 +73,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         let mut publication = Publication {
             shared: self,
             original: Some(original),
+            fence: Some(_publication),
         };
         drop(state);
         let mut before_publication = before_publication.clone();

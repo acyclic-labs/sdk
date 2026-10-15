@@ -35,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let publication = self
             .checkout
             .install_candidate(
-                candidate,
+                (candidate, None),
                 &mut carrier,
                 cancellation,
                 Some(&self.cancellation),

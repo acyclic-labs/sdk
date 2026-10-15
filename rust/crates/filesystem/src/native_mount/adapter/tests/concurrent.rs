@@ -2,6 +2,8 @@ use super::*;
 
 mod observers;
 mod overlap;
+mod publication;
+mod renames;
 
 #[test]
 fn file_mutation_admission_denies_unfunded_registry_growth()

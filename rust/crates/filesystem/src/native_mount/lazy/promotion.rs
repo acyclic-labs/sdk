@@ -72,7 +72,7 @@ where
         let installed = authored
             .shared_checkout()
             .install_candidate(
-                candidate,
+                (candidate, None),
                 carrier,
                 cancellation,
                 Some(authored.cancellation()),

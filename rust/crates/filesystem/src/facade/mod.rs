@@ -143,6 +143,8 @@ mod error;
 mod extents;
 #[cfg(feature = "native-mount")]
 mod merged_names;
+#[cfg(feature = "native-mount")]
+mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;

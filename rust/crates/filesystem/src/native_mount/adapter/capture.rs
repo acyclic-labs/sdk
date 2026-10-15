@@ -130,7 +130,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         let publication = self
             .checkout
             .install_candidate(
-                candidate,
+                (candidate, None),
                 carrier,
                 cancellation,
                 Some(&self.cancellation),
