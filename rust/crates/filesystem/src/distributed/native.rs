@@ -75,7 +75,11 @@ impl<'a> AuthorityWork<'a> {
             original.admit(WorkCounters::UNCHARGED)?;
             return Ok(meter);
         }
-        if self.request_allocation.as_ref().is_some_and(|a| a.bytes() == 0) {
+        if self
+            .request_allocation
+            .as_ref()
+            .is_some_and(|a| a.bytes() == 0)
+        {
             drop(self.request_allocation.take());
         }
         let mut allocation = original.authority_read_allocation()?;

@@ -140,7 +140,11 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
         let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
         let baseline = original.live_allocation_bytes();
         let mut work = AuthorityWork::native(&original, &cancellation);
-        let first = if meter_first { Some(work.native_meter()?) } else { None };
+        let first = if meter_first {
+            Some(work.native_meter()?)
+        } else {
+            None
+        };
         let bytes = work.vec::<u8>(16)?;
         let meter = work.native_meter()?;
         if let Some(first) = first {
@@ -185,7 +189,13 @@ fn rebinding_with_live_request_capacity_preserves_both_ledgers() -> TestResult {
     assert!(!Arc::ptr_eq(&initial, &rebound));
     assert_eq!(first.live_allocation_bytes(), retained);
     assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 16);
-    assert!(work.request_allocation.as_ref().unwrap().work().shares_ledger(&first));
+    assert!(
+        work.request_allocation
+            .as_ref()
+            .unwrap()
+            .work()
+            .shares_ledger(&first)
+    );
     let first_spent = first.receipt();
     rebound.record_read(3)?;
     assert_eq!(first.receipt(), first_spent);

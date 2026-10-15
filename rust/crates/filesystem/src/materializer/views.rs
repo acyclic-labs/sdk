@@ -84,7 +84,10 @@ impl NativeMaterializationWork {
             self.cancellation().clone(),
             NativeResourceCredit::AuthorityReadBytes,
         )?;
-        Ok(NativeAllocation { meter: work, bytes: 0 })
+        Ok(NativeAllocation {
+            meter: work,
+            bytes: 0,
+        })
     }
     pub(crate) fn authority_read_meter_for(
         &self,
