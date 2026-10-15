@@ -51,6 +51,10 @@ name = "client-notifications"
 path = "tests/client_notifications.rs"
 
 [[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown.rs"
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]

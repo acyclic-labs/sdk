@@ -11,6 +11,7 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("executor") => execution::run(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::parse(value)?.run().await,
         Some("notifications") => Notifications::parse(value)?.run(),
+        Some("plans") => super::plans::Plans::parse(value)?.run().await,
         _ => Err("unknown scenario driver".into()),
     }
 }

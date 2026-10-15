@@ -4,6 +4,41 @@ use serde_json::json;
 use std::path::Path;
 
 #[tokio::test]
+async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for name in ["lifecycle", "multiple-files", "malformed-raw"] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
+        run(baseline.clone()).await?;
+        let path = baseline["expect"]
+            .as_object()
+            .ok_or("missing files")?
+            .keys()
+            .next()
+            .ok_or("empty files")?
+            .clone();
+        for field in ["bytes", "tasks", "missing"] {
+            let mut case = baseline.clone();
+            match field {
+                "bytes" => case["expect"][&path]["markdown"] = json!("wrong bytes"),
+                "tasks" => {
+                    case["expect"][&path]["tasks"] = json!([{"state":"[ ]","text":"wrong task"}])
+                }
+                "missing" => {
+                    case["expect"]
+                        .as_object_mut()
+                        .ok_or("missing files")?
+                        .remove(&path);
+                }
+                _ => return Err("unknown plan mutation".into()),
+            }
+            assert!(run(case).await.is_err(), "accepted wrong {name} {field}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn driver_schemas_reject_unknown_and_inapplicable_fields() {
     let base = json!({"driver":"composer","prompt":"/plan",
         "expect":{"result":{"kind":"select","query":"plan"}}});
