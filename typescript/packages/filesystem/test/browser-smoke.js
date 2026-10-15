@@ -26,26 +26,31 @@ async function rejectObsoleteDatabase(name) {
   const request = indexedDB.open(name, 4);
   request.onupgradeneeded = () => request.result.createObjectStore("sentinel");
   const obsolete = await indexedDbRequest(request);
+  const sentinel = Uint8Array.of(0, 4, 18, 255, 91);
   const transaction = obsolete.transaction("sentinel", "readwrite");
-  transaction.objectStore("sentinel").put("preserved", "marker");
+  transaction.objectStore("sentinel").put(sentinel, "marker");
   await new Promise((resolve, reject) => {
     transaction.oncomplete = resolve;
     transaction.onabort = () => reject(transaction.error);
   });
   obsolete.close();
-  let rejected = false;
-  try {
-    const unexpected = await openBrowserFs({
-      databaseName: name,
-      maximumObjectBytes: 64 * 1024 * 1024,
-      objectAcceleration: "opfs",
-      objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
-    });
-    unexpected.close();
-  } catch {
-    rejected = true;
+  for (const objectAcceleration of ["indexeddb", "opfs"]) {
+    let rejected = false;
+    try {
+      const unexpected = await openBrowserFs({
+        databaseName: name,
+        maximumObjectBytes: 64 * 1024 * 1024,
+        objectAcceleration,
+        objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
+      });
+      unexpected.close();
+    } catch (error) {
+      assert(error instanceof DOMException && error.name === "VersionError",
+        "obsolete rejection lost its original typed VersionError");
+      rejected = true;
+    }
+    assert(rejected, "obsolete IndexedDB schema was accepted");
   }
-  assert(rejected, "obsolete IndexedDB schema was accepted");
   const retainedRequest = indexedDB.open(name);
   retainedRequest.onupgradeneeded = () => retainedRequest.transaction.abort();
   const retained = await indexedDbRequest(retainedRequest);
@@ -53,8 +58,10 @@ async function rejectObsoleteDatabase(name) {
     assert(retained.version === 4, "rejected IndexedDB schema was replaced");
     assert(retained.objectStoreNames.length === 1 && retained.objectStoreNames.contains("sentinel"),
       "rejected IndexedDB schema was mutated");
-    assert(await indexedDbRequest(retained.transaction("sentinel").objectStore("sentinel").get("marker"))
-      === "preserved", "rejected IndexedDB sentinel was mutated");
+    const unchanged = await indexedDbRequest(retained.transaction("sentinel").objectStore("sentinel").get("marker"));
+    assert(unchanged instanceof Uint8Array && unchanged.length === sentinel.length
+      && unchanged.every((byte, index) => byte === sentinel[index]),
+      "rejected IndexedDB sentinel bytes were mutated");
   } finally {
     retained.close();
   }

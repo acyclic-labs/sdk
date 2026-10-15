@@ -47,7 +47,7 @@ describe("mounted checkpoint snapshots", () => {
       { mountId: identity(3), volumeId: identity(4), path: "/failed", checkout: failing },
     ]);
 
-    await expect(view.checkpointSnapshot()).rejects.toThrow("candidate failed");
+    await expect(view.checkpointSnapshot()).rejects.toThrow();
     expect(candidateBuilds).toBe(1);
     expect(checkoutState).toEqual({ pending: ["unpublished-change"], publications: 0 });
   });

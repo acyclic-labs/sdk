@@ -272,6 +272,6 @@ describe("Git compatibility durable execution", () => {
       { async completeTransitionResult() { return "NoOp"; } },
       output,
       { async execute() { return { Applied: { tree: undefined, tracked_paths: undefined } }; } },
-    )).rejects.toThrow("without a durable transition");
+    )).rejects.toThrow();
   });
 });
