@@ -1,0 +1,6 @@
+{"prompt":"Keep call identities across interrupted streams.","turns":[[{"type":"event","kind":"tool_call",
+  "call_id":"same","name":"read","arguments":{}},{"type":"error","error":"offline"}]],
+  "recoveries":[{"observed":[{"kind":"tool_call","call_id":"same","name":"read","arguments":{}}],
+  "continuation":[{"kind":"tool_call","call_id":"same","name":"read","arguments":{}},{"kind":"completed",
+  "metadata":null}]}],"expect":{"error":"model tool call limit exceeded or identity repeated",
+  "not_events":[{"kind":"tool_started"}]}}

@@ -55,6 +55,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         .open_interaction(approved_id, &approval, None)?
         .await?;
     let tool = Tool {
+        hook_names: &[],
         definition,
         executor: Arc::new(NoopTool),
         projection: Arc::new(acyclic_harness::tool::JsonToolProjection),

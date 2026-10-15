@@ -26,7 +26,7 @@ pub(crate) struct PreparedCommit {
     plan: CommitPlan,
     conflicts: [(Vec<CommitConflict>, Allocation); 2],
     capacity: Option<CapacityReservation>,
-    inventory: Option<(Vec<Retained>, Allocation)>,
+    probes: ReplayProbes,
 }
 
 impl MemoryStream {
@@ -46,42 +46,40 @@ impl MemoryStream {
         let input = self.request_claim(&request)?;
         let maximum_hash = commit_hash_bytes(&request) + maximum as u64;
         let mut state = self.state.write().await;
-        let capacity = if let Some(stored) = state.replay(request.idempotency_key.as_bytes()) {
-            if !matches!(stored.result, IdempotencyOutcome::Commit(_)) {
-                return Err(StreamError::IdempotencyMismatch);
-            }
-            None
-        } else {
-            for condition in &request.conditions {
-                if !state.paths.contains_key(condition_path(condition)) {
-                    return Err(StreamError::NotFound);
+        let capacity =
+            if let Some(stored) = self.replay(&state, request.idempotency_key.as_bytes())? {
+                if !matches!(stored.result, IdempotencyOutcome::Commit(_)) {
+                    return Err(StreamError::IdempotencyMismatch);
                 }
-                if self.condition_conflict(&state, condition)?.is_some() {
-                    return Err(StreamError::OutOfRange);
+                None
+            } else {
+                for condition in &request.conditions {
+                    if !state.paths.contains_key(condition_path(condition)) {
+                        return Err(StreamError::NotFound);
+                    }
+                    if self.condition_conflict(&state, condition)?.is_some() {
+                        return Err(StreamError::OutOfRange);
+                    }
                 }
-            }
-            admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
-            reserve_commit(&state, self.limits)?;
-            reserve_records(&state, 1, maximum, self.limits)?;
-            let counters = Arc::clone(&state.reserved);
-            {
-                let mut held = counters
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                held.0 += 1;
-                held.1 += maximum;
-            }
-            Some(CapacityReservation {
-                counters,
-                bytes: maximum,
-            })
-        };
-        let needed = state.retained.len() + reserved(&state).0 + 1;
-        let inventory = if needed > state.retained.capacity() {
-            Some(self.vector(needed.next_power_of_two())?)
-        } else {
-            None
-        };
+                admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
+                reserve_commit(&state, self.limits)?;
+                reserve_records(&state, 1, maximum, self.limits)?;
+                let counters = Arc::clone(&state.reserved);
+                {
+                    let mut held = counters
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    held.0 += 1;
+                    held.1 += maximum;
+                }
+                Some(CapacityReservation {
+                    counters,
+                    bytes: maximum,
+                })
+            };
+        self.reserve_retained(&mut state)?;
+        // The tree can grow up to the admitted replay limit while this completion is pending.
+        let probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
         let mut plan = self.plan_commit(&mut state, &request, CommitId::default(), 0)?;
         for value in [&mut plan.result, &mut plan.cached] {
             let append = append_mut(value);
@@ -125,7 +123,7 @@ impl MemoryStream {
                 plan,
                 conflicts: [conflict, (cached_conflicts, conflict_claim)],
                 capacity,
-                inventory,
+                probes,
             },
             recovery,
         ))
@@ -156,18 +154,19 @@ impl MemoryStream {
             3 * std::mem::size_of::<Record>() as u64,
             maximum_hash + identity_bytes(),
         ))?;
-        work.record(meter.admit_examination(16, 0))?;
         work.record(meter.admit_codec(
             0,
             2 * std::mem::size_of::<CommitConflict>() as u64,
             maximum_hash,
         ))?;
-        work.record(meter.admit_examination(8, 0))?;
         let state = Arc::clone(&self.state);
+        let mut probes = self.reserve_replay_probes(self.maximum_replay_height() + 8)?;
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
             let state = state.read().await;
-            let (stored, observed) = read.attempt(|| state.replay(recovery_key.as_bytes()));
+            let (stored, observed) =
+                read.attempt(|| state.replay(recovery_key.as_bytes(), || probes.record(1)));
+            let stored = stored?;
             let mut observed = observed.err();
             let result = (|| {
                 let Some(stored) = stored else {
@@ -213,7 +212,7 @@ impl MemoryStream {
                     claim,
                 ))
             })();
-            if let Some(error) = observed.or(recovery_meter.record_examination(8, 0).err()) {
+            if let Some(error) = observed.or(probes.record(8).err()) {
                 return Err(error);
             }
             Ok(result.map(|(value, claim)| {
@@ -245,7 +244,10 @@ impl PreparedCommit {
         let mut state = self.provider.state.write().await;
         let [(mut conflicts, output_claim), (mut cached, resident)] = self.conflicts;
         let result = (|| {
-            if let Some(stored) = state.replay(self.key.as_bytes()) {
+            if let Some(stored) = state.replay(self.key.as_bytes(), || {
+                self.provider.record_replay_probe(&mut self.probes);
+                Ok::<_, StreamError>(())
+            })? {
                 if stored.digest != digest {
                     return Err(StreamError::IdempotencyMismatch);
                 }
@@ -273,12 +275,6 @@ impl PreparedCommit {
                 }
             }
             drop(self.capacity.take());
-            if state.retained.len() == state.retained.capacity() {
-                let (mut buffer, claim) = self.inventory.take().ok_or(StreamError::Unavailable)?;
-                buffer.append(&mut state.retained);
-                state.retained = buffer;
-                state.retained_allocation = claim;
-            }
             let bytes = if conflicts.is_empty() { body.len() } else { 0 };
             self.provider.publish(bytes, || {
                 if conflicts.is_empty() {
@@ -310,12 +306,19 @@ impl PreparedCommit {
                         3 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
-                    self.plan.publish(&mut state, self.key, digest, time)
+                    self.plan.publish(
+                        &mut state,
+                        &mut || self.provider.record_replay_probe(&mut self.probes),
+                        self.key,
+                        digest,
+                        time,
+                    )
                 } else {
                     let value = CommitOutcome::Conflict(conflicts);
                     let _ = work.record(work.meter.record_codec(0, 2 * copied_bytes(&value), 0));
                     retain(
                         &mut state,
+                        &mut || self.provider.record_replay_probe(&mut self.probes),
                         None,
                         Some(self.key),
                         digest,
@@ -326,7 +329,7 @@ impl PreparedCommit {
                 }
             })
         })();
-        let _ = work.record(work.meter.record_examination(16, 0));
+        let _ = work.record(self.probes.record(16));
         work.write
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

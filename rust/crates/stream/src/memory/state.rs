@@ -1,6 +1,8 @@
 #[derive(Default)]
 struct State {
     paths: BTreeMap<StreamPath, PathState>,
+    replay_root: Option<usize>,
+    replay_count: usize,
     retained: Vec<Retained>,
     path_bytes: usize,
     record_count: usize,
@@ -14,19 +16,25 @@ struct State {
 }
 
 impl State {
-    fn replay(&self, key: &[u8]) -> Option<&Retained> {
-        self.retained.iter().rev().find(|entry| {
-            entry
-                .replay
-                .as_ref()
-                .is_some_and(|stored| stored.as_ref() == key)
-        })
+    fn replay<E>(
+        &self,
+        key: &[u8],
+        mut probe: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<&Retained>, E> {
+        let mut next = self.replay_root;
+        while let Some(index) = next {
+            probe()?;
+            let entry = self.replay_entry(index);
+            match entry.replay.as_deref().cmp(&Some(key)) {
+                std::cmp::Ordering::Equal => return Ok(Some(entry)),
+                std::cmp::Ordering::Less => next = entry.replay_right,
+                std::cmp::Ordering::Greater => next = entry.replay_left,
+            }
+        }
+        Ok(None)
     }
     fn replay_count(&self) -> usize {
-        self.retained
-            .iter()
-            .filter(|entry| entry.replay.is_some())
-            .count()
+        self.replay_count
     }
     fn commit(&self, id: &CommitId) -> Option<&CommittedEnvelope> {
         self.retained

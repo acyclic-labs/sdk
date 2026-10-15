@@ -54,6 +54,7 @@ pub fn conversion_tool() -> Result<Tool> {
         write: files::write_file()?.executor,
     });
     Ok(Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: "example.convert_image".into(),
             revision: "img1-xor-1".into(),

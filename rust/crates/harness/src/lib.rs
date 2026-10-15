@@ -36,6 +36,8 @@ pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub mod hooks;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
@@ -49,6 +51,11 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub mod native_settings;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_future;
 #[cfg(feature = "objects")]

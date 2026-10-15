@@ -1,6 +1,7 @@
 //! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
+mod digest;
 pub(in crate::core) use capture::admit_copy;
 mod entries;
 mod restoration;
@@ -121,6 +122,9 @@ impl Snapshot {
         maximum as u64
     };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+        if work.is_none() {
+            return digest::without_work(self);
+        }
         crate::executor::json::canonical_json_digest(
             &(
                 self.format_version,

@@ -700,7 +700,9 @@ async fn assert_summary_child_import(
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_limits(limits);
+    .with_limits(limits)
+    // This fixture checks the frozen prefix before any subsequent child compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = FilesystemExecutionJournal::new(
         storage.stream.clone(),
         storage.host.clone(),
@@ -721,13 +723,23 @@ async fn assert_summary_child_import(
         max_steps: 1,
     };
     let output = executor.execute(input.clone(), &journal).await?;
+    let completed_requests = model
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
     let requests = model
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(requests.len(), 1);
-    let request = &requests[0];
+    assert_eq!(requests.len(), completed_requests);
+    let request = requests
+        .last()
+        .ok_or_else(|| Error::Invalid("child made no model request".into()))?;
+    let capacity = model.context_capacity(&request.request().model)?;
+    let input_tokens = model.count_tokens(request)?.validate(request, &mut None)?;
+    assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
     assert_eq!(
         request.request().messages.get(..captured.messages.len()),
         Some(captured.messages.as_slice())

@@ -1,0 +1,5 @@
+{
+  "prompt": "",
+  "turns": [],
+  "expect": {"error":"user input is empty", "requests":[], "events":[]}
+}

@@ -411,6 +411,7 @@ impl Fixture {
         tools.register(
             (
                 Tool {
+                    hook_names: &[],
                     definition: ToolDefinition {
                         name: "test.deadline".into(),
                         revision: "1".into(),
@@ -768,6 +769,7 @@ impl ModelProvider for PendingModel {
 mod mail_tests;
 
 mod admission;
+mod future_sizes;
 mod model;
 mod settlement;
 mod worker;

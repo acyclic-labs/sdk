@@ -101,6 +101,18 @@ struct Frontmatter {
 /// Parses a bounded prefix.
 pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<SkillMetadata> {
     source.validate(&mut None)?;
+    let metadata: Frontmatter = parse_frontmatter(prefix)?;
+    let metadata = SkillMetadata {
+        name: metadata.name,
+        description: metadata.description,
+        fields: metadata.fields,
+        source,
+    };
+    metadata.validate(&mut None)?;
+    Ok(metadata)
+}
+
+pub(crate) fn frontmatter_end(prefix: &[u8]) -> Result<(usize, usize, usize)> {
     let mut offset = 0;
     let mut header_start = None;
     let mut header_end = None;
@@ -115,16 +127,21 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
             }
             header_start = Some(line.len());
         } else if delimiter == b"---" && line.ends_with(b"\n") {
-            header_end = Some(offset);
+            header_end = Some((offset, offset + line.len()));
             break;
         }
         offset += line.len();
     }
-    let (Some(start), Some(end)) = (header_start, header_end) else {
+    let (Some(start), Some((end, body))) = (header_start, header_end) else {
         return Err(Error::Invalid(
             "skill frontmatter is missing or exceeds prefix bound".into(),
         ));
     };
+    Ok((start, end, body))
+}
+
+pub(crate) fn parse_frontmatter<T: serde::de::DeserializeOwned>(prefix: &[u8]) -> Result<T> {
+    let (start, end, _) = frontmatter_end(prefix)?;
     let header = prefix
         .get(start..end)
         .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
@@ -141,19 +158,11 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
         emit_comments: false,
         with_snippet: false,
     };
-    let metadata: Frontmatter = serde_saphyr::from_slice_with_options(header, options)
-        .map_err(|error| Error::Invalid(format!("invalid skill frontmatter: {error}")))?;
-    let metadata = SkillMetadata {
-        name: metadata.name,
-        description: metadata.description,
-        fields: metadata.fields,
-        source,
-    };
-    metadata.validate(&mut None)?;
-    Ok(metadata)
+    serde_saphyr::from_slice_with_options(header, options)
+        .map_err(|error| Error::Invalid(format!("invalid frontmatter: {error}")))
 }
 
-pub(super) async fn discover_skills(
+pub(crate) async fn discover_skills(
     reader: &dyn ContentResidencyVerifier,
     skills: &[ContextRoot],
     name: &str,

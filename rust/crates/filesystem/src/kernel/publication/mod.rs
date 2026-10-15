@@ -17,8 +17,10 @@ use bytes::Bytes;
 use thiserror::Error;
 
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::closure::CachedProofs;
 use crate::kernel::closure::ProofGuard;
 use crate::kernel::persistent_point::Owned;
+use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type PublicationRootPreparation<'a, E> = &'a mut (
             dyn FnMut(

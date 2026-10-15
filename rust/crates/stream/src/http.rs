@@ -448,19 +448,9 @@ impl StreamProvider for HttpStream {
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let wire = wire::AppendRequest {
-            path: request.path.to_string(),
-            records: request
-                .records
-                .iter()
-                .map(|record| bytes::Bytes::copy_from_slice(record))
-                .collect(),
-            if_tail: request.if_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
-        };
-        parse_append(&self.request("append", wire.encode_to_vec()).await?)
+        let mut bytes = Vec::with_capacity(wire_codec::requests::append_len(&request));
+        wire_codec::requests::append(&mut bytes, &request);
+        parse_append(&self.request("append", bytes).await?)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let source = request.source.clone();

@@ -55,6 +55,26 @@ pub(super) fn name_fold_equal(
     Ok(equal)
 }
 
+pub(super) fn folded_binding_collision<'a>(
+    target: &LogicalName,
+    folded_target: &[u8],
+    allowed: &[FileId],
+    entries: impl Iterator<Item = &'a crate::kernel::TreeEntry>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<&'a LogicalName>, FsError> {
+    for entry in entries {
+        let folded = name_fold_key(&entry.name, accounting)?;
+        let collision =
+            entry.name != *target && !allowed.contains(&entry.file_id) && folded.0 == folded_target;
+        let bytes = folded.0.capacity() as u64;
+        retire_name_owned(folded, bytes, accounting)?;
+        if collision {
+            return Ok(Some(&entry.name));
+        }
+    }
+    Ok(None)
+}
+
 pub(super) fn retire_name_owned<T>(
     owned: (T, KernelOwnedAllocation),
     bytes: u64,
@@ -553,19 +573,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             )
                             .await?;
                         let mut found = None;
-                        for entry in &page.0.entries {
-                            let folded_entry = name_fold_key(&entry.name, accounting)?;
-                            let collision = entry.name != *target
-                                && !allowed_file_ids.contains(&entry.file_id)
-                                && folded_entry.0 == folded_target.0;
-                            let bytes = folded_entry.0.capacity() as u64;
-                            retire_name_owned(folded_entry, bytes, accounting)?;
-                            if collision {
-                                found = Some(
-                                    entry.name.clone_with_accounting(accounting, cancellation)?,
-                                );
-                                break;
-                            }
+                        if let Some(name) = folded_binding_collision(
+                            target,
+                            &folded_target.0,
+                            allowed_file_ids,
+                            page.0.entries.iter(),
+                            accounting,
+                        )? {
+                            found = Some(name.clone_with_accounting(accounting, cancellation)?);
                         }
                         let has_more = page.0.has_more;
                         if let Some(old) = after.take() {

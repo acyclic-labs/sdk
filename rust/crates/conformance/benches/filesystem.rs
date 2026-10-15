@@ -142,6 +142,76 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
     std::hint::black_box(sources);
 }
 
+#[divan::bench(args = [false, true], threads = [1, 4])]
+fn authority_head(bencher: Bencher, native_accounting: bool) {
+    authority_head_bench(bencher, native_accounting, false);
+}
+
+#[divan::bench(threads = [1, 4], sample_count = 64, sample_size = 8)]
+fn authority_head_shared(bencher: Bencher) {
+    authority_head_bench(bencher, true, true);
+}
+
+fn authority_head_bench(bencher: Bencher, native_accounting: bool, shared: bool) {
+    use acyclic_fs::{AsyncAuthorityStore, AuthorityId, AuthorityWork, Epoch};
+    let runtime = Runtime::new().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let store = acyclic_fs::distributed::StreamAuthorityStore::new(std::sync::Arc::new(
+        acyclic_stream::MemoryStream::default(),
+    ));
+    let authority = AuthorityId::from_bytes([1; 16]);
+    runtime
+        .block_on(store.create_authority(
+            authority,
+            Epoch::GENESIS,
+            &mut AuthorityWork::new(budget, &cancellation),
+            None::<&mut ()>,
+        ))
+        .unwrap();
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let mut work = if native_accounting {
+            AuthorityWork::native(&original, &cancellation)
+        } else {
+            AuthorityWork::new(budget, &cancellation)
+        };
+        runtime.block_on(store.head(authority, &mut work)).unwrap();
+        eprintln!(
+            "head native={native_accounting} live={} work={:?}",
+            original.live_allocation_bytes(),
+            work.spent()
+        );
+    }
+    let shared_original =
+        shared.then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+    let name = if shared {
+        "authority_head_shared"
+    } else {
+        "authority_head"
+    };
+    benchmark_marker(name, native_accounting, true);
+    bencher.bench(|| {
+        let original = (native_accounting && !shared)
+            .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+        let mut work = match shared_original.as_ref().or(original.as_ref()) {
+            Some(original) => AuthorityWork::native(original, &cancellation),
+            None => AuthorityWork::new(budget, &cancellation),
+        };
+        runtime.block_on(store.head(authority, &mut work)).unwrap()
+    });
+    benchmark_marker(name, native_accounting, false);
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some()
+        && let Some(original) = shared_original
+    {
+        eprintln!(
+            "shared head live={} work={:?}",
+            original.live_allocation_bytes(),
+            original.receipt()
+        );
+    }
+}
+
 fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) {
     let root = tempfile::tempdir().unwrap();
     runtime.block_on(async {
@@ -248,7 +318,18 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
         ))
         .unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
-    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() && native_accounting {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .unwrap();
+        let read = runtime
+            .block_on(Box::pin(workspace.read("/entry", 64, &work, &cancellation)))
+            .unwrap();
+        eprintln!("local read native=true: {:?}", work.receipt());
+        std::hint::black_box(read);
+    } else if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         let read = runtime
             .block_on(Box::pin(workspace.read(
                 "/entry",
@@ -257,8 +338,9 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
                 &cancellation,
             )))
             .unwrap();
-        eprintln!("local read: {:?}", read.work);
+        eprintln!("local read native=false: {:?}", read.work);
     }
+    benchmark_marker("read_small", native_accounting, true);
     bencher.bench_local(|| {
         if native_accounting {
             let work = acyclic_fs::NativeMaterializationWork::new(
@@ -280,6 +362,7 @@ fn read_small(bencher: Bencher, native_accounting: bool) {
             .unwrap()
             .value
     });
+    benchmark_marker("read_small", native_accounting, false);
 }
 
 #[divan::bench(args = [false, true], threads = [1, 4])]
@@ -300,7 +383,18 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
             workspace.write("/entry", Bytes::from_static(b"value")),
         ))
         .unwrap();
-    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() && native_accounting {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .unwrap();
+        let read = runtime
+            .block_on(Box::pin(workspace.read("/entry", 64, &work, &cancellation)))
+            .unwrap();
+        eprintln!("memory read native=true: {:?}", work.receipt());
+        std::hint::black_box(read);
+    } else if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         let read = runtime
             .block_on(Box::pin(workspace.read(
                 "/entry",
@@ -309,8 +403,9 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
                 &cancellation,
             )))
             .unwrap();
-        eprintln!("memory read: {:?}", read.work);
+        eprintln!("memory read native=false: {:?}", read.work);
     }
+    benchmark_marker("read_memory_small", native_accounting, true);
     bencher.bench(|| {
         if native_accounting {
             let work = acyclic_fs::NativeMaterializationWork::new(
@@ -332,4 +427,11 @@ fn read_memory_small(bencher: Bencher, native_accounting: bool) {
             .unwrap()
             .value
     });
+    benchmark_marker("read_memory_small", native_accounting, false);
+}
+
+fn benchmark_marker(name: &str, native: bool, begin: bool) {
+    if std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some() {
+        eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} native={native} begin={begin}");
+    }
 }

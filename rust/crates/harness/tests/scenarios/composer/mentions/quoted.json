@@ -1,0 +1,5 @@
+{
+  "prompt": "Read @\"space name.txt\"",
+  "expect":{"mention_files":["spaces"],"result":{"kind":"prompt","text":"Read @\"space name.txt\"","mentions":[{"start":
+    5,"end":22,"file":{"path":"project/space name.txt"}}]}}
+}

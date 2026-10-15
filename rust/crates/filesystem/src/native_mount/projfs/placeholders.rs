@@ -327,15 +327,17 @@ pub(super) fn write_ordinary(
             if has_pending_capture(runtime.post_operation_failure.as_ref(), path) {
                 return Ok(Placed::Retry);
             }
-            match (&mut &*work)
-                .attempt_io(ReadOperations.delta(1), || {
-                    held_while(&runtime.root.join(host), state)
-                })
-                .map_err(NativeMountError::from)
-                .map_err(failed)?
-            {
-                held @ Some(_) => held,
-                None => return Ok(Placed::Nothing),
+            match (&mut &*work).attempt_io(ReadOperations.delta(1), || {
+                held_while(&runtime.root.join(host), state)
+            }) {
+                Ok(held @ Some(_)) => held,
+                Ok(None) => return Ok(Placed::Nothing),
+                Err(crate::NativeTreeMaterializationError::Io(error))
+                    if error.raw_os_error() == Some(SHARING_VIOLATION) =>
+                {
+                    return Ok(Placed::Retry);
+                }
+                Err(error) => return Err(failed(error.into())),
             }
         }
         None => None,

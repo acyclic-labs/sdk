@@ -89,17 +89,14 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     pub(super) async fn authority_read(
         &self,
         request: acyclic_stream::ReadRequest,
-        work: &AuthorityWork<'_>,
+        work: &mut AuthorityWork<'_>,
     ) -> Result<AuthorityRead, AuthorityStoreError> {
         let _ = work;
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
+            let meter = work.native_meter()?;
             return work
-                .result(
-                    self.provider
-                        .native_read(request, work.native_meter()?)
-                        .await,
-                )
+                .result(self.provider.native_read(request, meter).await)
                 .map(AuthorityRead::Native);
         }
         self.provider
@@ -123,11 +120,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
-            return work.result(
-                self.provider
-                    .native_inspect_idempotency(key, work.native_meter()?)
-                    .await,
-            );
+            let meter = work.native_meter()?;
+            return work.result(self.provider.native_inspect_idempotency(key, meter).await);
         }
         work.charge(WorkCounters {
             backend_read_operations: 1,
@@ -212,8 +206,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.is_native() {
             work.check()?;
+            let meter = work.native_meter()?;
             return work
-                .result(self.provider.native_tail(path, work.native_meter()?).await)
+                .result(self.provider.native_tail(path, meter).await)
                 .map(|value| value.0);
         }
         let read = WorkCounters {

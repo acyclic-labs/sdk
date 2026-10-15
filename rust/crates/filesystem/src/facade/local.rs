@@ -233,6 +233,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 },
                 workspace_namespace: [0; 16],
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                publication_proof: Mutex::default(),
                 _local_root_lifecycle: lifecycle,
             }),
         })

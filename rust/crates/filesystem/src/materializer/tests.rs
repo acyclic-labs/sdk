@@ -11,6 +11,39 @@ use std::fmt::Error;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn replay_probe_reservations_withhold_budget_and_survive_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cancel in [false, true] {
+        let cancellation = crate::CancellationToken::new();
+        let original = NativeMaterializationWork::new(
+            crate::WorkBudget {
+                items_examined: 4,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let meter = original.runtime_meter();
+        meter.reserve_examination(3)?;
+        assert_eq!(original.receipt().items_examined, 0);
+        assert!(meter.examine(2, 0).is_err());
+        meter.examine(1, 0)?;
+        if cancel {
+            cancellation.cancel();
+        }
+        meter.record_reserved_examination(1)?;
+        meter.cancel_reserved_examination(2);
+        assert_eq!(original.receipt().items_examined, 2);
+        if !cancel {
+            meter.examine(2, 0)?;
+            assert_eq!(original.receipt().items_examined, 4);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn buffer_growth_funds_both_live_backings() -> Result<(), Box<dyn std::error::Error>> {
     let width = std::mem::size_of::<usize>() as u64;
     let work = NativeMaterializationWork::new(
