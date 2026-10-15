@@ -15,6 +15,8 @@ use storage::ChangePositions;
 pub(super) use storage::same_work;
 pub(super) use storage::{copy_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
+#[cfg(all(test, feature = "model-checking"))]
+mod model_checking;
 mod notifications;
 mod storage;
 

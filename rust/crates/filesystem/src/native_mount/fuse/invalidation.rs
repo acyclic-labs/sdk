@@ -2,6 +2,9 @@ use super::*;
 use crate::native_mount::run_native_mount_handler_on_meter;
 use crate::{NativeMaterializationWork as Work, WorkCounters};
 
+#[cfg(all(test, feature = "model-checking"))]
+mod model_checking;
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum KernelCacheItem {
     Inode(u64),

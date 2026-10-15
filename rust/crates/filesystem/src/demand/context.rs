@@ -21,6 +21,10 @@ impl NativeDemandReadMeter {
     }
 }
 
+#[cfg(all(test, feature = "model-checking", not(target_arch = "wasm32")))]
+mod model_checking;
+mod retained;
+
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
     header: crate::NativeAllocation,
@@ -42,27 +46,19 @@ impl CaptureTransientCustody {
         self.header.work().shares_allocation_context(work)
     }
     pub(crate) fn take_retained_bytes(&self) -> u64 {
-        self.retained.swap(0, Ordering::AcqRel)
+        retained::take(&self.retained)
     }
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        self.retained
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_sub(bytes)
-            })
-            .map(|_| ())
-            .map_err(|_| crate::WorkError::Overflow)
+        retained::transfer(&self.retained, bytes)
     }
     pub(super) fn claim(&self, bytes: u64) {
-        self.retained.fetch_add(bytes, Ordering::AcqRel);
+        retained::claim(&self.retained, bytes);
     }
     pub(super) fn release(&self, bytes: u64) {
-        let _ = self
-            .retained
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                Some(current.saturating_sub(bytes))
-            });
+        retained::release(&self.retained, bytes);
     }
 }
+
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
     error
         .downcast::<DemandError>()
