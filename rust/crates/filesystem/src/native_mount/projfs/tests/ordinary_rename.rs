@@ -4,6 +4,16 @@ use std::io::{Read as _, Write as _};
 #[test]
 fn a_staged_replacement_keeps_the_identity_guard_and_existing_reader()
 -> Result<(), Box<dyn std::error::Error>> {
+    replace_with_reader(false)
+}
+
+#[test]
+fn a_read_only_replacement_keeps_the_identity_guard_and_existing_reader()
+-> Result<(), Box<dyn std::error::Error>> {
+    replace_with_reader(true)
+}
+
+fn replace_with_reader(read_only: bool) -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let work = crate::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
@@ -18,19 +28,26 @@ fn a_staged_replacement_keeps_the_identity_guard_and_existing_reader()
     let from = HostRoot::open(&staging, &mut &work)?;
     let to = HostRoot::open(&target, &mut &work)?;
     std::fs::write(target.join("leaf"), b"old contents")?;
+    let set_read_only = |path: &std::path::Path, value: bool| -> std::io::Result<()> {
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_readonly(value);
+        std::fs::set_permissions(path, permissions)
+    };
+    set_read_only(&target.join("leaf"), read_only)?;
     let mut reader = std::fs::File::open(target.join("leaf"))?;
     let identity = handle_state(&reader)?;
     let guard = held_while(&target.join("leaf"), identity)?.ok_or("target identity changed")?;
     let mut replacement =
         create_ordinary_file(&from.directory, std::ffi::OsStr::new("new"), &work)?;
     replacement.write_all(b"new contents")?;
+    set_read_only(&staging.join("new"), read_only)?;
     publish_ordinary_file(
         &replacement,
         &from.directory,
         std::ffi::OsStr::new("new"),
         &to.directory,
         std::ffi::OsStr::new("leaf"),
-        Some(&guard),
+        Some((&guard, identity)),
         &work,
     )?;
     crate::native_host::keep_windows_created_file(&replacement, &mut &work)?;
@@ -39,11 +56,18 @@ fn a_staged_replacement_keeps_the_identity_guard_and_existing_reader()
         "the held target changed identity or metadata"
     );
     assert_eq!(std::fs::read(target.join("leaf"))?, b"new contents");
+    assert_eq!(
+        std::fs::metadata(target.join("leaf"))?
+            .permissions()
+            .readonly(),
+        read_only
+    );
     let mut old = Vec::new();
     reader.read_to_end(&mut old)?;
     assert_eq!(old, b"old contents");
     drop(replacement);
     assert!(!staging.join("new").exists());
     assert_eq!(std::fs::read(target.join("leaf"))?, b"new contents");
+    set_read_only(&target.join("leaf"), false)?;
     Ok(())
 }
