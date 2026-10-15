@@ -79,7 +79,7 @@ pub async fn resolve_file_mentions(
                     format!("{}/{path}", root.directory)
                 },
             };
-            let (file, bytes) = source.read(reader, remaining).await?;
+            let (file, bytes) = source.read_remaining(reader, remaining).await?;
             remaining = remaining
                 .checked_sub(bytes.len() as u64)
                 .ok_or_else(|| Error::Storage("mention reader exceeded bound".into()))?;

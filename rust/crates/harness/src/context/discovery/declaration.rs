@@ -287,10 +287,25 @@ impl PinnedContextPath {
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        self.validate(&mut None)?;
-        if maximum_bytes == 0 || maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+        if maximum_bytes == 0 {
             return Err(Error::Invalid(
                 "context body requires a finite positive byte bound".into(),
+            ));
+        }
+        self.read_remaining(reader, maximum_bytes).await
+    }
+
+    // A consumed aggregate budget can still admit an empty file. Keep the public
+    // positive-bound contract while passing the exact remaining bound to the owner.
+    pub(crate) async fn read_remaining(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.validate(&mut None)?;
+        if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+            return Err(Error::Invalid(
+                "context byte bound exceeds protocol precision".into(),
             ));
         }
         let (file, bytes, _hold) = reader

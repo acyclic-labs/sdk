@@ -393,8 +393,12 @@ impl CommandCatalog {
                 let crate::model::ModelContent::Text(body) = message.content else {
                     return Err(Error::Invalid("skill body is not text".into()));
                 };
+                let (_, _, start) = frontmatter_end(body.as_bytes())?;
+                let body = body
+                    .get(start..)
+                    .ok_or_else(|| Error::Invalid("invalid skill body offset".into()))?;
                 Ok(CommandResolution::Prompt {
-                    text: expand(&body, arguments, maximum_bytes)?,
+                    text: expand(body, arguments, maximum_bytes)?,
                     source: Some(skill.source.clone()),
                     mentions: Vec::new(),
                 })

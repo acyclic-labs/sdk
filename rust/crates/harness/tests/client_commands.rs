@@ -234,7 +234,7 @@ async fn imported_prompt_and_skill_cases_keep_the_selected_revision() -> Result<
         ("project/.claude/commands/review.md", "---\ndescription: Review changes\nallowed-tools: [read]\n---\nProject $ARGUMENTS"),
         ("project/.codex/prompts/test.md", "Run tests"),
         ("project/.claude/commands/git/status.md", "Inspect status"),
-        ("skills/audit/SKILL.md", "---\nname: audit\ndescription: Audit code\nallowed-tools: [read]\n---\nInspect carefully"),
+        ("skills/audit/SKILL.md", "---\nname: audit\ndescription: Audit code and @missing.txt\nallowed-tools: [read]\n---\nInspect carefully"),
         ("project/readme.txt", "before"),
     ]).await?;
     // Reverse declaration order intentionally: precedence is data, not arrival order.
@@ -259,10 +259,7 @@ async fn imported_prompt_and_skill_cases_keep_the_selected_revision() -> Result<
         ("/review auth", "Project auth"),
         ("/test suite", "Run tests\nsuite"),
         ("/git:status", "Inspect status"),
-        (
-            "/audit files",
-            "---\nname: audit\ndescription: Audit code\nallowed-tools: [read]\n---\nInspect carefully\nfiles",
-        ),
+        ("/audit files", "Inspect carefully\nfiles"),
     ] {
         let CommandResolution::Prompt {
             text,
@@ -276,6 +273,31 @@ async fn imported_prompt_and_skill_cases_keep_the_selected_revision() -> Result<
         };
         assert_eq!(text, expected, "{input}");
         assert!(source.path.ends_with(".md"));
+        if input == "/audit files" {
+            let workspace = ContextRoot {
+                directory: "project".into(),
+                ..fixture.root.clone()
+            };
+            for (input, count) in [("/audit", 0), ("/audit @readme.txt", 1)] {
+                let CommandResolution::Prompt { text, mentions, .. } = catalog
+                    .resolve_input(
+                        input,
+                        &workspace,
+                        &source.generation,
+                        fixture.reader.as_ref(),
+                        1024,
+                    )
+                    .await?
+                else {
+                    panic!("skill composer prompt");
+                };
+                assert!(!text.contains("description:"));
+                assert_eq!(mentions.len(), count, "{input}");
+                if let Some(mention) = mentions.first() {
+                    assert_eq!(mention.file.path(), "project/readme.txt");
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -587,6 +609,7 @@ async fn mention_bytes_are_cumulative_and_duplicate_paths_read_once() -> Result<
         (".claude/commands/read.md", "body"),
         ("a.txt", &body),
         ("b.txt", &body),
+        ("empty.txt", ""),
     ])
     .await?;
     let catalog = fixture.catalog(&[("", CommandScope::Project)], &[]).await?;
@@ -599,14 +622,21 @@ async fn mention_bytes_are_cumulative_and_duplicate_paths_read_once() -> Result<
     else {
         panic!("pinned source");
     };
-    for (input, succeeds) in [("@a.txt @a.txt", true), ("@a.txt @b.txt", false)] {
+    for (input, maximum_bytes, succeeds) in [
+        ("@a.txt @a.txt", 150, true),
+        ("@a.txt @b.txt", 150, false),
+        ("@a.txt @empty.txt", 100, true),
+        ("@a.txt @empty.txt @a.txt", 100, true),
+        ("@empty.txt @a.txt", 100, true),
+        ("@a.txt @b.txt", 100, false),
+    ] {
         assert_eq!(
             resolve_file_mentions(
                 input,
                 &source.root,
                 &source.generation,
                 fixture.reader.as_ref(),
-                150
+                maximum_bytes
             )
             .await
             .is_ok(),
