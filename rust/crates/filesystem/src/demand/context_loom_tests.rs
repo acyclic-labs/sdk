@@ -40,16 +40,15 @@ impl<G: DerefMut<Target = DemandWork>> DerefMut for LeafGuard<G> {
 }
 #[cfg(feature = "native-watch")]
 fn modeled<T>(operation: impl FnOnce() -> T) -> T {
-    struct Reset;
+    struct Reset(bool);
     impl Drop for Reset {
         fn drop(&mut self) {
-            MODEL.with(|active| active.set(false));
+            MODEL.with(|active| active.set(self.0));
         }
     }
-    MODEL.with(|active| {
-        assert!(!active.replace(true));
-    });
-    let _reset = Reset;
+    // Loom logical threads may share an OS thread. The parent model scope
+    // outlives its joined children; each restores the host thread's prior flag.
+    let _reset = Reset(MODEL.with(|active| active.replace(true)));
     operation()
 }
 #[cfg(feature = "native-watch")]
@@ -70,6 +69,8 @@ fn read_and_invalidate(legacy_inspection: bool) {
             resource
                 .with_original_leaf(|work| custody.claim(37, work))
                 .unwrap();
+            // A real retirement notification admits the reconciliation scan.
+            custody.retire(1).unwrap();
             let expected_items = original.receipt().items_examined + 1;
             let weak = Arc::downgrade(&custody);
             // Custody is now the sole owner of resource metadata. Its destruction
