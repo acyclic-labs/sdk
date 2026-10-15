@@ -30,6 +30,16 @@ struct CountingReader<'a> {
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read<'a>(
+        &'a self,
+        reference: &'a acyclic_harness::conversation::FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        self.inner.read(reference, maximum_bytes, io)
+    }
+
     fn read_private_path<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,
@@ -62,6 +72,9 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         )
     }
 }
+
+#[path = "context_discovery_cases/manifest.rs"]
+mod manifest;
 
 type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -137,6 +150,7 @@ impl Fixture {
                     private.capability(VolumeOperation::Read, &mut None)?,
                     private.capability(VolumeOperation::Write, &mut None)?,
                     self.volume.capability(VolumeOperation::Read, &mut None)?,
+                    self.volume.directory_read_capability("", &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,

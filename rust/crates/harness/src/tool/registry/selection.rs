@@ -1,6 +1,33 @@
 use super::*;
 
 impl ToolRegistry {
+    pub(crate) fn pin_model_definitions(&mut self, definitions: &[ToolDefinition]) -> Result<()> {
+        let mut selected = BTreeMap::new();
+        for definition in definitions {
+            let tool = self
+                .get(&definition.name, Some(&definition.revision), None)?
+                .ok_or_else(|| {
+                    Error::NotFound("manifest tool revision is not registered".into())
+                })?;
+            if tool.definition != *definition {
+                return Err(Error::Conflict(
+                    "manifest tool definition differs from its executor".into(),
+                ));
+            }
+            if selected
+                .insert(
+                    definition.name.clone(),
+                    ModelSelection::Revision(definition.revision.clone()),
+                )
+                .is_some()
+            {
+                return Err(Error::Conflict("manifest repeats a tool name".into()));
+            }
+        }
+        self.selected = selected;
+        Ok(())
+    }
+
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
         if !self
