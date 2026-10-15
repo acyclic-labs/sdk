@@ -1,4 +1,5 @@
 //! Native HTTP codec properties and shared fuzz corpus settlement checks.
+#![cfg(not(target_arch = "wasm32"))]
 #[path = "search_http_codec/support.rs"]
 mod support;
 use proptest::prelude::*;
