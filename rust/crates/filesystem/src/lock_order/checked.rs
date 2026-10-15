@@ -167,10 +167,7 @@ impl Condvar {
         condition: impl FnMut(&mut T) -> bool,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
         while_timed(guard, duration, condition, |guard, remaining| {
-            match self.wait_timeout(guard, remaining) {
-                Ok((guard, _)) => Ok(guard),
-                Err(error) => Err(PoisonError::new(error.into_inner().0)),
-            }
+            self.wait_timeout(guard, remaining)
         })
     }
 }
@@ -214,7 +211,7 @@ fn while_timed<G: DerefMut>(
     mut guard: TrackedGuard<G>,
     duration: Duration,
     mut condition: impl FnMut(&mut G::Target) -> bool,
-    mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<TrackedGuard<G>>,
+    mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)>,
 ) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)> {
     let started = Instant::now();
     while condition(&mut guard) {
@@ -222,7 +219,7 @@ fn while_timed<G: DerefMut>(
         if remaining.is_zero() {
             return Ok((guard, WaitTimeoutResult(true)));
         }
-        guard = wait(guard, remaining)?;
+        (guard, _) = wait(guard, remaining)?;
     }
     Ok((guard, WaitTimeoutResult(false)))
 }

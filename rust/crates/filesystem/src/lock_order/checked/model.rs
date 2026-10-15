@@ -164,3 +164,42 @@ fn timed_predicate_and_timeout_return_keep_the_held_rank() {
         drop(healthy(acquire(10, || low.lock(), with_model_held)));
     });
 }
+
+#[test]
+fn poisoned_while_waits_return_a_guard_with_its_rank() {
+    for timed in [false, true] {
+        loom::model(move || {
+            let high = Mutex::new(());
+            let low = Mutex::new(());
+            let guard = healthy(acquire(20, || high.lock(), with_model_held));
+            let guard = if timed {
+                let Err(error) = while_timed(
+                    guard,
+                    Duration::MAX,
+                    |_| true,
+                    |guard, _| Err(PoisonError::new((guard, WaitTimeoutResult(false)))),
+                ) else {
+                    unreachable!("the wait returned poison");
+                };
+                error.into_inner().0
+            } else {
+                let Err(error) =
+                    while_locked(guard, |_| true, |guard| Err(PoisonError::new(guard)))
+                else {
+                    unreachable!("the wait returned poison");
+                };
+                error.into_inner()
+            };
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| acquire(
+                    10,
+                    || low.lock(),
+                    with_model_held
+                )))
+                .is_err()
+            );
+            drop(guard);
+            drop(healthy(acquire(10, || low.lock(), with_model_held)));
+        });
+    }
+}
