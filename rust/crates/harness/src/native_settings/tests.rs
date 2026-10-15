@@ -376,7 +376,10 @@ async fn disabling_hooks_uses_trusted_settings_precedence_before_registration() 
         2,
         "trusted false must restore both guards"
     );
-    assert!(output.blocked.is_some());
+    assert!(
+        output.blocked.is_none(),
+        "Stop hook failures only report diagnostics"
+    );
     write(&local, br#"{"disableAllHooks":true,"hooks":42}"#)?;
     let snapshot = NativeSettings::load(fixture.config().trust_project_hooks(true)).await?;
     let output = stop_hooks(snapshot, &fixture).await?;

@@ -40,6 +40,9 @@ pub(crate) struct Meter {
     pub(crate) pending_write_operations: AtomicU64,
     pub(crate) pending_durability: AtomicU64,
     pub(crate) copied: AtomicU64,
+    pub(crate) examined: AtomicU64,
+    pub(crate) examination_limit: AtomicU64,
+    pub(crate) pending_examination: AtomicU64,
     pub(crate) cancel_after_read: u64,
     pub(crate) late_write_error: bool,
     pub(crate) cancelled: AtomicBool,
@@ -75,6 +78,9 @@ impl Default for Meter {
             pending_write_operations: AtomicU64::new(0),
             pending_durability: AtomicU64::new(0),
             copied: AtomicU64::new(0),
+            examined: AtomicU64::new(0),
+            examination_limit: AtomicU64::new(u64::MAX),
+            pending_examination: AtomicU64::new(0),
 
             cancel_after_read: u64::MAX,
             late_write_error: false,
@@ -103,6 +109,7 @@ impl Meter {
     }
     pub(crate) fn assert_refunded(&self) {
         for held in [
+            &self.pending_examination,
             &self.pending_read,
             &self.pending_write,
             &self.pending_read_operations,
@@ -300,15 +307,46 @@ impl NativeReadMeter for Meter {
         self.admit_examination(items, copied)?;
         self.record_examination(items, copied)
     }
-    fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
-        self.check()
+    fn admit_examination(&self, items: u64, _: u64) -> std::io::Result<()> {
+        self.check()?;
+        if self
+            .examined
+            .load(Ordering::SeqCst)
+            .saturating_add(self.pending_examination.load(Ordering::SeqCst))
+            .saturating_add(items)
+            > self.examination_limit.load(Ordering::SeqCst)
+        {
+            return Err(Self::denial("examination"));
+        }
+        Ok(())
     }
-    fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
+    fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+        self.examined.fetch_add(items, Ordering::SeqCst);
         self.copied.fetch_add(copied, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
             self.cancelled.store(true, Ordering::SeqCst);
         }
+        if self
+            .examined
+            .load(Ordering::SeqCst)
+            .saturating_add(self.pending_examination.load(Ordering::SeqCst))
+            > self.examination_limit.load(Ordering::SeqCst)
+        {
+            return Err(Self::denial("examination"));
+        }
         self.recorded()
+    }
+    fn reserve_examination(&self, items: u64) -> std::io::Result<()> {
+        self.admit_examination(items, 0)?;
+        self.pending_examination.fetch_add(items, Ordering::SeqCst);
+        Ok(())
+    }
+    fn cancel_reserved_examination(&self, items: u64) {
+        assert!(self.pending_examination.fetch_sub(items, Ordering::SeqCst) >= items);
+    }
+    fn record_reserved_examination(&self, items: u64) -> std::io::Result<()> {
+        self.cancel_reserved_examination(items);
+        self.record_examination(items, 0)
     }
     fn release(&self, bytes: u64) {
         assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);

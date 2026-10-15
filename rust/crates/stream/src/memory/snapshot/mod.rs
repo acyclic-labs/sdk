@@ -249,7 +249,10 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         let (key, digest, result, envelope) = match observation {
             Some(observation) => {
                 let key = observation.idempotency_key;
-                if state.replay(key.as_bytes()).is_some()
+                if state
+                    .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
+                    .ok()?
+                    .is_some()
                     || replay_commit_id(envelope.as_ref(), &observation.outcome)?
                         != envelope.as_ref().map(|envelope| envelope.commit_id)
                 {
@@ -269,7 +272,15 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 None,
             ),
         };
-        retain(state, envelope, key, digest, result, Default::default());
+        retain(
+            state,
+            &mut || {},
+            envelope,
+            key,
+            digest,
+            result,
+            Default::default(),
+        );
     }
     Some(())
 }

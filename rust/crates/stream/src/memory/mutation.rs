@@ -26,42 +26,47 @@ fn commit_identity(decision: u64, digest: [u8; 32]) -> CommitId {
     CommitId::from_bytes(hash.finalize().into())
 }
 
-fn replay<'a>(
-    state: &'a State,
-    key: Option<&crate::IdempotencyKey>,
-    digest: [u8; 32],
-) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
-    let Some(key) = key else { return Ok(None) };
-    let Some(replay) = state.replay(key.as_bytes()) else {
-        return Ok(None);
-    };
-    if replay.digest != digest {
-        return Err(StreamError::IdempotencyMismatch);
+impl MemoryStream {
+    fn replay_outcome<'a>(
+        &self,
+        state: &'a State,
+        key: Option<&crate::IdempotencyKey>,
+        digest: [u8; 32],
+    ) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
+        let Some(key) = key else { return Ok(None) };
+        let Some(replay) = self.replay(state, key.as_bytes())? else {
+            return Ok(None);
+        };
+        if replay.digest != digest {
+            return Err(StreamError::IdempotencyMismatch);
+        }
+        Ok(Some(&replay.result))
     }
-    Ok(Some(&replay.result))
-}
 
-fn replay_append(
-    state: &State,
-    key: Option<&crate::IdempotencyKey>,
-    digest: [u8; 32],
-) -> Result<Option<AppendOutcome>, StreamError> {
-    match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result.clone())),
-        Some(_) => Err(StreamError::IdempotencyMismatch),
-        None => Ok(None),
+    fn replay_append(
+        &self,
+        state: &State,
+        key: Option<&crate::IdempotencyKey>,
+        digest: [u8; 32],
+    ) -> Result<Option<AppendOutcome>, StreamError> {
+        match self.replay_outcome(state, key, digest)? {
+            Some(IdempotencyOutcome::Append(result)) => Ok(Some(result.clone())),
+            Some(_) => Err(StreamError::IdempotencyMismatch),
+            None => Ok(None),
+        }
     }
-}
 
-fn replay_fork(
-    state: &State,
-    key: Option<&crate::IdempotencyKey>,
-    digest: [u8; 32],
-) -> Result<Option<ForkReceipt>, StreamError> {
-    match replay(state, key, digest)? {
-        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result.clone())),
-        Some(_) => Err(StreamError::IdempotencyMismatch),
-        None => Ok(None),
+    fn replay_fork(
+        &self,
+        state: &State,
+        key: Option<&crate::IdempotencyKey>,
+        digest: [u8; 32],
+    ) -> Result<Option<ForkReceipt>, StreamError> {
+        match self.replay_outcome(state, key, digest)? {
+            Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result.clone())),
+            Some(_) => Err(StreamError::IdempotencyMismatch),
+            None => Ok(None),
+        }
     }
 }
 
@@ -82,6 +87,7 @@ fn admit_replay(
 /// Retains a mutation envelope and its replay result indefinitely.
 fn retain(
     state: &mut State,
+    probe: &mut impl FnMut(),
     envelope: Option<CommittedEnvelope>,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
@@ -98,12 +104,21 @@ fn retain(
     };
     let entry = Retained {
         replay: key.map(|key| key.0),
+        replay_left: None,
+        replay_right: None,
+        replay_height: 1,
         digest,
         result,
         envelope,
         _allocation: allocation,
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
+        let keyed = entry.replay.is_some();
+        let index = state.retained.len();
         state.retained.push(entry);
+        if keyed {
+            state.replay_root = Some(state.insert_replay(state.replay_root, index, probe));
+            state.replay_count += 1;
+        }
     }
 }

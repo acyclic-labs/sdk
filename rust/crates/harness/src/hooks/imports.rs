@@ -38,9 +38,6 @@ impl CommandHook {
             ));
         }
         let run = if let Some(argv) = self.args {
-            if self.shell.is_some() {
-                return Err(Error::Invalid("argv hooks cannot select a shell".into()));
-            }
             HookRun::Executable {
                 executable: self.command,
                 argv,

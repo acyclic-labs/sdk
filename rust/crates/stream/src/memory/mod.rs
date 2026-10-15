@@ -53,6 +53,8 @@ include!("state.rs");
 
 include!("retained.rs");
 
+include!("replay.rs");
+
 include!("path_state.rs");
 
 include!("history.rs");

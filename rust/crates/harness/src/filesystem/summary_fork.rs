@@ -341,8 +341,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             || prepared.through_sequence()
                 != parent
                     .conversation()
-                    .and_then(|state| state.messages().last())
-                    .map_or(0, |message| message.sequence)
+                    .map_or(0, crate::conversation::ConversationState::logical_revision)
             || journal.canonical_authority() != Some(self.verifier.audience())
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate

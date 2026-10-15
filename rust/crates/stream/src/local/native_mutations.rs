@@ -32,7 +32,14 @@ impl LocalStream {
                 let _input = input;
                 let result = loop {
                     let revision = *stream.inner.changed.borrow();
-                    let replay = provider.has_replay(&request.idempotency_key).await;
+                    let replay = match provider.has_replay(&request.idempotency_key).await {
+                        Ok(replay) => replay,
+                        Err(error) => {
+                            return work
+                                .finish(Err(error))
+                                .map(|result| result.map_err(E::from));
+                        }
+                    };
                     if !replay && let Err(error) = before().await {
                         return Ok(Err(error));
                     }
@@ -119,7 +126,7 @@ impl LocalStream {
                 .exclusive(&span, move |stream| async move {
                     let _input = input;
                     let replay = match &request.idempotency_key {
-                        Some(key) => provider.has_replay(key).await,
+                        Some(key) => provider.has_replay(key).await?,
                         None => false,
                     };
                     let command = Command::Append(request);

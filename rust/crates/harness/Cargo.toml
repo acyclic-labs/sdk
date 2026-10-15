@@ -138,6 +138,10 @@ keyring = { version = "3.6.3", optional = true, features = ["apple-native", "win
 tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
+[dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
@@ -145,9 +149,6 @@ proptest.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream" }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
-
-[dev-dependencies]
-acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rust SDK execution uses the real browser event loop even without exports.
