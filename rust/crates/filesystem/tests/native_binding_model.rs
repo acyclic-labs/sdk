@@ -9,10 +9,29 @@ mod interleavings {
     use loom::sync::atomic::{AtomicU8, Ordering};
     use loom::sync::{Arc, Mutex, RwLock};
     use loom::thread;
+    use std::cell::Cell;
 
     #[test]
     fn cache_copy_source_lease_and_publication_cannot_deadlock_or_accept_torn_state() {
-        for related in [false, true] {
+        check_decisions(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "cached binding disagrees with the leased source state")]
+    fn accepting_a_stale_binding_is_detected() {
+        check_decisions(true);
+    }
+
+    fn check_decisions(accept_stale: bool) {
+        // No/unrelated/related changes, independently of binding replacement.
+        for (changed, related, rebound) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (false, false, true),
+            (true, false, true),
+            (true, true, true),
+        ] {
             for reports in [false, true] {
                 loom::model(move || {
                     // Source lease precedes cache for a writer. The reader must
@@ -26,31 +45,65 @@ mod interleavings {
                             (gate.clone(), cache.clone(), stamp.clone(), epoch.clone());
                         thread::spawn(move || {
                             let _lease = gate.write().unwrap();
-                            stamp.store(1, Ordering::Release);
-                            epoch.store(u8::from(related), Ordering::Release);
-                            *cache.lock().unwrap() = None;
+                            if changed || rebound {
+                                stamp.store(u8::from(changed), Ordering::Release);
+                                epoch.store(u8::from(rebound), Ordering::Release);
+                                *cache.lock().unwrap() = None;
+                            }
                         })
                     };
-                    let reader = thread::spawn(move || {
+                    {
                         // RwLock supplies the existing source lease contract;
                         // production owns the lookup/lease/decision ordering.
                         let sample = || {
                             let observed =
                                 (stamp.load(Ordering::Acquire), epoch.load(Ordering::Acquire));
-                            assert!(observed == (0, 0) || observed == (1, u8::from(related)));
+                            assert!(
+                                observed == (0, 0)
+                                    || observed == (u8::from(changed), u8::from(rebound))
+                            );
                             observed
                         };
-                        cached_binding_matches(
+                        // Extend the model lease through the oracle so a
+                        // writer cannot change the state being compared with
+                        // the returned decision. Kani checks its real lifetime.
+                        let mut lease = None;
+                        let fallback = Cell::new(false);
+                        let matched = cached_binding_matches(
                             || *cache.lock().unwrap(),
-                            || Ok::<_, ()>(gate.read().unwrap()),
-                            |expected| reports && sample() == expected,
+                            || {
+                                lease = Some(gate.read().unwrap());
+                                Ok::<_, ()>(())
+                            },
+                            // Negative control: a reporting source alone must
+                            // never bypass freshness after a related change.
                             |expected| {
+                                reports
+                                    && (accept_stale && (related || rebound)
+                                        || sample() == expected)
+                            },
+                            |expected| {
+                                fallback.set(true);
                                 let observed = sample();
                                 observed.1 == expected.1 && (observed.0 == expected.0 || !related)
                             },
                         );
-                    });
-                    reader.join().unwrap();
+                        if lease.is_some() {
+                            let observed = sample();
+                            assert_eq!(
+                                matched,
+                                observed.1 == 0 && (!related || observed.0 == 0),
+                                "cached binding disagrees with the leased source state"
+                            );
+                            assert_eq!(fallback.get(), !reports || observed != (0, 0));
+                        } else {
+                            assert!(!matched, "a missing cache entry cannot be accepted");
+                            assert!(!fallback.get());
+                        }
+                        if !changed && !rebound {
+                            assert!(matched, "an unchanged cached binding must be accepted");
+                        }
+                    }
                     writer.join().unwrap();
                 });
             }
