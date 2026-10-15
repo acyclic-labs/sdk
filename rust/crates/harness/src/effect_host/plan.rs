@@ -14,8 +14,24 @@ pub struct TaskEffectPlan {
     /// Immutable result schema.
     pub result_schema: crate::conversation::FileRef,
 }
+impl TaskEffectPlan {
+    /// Returns the retained header and owned field storage.
+    pub fn logical_owned_bytes(&self) -> Result<u64> {
+        crate::core::owned_sum([
+            std::mem::size_of::<Self>() as u64,
+            self.provider.capacity() as u64,
+            self.effect_kind.capacity() as u64,
+            self.request.logical_owned_bytes()?,
+            self.result_schema.logical_owned_bytes()?,
+        ])
+    }
+}
 #[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for TaskEffectPlan {}
+impl crate::filesystem::PreparationRecord for TaskEffectPlan {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.logical_owned_bytes().map(Some)
+    }
+}
 /// Returns the canonical identity of one task command's effect.
 #[cfg(feature = "filesystem")]
 pub fn task_effect_id(

@@ -371,6 +371,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
         acyclic_harness::effect_host::TaskEffectPlan,
     >(owner, &context, &payload.0, work)
     .await?;
+    plan.1.resize(plan.0.logical_owned_bytes()?)?;
     if plan.0.provider != ROOT_ALLOCATION_PROVIDER
         || plan.0.effect_kind != ROOT_ALLOCATION_EFFECT
         || plan.0.guarantee != EffectGuarantee::AtMostOnce
