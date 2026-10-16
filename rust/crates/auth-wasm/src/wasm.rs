@@ -34,7 +34,8 @@ impl TrustSnapshot {
             environment_keys: block_ids(&environment_keys.to_vec()).map_err(error)?,
             account,
             issuer_keys: block_ids(&issuer_keys.to_vec()).map_err(error)?,
-            minimum_key_epoch: u64::try_from(minimum_key_epoch).map_err(|_| error(VerifyError::Malformed))?,
+            minimum_key_epoch: u64::try_from(minimum_key_epoch)
+                .map_err(|_| error(VerifyError::Malformed))?,
             revoked_key_ids: revoked_key_ids.into_iter().collect(),
             revoked_block_ids: block_ids(&revoked_block_ids.to_vec())
                 .map_err(error)?
@@ -61,9 +62,7 @@ impl Capability {
         let mut input = Zeroizing::new(vec![0; bytes.length() as usize]);
         bytes.copy_to(&mut input);
         let now = u64::try_from(now_unix_seconds).map_err(|_| error(VerifyError::Malformed))?;
-        verify(&input, &trust.0, now)
-            .map(Self)
-            .map_err(error)
+        verify(&input, &trust.0, now).map(Self).map_err(error)
     }
 
     /// Recheck current trust and time without repeating signatures.
@@ -90,8 +89,7 @@ impl Capability {
                 let bytes = value
                     .dyn_into::<Uint8Array>()
                     .map_err(|_| error(VerifyError::Malformed))?;
-                decode_caveat(&bytes.to_vec())
-                    .map_err(|_| error(VerifyError::Malformed))
+                decode_caveat(&bytes.to_vec()).map_err(|_| error(VerifyError::Malformed))
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.0.attenuate(caveats, &secret).map(Self).map_err(error)
@@ -109,7 +107,11 @@ impl Capability {
 
     #[wasm_bindgen(js_name = blockIds)]
     pub fn block_ids(&self) -> Array {
-        self.0.block_ids().iter().map(|id| Uint8Array::from(id.as_slice())).collect()
+        self.0
+            .block_ids()
+            .iter()
+            .map(|id| Uint8Array::from(id.as_slice()))
+            .collect()
     }
 
     /// Issuer-certified identity with append-only delegation lineage applied.
@@ -120,9 +122,17 @@ impl Capability {
 
     /// Each grant set remains a conjunctive ceiling.
     pub fn grants(&self) -> Array {
-        self.0.effective().grants().map(|value| {
-            Uint8Array::from(GrantSetProto::from(value.clone()).encode_to_vec().as_slice())
-        }).collect()
+        self.0
+            .effective()
+            .grants()
+            .map(|value| {
+                Uint8Array::from(
+                    GrantSetProto::from(value.clone())
+                        .encode_to_vec()
+                        .as_slice(),
+                )
+            })
+            .collect()
     }
 
     #[wasm_bindgen(js_name = filterCount)]
@@ -131,7 +141,11 @@ impl Capability {
     }
 
     pub fn filter(&self, index: usize) -> Result<FilterClause, JsValue> {
-        let clause = self.0.effective().filters().nth(index)
+        let clause = self
+            .0
+            .effective()
+            .filters()
+            .nth(index)
             .ok_or_else(|| error(VerifyError::Malformed))?;
         Ok(FilterClause {
             declaring_block: clause.declaring_block(),

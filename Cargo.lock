@@ -99,6 +99,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-auth-wasm"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "ed25519-dalek",
+ "js-sys",
+ "proptest",
+ "prost",
+ "wasm-bindgen",
+ "zeroize",
+]
+
+[[package]]
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [

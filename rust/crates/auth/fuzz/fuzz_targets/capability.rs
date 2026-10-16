@@ -1,6 +1,9 @@
 #![no_main]
 use acyclic_auth::{
-    authority::{Deny, PolicyDecision, Request, Target, decode_block, decode_capability, decode_caveat, permits},
+    authority::{
+        Deny, PolicyDecision, Request, Target, decode_block, decode_capability, decode_caveat,
+        permits,
+    },
     contract::{
         BlockProto, CapabilityProto, CaveatProto, Limits, RecordAttributes, RecordAttributesProto,
         SocketHostRule, SocketHostRuleProto,
