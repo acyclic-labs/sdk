@@ -117,6 +117,7 @@ impl Delta {
             .chain(restore.iter().cloned())
             .collect();
         buffer.folds.sort_by_key(|r| r.start);
+        buffer.changed(self.start..self.start + old.len(), new.len());
         buffer
             .text
             .replace_range(self.start..self.start + old.len(), new);

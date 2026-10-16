@@ -2,13 +2,21 @@ pub(super) fn native_mount_name(
     name: &LogicalName,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(Vec<u8>, Option<crate::NativeAllocation>), MountSourceError> {
+    native_name_bytes(name.encoding(), name.as_bytes(), carrier)
+}
+
+fn native_name_bytes(
+    encoding: NameEncoding,
+    name: &[u8],
+    carrier: &mut NativeDemandCarrier<'_>,
+) -> Result<(Vec<u8>, Option<crate::NativeAllocation>), MountSourceError> {
     let mut inputs = InputBuffers::new(carrier)?;
     inputs.items(1)?;
-    let bytes = match (name.encoding(), std::env::consts::OS) {
+    let bytes = match (encoding, std::env::consts::OS) {
         (NameEncoding::Utf8 | NameEncoding::PosixBytes, "linux" | "macos")
-        | (NameEncoding::WindowsUtf16Le, "windows") => inputs.copy_bytes(name.as_bytes())?,
+        | (NameEncoding::WindowsUtf16Le, "windows") => inputs.copy_bytes(name)?,
         (NameEncoding::Utf8, "windows") => {
-            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
+            let text = std::str::from_utf8(name).map_err(|_| {
                 MountSourceError::Invalid("authenticated UTF-8 name is malformed".into())
             })?;
             let mut length = 0_usize;

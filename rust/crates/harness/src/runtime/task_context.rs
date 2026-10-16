@@ -335,9 +335,19 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
-    if contains_content_grant_with_work(grants, file, "file:read:", work)?
-        || contains_content_grant_with_work(grants, file.volume(), "volume:read:", work)?
-        || contains_content_grant_with_work(grants, &(file.volume(), ""), "directory:read:", work)?
+    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
+        || contains_content_grant_with_work(
+            grants,
+            file.volume(),
+            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+            work,
+        )?
+        || contains_content_grant_with_work(
+            grants,
+            &(file.volume(), ""),
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
+            work,
+        )?
     {
         return Ok(true);
     }
@@ -350,7 +360,7 @@ pub(crate) fn read_granted_with_work(
             && contains_content_grant_with_work(
                 grants,
                 &(file.volume(), prefix),
-                "directory:read:",
+                acyclic_fs::access::DIRECTORY_READ_PREFIX,
                 work,
             )?
         {
