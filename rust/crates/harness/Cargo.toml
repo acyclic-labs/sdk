@@ -52,6 +52,10 @@ path = "tests/file_query.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "client-model-views"
+path = "tests/client_model_views.rs"
+
+[[test]]
 name = "client-goal-views"
 path = "tests/client_goal_views.rs"
 required-features = ["wasm"]

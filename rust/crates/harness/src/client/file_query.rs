@@ -48,6 +48,7 @@ pub struct FileQueryView {
     query: Query,
     files: BTreeMap<FileKey, FileValue>,
     rows: BTreeMap<FileKey, Arc<[String]>>,
+    models: BTreeMap<FileKey, super::ModelFileView>,
     goal: GoalFileView,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
@@ -103,11 +104,17 @@ impl FileQueryView {
             .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
             .map(|(key, file)| (key.clone(), plan_rows(file)))
             .collect();
+        let models = files
+            .iter()
+            .filter(|(key, _)| super::model_view::turn_request(key).is_some())
+            .map(|(key, file)| (key.clone(), super::ModelFileView::from_file(file)))
+            .collect();
         let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
         let goal_line_starts = goal_line_starts(&goal);
         Ok(Self {
             query,
             rows,
+            models,
             goal,
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
@@ -132,6 +139,19 @@ impl FileQueryView {
     /// Current file slices, sharing their immutable query payloads.
     pub fn files(&self) -> &BTreeMap<FileKey, FileValue> {
         &self.files
+    }
+
+    /// Borrows model identities; rendering never reparses request bytes.
+    pub fn models(&self) -> impl Iterator<Item = super::ModelQueryView<'_>> {
+        self.models.iter().filter_map(|(key, model)| {
+            let (task, turn) = super::model_view::turn_request(key)?;
+            Some(super::ModelQueryView {
+                cursor: &self.cursor,
+                task,
+                turn,
+                model,
+            })
+        })
     }
 
     /// Borrows parsed goal state; rendering never reparses the file.
@@ -237,6 +257,7 @@ impl FileQueryView {
             }
             self.files.remove(&key);
             self.rows.remove(&key);
+            self.models.remove(&key);
         }
         for file in change.file.into_iter().chain(change.files) {
             if file.key == FileKey::RequestHead && self.files.get(&file.key) != Some(&file) {
@@ -248,6 +269,12 @@ impl FileQueryView {
             }
             if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
+            }
+            if super::model_view::turn_request(&file.key).is_some()
+                && self.files.get(&file.key) != Some(&file)
+            {
+                self.models
+                    .insert(file.key.clone(), super::ModelFileView::from_file(&file));
             }
             self.files.insert(file.key.clone(), file);
         }
