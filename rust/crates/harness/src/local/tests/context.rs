@@ -28,7 +28,7 @@ async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<(
     Ok(())
 }
 
-async fn manifest(
+pub(super) async fn manifest(
     harness: &LocalHarness,
     operation: OperationId,
 ) -> Result<(FileRef, ContextManifest)> {
@@ -41,7 +41,7 @@ async fn manifest(
     Ok((file, manifest))
 }
 
-fn admitted(
+pub(super) fn admitted(
     admission: Admission<crate::runtime::RuntimeTask<crate::executor::TurnOutput>>,
 ) -> Result<crate::TaskId> {
     match admission {

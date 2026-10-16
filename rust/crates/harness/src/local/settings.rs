@@ -21,7 +21,7 @@ pub(super) async fn load(
 #[cfg(feature = "hooks")]
 pub(super) async fn capture_hooks(
     hooks: &crate::hooks::Hooks,
-    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
+    publisher: &dyn ContentPublisher,
     limits: Limits,
 ) -> Result<crate::conversation::FileRef> {
     let prefix = "inputs/config/hooks/";

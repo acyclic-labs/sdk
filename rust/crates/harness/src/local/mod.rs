@@ -64,11 +64,10 @@ pub struct LocalHarness {
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
-    hook_configuration: Option<crate::conversation::FileRef>,
+    hooks: crate::hooks::Hooks,
     #[cfg(test)]
-    context_read_observer: Option<
-        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
-    >,
+    context_read_observer:
+        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -268,27 +267,6 @@ impl LocalHarness {
                 )
                 .await?,
             );
-            #[cfg(feature = "hooks")]
-            let hook_configuration = if settings.hooks.is_empty() {
-                None
-            } else {
-                Some(
-                    settings::capture_hooks(
-                        &settings.hooks,
-                        FilesystemContentPublisher::new(
-                            files.clone(),
-                            &journal,
-                            &verifier,
-                            &signed,
-                            config.limits.file_bytes,
-                            None,
-                        )?
-                        .as_ref(),
-                        config.limits,
-                    )
-                    .await?,
-                )
-            };
             Ok(Self {
                 files,
                 task_files,
@@ -306,7 +284,7 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 #[cfg(feature = "hooks")]
-                hook_configuration,
+                hooks: settings.hooks,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

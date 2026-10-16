@@ -103,7 +103,6 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
     };
     let (original, rules) = pinned(&harness, operation).await?;
     guard(&rules, "user-guard-A");
-    assert_eq!(harness.hook_configuration.as_ref(), Some(&original));
     assert!(provider.requests().is_empty());
     let hooks: Hooks =
         serde_json::from_slice(&serde_json::to_vec(&rules).map_err(super::super::storage)?)
@@ -142,7 +141,6 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
     std::fs::write(home.join(".claude/settings.json"), settings("user-guard-B"))
         .map_err(super::super::storage)?;
     let reopened = LocalHarness::open(config()?).await?;
-    assert_ne!(reopened.hook_configuration.as_ref(), Some(&original));
     let (recovered, rules) = pinned(&reopened, operation).await?;
     assert_eq!(recovered, original);
     guard(&rules, "user-guard-A");
@@ -164,4 +162,106 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
     );
     assert!(!requests.contains("untrusted-project-guard"));
     Ok(())
+}
+
+async fn oversized_current_hooks(explicit_override: bool) -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let settings_path = home.join(".claude/settings.json");
+    std::fs::write(&settings_path, settings("guard-A")).map_err(super::super::storage)?;
+    let provider = scripted([ScriptedTurn::Text("original context".into())]);
+    let limits = Limits {
+        file_bytes: 8192,
+        ..Default::default()
+    };
+    let config = || -> Result<LocalHarnessConfig> {
+        Ok(
+            crate::test_support::local_harness_config(&workspace, (model()?, provider.clone()))?
+                .without_default_tools()
+                .limits(limits)
+                .state_directory(root.path().join("state"))
+                .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let operation = OperationId::new();
+    let task = if explicit_override {
+        harness.stage_turn(operation, "retained prompt").await?;
+        None
+    } else {
+        Some(super::context::admitted(
+            harness.submit(operation, "retained prompt").await?,
+        )?)
+    };
+    let (reference, _) = super::context::manifest(&harness, operation).await?;
+    let (hooks, rules) = pinned(&harness, operation).await?;
+    guard(&rules, "guard-A");
+    assert!(provider.requests().is_empty());
+    drop(harness);
+    // Valid selected configuration fits the settings read bound, but cannot fit
+    // the task's file bound. It must matter only to a new automatic selection.
+    let large = format!("guard-B-{}", "x".repeat(limits.file_bytes as usize));
+    std::fs::write(&settings_path, settings(&large)).map_err(super::super::storage)?;
+    let mut selected = config()?;
+    if explicit_override {
+        selected = selected.context_manifest(reference.clone());
+    }
+    let reopened = LocalHarness::open(selected).await?;
+    assert!(
+        reopened.hooks.encode(limits.file_bytes).is_err(),
+        "fixture no longer exceeds the task file bound"
+    );
+    if explicit_override {
+        let next = OperationId::new();
+        let next_task =
+            super::context::admitted(reopened.submit(next, "explicit selection").await?)?;
+        let (_, command) = reopened.recover_turn_inputs(next).await?.unwrap();
+        let bytes = reopened
+            .context_reader()?
+            .read(&command.payload, limits.file_bytes, None)?
+            .await?;
+        let command: crate::filesystem::ModelTaskCommand =
+            serde_json::from_slice(&bytes).map_err(super::super::storage)?;
+        assert_eq!(command.context_manifest, reference);
+        let (selected_hooks, rules) = pinned(&reopened, next).await?;
+        assert_eq!(selected_hooks, hooks);
+        guard(&rules, "guard-A");
+        assert_eq!(reopened.resume(next_task).await?.text, "original context");
+    } else {
+        // Retry the original production submission without supplying any old
+        // manifest/configuration refs. Recovery must find the retained files.
+        let recovered_task =
+            super::context::admitted(reopened.submit(operation, "retained prompt").await?)?;
+        assert_eq!(Some(recovered_task), task);
+        let (retained, _) = super::context::manifest(&reopened, operation).await?;
+        assert_eq!(retained, reference);
+        let (selected_hooks, rules) = pinned(&reopened, operation).await?;
+        assert_eq!(selected_hooks, hooks);
+        guard(&rules, "guard-A");
+        assert_eq!(
+            reopened.resume(task.unwrap()).await?.text,
+            "original context"
+        );
+        let next = OperationId::new();
+        assert!(matches!(
+            reopened.submit(next, "new selection").await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(reopened.recover_turn_inputs(next).await?.is_none());
+    }
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopening_retained_prompts_does_not_publish_oversized_current_hooks() -> Result<()> {
+    oversized_current_hooks(false).await
+}
+
+#[tokio::test]
+async fn explicit_manifests_do_not_publish_unused_current_hooks() -> Result<()> {
+    oversized_current_hooks(true).await
 }
