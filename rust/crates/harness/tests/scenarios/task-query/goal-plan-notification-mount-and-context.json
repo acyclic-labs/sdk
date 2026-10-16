@@ -1,0 +1,8 @@
+{"folder":"","writes":[{"path":"GOAL.md","text":"active"},{"path":"plans/main.md","text":"steps"},{"path":
+  ".tasks/t/notifications/n.json","text":"ready"},{"path":".tasks/t/context/v1/manifest.json","text":"pinned"},{"path":
+  ".volumes/agents/child","text":"lineage"},{"path":"GOAL.md","text":"done"},{"path":"plans/main.md","text":"finished"}]
+  ,"expect":{"files":{"GOAL.md":"done","plans/main.md":"finished",".tasks/t/notifications/n.json":"ready",
+  ".tasks/t/context/v1/manifest.json":"pinned",".volumes/agents/child":"lineage"},"changes":[{"path":"GOAL.md","text":
+  "active"},{"path":"plans/main.md","text":"steps"},{"path":".tasks/t/notifications/n.json","text":"ready"},{"path":
+  ".tasks/t/context/v1/manifest.json","text":"pinned"},{"path":".volumes/agents/child","text":"lineage"},{"path":
+  "GOAL.md","text":"done"},{"path":"plans/main.md","text":"finished"}]}}

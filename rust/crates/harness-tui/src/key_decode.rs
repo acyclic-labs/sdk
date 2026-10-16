@@ -1,5 +1,6 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::{Action, Binding, InputKeymap};
+use std::fmt::Write as _;
 
 /// A decoded editing key, or committed text from a terminal character event.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +72,7 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
     None
 }
 
-fn find_binding(bindings: &InputKeymap, key: KeyEvent) -> Option<Binding> {
+fn find_binding(bindings: &InputKeymap, key: KeyEvent) -> Option<Binding<'_>> {
     let chord = event_chord(key)?;
     bindings.resolve(&chord)
 }
@@ -105,6 +106,9 @@ pub(crate) fn event_chord(mut key: KeyEvent) -> Option<arrayvec::ArrayString<40>
         KeyCode::PageDown => "PageDown",
         KeyCode::Tab => "Tab",
         KeyCode::Delete => "Delete",
+        KeyCode::Insert => "Insert",
+        KeyCode::F(_) => "",
+        KeyCode::Char(' ') => "Space",
         KeyCode::Esc => "Esc",
         KeyCode::Char(_) => "",
         _ => return None,
@@ -126,7 +130,11 @@ pub(crate) fn event_chord(mut key: KeyEvent) -> Option<arrayvec::ArrayString<40>
     {
         return None;
     }
-    if let KeyCode::Char(character) = key.code {
+    if let KeyCode::F(number) = key.code {
+        write!(&mut chord, "F{number}").ok()?;
+    } else if key.code == KeyCode::Char(' ') {
+        chord.push_str("Space");
+    } else if let KeyCode::Char(character) = key.code {
         for character in character.to_lowercase() {
             chord.push(character);
         }

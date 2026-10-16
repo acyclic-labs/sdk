@@ -65,7 +65,9 @@ fn repeat_policy_selection_modifiers_and_platform_keys() {
 
 #[test]
 fn user_overrides_drive_dispatch_help_and_disabling() -> Result<(), Box<dyn std::error::Error>> {
-    let map = InputKeymap::from_json(r#"{"Ctrl+l":"Home","Ctrl+c":"","a":""}"#)?;
+    let map =
+        InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start","Ctrl+c":null,"a":null}}"#)
+            .unwrap();
     assert_eq!(
         decode_key(KeyEvent::new(KeyCode::Char('l'), M::CONTROL), &map),
         Some(DecodedKey::Action {
@@ -83,15 +85,18 @@ fn user_overrides_drive_dispatch_help_and_disabling() -> Result<(), Box<dyn std:
     );
     assert!(map.help().contains("Ctrl+l\tLine start\n"));
     assert!(!map.help().contains("Ctrl+c\t"));
-    assert_eq!(InputKeymap::from_json(&map.to_json()?)?, map);
-    assert!(InputKeymap::from_json(r#"{"Shift+Ctrl+l":"Home"}"#).is_err());
-    assert!(InputKeymap::from_json(r#"{"Ctrl+l":"typo"}"#).is_err());
+    assert_eq!(InputKeymap::parse(&map.encode()).unwrap(), map);
+    assert!(InputKeymap::parse(r#"{"bindings":{"Shift+Ctrl+l":"cursor.line-start"}}"#).is_err());
+    assert!(InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"typo"}}"#).is_err());
     Ok(())
 }
 
 #[test]
 fn super_overrides_share_canonical_dispatch_and_help() -> Result<(), Box<dyn std::error::Error>> {
-    let map = InputKeymap::from_json(r#"{"Super+k":"Home","Super+x Super+e":"Ctrl+x Ctrl+e"}"#)?;
+    let map = InputKeymap::parse(
+        r#"{"bindings":{"Super+k":"cursor.line-start","Super+x Super+e":"external-editor"}}"#,
+    )
+    .unwrap();
     for modifiers in [M::SUPER, M::CONTROL] {
         assert_eq!(
             decode_key(KeyEvent::new(KeyCode::Char('k'), modifiers), &map),
@@ -110,13 +115,18 @@ fn super_overrides_share_canonical_dispatch_and_help() -> Result<(), Box<dyn std
         map.resolve("Ctrl+x Ctrl+e").map(|b| b.action),
         Some(Action::ExternalEditor)
     );
-    assert_eq!(InputKeymap::from_json(&map.to_json()?)?, map);
-    assert!(InputKeymap::from_json(r#"{"Super+k":"Home","Ctrl+k":"End"}"#).is_err());
+    assert_eq!(InputKeymap::parse(&map.encode()).unwrap(), map);
+    assert!(
+        InputKeymap::parse(
+            r#"{"bindings":{"Super+k":"cursor.line-start","Ctrl+k":"cursor.line-end"}}"#
+        )
+        .is_err()
+    );
     Ok(())
 }
 
 fn assert_dispatch_allocates_nothing(broken: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let overrides = InputKeymap::from_json(r#"{"Super+k":"Home","a":"","Ctrl+x Ctrl+e":"Home"}"#)?;
+    let overrides = InputKeymap::parse(r#"{"bindings":{"Super+k":"cursor.line-start","a":null,"Ctrl+x Ctrl+e":"cursor.line-start"}}"#).unwrap();
     for map in [InputKeymap::default(), overrides] {
         for code in [
             KeyCode::Char('a'),

@@ -7,6 +7,7 @@
 mod driver;
 mod io;
 mod service;
+pub mod terminal;
 
 pub(super) use driver::{submit_read, submit_write};
 pub(super) use io::{

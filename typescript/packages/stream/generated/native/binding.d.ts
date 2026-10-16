@@ -53,6 +53,8 @@ export declare class NativeStreamClient {
   readResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamSequenceResult>
   /** Opens a Rust-owned follow cursor from an encoded request. */
   openFollowResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamFollowResult>
+  /** Opens a Rust-owned live direct-child cursor from an encoded request. */
+  openChildrenResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamFollowResult>
   /** Executes a canonical children-page request. */
   childrenPageResult(request: Buffer, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamOperationResult>
   /** Executes a canonical commit request, retaining an optional provider deadline. */
@@ -66,7 +68,7 @@ export declare class NativeStreamClient {
 /** One Rust-owned live follow cursor. A fresh cursor is required after close. */
 export declare class NativeStreamFollow {
   /**
-   * Returns the next canonical `ReadResponse`, or an empty result at end/close.
+   * Returns the next canonical response for this cursor, or an empty result at end/close.
    *
    * Transient `Unavailable` items remain owned by the Rust cursor and are
    * retried here. Terminal stream errors are returned in the result envelope.

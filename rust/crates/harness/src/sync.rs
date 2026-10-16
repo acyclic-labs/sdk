@@ -3,11 +3,7 @@
 mod primitives;
 pub(crate) use primitives::{Arc, atomic};
 
-#[cfg(all(
-    feature = "native-execution",
-    feature = "filesystem-local",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]
 pub(crate) mod owned;
 

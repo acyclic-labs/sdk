@@ -2,7 +2,7 @@ use crate::{PromptInput, PromptWidget, Viewport};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, StatefulWidget, Widget},
 };
 
@@ -27,15 +27,17 @@ impl<'a> PromptBox<'a> {
         Self {
             input,
             placeholder: "",
-            style: Style::default(),
-            editing_style: Style::default().fg(Color::Yellow),
+            style: input.theme.style(crate::config::ThemeRole::Text),
+            editing_style: input.theme.style(crate::config::ThemeRole::Editing),
             now_ms,
         }
     }
 
     /// Grow to at most half the screen, including border and status title.
     pub fn height(&self, width: u16, screen_height: u16) -> u16 {
-        let maximum = screen_height / 2;
+        let maximum = (u32::from(screen_height)
+            * self.input.editor.settings().max_input_height_percent as u32
+            / 100) as u16;
         PromptWidget::new(&self.input.editor)
             .height(width.saturating_sub(2), maximum.saturating_sub(2))
             .saturating_add(2)
@@ -72,15 +74,19 @@ impl StatefulWidget for PromptBox<'_> {
         if self.input.recording {
             labels.push("● REC".to_owned());
         }
-        if self.now_ms.saturating_sub(self.input.last_activity()) < 500 {
+        if self.now_ms.saturating_sub(self.input.last_activity())
+            < self.input.editor.settings().activity_ms as u64
+        {
             labels.push("●".to_owned());
         }
         let style = if self.input.editing_message().is_some() {
             self.style.patch(self.editing_style)
         } else {
             self.style
+                .patch(self.input.theme.style(crate::config::ThemeRole::Border))
         };
         let block = Block::default()
+            .style(self.style)
             .borders(Borders::ALL)
             .border_style(style)
             .title(labels.join(" · "));
@@ -89,6 +95,11 @@ impl StatefulWidget for PromptBox<'_> {
         let mut widget = PromptWidget::new(&self.input.editor);
         widget.placeholder = self.placeholder;
         widget.style = self.style;
+        widget.selection_style = self.input.theme.style(crate::config::ThemeRole::Selection);
+        widget.placeholder_style = self
+            .input
+            .theme
+            .style(crate::config::ThemeRole::Placeholder);
         widget.render(inner, buffer, viewport);
     }
 }

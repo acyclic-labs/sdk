@@ -101,17 +101,6 @@ impl FileTool {
                 }
                 (input.0.file, input.1)
             }
-            Self::Plan => {
-                let custody = super::edit::allocation(work, 0)?;
-                super::super::plan::PlanView::borrow(&invocation.arguments, &custody)?;
-                if super::super::plan::PLAN_PATH.len() > scope.limits().path_bytes {
-                    return Err(error(
-                        crate::wire::ErrorCode::Invalid,
-                        "plan path exceeds task path bound",
-                    ));
-                }
-                return Ok((None, custody));
-            }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;

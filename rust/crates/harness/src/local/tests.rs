@@ -17,6 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod goals;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -726,10 +727,15 @@ mod checkout;
 #[path = "tests/checkout_reopen.rs"]
 mod checkout_reopen;
 
-mod task_files;
-
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout_reconciliation;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;
+
+#[cfg(feature = "mcp-http")]
+mod mcp;
+mod task_files;

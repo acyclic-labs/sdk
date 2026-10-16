@@ -1,9 +1,11 @@
 use super::*;
+use crate::filesystem::NativeDirectory;
+use acyclic_fs::MaterializeOptions;
 
 /// Publishes git facade mutations into the ordinary checkout.
 pub(crate) struct RootMaterializingGitExecutor<'a, F> {
     /// Managed workspace executor.
-    pub inner: WorkspaceGitExecutor<'a>,
+    pub inner: &'a WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
@@ -38,7 +40,7 @@ where
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         publish_checkout_transition(
             self.root,
             self.source_root_identity,
@@ -67,10 +69,10 @@ where
 {
     before_effect().await?;
     let to = to_generation.id();
-    let operation_directory = NativeDirectory(root)
-        .publication_directory(operation_id)
-        .map_err(Error::Storage)?;
+    let operation_directory = NativeDirectory(root).publication_directory(operation_id)?;
     let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| Error::from(cause))?;
     let journal = acyclic_fs::load_native_materialization_journal(
         store,
         operation_id,
@@ -78,9 +80,9 @@ where
         &cancellation,
     )
     .await
-    .map_err(|(cause, _)| display(cause))?
+    .map_err(|(cause, _)| Error::from(cause))?
     .value;
-    if acyclic_fs::capture_root_identity(root).map_err(display)? != source_root_identity {
+    if work.root_identity(root).map_err(Error::from)? != source_root_identity {
         return Err(Error::Unauthorized(
             "checkout root changed before publication".into(),
         ));
@@ -101,7 +103,7 @@ where
                 .workspace()
                 .generation(original, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(display)?
+                .map_err(|failure| Error::from(failure.error))?
                 .value;
         }
         if completed(journal, source_root_identity, from.id(), to)? {
@@ -117,13 +119,11 @@ where
     let parent = operation_directory
         .parent()
         .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
-    std::fs::create_dir_all(parent).map_err(display)?;
-    let cancellation = CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| display(cause))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
     let actual =
         acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
-            .map_err(display)?;
+            .map_err(Error::from)?;
     if actual != source_root_identity {
         return Err(Error::Storage(
             "checkout root changed before publication".into(),
@@ -136,7 +136,6 @@ where
         maximum_extent_spans: 65_536,
         transfer_bytes: 8 * 1024 * 1024,
     };
-    let cancellation = CancellationToken::new();
     acyclic_fs::publish_native_generation_transition(
         &from,
         &to_generation,
@@ -153,8 +152,7 @@ where
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,
         },
-        acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| display(cause))?,
+        work,
         || async {
             before_effect().await.map_err(|error| {
                 acyclic_fs::NativeWorkspacePublicationError::Native(
@@ -164,7 +162,7 @@ where
         },
     )
     .await
-    .map_err(|(cause, _)| display(cause))?;
+    .map_err(|(cause, _)| Error::from(cause))?;
     cleanup(root, &operation_directory)
 }
 
@@ -185,15 +183,18 @@ fn completed(
     Ok(journal.phase == acyclic_fs::MaterializationPhase::Applied)
 }
 
-fn cleanup(root: &Path, operation_directory: &Path) -> Result<(), Error> {
-    NativeDirectory(
-        &NativeDirectory(root)
-            .publication_root()
-            .map_err(Error::Storage)?,
-    )
-    .remove(operation_directory)
-    .map_err(display)?;
-    Ok(())
+fn cleanup(_root: &Path, operation_directory: &Path) -> Result<(), Error> {
+    if !operation_directory
+        .try_exists()
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?
+    {
+        return Ok(());
+    }
+    let parent = operation_directory
+        .parent()
+        .ok_or_else(|| Error::Invalid("native staging directory has no parent".into()))?;
+    acyclic_native_runtime::remove_child_directory(parent, operation_directory)
+        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))
 }
 
 impl<F, Fut> GitFilesystemExecutor for RootMaterializingGitExecutor<'_, F>
@@ -223,7 +224,7 @@ where
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let result = self.inner.execute(operation_id, action).await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so

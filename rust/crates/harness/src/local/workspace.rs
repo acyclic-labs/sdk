@@ -184,9 +184,7 @@ pub(super) async fn open_volume(
     if !path.try_exists().map_err(storage)? {
         let staging = directory.join("project-initializing");
         if staging.try_exists().map_err(storage)? {
-            crate::filesystem::NativeDirectory(directory)
-                .remove(&staging)
-                .map_err(Error::Storage)?;
+            acyclic_native_runtime::remove_child_directory(directory, &staging).map_err(storage)?;
         }
         owner::directory(&staging)?;
         let cancellation = acyclic_fs::CancellationToken::new();

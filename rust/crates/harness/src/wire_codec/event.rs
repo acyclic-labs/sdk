@@ -99,10 +99,7 @@ pub(crate) fn decode_event(
     }
     validate_protocol(
         envelope.protocol.as_ref(),
-        (
-            EVENT_WIRE_VERSION,
-            blake3::hash(crate::FILE_DESCRIPTOR_SET).to_hex().as_str(),
-        ),
+        COMPILED_PROTOCOL,
         Storage,
         quota.work(),
     )?;

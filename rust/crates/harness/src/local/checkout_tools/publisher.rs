@@ -67,6 +67,10 @@ impl CheckoutPublisher {
         publication: Publication<'_>,
     ) -> Result<FileRef> {
         serialized(&self.tools.state, async |mut state| {
+            let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+            if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
+                state.watcher = None;
+            }
             let State { active, watcher } = &mut *state;
             let view = active
                 .as_ref()

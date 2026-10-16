@@ -102,3 +102,42 @@ proptest! {
         prop_assert_ne!(original, reconciliation_operation(operation, b"close", generation(from), generation(changed)));
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // The pending native acknowledgement survives exact Git-state round trips.
+    #[test]
+    fn reconciliation_marker_round_trip(
+        workspace in any::<[u8; 16]>(), generation in any::<[u8; 32]>(),
+        operation in any::<[u8; 16]>(), present in any::<bool>(),
+    ) {
+        let workspace = acyclic_fs::WorkspaceId::from_bytes(workspace);
+        let mut state = acyclic_fs::GitCompatState::new("main", workspace);
+        state.checkout_reconciliation = present.then_some((
+            acyclic_fs::OperationId::from_bytes(operation), acyclic_fs::GitGenerationRef {
+                workspace_id: workspace,
+                generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(generation)),
+            },
+        ));
+        let bytes = serde_json::to_vec(&state).unwrap();
+        let recovered: acyclic_fs::GitCompatState = serde_json::from_slice(&bytes).unwrap();
+        prop_assert_eq!(&recovered, &state);
+        prop_assert_eq!(serde_json::to_vec(&recovered).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn reconciliation_fuzz_seed_is_a_recoverable_git_state() {
+    let seed =
+        include_bytes!("../../../../harness-fuzz/corpus/records/checkout-reconciliation.json");
+    let state: acyclic_fs::GitCompatState = serde_json::from_slice(seed).unwrap();
+    assert_eq!(
+        state.checkout_reconciliation.unwrap().1.workspace_id,
+        state.branches["main"].workspace_id
+    );
+    let encoded = serde_json::to_vec(&state).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<acyclic_fs::GitCompatState>(&encoded).unwrap(),
+        state
+    );
+}

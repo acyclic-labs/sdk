@@ -1,0 +1,5 @@
+{"folder":"plans","writes":[{"path":"plans/main.md","text":"initial"},{"path":"GOAL.md","text":"active"},{"path":
+  "plans/other.md","text":"other"},{"path":".tasks/t/status.json","text":"running"},{"path":"plans/main.md","text":
+  "revised"}],"expect":{"files":{"plans/main.md":"revised","plans/other.md":"other"},"changes":[{"path":"plans/main.md",
+  "text":"initial"},null,{"path":"plans/other.md","text":"other"},null,{"path":"plans/main.md","text":"revised"}],
+  "order":["plans/main.md","plans/other.md"]}}

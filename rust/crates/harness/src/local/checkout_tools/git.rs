@@ -26,6 +26,8 @@ impl CheckoutTools {
             &acyclic_stream::SystemUnixMillisClock,
         );
         let before_recovery = head(view).await?;
+        self.prepare_reconciliation(context, b"recover", &before_recovery)
+            .await?;
         // A previous worker can disappear after opening its lease. Expiry
         // fences it; complete its durable reconciliation before opening ours.
         let recovery = coordinator
@@ -40,8 +42,7 @@ impl CheckoutTools {
             Some(outcome) => reconciliation_generation(outcome)?,
             None => before_recovery.clone(),
         };
-        self.publish_reconciliation(context, b"recover", before_recovery, parent.clone())
-            .await?;
+        self.publish_reconciliation(context).await?;
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(
@@ -68,6 +69,13 @@ impl CheckoutTools {
         }
         .await;
         let before_close = head(view).await?;
+        if !result
+            .as_ref()
+            .is_ok_and(|output| output.switched.is_some())
+        {
+            self.prepare_reconciliation(context, b"close", &before_close)
+                .await?;
+        }
         let closed = coordinator
             .finish_workspace(
                 workspace,
@@ -85,13 +93,12 @@ impl CheckoutTools {
         let publication = match closed {
             Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
                 match reconciliation_generation(outcome) {
-                    Ok(to)
+                    Ok(_)
                         if !result
                             .as_ref()
                             .is_ok_and(|output| output.switched.is_some()) =>
                     {
-                        self.publish_reconciliation(context, b"close", before_close, to)
-                            .await
+                        self.publish_reconciliation(context).await
                     }
                     Ok(_) => Ok(()),
                     Err(error) => Err(error),
@@ -150,41 +157,43 @@ impl CheckoutTools {
         .await
     }
 
-    async fn publish_reconciliation(
+    async fn prepare_reconciliation(
         &self,
         context: &ToolContext,
         phase: &[u8],
-        from: acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
-        to: acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
+        from: &acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>,
     ) -> Result<()> {
-        if from.id() == to.id() {
-            return Ok(());
-        }
-        let operation = reconciliation_operation(context.operation_id(), phase, from.id(), to.id());
-        crate::tools::git::publish_checkout_transition(
-            &self.workspace.path,
-            self.workspace.identity,
-            &self.workspace.store,
+        let operation =
+            reconciliation_operation(context.operation_id(), phase, from.id(), from.id());
+        reconciliation::prepare(
+            &self.workspace,
             operation,
-            from,
-            to,
-            &|| async {
-                context
-                    .task()
-                    .owned_mailbox
-                    .as_ref()
-                    .ok_or_else(|| {
-                        Error::Unauthorized("git command has no execution owner".into())
-                    })?
-                    .verify_owner(None)?
-                    .await
+            acyclic_fs::GitGenerationRef {
+                workspace_id: from.workspace().id(),
+                generation: from.id(),
             },
         )
         .await
     }
+
+    async fn publish_reconciliation(&self, context: &ToolContext) -> Result<()> {
+        let state = self.workspace.selected_view().await?;
+        let view = state.as_ref().unwrap_or_else(|| self.workspace.view());
+        reconciliation::publish(&self.workspace, view, &|| async {
+            context
+                .task()
+                .owned_mailbox
+                .as_ref()
+                .ok_or_else(|| Error::Unauthorized("git command has no execution owner".into()))?
+                .verify_owner(None)?
+                .await
+        })
+        .await?;
+        Ok(())
+    }
 }
 
-fn reconciliation_generation(
+pub(super) fn reconciliation_generation(
     outcome: acyclic_fs::WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> Result<acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>> {
     match outcome {

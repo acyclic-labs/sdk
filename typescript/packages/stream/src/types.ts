@@ -74,6 +74,7 @@ export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal }
 export interface StreamChild { readonly path: string }
+export interface ChildrenRequest { readonly parent?: string; readonly limit: number; readonly signal?: AbortSignal }
 export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>
@@ -126,6 +127,7 @@ export interface StreamProvider {
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
+  children?(request: ChildrenRequest): AsyncIterable<StreamChild>;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;

@@ -4,6 +4,44 @@ use serde_json::json;
 use std::path::Path;
 
 #[tokio::test]
+async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for name in [
+        "lifecycle",
+        "multiple-raw-and-code",
+        "filenames-and-paragraphs",
+    ] {
+        let mut baseline =
+            crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plan_query::PlanQuery::parse(baseline)?
+            .negative_oracles()
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for name in ["lifecycle", "multiple-files", "malformed-raw"] {
+        let mut baseline =
+            crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plans::Plans::parse(baseline)?
+            .negative_oracles()
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn unbound_tool_oracles_reject_corrupted_names_and_arguments() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     for path in [
@@ -131,6 +169,96 @@ async fn composer_oracles_reject_changed_results_completions_bytes_and_snapshots
         let mut case = crate::scenario::load_value(&root, &path)?;
         case["expect"]["completions"] = json!(["wrong"]);
         assert!(run(case).await.is_err(), "accepted wrong completion");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for (name, mutations) in [
+        (
+            "fence-split",
+            &[
+                "coalesced",
+                "reversed",
+                "missing",
+                "completion",
+                "delta",
+                "metadata",
+                "final",
+            ][..],
+        ),
+        ("empty-deltas", &["missing"][..]),
+        ("reasoning", &["leaked", "missing", "reversed"][..]),
+    ] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("markdown/{name}.json")))?;
+        run(baseline.clone()).await?;
+        for mutation in mutations {
+            let mut case = baseline.clone();
+            match *mutation {
+                "coalesced" => {
+                    let events = case["turns"][0].as_array().ok_or("events")?;
+                    let text: String = events
+                        .iter()
+                        .filter_map(|event| event["delta"].as_str())
+                        .collect();
+                    case["turns"][0] = json!([
+                        {"type":"event","kind":"content","delta":text},
+                        {"type":"event","kind":"completed","metadata":null}
+                    ]);
+                }
+                "reversed" => case["turns"][0].as_array_mut().ok_or("events")?.swap(0, 1),
+                "missing" => {
+                    case["turns"][0].as_array_mut().ok_or("events")?.remove(0);
+                }
+                "completion" => {
+                    case["turns"][0].as_array_mut().ok_or("events")?.pop();
+                }
+                "delta" => case["turns"][0][0]["delta"] = json!("corrupted"),
+                "leaked" => case["turns"][0][0]["kind"] = json!("content"),
+                "metadata" => {
+                    case["turns"][0]
+                        .as_array_mut()
+                        .ok_or("events")?
+                        .last_mut()
+                        .ok_or("completion")?["metadata"] = json!({"injected":true});
+                }
+                "final" => case["expect"]["text"] = json!("corrupted"),
+                _ => return Err("unknown Markdown mutation".into()),
+            }
+            assert!(run(case).await.is_err(), "accepted {name}: {mutation}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn composer_byte_boundary_oracles_reject_character_counts_and_expansion_overflow()
+-> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for (name, maximum) in [
+        ("ascii-exact", 4),
+        ("ascii-over", 5),
+        ("unicode-exact", 2),
+        ("unicode-over", 6),
+        ("builtin-exact", 4),
+        ("builtin-over", 5),
+        ("templates/appended-arguments-exact", 14),
+        ("templates/appended-arguments-over", 15),
+        ("templates/unicode-body-exact", 15),
+        ("templates/unicode-body-over", 16),
+    ] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("composer/limits/{name}.json")))?;
+        run(baseline.clone()).await?;
+        let mut changed = baseline;
+        changed["maximum_bytes"] = json!(maximum);
+        assert!(
+            run(changed).await.is_err(),
+            "accepted wrong bound for {name}"
+        );
     }
     Ok(())
 }
