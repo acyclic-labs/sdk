@@ -1,7 +1,7 @@
 //! Durable wire outbox, cursor recovery and operation-bound settlement progress.
 
 use super::{
-    content::MessageContent,
+    content,
     session_progress::{authority_key, payload},
 };
 use crate::{
@@ -203,17 +203,12 @@ impl<S: ClientStateStore> ClientSession<S> {
         let mut messages = Vec::with_capacity(delivery.events.len());
         for event in &delivery.events {
             let payload = payload(event)?;
-            let content = if event.revision > replay_revision {
-                if let crate::core::EventPayload::ConversationMessageAppended { message } = &payload
-                {
-                    MessageContent::read(message, files).await?
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            messages.push((payload, content));
+            if event.revision > replay_revision
+                && let crate::core::EventPayload::ConversationMessageAppended { message } = &payload
+            {
+                content::validate(message, files).await?;
+            }
+            messages.push(payload);
         }
         let record = SessionRecord {
             request: None,
@@ -355,13 +350,13 @@ impl<S: ClientStateStore> ClientSession<S> {
                                 && let crate::core::EventPayload::ConversationMessageAppended {
                                     message,
                                 } = &payload
-                                && MessageContent::requires_files(message)
+                                && content::requires_files(message)
                             {
                                 return Err(Error::Unsupported(
                                     "message projection requires a filesystem provider".into(),
                                 ));
                             }
-                            Ok((payload, None))
+                            Ok(payload)
                         })
                         .collect::<Result<Vec<_>>>()?;
                     self.deliver(delivery, record, persist, messages, |_| Ok(()))?;
@@ -513,7 +508,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         delivery: &wire::Delivery,
         record: &SessionRecord,
         persist: bool,
-        messages: Vec<(crate::core::EventPayload, Option<MessageContent>)>,
+        messages: Vec<crate::core::EventPayload>,
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<()> {
         let authority = valid_authority(delivery.authority.as_ref())?;
@@ -580,13 +575,12 @@ impl<S: ClientStateStore> ClientSession<S> {
         // Recheck settlement evidence without re-appending history or moving the
         // durable cursor backwards. UI state comes exclusively from file follows.
         if persist && delivery.through_revision > replay_revision {
-            for (event, (payload, content)) in delivery
+            for (event, payload) in delivery
                 .events
                 .iter()
                 .skip(skip)
                 .zip(messages.into_iter().skip(skip))
             {
-                let _ = content;
                 if let crate::core::EventPayload::LifecycleTransitioned { to, .. } = payload {
                     self.lifecycle
                         .insert(key.clone(), (to, event.operation_id.clone()));

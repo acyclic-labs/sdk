@@ -33,7 +33,7 @@ pub async fn connect_or_spawn<S: ClientStateStore>(
     HarnessClient::connect(api, session).await
 }
 
-/// Thin transport runner; Rust owns retry identities, replay and projection recovery.
+/// Thin transport runner; Rust owns retry identities, replay and cursor recovery.
 pub struct HarnessClient<S> {
     api: Arc<dyn HarnessWireApi>,
     handshake: wire::HandshakeResponse,
@@ -71,7 +71,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         })
     }
 
-    /// Binds the platform filesystem reader used by both live and recovered views.
+    /// Binds the filesystem reader used to validate live and replayed message references.
     /// Without read authority, content-bearing deliveries fail before cursor commit.
     pub fn with_files(
         mut self,
