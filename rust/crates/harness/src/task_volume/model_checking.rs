@@ -19,6 +19,8 @@ pub enum Fault {
     OmitAuthorityConditions,
     /// Publish without the caller's deadline.
     IgnoreDeadline,
+    /// Stop output on an unrelated task-file writer's generation advance.
+    StopAfterGenerationConflict,
 }
 
 loom::thread_local! {

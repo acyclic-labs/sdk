@@ -11,7 +11,7 @@ use acyclic_fs::{
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
     WorkspaceRestore, apply_git_patch, blame_git_generations, capture_git_compatible_generation,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
-    resolve_merge_plan, walk_git_tree,
+    walk_git_tree,
 };
 use serde_json::json;
 use std::{
@@ -42,6 +42,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 mod helpers;
+mod join;
 use acyclic_fs::facade::FsWork as _;
 use helpers::existing_tracked_paths;
 mod path;

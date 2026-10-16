@@ -339,10 +339,25 @@ async fn fixture() -> Result<(
     LocalCoreStateStore,
     Lazy,
 )> {
+    fixture_native(false).await
+}
+
+async fn fixture_native(
+    native_file: bool,
+) -> Result<(
+    tempfile::TempDir,
+    std::path::PathBuf,
+    LocalFs,
+    LocalCoreStateStore,
+    Lazy,
+)> {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");
     std::fs::create_dir(&root).unwrap();
+    if native_file {
+        std::fs::write(root.join("native.txt"), b"native origin\n")?;
+    }
     let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
         .await
         .unwrap();
@@ -374,6 +389,89 @@ async fn fixture() -> Result<(
     .await
     .unwrap();
     Ok((temp, root, fs, store, main))
+}
+
+#[tokio::test]
+async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    let repository = main.workspace().id();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let (_, child) = run(
+        &fs,
+        &store,
+        &main,
+        repository,
+        &["checkout", "-b", "agents/child"],
+    )
+    .await?;
+    let child = child.ok_or("missing child")?;
+    run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+    let coordinator = acyclic_fs::OperationWindowCoordinator::new(fs.operation_window_store());
+    let now =
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock);
+    let head = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value;
+    let lease = coordinator
+        .begin(repository, head.id(), "agent-diff", now, now + 60_000)
+        .await?;
+    // Negative control: the caller's lease cannot publish this target's
+    // still-native file, even though both belong to the same repository.
+    assert!(
+        child
+            .exactify(
+                "/",
+                lease.publication_permit(),
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())
+            )
+            .await
+            .is_err()
+    );
+    let output = git::run(
+        git::Workspace {
+            filesystem: &fs,
+            store: &store,
+            view: (&main).into(),
+            root: &root,
+            repository,
+            lease: Some(lease.clone()),
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &["diff".into(), "agents/child".into()],
+    )
+    .await?;
+    assert!(output.command.is_some());
+    assert_eq!(
+        child
+            .read(
+                "/native.txt",
+                64,
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())
+            )
+            .await?
+            .bytes
+            .as_ref(),
+        b"native origin\n"
+    );
+    coordinator
+        .finish_workspace(
+            main.workspace(),
+            &lease,
+            now + 1,
+            acyclic_fs::OperationReconcileLimits::default(),
+        )
+        .await?;
+    assert!(matches!(
+        coordinator.snapshot(child.workspace().id()).await?.phase,
+        acyclic_fs::OperationWindowPhase::Idle
+    ));
+    Ok(())
 }
 
 #[tokio::test]

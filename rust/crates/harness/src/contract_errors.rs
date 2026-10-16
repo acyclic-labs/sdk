@@ -45,6 +45,12 @@ pub enum Error {
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
+    /// A tool requires a native view whose host device or driver is missing.
+    #[error("native mount unavailable: {device}")]
+    MountUnavailable {
+        /// Missing host mount device or driver.
+        device: &'static str,
+    },
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
@@ -363,7 +369,9 @@ impl Error {
             },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
+                ErrorCode::Unsupported
+            }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {

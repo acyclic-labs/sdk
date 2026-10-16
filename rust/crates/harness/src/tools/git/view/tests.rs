@@ -51,7 +51,7 @@ async fn execute(
 }
 
 #[tokio::test]
-async fn merge_continue_cannot_commit_an_unpublished_unresolved_entry() -> TestResult {
+async fn manual_binary_resolution_can_continue_without_committing_markers() -> TestResult {
     let (_directory, filesystem, store, main) = fixture().await?;
     let repository = main.id();
     main.write_text("/note", "base\n").await?;
@@ -117,6 +117,17 @@ async fn merge_continue_cannot_commit_an_unpublished_unresolved_entry() -> TestR
         .pending_transition()
         .await?
         .ok_or("missing pending merge")?;
+    assert_eq!(
+        match &before.mutation {
+            acyclic_fs::GitPendingMutation::Join {
+                conflicts: Some(paths),
+                ..
+            } => paths,
+            _ => panic!("conflict paths"),
+        },
+        &BTreeSet::from(["/note".into()])
+    );
+    main.write_text("/note", ">>>>>>> unresolved\n").await?;
     let continuation = execute(
         &filesystem,
         &store,
@@ -126,22 +137,201 @@ async fn merge_continue_cannot_commit_an_unpublished_unresolved_entry() -> TestR
     )
     .await;
     assert!(
-        matches!(continuation, Err(Error::Conflict(ref message)) if message.contains("unresolved entries"))
+        matches!(continuation, Err(Error::Conflict(ref message)) if message.contains("unresolved conflict markers"))
     );
     assert_eq!(compatibility.pending_transition().await?, Some(before));
-    let bytes = main
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value
-        .read(
-            "/note",
-            64,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+    main.write("/note", bytes::Bytes::from_static(b"\xffresolved"))
+        .await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "--continue"],
+    )
+    .await?;
+    assert!(compatibility.pending_transition().await?.is_none());
+    assert_eq!(
+        View::Volume(&main).read("/note", 64).await?.as_ref(),
+        b"\xffresolved"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestResult {
+    for (ours_deleted, delete_resolution) in [(false, false), (true, false), (false, true)] {
+        let (_directory, filesystem, store, main) = fixture().await?;
+        let repository = main.id();
+        main.write_text("/note", "base\n").await?;
+        execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["commit", "-m", "base"],
+        )
+        .await?;
+        let child = execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["checkout", "-b", "topic"],
         )
         .await?
-        .value;
-    assert_eq!(bytes.as_ref(), b"\xfeparent");
+        .switched
+        .ok_or("missing child")?;
+        if ours_deleted {
+            child.workspace().write_text("/note", "child\n").await?;
+        } else {
+            child.workspace().remove("/note").await?;
+        }
+        child
+            .workspace()
+            .write_text("/clean", "nonconflicting source\n")
+            .await?;
+        execute(
+            &filesystem,
+            &store,
+            child.view(),
+            repository,
+            &["commit", "-m", "child"],
+        )
+        .await?;
+        execute(
+            &filesystem,
+            &store,
+            child.view(),
+            repository,
+            &["checkout", "main"],
+        )
+        .await?;
+        if ours_deleted {
+            main.remove("/note").await?;
+        } else {
+            main.write_text("/note", "parent\n").await?;
+        }
+        execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["commit", "-m", "parent"],
+        )
+        .await?;
+        assert!(
+            execute(
+                &filesystem,
+                &store,
+                (&main).into(),
+                repository,
+                &["merge", "topic"]
+            )
+            .await
+            .is_err()
+        );
+        if delete_resolution {
+            main.remove("/note").await?;
+        } else {
+            main.write_text("/note", "resolved\n").await?;
+        }
+        execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["merge", "--continue"],
+        )
+        .await?;
+        assert_eq!(
+            View::Volume(&main).read("/clean", 64).await?.as_ref(),
+            b"nonconflicting source\n"
+        );
+        if !delete_resolution {
+            assert_eq!(
+                View::Volume(&main).read("/note", 64).await?.as_ref(),
+                b"resolved\n"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn continuation_checks_manual_paths_even_without_a_join_generation() -> TestResult {
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let repository = main.id();
+    main.write_text("/note", "base\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let child = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["checkout", "-b", "topic"],
+    )
+    .await?
+    .switched
+    .ok_or("missing child")?;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        repository,
+        &["checkout", "main"],
+    )
+    .await?;
+    let compatibility = GitCompatRepository::new(repository, store.clone());
+    let tree = View::Volume(&main)
+        .tree(true, PublicationPermit::Unrestricted)
+        .await?;
+    let GitCommandOutput::Prepared { transition, .. } = compatibility
+        .execute(
+            GitCommand::Merge {
+                branch: "topic".into(),
+            },
+            tree,
+        )
+        .await?
+    else {
+        return Err("pending merge".into());
+    };
+    compatibility
+        .record_merge_conflicts(transition.operation_id(), &BTreeSet::from(["/note".into()]))
+        .await?;
+    assert!(
+        main.operation_generation(
+            IdempotencyKey::from_bytes(transition.operation_id().into_bytes()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new()
+        )
+        .await?
+        .value
+        .is_none()
+    );
+    main.write_text("/note", "resolved manually\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "--continue"],
+    )
+    .await?;
+    assert!(compatibility.pending_transition().await?.is_none());
+    assert_eq!(
+        View::Volume(&main).read("/note", 64).await?.as_ref(),
+        b"resolved manually\n"
+    );
     Ok(())
 }
 

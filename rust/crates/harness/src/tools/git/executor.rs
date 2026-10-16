@@ -40,25 +40,26 @@ where
         tree: GitTreeRef,
     ) -> Result<(), Self::Error> {
         self.validate().await?;
-        let GitFilesystemAction::Join { target_tree, .. } = action else {
+        let GitFilesystemAction::Join { .. } = action else {
             return Err(Error::Invalid("merge continuation requires a join".into()));
         };
-        let applied = self
-            .current
-            .operation_generation(
-                IdempotencyKey::from_bytes(operation.into_bytes()),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+        let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
+            .pending_transition()
             .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value
-            .ok_or_else(|| {
-                Self::error("Git merge has unresolved entries; no join was published")
-            })?;
-        let before = self.generation(*target_tree).await?;
+            .map_err(super::errors::compat_error)?
+            .filter(|pending| pending.id.operation_id() == operation)
+            .ok_or_else(|| Self::error("Git merge transition changed"))?;
+        let acyclic_fs::GitPendingMutation::Join {
+            conflicts: Some(paths),
+            ..
+        } = &pending.mutation
+        else {
+            return Err(Self::error(
+                "Git merge has unresolved entries; conflicts have not been inspected",
+            ));
+        };
         let current = self.generation(tree).await?;
-        if !acyclic_fs::git_merge_is_resolved(&before, &applied, &current).await? {
+        if !acyclic_fs::git_merge_is_resolved(&current, paths).await? {
             return Err(Self::error(
                 "Git merge still contains unresolved conflict markers",
             ));
@@ -330,106 +331,8 @@ where
                 tracked_paths,
                 ..
             } => {
-                let source = self.workspace(*source_workspace).await?;
-                let mut builder = source.join_into(&self.current).git_metadata();
-                if *rebase {
-                    builder = builder.history(acyclic_fs::JoinHistory::Rebase);
-                }
-                let plan = super::materialize::prepared(
-                    async {
-                        builder
-                            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| Error::from(failure.error))
-                    },
-                    &|| self.validate(),
-                )
-                .await?;
-                let options = ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                };
-                let initial = plan
-                    .apply(options, BTreeMap::new(), self.permit)
+                self.join(operation_id, *source_workspace, *rebase, tracked_paths)
                     .await
-                    .map_err(Error::from)?;
-                let mut projected_conflicts = None;
-                let outcome = if let JoinOutcome::Conflicted {
-                    conflicts,
-                    truncated,
-                } = initial
-                {
-                    let typed = plan
-                        .describe_conflicts(conflicts, truncated)
-                        .await
-                        .map_err(Error::from)?;
-                    let typed_json = serde_json::to_string(&typed).map_err(json_error)?;
-                    let candidate = super::materialize::prepared(async {
-                        let mut cache = self.merge_cache.lock().await;
-                        resolve_merge_plan(typed, &self.merge_drivers, &mut *cache, false).map_err(
-                            |error| {
-                                Self::error(format!(
-                                    "Git join has unresolved typed conflicts: {typed_json}; {error}"
-                                ))
-                            },
-                        )
-                    }, &|| self.validate()).await?;
-                    let has_markers = candidate.resolutions.values().any(|resolution| {
-                        matches!(resolution, acyclic_fs::MergeResolution::Text(text)
-                                if acyclic_fs::text_merge::has_conflict_markers(text))
-                    });
-                    let resolutions = super::materialize::prepared(
-                        async {
-                            plan.prepare_candidate(&candidate)
-                                .await
-                                .map_err(Error::from)
-                        },
-                        &|| self.validate(),
-                    )
-                    .await?;
-                    let outcome = plan
-                        .apply(options, resolutions, self.permit)
-                        .await
-                        .map_err(Error::from)?;
-                    if has_markers {
-                        projected_conflicts = Some(typed_json);
-                    }
-                    outcome
-                } else {
-                    initial
-                };
-                let generation = match outcome {
-                    JoinOutcome::Applied(application)
-                    | JoinOutcome::AlreadyApplied(application) => application.generation,
-                    JoinOutcome::NoChanges(generation) => generation,
-                    JoinOutcome::StaleTarget(_) => {
-                        return Err(Self::error("Git join raced with another workspace writer"));
-                    }
-                    JoinOutcome::Conflicted {
-                        conflicts,
-                        truncated,
-                    } => {
-                        return Err(Self::error(format!(
-                            "Git join has {} conflict(s); truncated={truncated}",
-                            conflicts.len()
-                        )));
-                    }
-                    JoinOutcome::Fenced => return Err(Self::error("Git join was fenced")),
-                    JoinOutcome::IdempotencyConflict => {
-                        return Err(Self::error("Git join retry identity was reused"));
-                    }
-                };
-                if let Some(conflicts) = projected_conflicts {
-                    return Err(Self::error(format!(
-                        "Git join projected unresolved text conflicts into the workspace: {conflicts}. Edit them, then run `acyclic git merge --continue`, or run `acyclic git merge --abort`"
-                    )));
-                }
-                let resulting_tracked = existing_tracked_paths(&generation, tracked_paths).await?;
-                Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-                    tracked_paths: Some(resulting_tracked),
-                })
             }
             GitFilesystemAction::ApplyCommit {
                 base,

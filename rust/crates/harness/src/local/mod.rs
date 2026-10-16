@@ -76,6 +76,24 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    /// Publishes pending mount writes and awaits physical mount retirement.
+    /// Reopening after this completes can immediately acquire the destination.
+    pub async fn close(&self) -> Result<()> {
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            for (_, mount) in workspace.mounts.mounts() {
+                if let Some(native) = mount
+                    .view
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.native.as_ref())
+                {
+                    native.unmount().await?;
+                }
+            }
+        }
+        Ok(())
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
@@ -122,9 +140,14 @@ impl LocalHarness {
                 &tools,
                 config.limits,
             )?;
+            #[cfg(feature = "native-execution")]
+            let native_mounts = tools.get("bash", None, None)?.is_some();
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            if native_mounts {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+                acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            }
             #[cfg(not(feature = "native-execution"))]
             if matches!(config.project, LocalProject::Workspace(_)) {
                 return Err(Error::Unsupported(
@@ -187,6 +210,7 @@ impl LocalHarness {
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
                         false,
+                        native_mounts,
                     )
                     .await?,
                 ),
@@ -197,6 +221,7 @@ impl LocalHarness {
                         &scratch,
                         &directory,
                         workspace::attach_operation(owner.task),
+                        native_mounts,
                     )
                     .await?,
                 ),

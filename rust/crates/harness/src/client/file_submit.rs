@@ -310,10 +310,10 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             if head.volume != self.target_id || head.epoch != self.target_epoch {
                 return Err(Error::Conflict("outbox target history differs".into()).into());
             }
-            self.target
-                .append(head, &pending.write)
-                .await
-                .map_err(query_error)?;
+            crate::task_volume::publish(&self.target, head, &pending.write, || {
+                std::future::ready(Ok((Vec::new(), None)))
+            })
+            .await?;
             if self.limits.durability == FileClientDurability::Durable
                 && !self
                     .target

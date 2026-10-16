@@ -21,6 +21,19 @@ pub(crate) fn parse_fs_command(command: &str) -> Result<FsCommand> {
     let mut volume = None;
     let mut index = 0;
     while index < arguments.len() && arguments[index] != "--" {
+        let value_option = matches!(
+            (
+                arguments.first().map(String::as_str),
+                arguments[index].as_str()
+            ),
+            (Some("commit"), "-m" | "--message" | "--author")
+                | (Some("restore"), "--source")
+                | (Some("log"), "-n" | "--max-count")
+        );
+        if value_option {
+            index += 2;
+            continue;
+        }
         if arguments[index] != "--volume" {
             index += 1;
             continue;
@@ -153,6 +166,27 @@ mod tests {
             let parsed = parse_fs_command(&command).unwrap();
             prop_assert_eq!(parsed.volume.as_deref(), Some(name.as_str()));
             prop_assert_eq!(parsed.arguments, ["status", "--", &operand, "--volume"]);
+        }
+
+        #[test]
+        fn option_values_are_never_mount_qualifiers(
+            flag in prop::sample::select(vec!["-m", "--message", "--author"]),
+            name in "[a-z][a-z0-9_-]{0,20}",
+            qualifier_first in any::<bool>(),
+        ) {
+            let args = if flag == "--author" { " --message message" } else { "" };
+            let qualifier = format!("--volume {name}");
+            let command = if qualifier_first {
+                format!("{qualifier} commit {flag} '--volume'{args}")
+            } else {
+                format!("commit {flag} '--volume'{args} {qualifier}")
+            };
+            let parsed = parse_fs_command(&command).unwrap();
+            prop_assert_eq!(parsed.volume.as_deref(), Some(name.as_str()));
+            prop_assert_eq!(&parsed.arguments[..3], ["commit", flag, "--volume"]);
+            let plain = parse_fs_command(&format!("commit {flag} '--volume'{args}")).unwrap();
+            prop_assert_eq!(plain.volume, None);
+            prop_assert_eq!(plain.arguments, parsed.arguments);
         }
     }
 

@@ -2,10 +2,13 @@
 use super::*;
 use crate::{
     durable_host::TaskJournalOwner,
-    task_volume::{Component, FileKey, Generation, Query, TaskFile, TaskFiles, ToolFile, Write},
+    task_volume::{Component, FileKey, Generation, TaskFile, TaskFiles, ToolFile, Write},
 };
 use acyclic_native_runtime::ProcessOutput;
 use acyclic_stream::OwnedBytes;
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
 
 pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 
@@ -31,18 +34,7 @@ impl Output {
         // Runtime operation IDs are canonical and unique across model turns.
         // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
-        let generation = volume
-            .inner
-            .snapshot(
-                &Query::Tool {
-                    task: task.clone(),
-                    turn: u64::from(context.model_step),
-                    call: call.clone(),
-                },
-                0,
-            )
-            .await?
-            .generation;
+        let generation = volume.inner.head().await?;
         let mut output = Self {
             owner,
             volume,
@@ -58,10 +50,6 @@ impl Output {
     }
 
     async fn publish(&mut self, file: ToolFile, bytes: OwnedBytes) -> Result<()> {
-        let condition = self
-            .owner
-            .condition(crate::distributed::JournalWrite::Fresh, &mut None)
-            .await?;
         let write = Write::new(
             FileKey::Task {
                 task: self.task.clone(),
@@ -73,17 +61,19 @@ impl Output {
             },
             bytes,
         );
-        self.generation = self
-            .volume
-            .inner
-            .append_if(
-                self.generation,
-                &write,
-                vec![condition],
-                self.owner.deadline_epoch_ms(),
-                None,
-            )
-            .await?;
+        let owner = self.owner.as_ref();
+        self.generation = crate::task_volume::publish(
+            &self.volume.inner,
+            self.generation,
+            &write,
+            || async move {
+                let condition = owner
+                    .condition(crate::distributed::JournalWrite::Fresh, &mut None)
+                    .await?;
+                Ok((vec![condition], owner.deadline_epoch_ms()))
+            },
+        )
+        .await?;
         Ok(())
     }
 

@@ -16,6 +16,18 @@ pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
 }
+
+impl Drop for MountedVolume {
+    fn drop(&mut self) {
+        if let Some(native) = &self.native {
+            // Provider retirement joins callbacks and releases the actual OS
+            // destination fence before the final workspace owner disappears.
+            if let Err(error) = native.abandon() {
+                tracing::error!(?error, "workspace mount retirement failed");
+            }
+        }
+    }
+}
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
 pub(super) type View = LazyWorkspace<
@@ -167,6 +179,7 @@ pub(super) async fn open(
     identity: Option<[u8; 16]>,
     operation: acyclic_fs::OperationId,
     existing: bool,
+    native_mounts: bool,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -213,8 +226,13 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
+    let exclusions = if native_mounts {
+        volumes::excluded(&path, config)?
+    } else {
+        Vec::new()
+    };
     let source = source
-        .exclude(volumes::excluded(&path, config)?, &&work, &cancellation)
+        .exclude(exclusions, &&work, &cancellation)
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     let source = Arc::new(source);
     let fresh = original.is_none();
@@ -250,9 +268,11 @@ pub(super) async fn open(
         &path,
         volume,
         None,
-        [("scratch".into(), scratch.clone(), None)],
+        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
-    volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+    if native_mounts {
+        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+    }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
     Ok(LocalWorkspace {
@@ -286,6 +306,7 @@ pub(super) async fn open_volume(
     scratch: &VolumeRef,
     directory: &Path,
     operation: acyclic_fs::OperationId,
+    native_mounts: bool,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -339,6 +360,7 @@ pub(super) async fn open_volume(
         Some(identity),
         operation,
         true,
+        native_mounts,
     )
     .await
 }

@@ -5,6 +5,23 @@ use acyclic_fs::{
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+pub(in crate::local) fn require_available(
+    capabilities: acyclic_fs::NativeMountCapabilities,
+) -> Result<()> {
+    if capabilities.available() {
+        return Ok(());
+    }
+    use acyclic_fs::NativeMountKind;
+    Err(Error::MountUnavailable {
+        device: match capabilities.kind {
+            Some(NativeMountKind::LinuxFuse) => "/dev/fuse",
+            Some(NativeMountKind::WindowsProjFs) => "ProjectedFSLib.dll",
+            Some(NativeMountKind::MacOsNfs) => "/sbin/mount_nfs",
+            None => "native mount provider",
+        },
+    })
+}
+
 pub(in crate::local) fn excluded(
     root: &Path,
     config: acyclic_fs::VolumeConfig,
@@ -114,6 +131,22 @@ fn mount_io(cause: std::io::Error) -> Error {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_fuse_device_has_a_typed_tool_admission_error() {
+        let error = require_available(acyclic_fs::NativeMountCapabilities {
+            kind: Some(acyclic_fs::NativeMountKind::LinuxFuse),
+            unavailable_reason: Some("missing device"),
+        })
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::MountUnavailable {
+                device: "/dev/fuse"
+            }
+        ));
+        assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
+    }
 
     #[test]
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {

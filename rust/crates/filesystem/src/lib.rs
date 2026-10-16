@@ -215,8 +215,8 @@ pub use git_compat::{
     GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
     blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
     capture_git_compatible_generation, capture_git_compatible_generation_at,
-    capture_git_compatible_generation_incremental, git_compatible_diff_counts, git_merge_is_resolved, grep_git_generation,
-    parse_git_public_command, walk_git_tree,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts,
+    git_merge_is_resolved, grep_git_generation, parse_git_public_command, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use hosted::{
@@ -269,7 +269,7 @@ pub use merge_driver::{
     ConflictView, DefaultTextMergeDriver, DriverError, DriverRegistrationError,
     MemoryMergeResolutionCache, MergeDriver, MergeDriverMode, MergeDriverRegistry, MergePlan,
     MergePlanResolutionError, MergeResolution, MergeResolutionCache, ResolutionKey,
-    UnpublishedMergeCandidate, resolve_merge_plan,
+    UnpublishedMergeCandidate, resolve_merge_conflict, resolve_merge_plan,
 };
 pub use model::{FilesystemProfile, Lifecycle, VolumeConfig, VolumeLimits};
 pub use mount::{

@@ -2,6 +2,29 @@ use super::*;
 use proptest::prelude::*;
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn conflict_paths_belong_to_one_pending_transition(path in "[a-z]{1,16}", stale in any::<bool>()) {
+        futures::executor::block_on(async {
+            let main = WorkspaceId::from_bytes([1; 16]);
+            let child = WorkspaceId::from_bytes([2; 16]);
+            let repository = GitCompatRepository::new(main, MemoryGitCompatStore::default());
+            repository.register_branch_workspace("topic", child, None, false).await.unwrap();
+            let GitCommandOutput::Prepared { transition, .. } = repository.execute(
+                GitCommand::Merge { branch: "topic".into() }, GitTreeRef::exact(main, generation(1)),
+            ).await.unwrap() else { panic!("pending join"); };
+            let paths = BTreeSet::from([format!("/{path}")]);
+            let operation = if stale { OperationId::from_bytes([0; 16]) } else { transition.operation_id() };
+            let result = repository.record_merge_conflicts(operation, &paths).await;
+            prop_assert_eq!(result.is_ok(), !stale);
+            let pending = repository.pending_transition().await.unwrap().unwrap();
+            let GitPendingMutation::Join { conflicts, .. } = &pending.mutation else { panic!("pending join"); };
+            prop_assert_eq!(conflicts, &(!stale).then_some(paths));
+            let restored: GitPendingTransition = serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+            prop_assert_eq!(pending, restored);
+            Ok(())
+        })?;
+    }
     // Property: completing a switch requires both the prepared action and its
     // result to name the destination, for arbitrary workspace identities.
     #[test]

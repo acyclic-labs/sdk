@@ -29,7 +29,46 @@ where
             .ok_or_else(|| Error::NotFound(branch.into()))?;
         let workspace = self.workspace(target.workspace_id).await?;
         let target_view = self.lazy_current.related(workspace).await?;
-        let target_tree = target_view.view().tree(true, self.permit).await?;
+        let target_tree = if target.workspace_id == self.current.id() {
+            target_view.view().tree(true, self.permit).await?
+        } else {
+            let coordinator = OperationWindowCoordinator::new(self.fs.operation_window_store());
+            let now = now_millis();
+            let head = target_view
+                .workspace()
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| Error::from(failure.error))?
+                .value;
+            let lease = coordinator
+                .begin(
+                    target.workspace_id,
+                    head.id(),
+                    "git-agent-diff",
+                    now,
+                    self.lease
+                        .as_ref()
+                        .map_or(now.saturating_add(300_000), |lease| lease.expires_at_millis),
+                )
+                .await
+                .map_err(Error::from)?;
+            let tree = target_view
+                .view()
+                .tree(true, lease.publication_permit())
+                .await;
+            // Retire the target lease on failure too; the caller's permit is
+            // never authority to exactify a different agent's native files.
+            coordinator
+                .finish_workspace(
+                    target_view.workspace(),
+                    &lease,
+                    now_millis(),
+                    acyclic_fs::OperationReconcileLimits::default(),
+                )
+                .await
+                .map_err(Error::from)?;
+            tree?
+        };
         let tracked_paths = repository
             .tracked_paths()
             .await

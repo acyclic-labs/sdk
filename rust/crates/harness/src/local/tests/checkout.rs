@@ -24,6 +24,38 @@ const COMMANDS: [(&str, &str); 8] = [
 ];
 
 #[tokio::test]
+async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::write(directory.path().join("note"), b"ordinary").map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, text()))?
+            .state_directory(state.path())
+            .without_default_tools(),
+    )
+    .await?;
+    let workspace = harness.workspace().unwrap();
+    assert_eq!(workspace.mounts.mounts().count(), 1);
+    assert!(!directory.path().join(".volumes").exists());
+    assert_eq!(
+        workspace
+            .view()
+            .read(
+                "/note",
+                32,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new())
+            )
+            .await
+            .map_err(super::super::storage)?
+            .bytes
+            .as_ref(),
+        b"ordinary"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state_directory = tempfile::tempdir().map_err(super::super::storage)?;

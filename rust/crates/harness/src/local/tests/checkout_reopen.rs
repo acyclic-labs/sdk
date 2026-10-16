@@ -1,6 +1,22 @@
 //! The durable branch catalog selects capture before the first reopened command.
 use super::*;
 
+#[tokio::test]
+async fn immediate_reopen_after_drop_and_close_has_no_retiring_fence() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let config = || {
+        crate::test_support::local_harness_config(directory.path(), (model()?, text()))
+            .map(|config| config.state_directory(state.path()))
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    drop(harness);
+    let harness = LocalHarness::open(config()?).await?;
+    harness.close().await?;
+    LocalHarness::open(config()?).await?.close().await?;
+    Ok(())
+}
+
 pub(super) async fn run(harness: &LocalHarness) -> Result<()> {
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "exercise the selected checkout")
