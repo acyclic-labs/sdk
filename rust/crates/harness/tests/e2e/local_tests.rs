@@ -168,3 +168,37 @@ proptest::proptest! {
         }
     }
 }
+
+#[tokio::test]
+async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() -> crate::TestResult {
+    reject_changed_command(
+        "default-tools/bash/stdout.json",
+        "printf changed > plans/a.md; printf CORRUPTED",
+    )
+    .await
+}
+
+#[tokio::test]
+async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
+    reject_changed_command("default-tools/fs/empty.json", "add plans/a.md").await
+}
+
+async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let baseline = super::scenario::load_value(&root, &root.join(path))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        super::drivers::run(baseline.clone()),
+    )
+    .await??;
+    let mut broken = baseline;
+    broken["turns"][0][0]["arguments"]["command"] = command.into();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        super::drivers::run(broken),
+    )
+    .await?
+    .expect_err("a different command passed unchanged family expectations");
+    assert!(error.to_string().contains("model tool result"), "{error}");
+    Ok(())
+}
