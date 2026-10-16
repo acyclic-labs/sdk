@@ -58,6 +58,7 @@ pub(super) struct Selection {
     entries: BTreeMap<FileKey, FileId>,
     root: FileId,
     directory: Option<FileId>,
+    parent: Option<FileId>,
 }
 
 impl Selection {
@@ -74,6 +75,7 @@ impl Selection {
             entries: BTreeMap::new(),
             root: root.file_id,
             directory: None,
+            parent: None,
         };
         let entries = selection.list(generation, query, maximum_files, io).await?;
         selection
@@ -89,9 +91,20 @@ impl Selection {
         maximum_files: usize,
         io: &PreparationIo,
     ) -> task_volume::Result<BTreeMap<FileKey, FileId>> {
+        if query == &Query::File(FileKey::RequestHead) {
+            let (parent, recorded) = generation.stat("/inputs", io, io.cancellation()).await;
+            recorded.map_err(crate::Error::from)?;
+            self.parent = match parent {
+                Ok(parent) if parent.kind == FileKind::Directory => Some(parent.file_id),
+                Err(WorkspaceError::NotFound) => None,
+                Ok(_) => return Err(task_volume::Error::InvalidPath),
+                Err(error) => return Err(crate::Error::from(error).into()),
+            };
+        }
         let directory = match query {
             Query::Plans => "/plans",
             Query::File(FileKey::Goal) => "/GOAL.md",
+            Query::File(FileKey::RequestHead) => "/inputs/current.json",
             _ => return Err(task_volume::Error::InvalidPath),
         };
         let (stat, recorded) = generation.stat(directory, io, io.cancellation()).await;
@@ -105,9 +118,9 @@ impl Selection {
             Err(error) => return Err(crate::Error::from(error).into()),
         };
         self.directory = Some(stat.file_id);
-        if query == &Query::File(FileKey::Goal) {
+        if let Query::File(key) = query {
             Ok(if stat.kind == FileKind::Regular {
-                BTreeMap::from([(FileKey::Goal, stat.file_id)])
+                BTreeMap::from([(key.clone(), stat.file_id)])
             } else {
                 BTreeMap::new()
             })
@@ -134,10 +147,17 @@ impl Selection {
         let root_name = match query {
             Query::Plans => "plans",
             Query::File(FileKey::Goal) => "GOAL.md",
+            Query::File(FileKey::RequestHead) => "inputs",
             _ => return Err(task_volume::Error::InvalidPath),
         };
         let mut root_changed = false;
         for binding in &diff.bindings {
+            if query == &Query::File(FileKey::RequestHead)
+                && Some(binding.directory_id) == self.parent
+                && name(&binding.name, io)? == "current.json"
+            {
+                root_changed = true;
+            }
             if binding.directory_id == self.root && name(&binding.name, io)? == root_name {
                 root_changed = true;
             }
@@ -178,7 +198,7 @@ impl Selection {
                     continue;
                 }
                 let decoded = name(&binding.name, io)?;
-                if !decoded.ends_with(".md") {
+                if decoded == ".md" || !decoded.ends_with(".md") {
                     continue;
                 }
                 let key = FileKey::parse(&format!("plans/{decoded}"))?;
@@ -301,12 +321,11 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
                 )
                 .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
             io.charge(decoded.work).map_err(crate::Error::from)?;
-            let path = format!("plans/{}", decoded.value);
-            if decoded.value.ends_with(".md") {
+            if decoded.value != ".md" && decoded.value.ends_with(".md") {
                 if entries.len() == maximum_files {
                     return Err(task_volume::Error::LimitExceeded);
                 }
-                let key = FileKey::parse(&path)?;
+                let key = FileKey::parse(&format!("plans/{}", decoded.value))?;
                 entries.push((key, entry.file_id, entry.kind));
             }
         }

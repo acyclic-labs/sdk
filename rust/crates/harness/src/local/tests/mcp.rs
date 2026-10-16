@@ -1,5 +1,44 @@
 use super::*;
 
+#[cfg(feature = "mcp-stdio")]
+#[tokio::test]
+async fn default_settings_match_original_and_canonical_workspace_keys() -> Result<()> {
+    use crate::native_settings::SettingsConfig;
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir(&home).map_err(super::super::storage)?;
+    let configured = workspace.join("..").join("workspace");
+    let canonical = std::fs::canonicalize(&configured).map_err(super::super::storage)?;
+    assert_ne!(configured, canonical);
+    for key in [&configured, &canonical] {
+        let document = json!({"projects":{key.to_string_lossy().as_ref():{"mcpServers":{
+            "selected":{"command":root.path().join("missing-executable")}
+        }}}});
+        std::fs::write(home.join(".claude.json"), document.to_string())
+            .map_err(super::super::storage)?;
+        let installed = super::super::mcp::install(
+            &super::super::LocalProject::Workspace(configured.clone()),
+            |path| {
+                assert_eq!(path, configured);
+                Ok(SettingsConfig::new(path, &home).codex_home(home.join(".codex")))
+            },
+            crate::tool::ToolRegistry::default(),
+            crate::mcp::McpClientLimits::default(),
+        )
+        .await?;
+        assert_eq!(installed.diagnostics.len(), 1);
+        assert_eq!(installed.diagnostics[0].server, "selected");
+        assert_eq!(
+            installed.diagnostics[0].message,
+            "process not_found: MCP executable was not found in its configured search path"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "mcp-stdio")]
 #[tokio::test]
 async fn configured_server_failures_are_visible_and_required_failures_precede_owner_creation()
 -> Result<()> {
@@ -7,7 +46,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let root = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(root.path()).await?;
         let document = json!({"mcpServers":{"missing":{
-            "command":"__acyclic_missing_mcp_executable__", "required":required,
+            "command":root.path().join("missing-mcp-executable"), "required":required,
         }}});
         std::fs::write(root.path().join(".claude.json"), document.to_string())
             .map_err(super::super::storage)?;
@@ -18,25 +57,33 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let owner = super::super::owner::state_directory(&config.project)?.join("owner.json");
         let opened = LocalHarness::open(config).await;
         if required {
-            assert!(opened.is_err());
+            assert!(
+                matches!(opened, Err(Error::Process { kind: "not_found", message })
+                if message == "MCP executable was not found in its configured search path")
+            );
             assert!(!owner.exists());
         } else {
             let harness = opened?;
             assert_eq!(harness.mcp_diagnostics().len(), 1);
             assert_eq!(harness.mcp_diagnostics()[0].server, "missing");
+            assert_eq!(
+                harness.mcp_diagnostics()[0].message,
+                "process not_found: MCP executable was not found in its configured search path"
+            );
             assert!(harness.tools().get("read", None, None)?.is_some());
         }
     }
     Ok(())
 }
 
+#[cfg(feature = "mcp-stdio")]
 #[tokio::test]
 async fn project_servers_require_explicit_settings_trust() -> Result<()> {
     for trust in [false, true] {
         let root = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(root.path()).await?;
         let document = json!({"mcpServers":{"project":{
-            "command":"__acyclic_missing_project_mcp_executable__",
+            "command":root.path().join("missing-project-mcp-executable"),
         }}});
         std::fs::write(root.path().join(".mcp.json"), document.to_string())
             .map_err(super::super::storage)?;
@@ -49,16 +96,23 @@ async fn project_servers_require_explicit_settings_trust() -> Result<()> {
         assert_eq!(harness.mcp_diagnostics().len(), usize::from(trust));
         if trust {
             assert_eq!(harness.mcp_diagnostics()[0].server, "project");
+            assert_eq!(
+                harness.mcp_diagnostics()[0].message,
+                "process not_found: MCP executable was not found in its configured search path"
+            );
         }
     }
     Ok(())
 }
 
+#[cfg(feature = "mcp-http")]
 #[tokio::test]
 async fn configured_http_server_initializes_pages_installs_and_calls_selected_tools() -> Result<()>
 {
     use crate::native_settings::SettingsConfig;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    const CATALOG_BYTES: u32 = 1024;
+    const QUERY_BYTES: usize = 2048;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(Error::process_io)?;
@@ -134,14 +188,18 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 }
                 _ => {
                     assert_eq!(request["method"], "tools/call");
+                    assert!(body_bytes > CATALOG_BYTES as usize);
                     assert_eq!(
                         request["params"],
-                        json!({"name":"read","arguments":{"query":"needle".repeat(512)}})
+                        json!({"name":"read","arguments":{"query":"q".repeat(QUERY_BYTES)}})
                     );
                     json!({"content":[{"type":"text","text":"found".repeat(512)}]})
                 }
             };
             let result = json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string();
+            if step == 4 {
+                assert!(result.len() > CATALOG_BYTES as usize);
+            }
             let (media, body) = if step == 3 {
                 ("text/event-stream", format!("data: {result}\n\n"))
             } else {
@@ -173,11 +231,11 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
     let project = volume(root.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "configured-call".into(),
-                name: "mcp.configured.read".into(),
-                arguments: json!({"query":"needle".repeat(512)}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "configured-call".into(),
+                "mcp.configured.read".into(),
+                json!({"query":"q".repeat(QUERY_BYTES)}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),
@@ -190,7 +248,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 SettingsConfig::new(root.path(), root.path()).codex_home(root.path().join("codex")),
             )
             .mcp_limits(crate::mcp::McpClientLimits {
-                catalog_bytes: 1024,
+                catalog_bytes: CATALOG_BYTES,
                 tool_bytes: 8192,
                 ..Default::default()
             })

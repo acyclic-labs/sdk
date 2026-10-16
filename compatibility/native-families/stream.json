@@ -22,6 +22,8 @@
     "package.json",
     "patches/napi-rs-cli-3.10.8.patch",
     "rust-toolchain.toml",
+    "rust/crates/auth",
+    "rust/crates/contract-derive",
     "rust/crates/native-runtime",
     "rust/crates/proto-build",
     "rust/crates/proto-codegen",

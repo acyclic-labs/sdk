@@ -208,7 +208,7 @@ impl McpRuntimeCallbacks {
         for event in events {
             match event {
                 ModelEvent::Content { delta } => text.push_str(&delta),
-                ModelEvent::ToolCall { .. } => {
+                ModelEvent::ToolCall(_) => {
                     return Err(Error::Unsupported(
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));

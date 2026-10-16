@@ -13,8 +13,12 @@ use acyclic_harness::{
     task_volume::{Change, FileQuerySource, Query},
 };
 use acyclic_stream::MemoryStream;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use std::sync::Arc;
+#[path = "file_query/goal_sources.rs"]
+mod goal_sources;
+#[path = "file_query/goals.rs"]
+mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
 use objects::CountingObjects;
@@ -76,8 +80,61 @@ async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_mat
             .keys()
             .map(|key| key.path())
             .collect::<Vec<_>>(),
-        ["plans/.md", "plans/release notes.md"]
+        ["plans/release notes.md"]
     );
+    let snapshot = fixture
+        .source
+        .observe_files(Query::Plans, None, 1, 128)
+        .await?
+        .snapshot
+        .ok_or("missing snapshot")?;
+    assert_eq!(snapshot.files.len(), 1);
+    assert_eq!(snapshot.files[0].key.path(), "plans/release notes.md");
+    Ok(())
+}
+
+#[test]
+fn empty_stem_publications_preserve_live_and_snapshot_plan_views()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use proptest::{prelude::*, test_runner::TestRunner};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    // A non-plan publication advances the cursor without changing selected
+    // bytes or consuming the one-plan allowance, for arbitrary names/content.
+    TestRunner::default().run(&("[a-zλ雪_-]{1,12}", ".{0,32}"), |(stem, text)| {
+        let result: std::result::Result<(), Box<dyn std::error::Error>> = runtime.block_on(async {
+            let fixture = Fixture::new().await?;
+            let path = format!("plans/{stem}.md");
+            fixture.write(&[(&path, Some(&text))]).await?;
+            let observation = fixture
+                .source
+                .observe_files(Query::Plans, None, 1, 256)
+                .await?;
+            let initial = observation.snapshot.ok_or("initial snapshot missing")?;
+            let expected = initial.files.clone();
+            let mut changes = observation.changes;
+            let mut view = FileQueryView::from_snapshot(Query::Plans, initial, 1, 256)?;
+            fixture.write(&[("plans/.md", Some("ignored"))]).await?;
+            let change = tokio::task::unconstrained(changes.next())
+                .now_or_never()
+                .ok_or("published revision is pending")?
+                .ok_or("follow ended")??;
+            assert!(!view.apply(change)?);
+            let latest = fixture
+                .source
+                .observe_files(Query::Plans, None, 1, 256)
+                .await?
+                .snapshot
+                .ok_or("latest snapshot missing")?;
+            assert_eq!(view.cursor(), &latest.cursor);
+            assert_eq!(latest.files, expected);
+            assert_eq!(view.files().values().cloned().collect::<Vec<_>>(), expected);
+            Ok(())
+        });
+        result.map_err(|error| TestCaseError::fail(error.to_string()))
+    })?;
     Ok(())
 }
 

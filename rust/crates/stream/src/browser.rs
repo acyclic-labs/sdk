@@ -19,6 +19,7 @@ use std::{
 use wasm_bindgen::{JsCast, JsValue};
 
 mod discovery;
+mod follow;
 mod publication;
 #[cfg(test)]
 mod tests;
@@ -461,31 +462,14 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        if from > self.tail(path.clone()).await? {
-            return Err(StreamError::OutOfRange);
-        }
-        let changed = self
-            .inner
-            .publications
-            .interests
-            .subscribe(publication::Key::Records(path.clone()))?;
-        Ok(stream::try_unfold(
-            (self.clone(), path, memory::HistoryCursor::at(from), changed),
-            |(provider, path, mut cursor, mut changed)| async move {
-                let record = changed
-                    .next(async || {
-                        provider
-                            .with_cached_provider(async |memory| {
-                                memory
-                                    .next_checked_record(&path, &mut cursor, &mut None)
-                                    .await
-                            })
-                            .await
-                    })
-                    .await?;
-                Ok(Some((record, (provider, path, cursor, changed))))
-            },
-        )
-        .boxed_local())
+        self.follow_from(path, from, None).await
+    }
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
     }
 }

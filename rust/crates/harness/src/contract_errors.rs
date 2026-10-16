@@ -36,12 +36,18 @@ pub enum Error {
         /// The task's retained failure diagnostic.
         message: String,
     },
+    /// Automatic admission stopped with a file-driven blocked goal.
+    #[error("goal blocked: {0}")]
+    GoalBlocked(crate::goal::GoalBlockedReason),
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// A definitive tool rejection; safe to journal without allocating a diagnostic.
+    #[error("tool rejected: {0}")]
+    ToolRejected(&'static str),
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -328,8 +334,8 @@ impl Error {
         match self {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
+            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -389,11 +395,13 @@ impl Error {
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
+                | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
                 | Self::TaskFailed { .. }
+                | Self::GoalBlocked(_)
         )
     }
 }

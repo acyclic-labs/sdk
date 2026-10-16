@@ -158,6 +158,7 @@ pub(super) fn inspect(
     finish(
         resident.bytes,
         resident.nodes,
+        0,
         counts,
         bounds,
         Origin::Owned,

@@ -1,0 +1,102 @@
+//! One disposable file-query fold with publish-before-cursor delivery.
+
+use super::{FileViews, QuerySubscription, QueryViewLimits, query_error};
+use crate::{
+    Result,
+    task_volume::{Change, Cursor, HeadFile, Query, TaskVolume},
+};
+use acyclic_stream::StreamProvider;
+
+/// A single task-volume subscription shared by native and WASM renderers.
+/// Source files stay authoritative; this cache is reconstructed at its cursor.
+pub struct ClientQuery {
+    subscription: QuerySubscription,
+    views: FileViews,
+    limits: QueryViewLimits,
+}
+
+impl ClientQuery {
+    /// Loads a snapshot at the retained cursor, or an explicit replacement cut
+    /// when history cannot be resumed, then follows from that same cut.
+    pub async fn open<P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
+        query: Query,
+        cursor: Option<Cursor>,
+        limits: QueryViewLimits,
+    ) -> Result<Self> {
+        let (subscription, snapshot) =
+            QuerySubscription::open(volume, query, cursor, limits.segments).await?;
+        let views = FileViews::snapshot(snapshot, limits).map_err(query_error)?;
+        Ok(Self {
+            subscription,
+            views,
+            limits,
+        })
+    }
+
+    /// Last completely published view cut. A failed publisher leaves it unchanged.
+    pub fn cursor(&self) -> &Cursor {
+        self.subscription.cursor()
+    }
+
+    /// Whether opening/resuming replaced an incompatible history rather than resuming it.
+    pub fn reset(&self) -> bool {
+        self.subscription.reset()
+    }
+
+    /// Borrow one logical file, including ordered text/reasoning segments.
+    pub fn file(&self, key: &crate::task_volume::FileKey) -> Option<&HeadFile> {
+        self.views.file(key)
+    }
+
+    /// Visit retained files without copying their bytes or serializing the transcript.
+    pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
+        self.views.files()
+    }
+
+    /// Validates and publishes one exact change before advancing the views/cursor.
+    /// Failed publication retains the same frame for retry, even when later records
+    /// have arrived. The shared reducer remains the only file-fold implementation.
+    pub async fn publish_next<F>(&mut self, mut publish: F) -> Result<()>
+    where
+        F: for<'a> std::ops::AsyncFnMut(&'a Change) -> Result<()>,
+    {
+        let views = &mut self.views;
+        let mut rejected = false;
+        let result = self
+            .subscription
+            .publish_next(async |change| {
+                let apply = match views.prepare(change) {
+                    Ok(apply) => apply,
+                    Err(error) => {
+                        rejected = true;
+                        return Err(query_error(error));
+                    }
+                };
+                publish(change).await?;
+                apply(views).map_err(query_error)
+            })
+            .await;
+        if rejected {
+            self.subscription.discard_rejected();
+        }
+        result
+    }
+
+    /// Resumes matching views directly, or atomically installs a validated reset
+    /// snapshot. Pending output must be published before reconnecting.
+    pub async fn reconnect<P: StreamProvider + ?Sized>(
+        &mut self,
+        volume: &TaskVolume<P>,
+    ) -> Result<bool> {
+        let views = &mut self.views;
+        self.subscription
+            .reconnect(volume, |snapshot| {
+                let replacement =
+                    FileViews::snapshot(snapshot, self.limits).map_err(query_error)?;
+                *views = replacement;
+                Ok(())
+            })
+            .await
+    }
+}

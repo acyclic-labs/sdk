@@ -34,10 +34,10 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
             .map(|(index, (name, command))| call(index, name, command))
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "edit and inspect the checkout")
@@ -133,10 +133,10 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = text();
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =

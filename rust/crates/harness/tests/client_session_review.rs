@@ -119,11 +119,11 @@ async fn incoming_model_and_tool_streams_update_session_owned_views() {
         ModelEvent::Reasoning {
             delta: "thinking".into(),
         },
-        ModelEvent::ToolCall {
-            call_id: "call".into(),
-            name: "bash".into(),
-            arguments: serde_json::json!({"command":"pwd"}),
-        },
+        ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+            "call".into(),
+            "bash".into(),
+            serde_json::json!({"command":"pwd"}),
+        )),
         ModelEvent::Completed {
             metadata: serde_json::json!({"tokens":2}),
         },

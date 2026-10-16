@@ -28,7 +28,7 @@ pub struct LocalHarnessConfig {
     pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-    pub(super) settings: Option<crate::native_settings::SettingsConfig>,
+    pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,

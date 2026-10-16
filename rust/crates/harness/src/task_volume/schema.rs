@@ -7,7 +7,7 @@ use std::sync::Arc;
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -82,6 +82,10 @@ pub enum ToolFile {
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
+    /// Host-owned dispatch claim for an immutable request.
+    RequestStarted(Component),
+    /// Host-owned terminal outcome of an immutable request.
+    RequestResult(Component),
     /// Current task status.
     Status,
     /// Immutable model turn input; turn numbers include retries/attempts.
@@ -140,6 +144,8 @@ impl TaskFile {
     fn path(&self) -> String {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
+            Self::RequestStarted(id) => format!("requests/{}/started.json", id.as_str()),
+            Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
@@ -206,6 +212,8 @@ impl From<InputPath> for String {
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
+    /// Existing host request head, selected from its authorized journal volume.
+    RequestHead,
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
@@ -294,6 +302,7 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            ["inputs", "current.json"] => return Ok(Self::RequestHead),
             ["commands" | "workspace" | "config", ..] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
@@ -311,6 +320,8 @@ impl FileKey {
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
+            ["requests", request, "started.json"] => TaskFile::RequestStarted(id(request)?),
+            ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
@@ -359,6 +370,7 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
@@ -384,10 +396,11 @@ impl FileKey {
         }
     }
 
-    pub(super) fn mutable(&self) -> bool {
+    pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Goal
+            Self::RequestHead
+                | Self::Goal
                 | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {

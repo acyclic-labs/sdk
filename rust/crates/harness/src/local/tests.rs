@@ -148,7 +148,11 @@ pub(super) fn volume_config(
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
-    Ok(LocalHarnessConfig::new(directory.join("filesystem"), (model()?, provider)).volume(volume))
+    Ok(crate::test_support::local_harness_config(
+        directory.join("filesystem"),
+        (model()?, provider),
+    )?
+    .volume(volume))
 }
 
 pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
@@ -266,10 +270,10 @@ async fn reopen_retains_owner_and_resumes_admitted_stock_turn_once() -> Result<(
     let config = || {
         #[cfg(feature = "native-execution")]
         {
-            Ok::<_, Error>(LocalHarnessConfig::new(
+            Ok::<_, Error>(crate::test_support::local_harness_config(
                 selection.join("."),
                 (model()?, provider.clone()),
-            ))
+            )?)
         }
         #[cfg(not(feature = "native-execution"))]
         {
@@ -408,16 +412,16 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
     let project = volume(directory.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "default".into(),
-                name: "write".into(),
-                arguments: json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
-            }),
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "custom".into(),
-                name: "test.custom".into(),
-                arguments: json!({}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "default".into(),
+                "write".into(),
+                json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "custom".into(),
+                "test.custom".into(),
+                json!({}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),
@@ -520,7 +524,7 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     let checkout = harness
         .workspace_path()
         .ok_or_else(|| Error::NotFound("checkout".into()))?;
-    let config = LocalHarnessConfig::new(checkout, (model()?, text()));
+    let config = crate::test_support::local_harness_config(checkout, (model()?, text()))?;
     let state = super::owner::state_directory(&config.project)?;
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
@@ -572,7 +576,7 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
         .await
         .map_err(super::storage)?;
     assert_eq!(bytes.bytes.as_ref(), b"original checkout");
-    let other = LocalHarnessConfig::new(other, (model()?, text()));
+    let other = crate::test_support::local_harness_config(other, (model()?, text()))?;
     assert!(matches!(
         super::owner::Owner::open(&state, &other.project),
         Err(Error::Unauthorized(_))
@@ -736,5 +740,5 @@ mod volume_tools;
 #[cfg(all(feature = "native-execution", unix))]
 mod reconciliation_interruptions;
 
-#[cfg(feature = "mcp-http")]
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;

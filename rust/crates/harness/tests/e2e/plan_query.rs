@@ -105,10 +105,10 @@ impl PlanQuery {
         let volume = storage.file_query(acyclic_fs::performance::BOUNDARY_BUDGET)?;
         let turns: Vec<_> = self.writes.iter().enumerate().flat_map(|(index, revision)| [
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("write-{index}"), name: "write".into(),
-                    arguments: json!({"path":revision.path,"text":revision.text,"media_type":"text/markdown","display_name":revision.path.rsplit('/').next().unwrap_or_default()}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    format!("write-{index}"), "write".into(),
+                    json!({"path":revision.path,"text":revision.text,"media_type":"text/markdown","display_name":revision.path.rsplit('/').next().unwrap_or_default()}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
             ]),
             ScriptedTurn::Text("Plans saved".into()),

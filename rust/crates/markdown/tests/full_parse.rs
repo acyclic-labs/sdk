@@ -10,6 +10,9 @@ mod maintenance_work;
 #[path = "reference_updates.rs"]
 mod reference_updates;
 
+#[path = "whitespace.rs"]
+mod whitespace;
+
 fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = if source.contains('\r') {
