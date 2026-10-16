@@ -28,34 +28,33 @@ impl WorkspaceGitExecutor<'_> {
                 let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
                 let mut identity = [0; 16];
                 identity.copy_from_slice(&snapshot_bytes[..16]);
-                let exact = lazy
-                    .exactify_snapshot(
-                        snapshot,
+                let (child, initial) = lazy
+                    .fork_snapshot(
                         &destination,
+                        snapshot,
                         IdempotencyKey::from_bytes(identity),
+                        PublicationPermit::Unrestricted,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
                     .map_err(Error::from)?;
                 WorkspaceGraph::new(self.store.clone())
-                    .register_existing_child(
+                    .register_existing_child_at_generation(
                         lazy.workspace(),
-                        &self
-                            .fs
-                            .open_workspace(
-                                &destination,
-                                WorkBudget::UNBOUNDED,
-                                &CancellationToken::new(),
-                            )
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(Error::from)?,
+                        child.workspace(),
                         snapshot.authored_generation,
+                        initial.authored_generation,
                     )
                     .await
                     .map_err(Error::from)?;
-                Ok(exact)
+                child
+                    .exactify(
+                        "/",
+                        PublicationPermit::Unrestricted,
+                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                    )
+                    .await
+                    .map_err(Error::from)
             }
         }
     }

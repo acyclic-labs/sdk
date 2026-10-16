@@ -14,17 +14,17 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// Reads exact UTF-8 from a pinned ref using the task's authenticated reader.
-pub fn read_file() -> Result<Tool> {
+pub fn read() -> Result<Tool> {
     FileTool::Read.assemble(super::schema::ProjectionMode::Full)
 }
 
 /// Publishes UTF-8 through the task's original owner-bound writer.
-pub fn write_file() -> Result<Tool> {
+pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
 /// Replaces one exact, unambiguous match at the source's pinned generation.
-pub fn edit_file() -> Result<Tool> {
+pub fn edit() -> Result<Tool> {
     FileTool::Edit.assemble(super::schema::ProjectionMode::Full)
 }
 

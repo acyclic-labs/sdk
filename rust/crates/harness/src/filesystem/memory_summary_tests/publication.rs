@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool::ToolRegistry;
 
 #[tokio::test]
 #[allow(

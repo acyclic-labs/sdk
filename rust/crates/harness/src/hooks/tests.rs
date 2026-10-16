@@ -659,7 +659,7 @@ fn registry() -> Result<ToolRegistry> {
         ("NotebookEdit", &[]),
     ];
     for &(name, names) in tools {
-        let mut tool = crate::tool::files::read_file()?;
+        let mut tool = crate::tool::files::read()?;
         tool.definition.name = name.into();
         tool.hook_names = names;
         registry.register((tool, None), &mut None, None)?;

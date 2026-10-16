@@ -1,1 +1,1 @@
-{"Ctrl+l":"Home","Ctrl+c":""}
+{"bindings":{"Ctrl+l":"cursor.line-start","Ctrl+c":null}}
