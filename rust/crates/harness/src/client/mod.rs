@@ -48,7 +48,7 @@ pub use notifications::*;
 mod interests;
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
-pub use interest_files::{InterestDocument, InterestFiles};
+pub use interest_files::InterestDocument;
 mod swarm;
 pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

@@ -1,17 +1,16 @@
-//! Layout selection at one published filesystem cut.
+//! Layout selection from one task-volume snapshot and live query.
 
 use super::ClientInterests;
 use crate::{
     Error, Result,
-    context::{ContextRoot, PinnedContextPath},
-    conversation::ContentResidencyVerifier,
-    resources::GenerationRef,
+    task_volume::{ChangeStream, FileKey, Query, TaskVolume},
 };
-use acyclic_stream::StreamPath;
+use acyclic_stream::{StreamPath, StreamProvider};
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 
-/// Contents of layout.json and open-views.json in the user's config volume.
-/// The two files share a schema; their selections are combined at one fs cut.
+/// Contents of workspace/{layout,open-views}.json in the user's config volume.
+/// Both files share a schema and are folded through the same live query.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InterestDocument {
@@ -34,55 +33,101 @@ impl InterestDocument {
     }
 }
 
-/// One publication yielded by the config-volume snapshot plus cursor follow.
-/// Both selected files are read at this generation, never at a moving head.
-#[derive(Clone, Debug)]
-pub struct InterestFiles {
-    /// Authorized config directory containing layout.json and open-views.json.
-    pub root: ContextRoot,
-    /// Exact publication cut supplied by the filesystem live query.
-    pub generation: GenerationRef,
+/// Disposable two-file fold of the user config volume's single live query.
+pub(super) struct InterestFiles {
+    root: StreamPath,
+    keys: [FileKey; 2],
+    documents: [InterestDocument; 2],
+    sizes: [usize; 2],
+    maximum_bytes: usize,
+    maximum_selected: usize,
+    initial: Option<ClientInterests>,
+    changes: ChangeStream,
 }
 
 impl InterestFiles {
-    pub(super) async fn read(
-        &self,
-        reader: &dyn ContentResidencyVerifier,
+    pub(super) async fn observe<P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
         swarm: StreamPath,
         maximum_selected: usize,
         maximum_bytes: usize,
-    ) -> Result<ClientInterests> {
-        let mut documents = [InterestDocument::default(), InterestDocument::default()];
-        let mut remaining = maximum_bytes as u64;
-        for (name, document) in ["layout.json", "open-views.json"]
-            .into_iter()
-            .zip(&mut documents)
-        {
-            let path = if self.root.directory.is_empty() {
-                name.into()
-            } else {
-                format!("{}/{name}", self.root.directory)
-            };
-            let source = PinnedContextPath {
-                root: self.root.clone(),
-                generation: self.generation.clone(),
-                path,
-            };
-            match source.read_remaining(reader, remaining).await {
-                Ok((_, bytes)) => {
-                    remaining -= bytes.len() as u64;
-                    *document = InterestDocument::decode(&bytes, maximum_bytes)?;
-                }
-                Err(Error::NotFound(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        let [layout, views] = documents;
-        ClientInterests::from_layout(
-            swarm,
-            layout.in_view.into_iter().chain(views.in_view),
-            layout.prefetch.into_iter().chain(views.prefetch),
+        maximum_files: usize,
+    ) -> Result<Self> {
+        let observed = volume
+            .observe(Query::Inputs, None, maximum_files)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let snapshot = observed
+            .snapshot
+            .ok_or_else(|| Error::Storage("missing initial layout snapshot".into()))?;
+        let mut files = Self {
+            root: swarm,
+            keys: [
+                FileKey::parse("workspace/layout.json")
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
+                FileKey::parse("workspace/open-views.json")
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
+            ],
+            documents: Default::default(),
+            sizes: [0; 2],
+            maximum_bytes,
             maximum_selected,
+            initial: None,
+            changes: observed.changes,
+        };
+        for file in snapshot.files {
+            files.apply(file)?;
+        }
+        files.initial = Some(files.select([&files.documents[0], &files.documents[1]])?);
+        Ok(files)
+    }
+
+    fn select(&self, documents: [&InterestDocument; 2]) -> Result<ClientInterests> {
+        ClientInterests::from_layout(
+            self.root.clone(),
+            documents.iter().flat_map(|doc| doc.in_view.iter().cloned()),
+            documents
+                .iter()
+                .flat_map(|doc| doc.prefetch.iter().cloned()),
+            self.maximum_selected,
         )
+    }
+
+    fn apply(&mut self, file: crate::task_volume::FileValue) -> Result<Option<ClientInterests>> {
+        let Some(index) = self.keys.iter().position(|key| key == &file.key) else {
+            return Ok(None);
+        };
+        if self.sizes[1 - index]
+            .checked_add(file.bytes.len())
+            .is_none_or(|bytes| bytes > self.maximum_bytes)
+        {
+            return Err(Error::Invalid(
+                "combined interest files exceed byte bound".into(),
+            ));
+        }
+        let document = InterestDocument::decode(&file.bytes, self.maximum_bytes)?;
+        let mut documents = [&self.documents[0], &self.documents[1]];
+        documents[index] = &document;
+        let selected = self.select(documents)?;
+        self.documents[index] = document;
+        self.sizes[index] = file.bytes.len();
+        Ok(Some(selected))
+    }
+
+    pub(super) async fn next(&mut self) -> Result<Option<ClientInterests>> {
+        if let Some(initial) = self.initial.take() {
+            return Ok(Some(initial));
+        }
+        let change = self
+            .changes
+            .next()
+            .await
+            .ok_or_else(|| Error::Storage("layout query ended; reobserve".into()))?
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if let Some(file) = change.file {
+            self.apply(file)
+        } else {
+            Ok(None)
+        }
     }
 }

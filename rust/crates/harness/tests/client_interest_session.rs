@@ -2,28 +2,29 @@
 
 use acyclic_harness::{
     Error, Result,
-    client::{InterestFiles, InterestTier, SwarmClient, SwarmClientLimits, SwarmUpdate},
+    client::{InterestTier, SwarmClient, SwarmClientLimits, SwarmUpdate},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamProvider, wire};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, channel::mpsc};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-#[path = "support/client_files.rs"]
-mod client_files;
-use client_files::Fixture;
-
 use super::path;
 
-async fn cut(fs: &Fixture) -> Result<InterestFiles> {
-    let page = fs
-        .reader
-        .list_private_directory(&fs.root.volume, "", "", None, None, 16, None)?
-        .await?;
-    Ok(InterestFiles {
-        root: fs.root.clone(),
-        generation: page.generation,
-    })
+async fn put(volume: &TaskVolume<MemoryStream>, path: &str, text: &str) -> Result<bool> {
+    let cut = volume
+        .snapshot(&Query::Inputs, 10)
+        .await
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let write = Write::new(
+        FileKey::parse(path).map_err(|e| Error::Invalid(e.to_string()))?,
+        text.as_bytes().to_vec(),
+    );
+    let after = volume
+        .append(cut.generation, &write)
+        .await
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(after.position != cut.generation.position)
 }
 
 fn child(value: &str) -> wire::SessionFrame {
@@ -47,8 +48,12 @@ fn child(value: &str) -> wire::SessionFrame {
 
 #[tokio::test]
 async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() -> Result<()> {
-    let fs = Fixture::new(&[("layout.json", "{}"), ("open-views.json", "{}")]).await?;
     let provider = Arc::new(MemoryStream::default());
+    let config = TaskVolume::open(provider.clone(), path("client/files"))
+        .await
+        .unwrap();
+    put(&config, "workspace/layout.json", "{}").await?;
+    put(&config, "workspace/open-views.json", "{}").await?;
     let volume = Arc::new(
         TaskVolume::open(provider.clone(), path("swarm/a/files"))
             .await
@@ -64,7 +69,6 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
 
     let client = SwarmClient::new(
         path("swarm"),
-        fs.reader.clone(),
         SwarmClientLimits {
             agents: 10,
             selected: 2,
@@ -72,7 +76,6 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             snapshot_files: 10,
         },
     )?;
-    let (mut publications, files) = mpsc::channel(1);
     let (session, mut sent) = mpsc::channel::<wire::SessionInterest>(4);
     let (mut frames, incoming) = mpsc::channel::<Result<wire::SessionFrame>>(2);
     let (layouts, mut rendered) = mpsc::unbounded();
@@ -80,7 +83,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
     let snapshots = Rc::new(RefCell::new(Vec::new()));
     let delivered = Rc::new(RefCell::new(Vec::new()));
     let consumer = client.follow(
-        files.map(Ok),
+        &config,
         session.sink_map_err(|e| Error::Storage(e.to_string())),
         incoming,
         |agent, maximum| {
@@ -160,10 +163,14 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             .unwrap();
         observed.next().await.unwrap();
         assert_eq!(delivered.borrow()[0], (true, attention));
+        assert_eq!(rendered.next().await.unwrap().visible().count(), 0);
 
-        fs.put("layout.json", r#"{"prefetch":["swarm/a"]}"#, "prefetch")
-            .await?;
-        publications.send(cut(&fs).await?).await.unwrap();
+        put(
+            &config,
+            "workspace/layout.json",
+            r#"{"prefetch":["swarm/a"]}"#,
+        )
+        .await?;
         let selected = sent.next().await.unwrap();
         assert_eq!(selected.revision, 3);
         let content = selected.upsert.iter().find(|sub| matches!(&sub.kind,
@@ -205,9 +212,12 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             .unwrap();
         observed.next().await.unwrap();
 
-        fs.put("open-views.json", r#"{"in_view":["swarm/a"]}"#, "focus")
-            .await?;
-        publications.send(cut(&fs).await?).await.unwrap();
+        put(
+            &config,
+            "workspace/open-views.json",
+            r#"{"in_view":["swarm/a"]}"#,
+        )
+        .await?;
         assert_eq!(
             rendered.next().await.unwrap().tier(&path("swarm/a")),
             Some(InterestTier::InView)
@@ -218,9 +228,12 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         );
         assert_eq!(snapshots.borrow().len(), 1);
 
-        fs.put("layout.json", "{}", "unprefetch").await?;
-        fs.put("open-views.json", "{}", "close").await?;
-        publications.send(cut(&fs).await?).await.unwrap();
+        put(&config, "workspace/layout.json", "{}").await?;
+        assert_eq!(
+            rendered.next().await.unwrap().tier(&path("swarm/a")),
+            Some(InterestTier::InView)
+        );
+        put(&config, "workspace/open-views.json", "{}").await?;
         let removed = sent.next().await.unwrap();
         assert_eq!(
             removed.revision, 4,
@@ -249,7 +262,135 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
     Ok(())
 }
 
+fn check_layout(value: &acyclic_harness::client::ClientInterests, visible: &[u8], nearby: &[u8]) {
+    assert_eq!(
+        super::ids(value.visible()),
+        visible.iter().copied().collect()
+    );
+    assert_eq!(
+        super::ids(value.full_fidelity()),
+        visible.iter().chain(nearby).copied().collect()
+    );
+}
+
+async fn check_snapshot_follow(
+    old_visible: Vec<u8>,
+    old_nearby: Vec<u8>,
+    new_visible: Vec<u8>,
+    new_nearby: Vec<u8>,
+) {
+    use acyclic_harness::client::InterestDocument;
+    let provider = Arc::new(MemoryStream::default());
+    let config = TaskVolume::open(provider.clone(), path("client/files"))
+        .await
+        .unwrap();
+    let mut agents = std::collections::BTreeMap::new();
+    for id in 0..4 {
+        agents.insert(
+            path(&format!("swarm/{id}")),
+            TaskVolume::open(provider.clone(), path(&format!("swarm/{id}/files")))
+                .await
+                .unwrap(),
+        );
+    }
+    let document = |visible: &[u8], nearby: &[u8]| {
+        serde_json::to_string(&InterestDocument {
+            in_view: super::selected(visible).collect(),
+            prefetch: super::selected(nearby).collect(),
+        })
+        .unwrap()
+    };
+    // Earlier layout must be superseded by the snapshot at C.
+    put(&config, "workspace/layout.json", &document(&[], &[3]))
+        .await
+        .unwrap();
+    put(
+        &config,
+        "workspace/layout.json",
+        &document(&[], &old_nearby),
+    )
+    .await
+    .unwrap();
+    put(
+        &config,
+        "workspace/open-views.json",
+        &document(&old_visible, &[]),
+    )
+    .await
+    .unwrap();
+    let client = SwarmClient::new(
+        path("swarm"),
+        SwarmClientLimits {
+            agents: 4,
+            selected: 4,
+            layout_bytes: 4096,
+            snapshot_files: 10,
+        },
+    )
+    .unwrap();
+    let (stop, stopped) = futures::channel::oneshot::channel();
+    let incoming = futures::stream::once(async {
+        stopped.await.unwrap();
+        Err(Error::Unsupported("end scenario".into()))
+    });
+    let (layouts, mut rendered) = mpsc::unbounded();
+    let sink = futures::sink::drain().sink_map_err(|never| match never {});
+    let consumer = client.follow(
+        &config,
+        sink,
+        incoming,
+        |agent, maximum| agents[&agent].heads(&Query::Root, None, maximum),
+        |update| {
+            if let SwarmUpdate::Layout(layout) = update {
+                layouts.unbounded_send(layout).unwrap();
+            }
+            futures::future::ready(Ok(()))
+        },
+    );
+    let writer = async {
+        let mut current = rendered.next().await.unwrap();
+        check_layout(&current, &old_visible, &old_nearby);
+        if put(
+            &config,
+            "workspace/layout.json",
+            &document(&[], &new_nearby),
+        )
+        .await
+        .unwrap()
+        {
+            current = rendered.next().await.unwrap();
+        }
+        check_layout(&current, &old_visible, &new_nearby);
+        if put(
+            &config,
+            "workspace/open-views.json",
+            &document(&new_visible, &[]),
+        )
+        .await
+        .unwrap()
+        {
+            current = rendered.next().await.unwrap();
+        }
+        check_layout(&current, &new_visible, &new_nearby);
+        stop.send(()).unwrap();
+    };
+    let (outcome, ()) = futures::join!(consumer, writer);
+    assert!(matches!(outcome, Err(Error::Unsupported(_))));
+}
+
 proptest::proptest! {
+    // Property: a snapshot at C plus each accepted file change after C equals
+    // folding the latest layout/open-view files from the complete write history.
+    #[test]
+    fn file_snapshot_plus_follow_equals_the_complete_fold(
+        old_visible in proptest::collection::vec(0u8..4, 0..8),
+        old_nearby in proptest::collection::vec(0u8..4, 0..8),
+        new_visible in proptest::collection::vec(0u8..4, 0..8),
+        new_nearby in proptest::collection::vec(0u8..4, 0..8),
+    ) {
+        futures::executor::block_on(check_snapshot_follow(old_visible, old_nearby, new_visible, new_nearby));
+    }
+
     #[test]
     fn json_path_validation_equals_platform_validation(value in ".{0,100}") {
         let bytes = serde_json::to_vec(&serde_json::json!({"in_view": [&value]})).unwrap();

@@ -1,10 +1,13 @@
 //! File-driven interest orchestration over the platform's multiplexed session.
 
-use super::{ClientInterests, InterestFiles};
-use crate::{Error, Result, conversation::ContentResidencyVerifier, task_volume::HeadSnapshot};
-use acyclic_stream::{StreamPath, wire};
-use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
-use std::{collections::BTreeMap, future::Future, sync::Arc};
+use super::{ClientInterests, interest_files::InterestFiles};
+use crate::{
+    Error, Result,
+    task_volume::{HeadSnapshot, TaskVolume},
+};
+use acyclic_stream::{StreamPath, StreamProvider, wire};
+use futures::{FutureExt as _, Sink, SinkExt as _, Stream, StreamExt as _};
+use std::{collections::BTreeMap, future::Future};
 
 /// Admission bounds, independent of how many agents are currently rendered.
 #[derive(Clone, Copy, Debug)]
@@ -46,7 +49,6 @@ pub enum SwarmUpdate {
 /// connection placement, credit, acknowledgements and resume; this owns demand.
 pub struct SwarmClient {
     root: StreamPath,
-    reader: Arc<dyn ContentResidencyVerifier>,
     limits: SwarmClientLimits,
 }
 
@@ -154,11 +156,7 @@ fn follow(
 
 impl SwarmClient {
     /// Binds authenticated providers; construction opens no connection or task.
-    pub fn new(
-        root: StreamPath,
-        reader: Arc<dyn ContentResidencyVerifier>,
-        limits: SwarmClientLimits,
-    ) -> Result<Self> {
+    pub fn new(root: StreamPath, limits: SwarmClientLimits) -> Result<Self> {
         if limits.agents == 0
             || limits.selected > limits.agents
             || limits.layout_bytes == 0
@@ -169,31 +167,27 @@ impl SwarmClient {
         // Validate the namespace before constructing any subscriptions.
         StreamPath::new(format!("{}/agent/files", root.as_str()))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(Self {
-            root,
-            reader,
-            limits,
-        })
+        Ok(Self { root, limits })
     }
 
     /// Runs one config-volume query and one multiplexed Streams session. `files`
-    /// yields its initial snapshot cut then pushed fs publications. The platform
+    /// holds workspace/{layout,open-views}.json in the user's config volume. The platform
     /// session sink accepts canonical interest diffs; incoming data is already
     /// credit-admitted/fenced by that same platform session, never a harness socket.
     /// `heads` executes the provider's bounded root query on `<agent>/files`;
     /// it reuses the query owner's materialized index rather than replaying agent
     /// history into a second client index.
     /// Finite sources fail closed rather than returning success with stale views.
-    pub async fn follow<L, S, I, Q, QFut, F, Fut>(
+    pub async fn follow<P, S, I, Q, QFut, F, Fut>(
         &self,
-        files: L,
+        files: &TaskVolume<P>,
         mut session: S,
         incoming: I,
         mut heads: Q,
         mut publish: F,
     ) -> Result<()>
     where
-        L: Stream<Item = Result<InterestFiles>>,
+        P: StreamProvider + ?Sized,
         S: Sink<wire::SessionInterest, Error = Error> + Unpin,
         I: Stream<Item = Result<wire::SessionFrame>>,
         Q: FnMut(StreamPath, usize) -> QFut,
@@ -223,14 +217,20 @@ impl SwarmClient {
             ..Default::default()
         });
         state.send(&mut session, initial).await?;
-        let files = files.fuse();
+        let mut files = InterestFiles::observe(
+            files,
+            self.root.clone(),
+            self.limits.selected,
+            self.limits.layout_bytes,
+            self.limits.snapshot_files,
+        )
+        .await?;
         let incoming = incoming.fuse();
-        futures::pin_mut!(files, incoming);
+        futures::pin_mut!(incoming);
         loop {
             futures::select! {
-                cut = files.next() => {
-                    let cut = cut.ok_or_else(|| Error::Storage("layout query ended".into()))??;
-                    let demand = cut.read(self.reader.as_ref(), self.root.clone(), self.limits.selected, self.limits.layout_bytes).await?;
+                demand = files.next().fuse() => {
+                    let Some(demand) = demand? else { continue; };
                     let diff = demand.changes(&state.demand)?;
                     let removed: Vec<_> = diff.unsubscribe().cloned().collect();
                     let added: Vec<_> = diff.subscribe().cloned().collect();
