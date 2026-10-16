@@ -273,16 +273,12 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(feature = "native-watch")]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        self.bytes
-            .as_ref()
-            .ok_or(crate::WorkError::Overflow)?
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current
-                    .checked_sub(bytes)
-                    .filter(|current| *current >= std::mem::size_of::<Self>() as u64)
-            })
-            .map_err(|_| crate::WorkError::Overflow)?;
-        accounting::publish(&self.accounting_dirty);
+        accounting::retire_bytes::<true>(
+            &self.accounting_dirty,
+            self.bytes.as_ref().ok_or(crate::WorkError::Overflow)?,
+            bytes,
+            std::mem::size_of::<Self>() as u64,
+        )?;
         self.retire_resource(bytes)
     }
     #[cfg(feature = "native-watch")]

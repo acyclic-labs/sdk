@@ -23,11 +23,9 @@ fn gauge_publication(publish_before_release: bool, final_owner: bool) {
                 }
             } else {
                 if publish_before_release {
-                    accounting::publish(dirty);
-                }
-                bytes.fetch_sub(2, Ordering::AcqRel);
-                if !publish_before_release {
-                    accounting::publish(dirty);
+                    accounting::retire_bytes::<false>(dirty, bytes, 2, 0).unwrap();
+                } else {
+                    accounting::retire_bytes::<true>(dirty, bytes, 2, 0).unwrap();
                 }
             }
         });
