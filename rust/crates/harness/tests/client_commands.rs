@@ -1,5 +1,7 @@
 //! Data-driven composer cases against the production filesystem reader.
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::Error;
 use acyclic_harness::{
     Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
@@ -7,6 +9,15 @@ use acyclic_harness::{
     conversation::ContentResidencyVerifier,
 };
 use serde_json::{Value, json};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_parser;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/parse.rs"]
+mod command_parse;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/context/discovery/frontmatter.rs"]
+mod frontmatter;
 
 #[path = "support/client_files.rs"]
 mod client_files;

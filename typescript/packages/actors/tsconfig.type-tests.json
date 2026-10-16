@@ -7,5 +7,5 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
-  "include": ["test/guest-types.ts"]
+  "include": ["src/**/*.ts", "test/*-types.ts"]
 }
