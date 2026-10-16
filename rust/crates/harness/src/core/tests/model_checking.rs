@@ -335,11 +335,9 @@ fn snapshot_property(
     reducer: &Reducer,
     restore_original: bool,
 ) -> proptest::test_runner::TestCaseResult {
-    let original = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
-    let mut snapshot = original.clone();
-    snapshot.revision += 1;
-    if restore_original {
-        snapshot = original;
+    let mut snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    if !restore_original {
+        snapshot.revision += 1;
     }
     prop_assert!(
         Reducer::restore(
