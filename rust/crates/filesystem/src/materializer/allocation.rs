@@ -83,16 +83,16 @@ impl NativeAllocation {
     }
     /// Releases destroyed backing capacity.
     pub fn release(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
-        self.bytes = self
-            .bytes
-            .checked_sub(bytes)
-            .ok_or(crate::WorkError::Overflow)?;
         let empty = bytes == 0;
         #[cfg(all(test, acyclic_fs_loom))]
         let empty = empty && !model_checking::force_ledger_release();
         if empty {
             return Ok(());
         }
+        self.bytes = self
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
         self.meter
             .state(|state| state.release(bytes))
             .map_err(native_materialization_work_error)
