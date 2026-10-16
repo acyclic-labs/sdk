@@ -30,14 +30,14 @@ proptest! {
             json!({"accountId":"a","orgId":"o","principal":principal,"credentialId":"c","actorId":"i","expiresAtMs":expiry.to_string(),"capability":cap})
         };
         let key = if positional { &raw[5] } else { &raw["expiresAtMs"] };
-        let original = key.as_str().ok_or("expiry string")?.as_ptr();
+        let original = key.as_str().ok_or_else(|| TestCaseError::fail("expiry string"))?.as_ptr();
         let bytes = serde_json::to_vec(&raw)?;
         let mut decoded = None;
         let allocation = allocation_counter::measure(|| {
             decoded = Some(serde_json::from_value::<AdmittedCaller>(raw));
         });
         prop_assert_eq!((allocation.count_total, allocation.bytes_total), (0, 0));
-        let decoded = decoded.ok_or("decode ran")??;
+        let decoded = decoded.ok_or_else(|| TestCaseError::fail("decode ran"))??;
         prop_assert_eq!(decoded.expires_at_ms().as_ptr(), original);
         prop_assert_eq!(decoded.expires_at_ms(), expiry.to_string());
         let mut from_bytes = None;
@@ -45,7 +45,7 @@ proptest! {
             from_bytes = Some(serde_json::from_slice::<AdmittedCaller>(&bytes));
         });
         prop_assert_eq!(allocation.count_total, 6 + u64::from(capability), "only the six wire strings and optional capability handle are allocated");
-        prop_assert_eq!(from_bytes.ok_or("byte decode ran")??, decoded);
+        prop_assert_eq!(from_bytes.ok_or_else(|| TestCaseError::fail("byte decode ran"))??, decoded);
 
         let fields = ["a".into(), "o".into(), principal, "c".into(), "i".into()];
         let [account, org, principal, credential, actor] = fields;
@@ -54,7 +54,7 @@ proptest! {
             constructed = Some(AdmittedCaller::new(account, org, principal, credential, actor, expiry));
         });
         prop_assert_eq!(allocation.count_total, 1, "only the canonical expiry string is allocated");
-        let constructed = constructed.ok_or("construction ran")??;
+        let constructed = constructed.ok_or_else(|| TestCaseError::fail("construction ran"))??;
         prop_assert_eq!(constructed.expires_at_ms(), expiry.to_string());
     }
 
