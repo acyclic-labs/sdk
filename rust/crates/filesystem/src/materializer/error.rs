@@ -24,9 +24,6 @@ pub enum NativeTreeMaterializationError {
     /// Original ledger is poisoned.
     #[error("original native work is poisoned")]
     OriginalWorkPoisoned,
-    /// Directory creation has an unacknowledged effect.
-    #[error("native preparation is indeterminate")]
-    IndeterminatePreparation,
     /// Payload lacks its admitted allocation.
     #[error("native payload lacks allocation")]
     MissingCustody,

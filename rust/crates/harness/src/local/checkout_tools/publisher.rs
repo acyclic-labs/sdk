@@ -6,6 +6,15 @@ use crate::conversation::{
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
 
+fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
+    hash.update(&operation.into_bytes());
+    hash.update(path.as_bytes());
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    acyclic_fs::OperationId::from_bytes(identity)
+}
+
 pub(in crate::local) struct CheckoutPublisher {
     tools: Arc<CheckoutTools>,
     files: Arc<LocalFilesystem>,
@@ -154,17 +163,11 @@ impl CheckoutPublisher {
             .await
             .map_err(storage)?
             .value;
-        let digest = blake3::derive_key(
-            "acyclic.local.checkout-publication/v1",
-            &operation.into_bytes(),
-        );
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&digest[..16]);
         crate::tools::git::publish_checkout_transition(
             &self.tools.workspace.path,
             self.tools.workspace.identity,
             &self.tools.workspace.store,
-            acyclic_fs::OperationId::from_bytes(identity),
+            publication_operation(operation, file.path()),
             from,
             to,
             &|| std::future::ready(Ok(())),

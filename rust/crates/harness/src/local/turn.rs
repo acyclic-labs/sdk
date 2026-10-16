@@ -227,7 +227,11 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let handle = self.runtime.harness().attach(task, &definition).await?;
+        let handle = match self.runtime.harness().attach(task, &definition).await {
+            Ok(handle) => handle,
+            Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
+            Err(error) => return Err(error),
+        };
         let terminal = matches!(
             self.runtime.task_host().outcome(task).await?,
             Some(
