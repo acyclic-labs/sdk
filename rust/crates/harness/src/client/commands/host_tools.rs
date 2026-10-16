@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 /// Execute an explicitly submitted host tool using the shared bounded native
-/// process lifecycle. The workspace and search endpoint come from config files.
+/// process lifecycle. The search endpoint comes from config files.
 pub async fn execute_host_command(
     tool: CommandTool,
     input: &Value,

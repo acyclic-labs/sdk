@@ -60,7 +60,7 @@ impl LocalHarness {
                     tool,
                     &input,
                     &settings,
-                    self.limits.render_bytes as usize,
+                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
                 )
                 .await
             }
