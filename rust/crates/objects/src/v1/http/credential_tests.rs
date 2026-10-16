@@ -20,7 +20,7 @@ fn credential_callbacks_are_current_sensitive_and_never_fall_back() {
                     prop_assert!(header.is_sensitive());
                 }
                 prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
-                let error = client.create_bucket(wire::CreateBucketRequest { name: "fresh".into(), ..Default::default() }).await.unwrap_err();
+                let error = client.create_bucket(wire::CreateBucketRequest { name: "fresh".into(), mutation: Some(wire::MutationIdentity { idempotency_key: "fresh-credential".into() }) }).await.unwrap_err();
                 prop_assert_eq!(error.code, wire::ErrorCode::AccessDenied);
                 Ok(())
             })
