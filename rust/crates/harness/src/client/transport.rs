@@ -44,6 +44,42 @@ pub struct HarnessClient<S> {
 }
 
 impl<S: ClientStateStore> HarnessClient<S> {
+    /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
+    /// The host folds returned records with `query_change` and redraws shared views.
+    pub async fn select_file_view(
+        &mut self,
+        selection: super::CommandQuery,
+        volume: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        let query = match selection {
+            super::CommandQuery::Plan => crate::task_volume::Query::Plans,
+            super::CommandQuery::Goal => {
+                crate::task_volume::Query::File(crate::task_volume::FileKey::Goal)
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "view does not select a private file query".into(),
+                ));
+            }
+        };
+        let observation = volume
+            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
+            .await
+            .map_err(|error| match error {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error,
+                error => Error::Storage(error.to_string()),
+            })?;
+        let snapshot = observation
+            .snapshot
+            .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;
+        self.session
+            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
+        Ok(observation.changes)
+    }
+
     /// Negotiates before sending commands. Opening a client starts no task.
     pub async fn connect(api: Arc<dyn HarnessWireApi>, session: ClientSession<S>) -> Result<Self> {
         let request = wire::HandshakeRequest {
@@ -268,7 +304,17 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let Some(update) = source.next().await.transpose()? else {
             return Ok(false);
         };
+        self.apply_update(update)?;
+        Ok(true)
+    }
+
+    /// Folds an input already selected by the host's existing event source.
+    /// Publication is synchronous so input selection cannot cancel half a fold.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
         match update {
+            super::ViewUpdate::File(change) => {
+                self.query_change(change)?;
+            }
             super::ViewUpdate::Model {
                 authority,
                 turn,
@@ -280,12 +326,29 @@ impl<S: ClientStateStore> HarnessClient<S> {
                 delta,
             } => self.tool_output(&authority, &call_id, &delta)?,
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Shared renderer state and outbox.
     pub fn session(&self) -> &ClientSession<S> {
         &self.session
+    }
+
+    /// Accepts an atomic snapshot from the volume query transport.
+    pub fn query_snapshot(
+        &mut self,
+        query: crate::task_volume::Query,
+        snapshot: crate::task_volume::Snapshot,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        self.session
+            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)
+    }
+
+    /// Accepts one pushed volume record, without adding a semantic wire message.
+    pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
+        self.session.query_change(change)
     }
 
     /// Negotiated service response, also emitted by JSONL runners.

@@ -87,7 +87,7 @@ try {
   assert.equal(followed, 2);
   assert.equal((await stream.fork(path, "browser/fork", { atTail: 1n, idempotencyKey: key("browser-fork") })).tail, 1n);
   assert.deepEqual((await stream.childrenPage({ parent: "browser", limit: 8 })).children.map(item => item.path), ["browser/events", "browser/fork"]);
-  const children = []; for await (const item of new StreamClient(stream).children("browser", 8)) children.push(item.path);
+  const children = []; for await (const item of new StreamClient(stream).children("browser", 8)) { children.push(item.path); if (children.length === 2) break; }
   assert.deepEqual(children, ["browser/events", "browser/fork"]);
   const commitRequest = { conditions: [{ path, ifTail: 2n }, { path: "browser/other", ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: "browser/other", values: [body("other")] } }] };
   const committed = await stream.commit(commitRequest, { idempotencyKey: key("browser-commit") });

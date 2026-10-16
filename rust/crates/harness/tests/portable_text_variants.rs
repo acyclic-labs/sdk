@@ -164,9 +164,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let mut tools = ToolRegistry::default();
     tools.register((read_tool, None), &mut None, None)?;
     tools.register((search_tool, None), &mut None, None)?;
-    tools.register((files::read_file()?, None), &mut None, None)?;
-    tools.register((files::write_file()?, None), &mut None, None)?;
-    tools.register((files::edit_file()?, None), &mut None, None)?;
+    tools.register((files::read()?, None), &mut None, None)?;
+    tools.register((files::write()?, None), &mut None, None)?;
+    tools.register((files::edit()?, None), &mut None, None)?;
     tools.register((files::patch_file(65_536, 16)?, None), &mut None, None)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
@@ -235,9 +235,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 search_projector.project(&invocation, &canonical, None)?.0,
                 json!({"kind":"json","value":canonical.value})
             );
-            let write = context.tool("acyclic.write_file")?;
-            let whole = context.tool("acyclic.read_file")?;
-            let edit = context.tool("acyclic.edit_file")?;
+            let write = context.tool("write")?;
+            let whole = context.tool("read")?;
+            let edit = context.tool("edit")?;
             let patch = context.tool("acyclic.patch_file")?;
             let written = context
                 .call::<_, FileResult>(
@@ -255,7 +255,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     .call::<_, String>(
                         &whole,
                         ReadFileInput {
-                            file: written.file.clone()
+                            file: written.file.clone(),
+                            range: None,
                         }
                     )
                     .await?,
@@ -428,9 +429,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "tool:call:acyclic.search_file".to_owned(),
             read,
             write,
-            "tool:call:acyclic.read_file".to_owned(),
-            "tool:call:acyclic.write_file".to_owned(),
-            "tool:call:acyclic.edit_file".to_owned(),
+            "tool:call:read".to_owned(),
+            "tool:call:write".to_owned(),
+            "tool:call:edit".to_owned(),
             "tool:call:acyclic.patch_file".to_owned(),
         ]),
         Limits::default(),

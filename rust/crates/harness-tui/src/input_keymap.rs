@@ -1,73 +1,87 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::{Binding, KEYMAP};
+use crate::{Binding, KEYMAP, named_action};
 use std::{collections::BTreeMap, io, path::Path};
 
-/// User remapping data. JSON maps canonical source chords to default action
-/// chords, e.g. `{"Ctrl+l":"Home","Home":""}`. An empty target disables a key.
-/// Super character shortcuts share Ctrl's canonical action chord. Conflicting
-/// aliases are rejected, so generated help and dispatch always agree.
+/// Canonical schema-validated `{"bindings":{"Ctrl+l":"cursor.line-start"}}`
+/// preferences. A null action disables a key. Super character shortcuts share
+/// Ctrl's canonical chord; conflicting aliases produce typed diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputKeymap {
     overrides: BTreeMap<String, String>,
 }
 
 impl InputKeymap {
-    /// Parse and validate an override file without changing any bindings on error.
-    pub fn from_json(json: &str) -> io::Result<Self> {
-        let raw: BTreeMap<String, String> = serde_json::from_str(json)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let invalid = || {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid or conflicting keymap chord",
-            )
-        };
-        let mut overrides = BTreeMap::new();
-        for (source, target) in raw {
-            let source = canonical_chord(&source).ok_or_else(invalid)?;
-            let target = if target.is_empty() {
-                target
-            } else {
-                canonical_chord(&target).ok_or_else(invalid)?
-            };
-            if !target.is_empty() && !KEYMAP.iter().any(|b| b.chord == target) {
-                return Err(invalid());
-            }
-            if overrides
-                .insert(source, target.clone())
-                .is_some_and(|old| old != target)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "conflicting canonical keymap chords",
-                ));
-            }
-        }
-        Ok(Self { overrides })
+    /// Parse the same keymap format as the live config file follower.
+    pub fn parse(json: &str) -> Result<Self, Vec<crate::config::Diagnostic>> {
+        let value = crate::config::parse(
+            crate::config::ConfigFile::Keymap,
+            crate::config::Scope::User,
+            json,
+        )?;
+        Ok(Self::from_bindings(&value))
+    }
+
+    // Accept only a value already validated and canonicalized by config::parse.
+    pub(crate) fn from_bindings(value: &serde_json::Value) -> Self {
+        let overrides = value["bindings"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(chord, action)| {
+                (
+                    chord.clone(),
+                    action.as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        Self { overrides }
     }
 
     /// Read overrides from a caller-selected configuration file.
     pub fn load(path: &Path) -> io::Result<Self> {
-        Self::from_json(&std::fs::read_to_string(path)?)
+        Self::parse(&std::fs::read_to_string(path)?)
+            .map_err(|errors| io::Error::new(io::ErrorKind::InvalidData, format!("{errors:?}")))
     }
 
     /// Write declarative overrides to the caller's config-volume path.
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        crate::prompt_files::write_atomic(path, self.to_json()?.as_bytes())
+        crate::prompt_files::write_atomic(path, self.encode().as_bytes())
     }
 
-    /// Serialize the overrides for editing or persistence.
-    pub fn to_json(&self) -> io::Result<String> {
-        serde_json::to_string(&self.overrides).map_err(io::Error::other)
+    /// Encode the canonical file format, including null disabled bindings.
+    pub fn encode(&self) -> String {
+        let bindings: serde_json::Map<String, serde_json::Value> = self
+            .overrides
+            .iter()
+            .map(|(chord, action)| {
+                (
+                    chord.clone(),
+                    if action.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        action.clone().into()
+                    },
+                )
+            })
+            .collect();
+        serde_json::json!({"bindings":bindings}).to_string()
     }
 
     /// Resolve an already canonical event chord using the generated help data.
-    /// Override files are canonicalized once by `from_json`.
-    pub fn resolve(&self, chord: &str) -> Option<Binding> {
-        let target = self.overrides.get(chord).map_or(chord, String::as_str);
+    /// Override files are canonicalized once by `parse`.
+    pub fn resolve(&self, chord: &str) -> Option<Binding<'_>> {
+        if let Some((source, target)) = self.overrides.get_key_value(chord) {
+            if let Some(binding) = named_action(target) {
+                return Some(Binding {
+                    chord: source,
+                    ..binding
+                });
+            }
+            return None;
+        }
         KEYMAP
             .iter()
-            .find(|binding| binding.chord == target)
+            .find(|binding| binding.chord == chord)
             .copied()
     }
 
@@ -103,7 +117,7 @@ impl InputKeymap {
     }
 }
 
-fn canonical_chord(chord: &str) -> Option<String> {
+pub(crate) fn canonical_chord(chord: &str) -> Option<String> {
     let keys: Vec<_> = chord.split(' ').collect();
     if keys.is_empty() || keys.len() > 2 {
         return None;
@@ -131,6 +145,15 @@ fn canonical_chord(chord: &str) -> Option<String> {
                 "End" => KeyCode::End,
                 "Backspace" => KeyCode::Backspace,
                 "Delete" => KeyCode::Delete,
+                "Insert" => KeyCode::Insert,
+                "Space" => KeyCode::Char(' '),
+                key if key.starts_with('F') => {
+                    let number = key[1..].parse::<u8>().ok()?;
+                    if !(1..=24).contains(&number) {
+                        return None;
+                    }
+                    KeyCode::F(number)
+                }
                 "Enter" => KeyCode::Enter,
                 "Tab" => KeyCode::Tab,
                 "Esc" => KeyCode::Esc,

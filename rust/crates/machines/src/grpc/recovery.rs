@@ -5,8 +5,9 @@ pub(super) async fn recovered_admission(
     key: IdempotencyKey,
 ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
     let value = provider
-        .client
-        .clone()
+        .client()
+        .await
+        .map_err(|_| ProviderError::Indeterminate(key))?
         .recover(wire::RecoverRequest {
             protocol: Some(protocol()),
             idempotency_key: Some(encode_key(key)),
@@ -30,8 +31,9 @@ pub(super) async fn wait(
             let mut unknown_observations = 0;
             loop {
                 match provider
-                    .client
-                    .clone()
+                    .client()
+                    .await
+                    .map_err(|_| ProviderError::Indeterminate(key))?
                     .watch_operation(operation_request(operation))
                     .await
                 {
@@ -63,8 +65,9 @@ pub(super) async fn wait(
                     Err(_) => {}
                 }
                 match provider
-                    .client
-                    .clone()
+                    .client()
+                    .await
+                    .map_err(|_| ProviderError::Indeterminate(key))?
                     .inspect_operation(operation_request(operation))
                     .await
                 {

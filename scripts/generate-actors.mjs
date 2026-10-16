@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeGeneratedTypeScript } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageGenerated = join(root, "typescript/packages/actors/src/generated");
@@ -86,7 +87,7 @@ async function bufActorOutput(protoFile) {
     run(buf, ["generate"], temporary);
     for (const relativePath of ["generated/typescript/actors/v1/actors_pb.js", "generated/typescript/actors/v1/actors_pb.d.ts"]) {
       const path = join(temporary, relativePath);
-      await writeFile(path, (await readFile(path, "utf8")).replace(/\n+$/u, "\n"));
+      await writeFile(path, normalizeGeneratedTypeScript(await readFile(path, "utf8")));
     }
     return temporary;
   } catch (error) {

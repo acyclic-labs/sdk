@@ -4,8 +4,6 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]
@@ -54,6 +52,8 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod discovery_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =

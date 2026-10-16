@@ -128,6 +128,7 @@ impl ObjectsV1Memory {
             ),
             "objects/head" => unary!(head),
             "objects/delete" => unary!(delete),
+            "objects/restore" => unary!(restore),
             "objects/list" => unary!(list),
             "multipart/create" => unary!(create_multipart),
             "multipart/upload-part" => frames(

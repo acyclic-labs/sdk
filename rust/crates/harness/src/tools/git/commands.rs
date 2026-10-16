@@ -84,7 +84,7 @@ pub(crate) async fn git_apply_patch(
         )
         .await
         .map(|chunk| Some(chunk.bytes.to_vec()))
-        .map_err(display)
+        .map_err(Error::from)
 }
 
 /// Captures the lazy or exact tree required by the command.
@@ -98,7 +98,7 @@ pub(crate) async fn git_workspace_tree(
             .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
             .await
             .map(GitTreeRef::Lazy)
-            .map_err(display);
+            .map_err(Error::from);
     }
     let exact = workspace
         .exactify(
@@ -107,7 +107,7 @@ pub(crate) async fn git_workspace_tree(
             &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
         )
         .await
-        .map_err(display)?;
+        .map_err(Error::from)?;
     Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
@@ -115,6 +115,8 @@ pub(crate) async fn git_workspace_tree(
 pub(crate) async fn git_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), Error> {
-    let policy = crate::filesystem::WorkspacePolicy::load(workspace).await?;
-    Ok((policy.ignore, policy.merge_drivers))
+    Ok((
+        crate::filesystem::workspace_policy::ignore_for(workspace).await?,
+        crate::filesystem::workspace_policy::merge_drivers_for(workspace).await?,
+    ))
 }

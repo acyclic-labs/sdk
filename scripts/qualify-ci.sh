@@ -183,6 +183,7 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
+    node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     nextest --workspace --all-features --locked
     ;;
   docs)

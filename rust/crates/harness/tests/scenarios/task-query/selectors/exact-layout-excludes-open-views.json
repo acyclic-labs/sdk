@@ -1,0 +1,4 @@
+{"folder":"workspace/layout.json","writes":[{"path":"workspace/open-views.json","text":"other"},{"path":
+  "workspace/layout.json","text":"{}"},{"path":"workspace/layout.json","text":"{\"in_view\":[]}"},{"path":
+  "commands/check.md","text":"command"}],"expect":{"files":{"workspace/layout.json":"{\"in_view\":[]}"},"changes":[null,
+  {"path":"workspace/layout.json","text":"{}"},{"path":"workspace/layout.json","text":"{\"in_view\":[]}"},null]}}

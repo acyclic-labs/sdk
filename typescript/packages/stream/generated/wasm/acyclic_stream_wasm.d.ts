@@ -40,6 +40,10 @@ export class WasmStream {
      */
     static openBrowser(name: string, maximum_commands: number, maximum_journal_bytes: bigint): Promise<WasmStream>;
     /**
+     * Opens live child discovery; each next yields one canonical ChildrenResponse.
+     */
+    open_children(input: Uint8Array): Promise<WasmFollow>;
+    /**
      * Opens a live follow cursor backed by the canonical provider.
      */
     open_follow(input: Uint8Array): Promise<WasmFollow>;
@@ -139,13 +143,16 @@ export interface InitOutput {
     readonly wasmstream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly wasmstream_new: () => number;
     readonly wasmstream_openBrowser: (a: number, b: number, c: number, d: bigint) => any;
+    readonly wasmstream_open_children: (a: number, b: number, c: number) => any;
     readonly wasmstream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmstream_read: (a: number, b: number, c: number) => any;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9e26981d63052d78___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9e26981d63052d78___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___wasm_bindgen_63246afed42a6cf1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_63246afed42a6cf1___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_63246afed42a6cf1___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___js_sys_739a24cbba7c6c91___Function_fn_wasm_bindgen_63246afed42a6cf1___JsValue_____wasm_bindgen_63246afed42a6cf1___sys__Undefined___js_sys_739a24cbba7c6c91___Function_fn_wasm_bindgen_63246afed42a6cf1___JsValue_____wasm_bindgen_63246afed42a6cf1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___bool__true_: (a: number, b: number) => number;
+    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

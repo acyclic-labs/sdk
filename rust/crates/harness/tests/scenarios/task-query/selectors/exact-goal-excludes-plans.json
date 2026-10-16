@@ -1,0 +1,3 @@
+{"folder":"GOAL.md","writes":[{"path":"plans/goal.md","text":"plan"},{"path":"GOAL.md","text":"continue"},{"path":
+  "GOAL.md","text":"complete"},{"path":".tasks/t/status.json","text":"done"}],"expect":{"files":{"GOAL.md":"complete"},
+  "changes":[null,{"path":"GOAL.md","text":"continue"},{"path":"GOAL.md","text":"complete"},null]}}

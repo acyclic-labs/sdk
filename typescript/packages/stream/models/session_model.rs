@@ -213,6 +213,72 @@ fn reservation_negative_control_waits_for_generator_cleanup() {
     run("reservation", "reservation", &["abort"], &["drop"]);
 }
 
+fn children_run(fault: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    for trace in traces(&["consume"], &["move", "append"]) {
+        let mut driver = driver::Driver::configured(&root, "children", fault);
+        let ready = driver.call(json!({"action":"ready"}));
+        assert_eq!(ready["seen"], json!([0]));
+        for action in trace {
+            driver.call(json!({"action":action}));
+        }
+        let state = driver.call(json!({"action":"finishChildren"}));
+        assert_eq!(
+            state["rejected"],
+            serde_json::Value::Null,
+            "child resume must preserve its opaque cursor"
+        );
+        assert_eq!(
+            state["seen"],
+            json!([0, 1, 2]),
+            "child resume must deliver every creation once"
+        );
+        assert_eq!(state["connections"], 2);
+        let state = driver.call(json!({"action":"abort"}));
+        assert_eq!(state["active"], 0);
+        assert_eq!(state["outstanding"], 0);
+    }
+}
+#[test]
+fn child_cursor_survives_consume_move_and_publication() {
+    children_run("");
+}
+#[test]
+#[should_panic(expected = "child resume must")]
+fn children_negative_control_drops_the_yielded_opaque_cursor() {
+    children_run("childCursor");
+}
+
+fn child_selection(fault: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    for trace in traces(&["releaseSelection"], &["abort"]) {
+        let mut driver = driver::Driver::configured(&root, "childSelect", fault);
+        driver.call(json!({"action":"ready"}));
+        for action in trace {
+            let state = driver.call(json!({"action":action}));
+            if action == "abort" {
+                assert_eq!(
+                    state["settled"], true,
+                    "child cancellation must not wait for provider selection"
+                );
+                assert_eq!(state["active"], 0);
+            }
+        }
+        let state = driver.call(json!({"action":"drop"}));
+        assert_eq!(state["active"], 0);
+        assert_eq!(state["outstanding"], 0);
+    }
+}
+#[test]
+fn default_child_selection_and_cancellation_are_independent() {
+    child_selection("");
+}
+#[test]
+#[should_panic(expected = "child cancellation must not wait for provider selection")]
+fn child_selection_negative_control_omits_the_selection_signal() {
+    child_selection("childSelect");
+}
+
 fn deadline_run(fault: &str, events: &'static [&'static str]) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(&["expire"], events) {
@@ -367,6 +433,24 @@ fn deadline_cancels_a_blocked_subscription_write() {
     blocked_deadline("deadline-subscription", "");
 }
 #[test]
+fn child_deadline_cancels_a_blocked_subscription_write() {
+    blocked_deadline("deadline-subscription-children", "");
+}
+#[test]
+#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
+fn child_deadline_negative_control_omits_timeout() {
+    blocked_deadline("deadline-subscription-children", "deadline");
+}
+#[test]
+fn child_deadline_cancels_a_blocked_acknowledgement_write() {
+    blocked_deadline("deadline-ack-children", "");
+}
+#[test]
+#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
+fn child_deadline_negative_control_waits_for_a_blocked_write() {
+    blocked_deadline("deadline-ack-children", "write");
+}
+#[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_subscription_negative_control_awaits_the_write() {
     blocked_deadline("deadline-subscription", "write");
@@ -461,6 +545,15 @@ proptest::proptest! {
         let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
         let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
         shared.lock().unwrap().call(json!({"action":"decode", "hex":hex}));
+    }
+
+    #[test]
+    fn child_frames_round_trip_and_enforce_the_direct_parent(name in "[a-z]{1,8}", nested in proptest::prelude::any::<bool>()) {
+        static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
+        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
+        let path = if nested { format!("parent/{name}") } else { name };
+        let result = shared.lock().unwrap().call(json!({"action":"child", "path":path}));
+        proptest::prop_assert_eq!(&result["outcome"], &json!(if nested { "invalid_response" } else { "child" }));
     }
 
     #[test]

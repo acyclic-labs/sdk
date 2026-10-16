@@ -1,0 +1,8 @@
+{
+  "writes": [
+    {"path":"plans/a.md","text":"* [~] Build\n1. [x] Inspect\n","files":{"plans/a.md":"* [~] Build\n1. [x] Inspect\n"},"panel":["plans/a.md","[~] Build","[x] Inspect"]},
+    {"path":"plans/b.md","text":"- [?] Raw text\n","files":{"plans/a.md":"* [~] Build\n1. [x] Inspect\n","plans/b.md":"- [?] Raw text\n"},"panel":["plans/a.md","[~] Build","[x] Inspect","plans/b.md","- [?] Raw text"]},
+    {"path":"plans/b.md","text":"    - [ ] Example\n","files":{"plans/a.md":"* [~] Build\n1. [x] Inspect\n","plans/b.md":"    - [ ] Example\n"},"panel":["plans/a.md","[~] Build","[x] Inspect","plans/b.md","    - [ ] Example"]},
+    {"path":"GOAL.md","text":"---\nstatus: done\n---\nShip\n","files":{"plans/a.md":"* [~] Build\n1. [x] Inspect\n","plans/b.md":"    - [ ] Example\n"},"panel":["plans/a.md","[~] Build","[x] Inspect","plans/b.md","    - [ ] Example"]}
+  ]
+}

@@ -361,9 +361,20 @@ pub(super) fn write_journaled<T: Serialize>(
     let mut temporary = MaterializationWriter {
         file,
         work,
-        encoded: true,
+        encoded: false,
     };
-    serde_json::to_writer(&mut temporary, value)?;
+    if let Some(work) = work {
+        // Encode once on the original ledger. Writing each serde token as a
+        // separate syscall creates thousands of needless interruption points.
+        let mut encoded = LogBuffer {
+            bytes: Vec::new(),
+            allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
+        };
+        serde_json::to_writer(&mut encoded, value)?;
+        temporary.write_all(&encoded.bytes)?;
+    } else {
+        serde_json::to_writer(&mut temporary, value)?;
+    }
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
         None => temporary.file.sync_all()?,

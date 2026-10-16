@@ -85,11 +85,9 @@ mod replay_tests {
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             let missing = self.missing;
             let records = self.inner.read(request).await?;
-            Ok(records
-                .filter(move |record| {
-                    std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
-                })
-                .boxed())
+            Ok(Box::pin(records.filter(move |record| {
+                std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
+            })))
         }
         async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
             self.inner.follow(path, from).await

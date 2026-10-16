@@ -1,0 +1,5 @@
+{"turns":[[{"type":"event","kind":"content","delta":"- ["},{"type":"event","kind":"content","delta":
+  " ] task\n"},{"type":"event","kind":"content","delta":"- [x"},{"type":"event","kind":"content","delta":
+  "] done"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"- [ ] task\n- [x] done",
+  "model_events":[{"kind":"content","delta":"- ["},{"kind":"content","delta":" ] task\n"},{"kind":"content",
+  "delta":"- [x"},{"kind":"content","delta":"] done"},{"kind":"completed","metadata":null}]}}

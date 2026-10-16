@@ -49,6 +49,7 @@ export abstract class ObjectsV1Provider {
   put(value: wire.PutObjectHeader, body: Uint8Array) { return this.call("objects/put", wire.PutObjectHeaderSchema, wire.ObjectInfoSchema, value, body); }
   head(value: wire.HeadObjectRequest) { return this.call("objects/head", wire.HeadObjectRequestSchema, wire.HeadObjectResponseSchema, value); }
   delete(value: wire.DeleteObjectRequest) { return this.call("objects/delete", wire.DeleteObjectRequestSchema, wire.DeleteObjectResponseSchema, value); }
+  restore(value: wire.RestoreObjectsRequest) { return this.call("objects/restore", wire.RestoreObjectsRequestSchema, wire.RestoreObjectsResponseSchema, value); }
   list(value: wire.ListObjectsRequest) { return this.call("objects/list", wire.ListObjectsRequestSchema, wire.ListObjectsResponseSchema, value); }
   createMultipart(value: wire.CreateMultipartRequest) { return this.call("multipart/create", wire.CreateMultipartRequestSchema, wire.MultipartUploadSchema, value); }
   uploadPart(value: wire.UploadPartHeader, body: Uint8Array) { return this.call("multipart/upload-part", wire.UploadPartHeaderSchema, wire.UploadedPartSchema, value, body); }
