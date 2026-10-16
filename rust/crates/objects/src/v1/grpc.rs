@@ -1,4 +1,5 @@
 //! Authenticated, bounded gRPC client for logical Objects v1.
+pub use acyclic_auth::credential::CredentialProvider;
 use super::response::object_info as info;
 use super::{
     Download, Error, Object, ObjectsProvider, UploadBody, request, response, upload, wire,
@@ -17,6 +18,9 @@ const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
+#[cfg(test)]
+mod credential_tests;
+
 fn put_frame(chunk: Result<OwnedBytes, Error>) -> wire::PutObjectRequest {
     wire::PutObjectRequest {
         frame: chunk
@@ -30,6 +34,13 @@ fn part_frame(chunk: Result<OwnedBytes, Error>) -> wire::UploadPartRequest {
             .ok()
             .map(|chunk| wire::upload_part_request::Frame::Body(upload::body_bytes(chunk))),
     }
+}
+
+fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
+    if !acyclic_auth::credential::valid_credential(token) { return Err(ConnectError::InvalidConfiguration); }
+    let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ConnectError::InvalidConfiguration)?;
+    value.set_sensitive(true);
+    Ok(value)
 }
 
 /// Client configuration or connection failure.
@@ -50,7 +61,8 @@ pub enum ConnectError {
 #[derive(Clone)]
 pub struct GrpcObjects {
     channel: Channel,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<CredentialProvider>,
     transfer_timeout: std::time::Duration,
 }
 impl GrpcObjects {
@@ -73,6 +85,20 @@ impl GrpcObjects {
         ca: Option<&[u8]>,
         identity: Option<(&[u8], &[u8])>,
     ) -> Result<Self, ConnectError> {
+        Self::connect_inner(endpoint, Some(token), None, ca, identity).await
+    }
+
+    /// Connect without a fixed bearer, resolving the callback before each RPC.
+    pub async fn connect_with_credential(
+        endpoint: &str,
+        credential: CredentialProvider,
+        ca: Option<&[u8]>,
+        identity: Option<(&[u8], &[u8])>,
+    ) -> Result<Self, ConnectError> {
+        Self::connect_inner(endpoint, None, Some(credential), ca, identity).await
+    }
+
+    async fn connect_inner(endpoint: &str, token: Option<&str>, credential: Option<CredentialProvider>, ca: Option<&[u8]>, identity: Option<(&[u8], &[u8])>) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
                 if certificate.is_empty()
@@ -93,15 +119,10 @@ impl GrpcObjects {
                 .is_none_or(|authority| authority.as_str().contains('@'))
             || endpoint.uri().query().is_some()
             || endpoint.uri().path() != "/"
-            || token.trim().is_empty()
-            || token.len() > super::MAX_BEARER_TOKEN_BYTES
         {
             return Err(ConnectError::InvalidConfiguration);
         }
-        let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
-            .parse()
-            .map_err(|_| ConnectError::InvalidConfiguration)?;
-        authorization.set_sensitive(true);
+        let authorization = token.map(credential_header).transpose()?;
         let mut tls = ClientTlsConfig::new();
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
@@ -130,17 +151,22 @@ impl GrpcObjects {
         Ok(Self {
             channel,
             authorization,
+            credential,
             transfer_timeout: REQUEST_TIMEOUT,
         })
     }
 
-    fn authenticated<T>(&self, value: T, timeout: std::time::Duration) -> Request<T> {
+    async fn authenticated<T>(&self, value: T, timeout: std::time::Duration) -> Result<Request<T>, Error> {
+        let authorization = if let Some(provider) = &self.credential {
+            let token = provider.resolve().await.map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?
+        } else {
+            self.authorization.clone().ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?
+        };
         let mut request = Request::new(value);
         request.set_timeout(timeout);
-        request
-            .metadata_mut()
-            .insert("authorization", self.authorization.clone());
-        request
+        request.metadata_mut().insert("authorization", authorization);
+        Ok(request)
     }
 
     fn buckets(&self) -> wire::buckets_service_client::BucketsServiceClient<Channel> {
@@ -212,7 +238,7 @@ impl GrpcObjects {
                             .chain(frames)
                             .chain(stream::iter([complete])),
                         owner.transfer_timeout,
-                    );
+                    ).await?;
                     input.extensions_mut().insert(tonic::GrpcMethod::new(
                         "acyclic.objects.v1.ObjectsService",
                         "PutObject",
@@ -276,7 +302,7 @@ impl GrpcObjects {
                             .chain(stream::iter([complete]))
                             .boxed(),
                         owner.transfer_timeout,
-                    );
+                    ).await?;
                     let result = upload::run(
                         owner
                             .multipart()
@@ -306,7 +332,7 @@ impl GrpcObjects {
                 request::get(&query)?;
                 let range = query.range;
                 let deadline = tokio::time::Instant::now() + self.transfer_timeout;
-                let mut request = self.authenticated(query, self.transfer_timeout);
+                let mut request = self.authenticated(query, self.transfer_timeout).await?;
                 request.extensions_mut().insert(tonic::GrpcMethod::new(
                     "acyclic.objects.v1.ObjectsService",
                     "GetObject",
@@ -418,7 +444,7 @@ macro_rules! unary {
                     async {
                         $($prepare)*
                         let $result = self.$client()
-                            .$rpc(self.authenticated($query, REQUEST_TIMEOUT))
+                            .$rpc(self.authenticated($query, REQUEST_TIMEOUT).await?)
                             .await.map(ok).map_err(|status| error_from_status(&status))?;
                         $validate;
                         Ok($result)

@@ -1,4 +1,5 @@
 //! Authenticated logical Objects HTTP gateway with bounded Protobuf JSON/NDJSON.
+pub use acyclic_auth::credential::CredentialProvider;
 use super::{
     Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json, request, response,
     upload, wire,
@@ -13,16 +14,28 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
+fn credential_header(token: &str) -> Result<HeaderValue, Error> {
+    let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
+    if !acyclic_auth::credential::valid_credential(token) { return Err(invalid()); }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 /// One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
 const JSON_FRAME_BYTES: usize = 12 * 1024 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(test)]
+mod credential_tests;
 
 /// Authenticated native HTTP client for the logical Objects v1 gateway.
 #[derive(Clone)]
 pub struct HttpObjects {
     transport: Client,
     endpoint: Url,
-    authorization: HeaderValue,
+    authorization: Option<HeaderValue>,
+    credential: Option<CredentialProvider>,
     maximum: usize,
 }
 impl HttpObjects {
@@ -161,6 +174,15 @@ impl HttpObjects {
         maximum_response_bytes: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
+        Self::build(endpoint, Some(token), None, maximum_response_bytes, ca)
+    }
+
+    /// Resolve the callback for every physical request, including streamed transfers.
+    pub fn with_credential_provider(endpoint: &str, credential: CredentialProvider, maximum: usize, ca: Option<&[u8]>) -> Result<Self, Error> {
+        Self::build(endpoint, None, Some(credential), maximum, ca)
+    }
+
+    fn build(endpoint: &str, token: Option<&str>, credential: Option<CredentialProvider>, maximum_response_bytes: usize, ca: Option<&[u8]>) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
         let mut endpoint = Url::parse(endpoint).map_err(|_| invalid())?;
         let loopback = endpoint.host_str().is_some_and(|host| {
@@ -176,8 +198,6 @@ impl HttpObjects {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.len() > super::MAX_BEARER_TOKEN_BYTES
             || maximum_response_bytes == 0
         {
             return Err(invalid());
@@ -185,9 +205,7 @@ impl HttpObjects {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
-        authorization.set_sensitive(true);
+        let authorization = token.map(credential_header).transpose()?;
         let mut transport = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30));
@@ -202,9 +220,19 @@ impl HttpObjects {
             transport: transport.build().map_err(|_| invalid())?,
             endpoint: endpoint.join("v1/objects/").map_err(|_| invalid())?,
             authorization,
+            credential,
             maximum: maximum_response_bytes,
         })
     }
+    async fn authorization(&self) -> Result<HeaderValue, Error> {
+        if let Some(provider) = &self.credential {
+            let token = provider.resolve().await.map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))
+        } else {
+            self.authorization.clone().ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
+        }
+    }
+
     async fn post(
         &self,
         route: &'static str,
@@ -218,7 +246,7 @@ impl HttpObjects {
         let response = self
             .transport
             .post(url)
-            .header(AUTHORIZATION, self.authorization.clone())
+            .header(AUTHORIZATION, self.authorization().await?)
             .header("content-type", content_type)
             .body(body)
             .send()
