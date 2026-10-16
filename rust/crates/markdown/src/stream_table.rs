@@ -1,5 +1,5 @@
 use super::*;
-use table::{Table, border, width};
+use table::{Table, border};
 
 pub(super) struct Stream {
     parsed: usize,
@@ -30,15 +30,22 @@ impl Markdown {
             return;
         }
         let (events, calls) = events::scoped(source, &self.references, options(), budget);
-        let Some(table) = parsed_table(source, &events, &self.references) else {
+        let Some(table) =
+            parsed_table(source, &events, &self.references, self.state.render_width())
+        else {
             return;
         };
+        let alignments = if table.alignments.is_empty() {
+            &[pulldown_cmark::Alignment::None][..]
+        } else {
+            &table.alignments
+        };
         let mut header = String::from("|");
-        for _ in &table.alignments {
+        for _ in alignments {
             header.push_str("x|");
         }
         header.push_str("\n|");
-        for alignment in &table.alignments {
+        for alignment in alignments {
             header.push_str(match alignment {
                 pulldown_cmark::Alignment::Left => ":---|",
                 pulldown_cmark::Alignment::Center => ":---:|",
@@ -86,7 +93,12 @@ impl Markdown {
             options(),
             budget.saturating_sub(stream.cost),
         );
-        let mut addition = parsed_table(&source, &events, &self.references)?;
+        let mut addition = parsed_table(
+            &source,
+            &events,
+            &self.references,
+            self.state.render_width(),
+        )?;
         let stream = self.table.as_mut()?;
         #[cfg(test)]
         work::copy(stream.widths.len() * std::mem::size_of::<usize>());
@@ -94,7 +106,7 @@ impl Markdown {
         for row in addition.rows.iter().skip(1) {
             for (column, cell) in row.iter().enumerate() {
                 if let Some(size) = widths.get_mut(column) {
-                    *size = (*size).max(width(cell));
+                    *size = (*size).max(stream.table.cell_width(cell));
                 }
             }
         }
@@ -144,7 +156,7 @@ impl Markdown {
         for row in addition.rows.drain(1..) {
             for (column, cell) in row.iter().enumerate() {
                 if let Some(size) = stream.widths.get_mut(column) {
-                    *size = (*size).max(width(cell));
+                    *size = (*size).max(stream.table.cell_width(cell));
                 }
             }
             #[cfg(test)]
@@ -171,6 +183,7 @@ fn parsed_table(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
     references: &References,
+    render_width: u16,
 ) -> Option<Table> {
     let Some((Event::Start(Tag::Table(alignments)), start)) = events.first() else {
         return None;
@@ -182,7 +195,7 @@ fn parsed_table(
     {
         return None;
     }
-    let mut table = Table::new(alignments.clone(), Style::default());
+    let mut table = Table::new(alignments.clone(), Style::default(), render_width);
     for (event, _) in events.iter().skip(1).take(events.len().saturating_sub(2)) {
         table.event(event, Some(references));
     }
