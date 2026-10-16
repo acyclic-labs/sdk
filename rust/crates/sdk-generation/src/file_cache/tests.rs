@@ -456,13 +456,13 @@ fn operation_boundaries_retire_metadata_on_error_and_unwind() {
                 })
             })
         });
-        assert_eq!(METADATA.with_borrow(|values| values.borrow().len()), 1);
+        assert_eq!(METADATA.with_borrow(BTreeMap::len), 1);
         if unwind {
             assert!(std::panic::catch_unwind(|| with_run(|| panic!("operation unwind"))).is_err());
         } else {
             assert!(with_run(|| Err::<(), _>(CliError("operation error".into()))).is_err());
         }
-        assert!(METADATA.with_borrow(|values| values.borrow().is_empty()));
-        assert!(METADATA_OBSERVED.with_borrow(|values| values.borrow().is_empty()));
+        assert!(METADATA.with_borrow(BTreeMap::is_empty));
+        assert!(METADATA_OBSERVED.with_borrow(BTreeSet::is_empty));
     }
 }
