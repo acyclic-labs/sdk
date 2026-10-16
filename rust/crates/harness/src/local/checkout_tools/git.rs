@@ -108,6 +108,22 @@ impl CheckoutTools {
             Ok(_) => Ok(()),
             Err(error) => Err(error),
         };
+        // In-place actions publish directly to the workspace, including conflict
+        // projections. Refresh its clean mount before another command can enter
+        // this checkout. Switched actions select their destination mount below.
+        let advanced = async {
+            if !result
+                .as_ref()
+                .is_ok_and(|output| output.switched.is_some())
+                && let Some(mount) = &workspace.mounted
+            {
+                owner.verify_owner(None)?.await?;
+                mount.advance_to_head().await.map_err(storage)?;
+                owner.verify_owner(None)?.await?;
+            }
+            Ok::<(), Error>(())
+        }
+        .await;
         let output = result?;
         if let Some(switched) = output.switched {
             *active = Some(switched);
@@ -116,6 +132,7 @@ impl CheckoutTools {
         // Persist the selected view in memory even when a recovered transition
         // has no command result or closing the old workspace failed.
         publication?;
+        advanced?;
         let command = output.command.ok_or_else(|| {
             Error::Conflict("recovered a pending fs transition; retry the command".into())
         })?;

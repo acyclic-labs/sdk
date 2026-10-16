@@ -8,6 +8,89 @@ use acyclic_harness::{
 };
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
+
+#[cfg(all(feature = "native-execution", unix))]
+#[tokio::test]
+async fn child_restore_is_visible_to_the_next_model_bash_without_a_branch_switch() -> Result<()> {
+    use acyclic_harness::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use acyclic_harness::test_support::ScriptedEvent;
+    let directory = tempfile::tempdir().unwrap();
+    let provider = provider(
+        [
+            ("bash", "printf original > marker"),
+            ("fs", "git add marker"),
+            ("fs", "git commit -m baseline"),
+            ("bash", "printf changed > marker"),
+            ("fs", "git restore --source HEAD -- marker"),
+            ("bash", "cat marker"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, command))| {
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    format!("restore-{index}"),
+                    name.into(),
+                    json!({"command":command}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ])
+        })
+        .chain([ScriptedTurn::Text("restored".into())]),
+    );
+    let local = local(directory.path(), provider.clone()).await?;
+    let Admission::Accepted(RuntimeTask::Durable {
+        task_id: parent, ..
+    }) = local.submit(OperationId::new(), "parent").await?
+    else {
+        panic!("parent admission")
+    };
+    let mut client = selected(&local, parent).await?;
+    let child = send(&local, &mut client, "/delegate child").await?;
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    assert_eq!(
+        local
+            .resume(child)
+            .await
+            .unwrap_or_else(|error| panic!(
+                "child restore failed after {} model requests: {error:?}",
+                provider.requests().len()
+            ))
+            .text,
+        "restored"
+    );
+    let requests = provider.requests();
+    let output = |id: &str| {
+        requests
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    call_id,
+                    content: ToolResultContent::Json { value },
+                    ..
+                } if call_id == id => Some(value),
+                _ => None,
+            })
+            .expect("model did not receive a successful tool result")
+    };
+    assert!(
+        output("restore-4").get("result").is_some(),
+        "restore was not executed"
+    );
+    assert_eq!(
+        output("restore-5")["stdout"],
+        "original",
+        "child mount retained pre-restore contents"
+    );
+    assert!(!local.workspace_path().unwrap().join("marker").exists());
+    Ok(())
+}
 fn provider(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
         acyclic_harness::context::ModelContextCapacity {
@@ -510,7 +593,11 @@ async fn clear_direct_admissions(completed: usize, page: usize) -> Result<()> {
     let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 128).await?;
     client.submit("/clearall", &NoReads).await?;
     let result = send(&local, &mut client, "yes").await?;
-    assert_eq!(result["deleted_count"], completed + 1);
+    assert_eq!(
+        result["deleted_count"],
+        completed + 1,
+        "clear skipped an owner admission without UI settings"
+    );
     for task in &tasks {
         let key =
             FileKey::parse(&format!(".ui/task-{task}/settings.json")).map_err(volume_error)?;

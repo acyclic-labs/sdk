@@ -49,6 +49,22 @@ pub(crate) fn is_result(key: &FileKey) -> bool {
     ) && related(key, TaskFile::Request).is_some()
 }
 
+pub(super) fn owner(key: &FileKey) -> Option<Component> {
+    match key {
+        FileKey::Session { session, .. } => Some(session.clone()),
+        FileKey::Task {
+            file:
+                TaskFile::Request(id) | TaskFile::ExecutionClaim(id) | TaskFile::ExecutionResult(id),
+            ..
+        } => identity(id)
+            .and_then(|(session, _)| session)
+            .map(|session| {
+                Component::new(session.to_string()).expect("UUID is a namespace component")
+            }),
+        _ => None,
+    }
+}
+
 pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
     match key {
         FileKey::Session { session: owner, .. } => owner == session,
@@ -102,8 +118,11 @@ pub(super) fn snapshot(
     }
     for key in index
         .pending_commands
-        .iter()
-        .filter(|key| matches(session, key))
+        .get(&None)
+        .into_iter()
+        .chain(index.pending_commands.get(&Some(session.clone())))
+        .flat_map(|keys| keys.iter())
+        .inspect(|_| super::item_examined())
     {
         insert(key)?;
     }

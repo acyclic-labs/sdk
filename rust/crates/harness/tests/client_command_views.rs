@@ -512,7 +512,7 @@ async fn hidden_archived_results_do_not_fill_the_selected_task_view() -> Result<
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn recent_command_snapshot_work_ignores_other_session_history(foreign in 0usize..96, own in 0usize..12, recent in 1u32..8, bytes in any::<[u8;16]>()) {
+    fn recent_command_snapshot_work_ignores_other_session_history(foreign in 0usize..96, own in 0usize..12, foreign_pending in 1usize..96, own_pending in 0usize..8, claimed in any::<bool>(), recent in 1u32..8, bytes in any::<[u8;16]>()) {
         futures::executor::block_on(async {
             use acyclic_harness::task_volume::{Component, TaskFile};
             let volume = volume().await;
@@ -529,19 +529,34 @@ proptest! {
                     if owner == session { ours.push(key); }
                 }
             }
+            let mut pending = std::collections::BTreeSet::new();
+            for (owner,count) in [(other,foreign_pending),(session,own_pending)] {
+                for sequence in 0..count {
+                    let id = Component::new(format!("command-{owner}.{}", uuid::Uuid::from_u128(sequence as u128+1_000))).unwrap();
+                    let mut files = vec![TaskFile::Request(id.clone())];
+                    if claimed { files.push(TaskFile::ExecutionClaim(id)); }
+                    for file in files {
+                        let key = FileKey::Task { task:task.clone(),file };
+                        let cut = volume.snapshot(&Query::File(key.clone()),1).await.unwrap().generation;
+                        volume.append(cut,&FileValue::new(key.clone(),b"{}".to_vec())).await.unwrap();
+                        if owner == session { pending.insert(key); }
+                    }
+                }
+            }
             let query = Query::CommandSession { session:Component::new(session.to_string()).unwrap(),recent };
             let (snapshot,work) = acyclic_harness::test_support::measure_task_volume_work(|| volume.snapshot(&query,64).now_or_never().unwrap());
             let selected: std::collections::BTreeSet<_> = snapshot.unwrap().files.into_iter().map(|file| file.key).collect();
-            let expected = ours.into_iter().rev().take(recent as usize).collect();
+            let mut expected = pending.clone();
+            expected.extend(ours.into_iter().rev().take(recent as usize));
             prop_assert_eq!(selected,expected);
             // One history anchor, two catalog lookups, and exactly three
             // accesses per selected outcome (ordered index, outcome, request).
-            prop_assert!(work <= 3 + 3 * u64::from(recent), "foreign={foreign} own={own} recent={recent} work={work}");
+            prop_assert!(work <= 3 + 3 * u64::from(recent) + 2 * pending.len() as u64, "foreign={foreign} foreign_pending={foreign_pending} own={own} recent={recent} work={work}");
             let mut fresh=bytes; fresh[0] ^= 2;
             let query = Query::CommandSession { session:Component::new(uuid::Uuid::from_bytes(fresh).to_string()).unwrap(),recent };
             let (snapshot,work) = acyclic_harness::test_support::measure_task_volume_work(|| volume.snapshot(&query,64).now_or_never().unwrap());
             prop_assert!(snapshot.unwrap().files.is_empty());
-            prop_assert_eq!(work,3,"a fresh terminal must not walk another terminal's outcomes");
+            prop_assert_eq!(work,3,"a fresh terminal must not walk another terminal's requests, claims or outcomes");
             Ok(())
         })?;
     }

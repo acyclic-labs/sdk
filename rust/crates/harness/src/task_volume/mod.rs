@@ -201,7 +201,7 @@ struct Index {
     commit: CommitId,
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
-    pending_commands: BTreeSet<FileKey>,
+    pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
     view_order: BTreeMap<(Component, u8, u64), FileKey>,
     view_revisions: BTreeMap<FileKey, (u8, u64)>,
     overviews: BTreeMap<Component, FileKey>,
@@ -501,28 +501,28 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
     recent::record(index, &file, position);
+    let owner = command_query::owner(&file.key);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
-        let owner = match &file.key {
-            FileKey::Session { session, .. } => Some(session.clone()),
-            FileKey::Task {
-                file: TaskFile::ExecutionResult(id),
-                ..
-            } => command_query::identity(id)
-                .and_then(|(session, _)| session)
-                .map(|session| {
-                    Component::new(session.to_string()).expect("UUID is a namespace component")
-                }),
-            _ => None,
-        };
-        index.executions.insert((owner, position), file.key.clone());
-        for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
-            if let Some(key) = command_query::related(&file.key, make) {
-                index.pending_commands.remove(&key);
+        index
+            .executions
+            .insert((owner.clone(), position), file.key.clone());
+        if let Some(pending) = index.pending_commands.get_mut(&owner) {
+            for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
+                if let Some(key) = command_query::related(&file.key, make) {
+                    pending.remove(&key);
+                }
+            }
+            if pending.is_empty() {
+                index.pending_commands.remove(&owner);
             }
         }
     } else if let Some(result) = command_query::related(&file.key, TaskFile::ExecutionResult) {
         if !index.files.contains_key(&result) {
-            index.pending_commands.insert(file.key.clone());
+            index
+                .pending_commands
+                .entry(owner)
+                .or_default()
+                .insert(file.key.clone());
         }
     }
     index
