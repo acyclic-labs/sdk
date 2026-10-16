@@ -10,6 +10,7 @@ use super::{
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
+use crate::lock_order::{Mutex, MutexGuard};
 #[cfg(test)]
 use crate::model::FilesystemProfile;
 use crate::model::{VolumeConfig, VolumeConfigError};
@@ -20,7 +21,6 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
-use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
 /// Exact path lookup result. Absence is authenticated and not an error.

@@ -15,7 +15,9 @@ pub(super) struct CacheState {
 }
 pub(super) struct OperationReadCache<'a, S> {
     pub(super) store: &'a S,
-    pub(super) state: Mutex<CacheState>,
+    // Cache/view (20) precedes custody/observer and original demand leaf (50).
+    // Keep one guard across lookup, optional rehash and insertion.
+    pub(super) state: Mutex<CacheState, { crate::lock_order::VIEW }>,
     maximum_entries: usize,
     slot_limit: usize,
     pub(super) data_custody: Option<&'a crate::kernel::ProofDataCustody>,
@@ -64,6 +66,7 @@ impl<'a, S> OperationReadCache<'a, S> {
             data_custody,
         })
     }
+    #[track_caller]
     pub(super) fn lock_state(&self) -> MutexGuard<'_, CacheState> {
         self.state
             .lock()
@@ -96,14 +99,21 @@ impl<'a, S> OperationReadCache<'a, S> {
         owned_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bool, crate::FsError> {
+        self.admit_with_slot::<true>(object_id, bytes, owned_bytes, accounting)
+    }
+    fn admit_with_slot<const REPROBE_GROWTH: bool>(
+        &self,
+        object_id: ObjectId,
+        bytes: &OwnedBytes,
+        owned_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, crate::FsError> {
         let mut state = self.lock_state();
         if state.entry_count >= self.maximum_entries {
             return Ok(false);
         }
-        if probe_slots(&state.slots.value, object_id, accounting, None)?
-            .0
-            .is_some()
-        {
+        let (existing, mut vacant) = probe_slots(&state.slots.value, object_id, accounting, None)?;
+        if existing.is_some() {
             return Ok(false);
         }
         if state.entry_count.saturating_mul(2) >= state.slots.value.len()
@@ -144,8 +154,10 @@ impl<'a, S> OperationReadCache<'a, S> {
                         .ok_or(WorkError::Overflow)?,
                 )?;
             }
+            if REPROBE_GROWTH {
+                vacant = probe_slots(&state.slots.value, object_id, accounting, None)?.1;
+            }
         }
-        let vacant = probe_slots(&state.slots.value, object_id, accounting, None)?.1;
         *state
             .slots
             .value
@@ -271,3 +283,8 @@ pub(super) fn compare_object_id(left: &ObjectId, right: &ObjectId) -> Ordering {
         .cmp(&right.kind.canonical_tag())
         .then_with(|| left.digest.cmp(&right.digest))
 }
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod loom_tests;
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod tests;
