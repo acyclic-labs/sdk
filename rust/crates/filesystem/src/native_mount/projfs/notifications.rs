@@ -307,16 +307,17 @@ pub(super) unsafe fn notification(
             if metadata_changed {
                 *retry_path.borrow_mut() = Some(capture_path.clone());
             }
-            if !metadata_changed
-                && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                && crate::native_mount::cached_binding::cached_binding_matches(
-                    || {
-                        lock_recover(projection)
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+            {
+                match crate::native_mount::cached_binding::cached_binding_matches(
+                    projection,
+                    |bindings| {
+                        bindings
                             .get(&capture_path)
                             .copied()
                             .filter(|binding| binding.host == host && host.links == Some(1))
                     },
-                    || source.acquire_view_lease(),
+                    || source.acquire_binding_lease_with_meter(None, &work),
                     |binding| {
                         source.reports_changes_to(binding.file_id)
                             && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
@@ -328,9 +329,20 @@ pub(super) unsafe fn notification(
                             Some(binding.file_id),
                         )
                     },
-                )
-            {
-                return Ok(());
+                ) {
+                    Ok(true) => return Ok(()),
+                    Err(error)
+                        if matches!(
+                            error.semantic_error(),
+                            MountSourceError::Work(_)
+                                | MountSourceError::NativeWork(_)
+                                | MountSourceError::Cancelled
+                        ) =>
+                    {
+                        return Err(error);
+                    }
+                    Ok(false) | Err(_) => {}
+                }
             }
             let basis = ReadBasis::sample(source.as_ref());
             let lookup = source.lookup(&capture_path);
@@ -508,16 +520,15 @@ pub(super) fn handle_rename_source(
 
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 
-macro_rules! on_provider_stack {
-    ($level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*)) => {{
+macro_rules! on_callback {
+    ($stack:ident, $level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*)) => {{
         unsafe extern "system" fn entry($data: $data_type $(, $argument: $type)*) -> HRESULT {
             // SAFETY: the SDK retains its installed instance context through this callback.
             let Some((_, runtime)) = (unsafe { runtime($data) }) else { return HR_UNEXPECTED; };
             let Some(_active) = runtime.callbacks.enter() else { return HR_FILE_INVALID; };
             let span = callback_span!($level, $callback);
             // SAFETY: `ProjFS` passes the arguments its callback contract
-            let result = provider_stack::run(|| unsafe { $callback($data $(, $argument)*) })
-                .unwrap_or_else(|error| error.code());
+            let result = on_callback!(@run $stack, $callback($data $(, $argument)*));
             if result.is_err() {
                 span.record("errno", result.0);
             }
@@ -525,36 +536,42 @@ macro_rules! on_provider_stack {
         }
         entry
     }};
+    (@run provider, $call:expr) => {
+        provider_stack::run(|| unsafe { $call }).unwrap_or_else(|error| error.code())
+    };
+    // Only constant-return callbacks use the caller's stack; they neither
+    // inspect their arguments nor invoke a source operation.
+    (@run caller, $call:expr) => { unsafe { $call } };
 }
 
 pub(super) fn callbacks() -> PRJ_CALLBACKS {
     PRJ_CALLBACKS {
-        StartDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, start_directory(
+        StartDirectoryEnumerationCallback: Some(on_callback!(provider, TRACE, start_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        EndDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, end_directory(
+        EndDirectoryEnumerationCallback: Some(on_callback!(caller, TRACE, end_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        GetDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, get_directory(
+        GetDirectoryEnumerationCallback: Some(on_callback!(caller, TRACE, get_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID,
             search_expression: PCWSTR,
             buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE
         ))),
-        GetPlaceholderInfoCallback: Some(on_provider_stack!(TRACE, placeholder(
+        GetPlaceholderInfoCallback: Some(on_callback!(caller, TRACE, placeholder(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        GetFileDataCallback: Some(on_provider_stack!(TRACE, file_data(
+        GetFileDataCallback: Some(on_callback!(caller, TRACE, file_data(
             callback_data: *const PRJ_CALLBACK_DATA,
             byte_offset: u64,
             length: u32
         ))),
-        QueryFileNameCallback: Some(on_provider_stack!(TRACE, query_name(
+        QueryFileNameCallback: Some(on_callback!(provider, TRACE, query_name(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        NotificationCallback: Some(on_provider_stack!(DEBUG, notification(
+        NotificationCallback: Some(on_callback!(provider, DEBUG, notification(
             callback_data: *const PRJ_CALLBACK_DATA,
             is_directory: bool,
             kind: PRJ_NOTIFICATION,

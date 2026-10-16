@@ -160,6 +160,7 @@ fn follow(
             wire::SessionFollow {
                 path: format!("{}/{suffix}", agent.as_str()),
                 delivery: delivery as i32,
+                ..Default::default()
             },
         )),
     }

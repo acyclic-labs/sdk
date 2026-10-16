@@ -124,6 +124,11 @@ impl FileViews {
         &self,
         change: &'a Change,
     ) -> Result<impl FnOnce(&mut Self) -> Result<()> + use<'a>> {
+        // TaskVolume appends one immutable event. A different source's atomic
+        // file replacements/removals must not be silently reduced as that event.
+        if !change.files.is_empty() || !change.removed.is_empty() {
+            return Err(Error::InvalidSegment);
+        }
         let next = &change.cursor;
         if next.volume != self.cursor.volume
             || next.epoch != self.cursor.epoch

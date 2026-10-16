@@ -1,0 +1,6 @@
+{"writes":[{"path":".tasks/t/turns/0/chunks/0","text":"```r","channel":"Text"},{"path":".tasks/t/turns/0/chunks/1",
+  "text":"ust\nfn main() {}\n","channel":"Text"},{"path":".tasks/t/turns/0/chunks/2","text":"```\n","channel":"Text"}],
+  "expect":{"files":{".tasks/t/turns/0/chunks/0":"```r",".tasks/t/turns/0/chunks/1":"ust\nfn main() {}\n",
+  ".tasks/t/turns/0/chunks/2":"```\n"},"changes":[{"path":".tasks/t/turns/0/chunks/0","text":"```r","channel":"Text"},{
+  "path":".tasks/t/turns/0/chunks/1","text":"ust\nfn main() {}\n","channel":"Text"},{"path":".tasks/t/turns/0/chunks/2",
+  "text":"```\n","channel":"Text"}],"heads":{".tasks/t/turns/0/text.md":"```rust\nfn main() {}\n```\n"}}}

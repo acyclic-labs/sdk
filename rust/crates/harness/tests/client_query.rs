@@ -345,7 +345,7 @@ proptest::proptest! {
     // Property: every cursor identity/gap/watermark rejection preserves all view
     // state, including the previously applied cursor.
     #[test]
-    fn invalid_cursor_never_changes_the_fold(case in 0u8..9, bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..32)) {
+    fn invalid_cursor_or_publication_never_changes_the_fold(case in 0u8..11, bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..32)) {
         futures::executor::block_on(async {
             let volume = volume().await;
             let mut snapshot = volume.heads(&Query::Root, None, 128).await.unwrap();
@@ -365,9 +365,15 @@ proptest::proptest! {
                 5 => { next.position += 1; next.accepted = next.position; },
                 6 => next.accepted = 0,
                 7 => next.durable = next.accepted + 1,
-                _ => next.durable = 0,
+                8 => next.durable = 0,
+                _ => {},
             }
-            let change = Change { cursor: next, file: Some(Write::new(FileKey::Goal, bytes)) };
+            let mut change = Change { cursor: next, file: Some(Write::new(FileKey::Goal, bytes)), files: Vec::new(), removed: Vec::new() };
+            match case {
+                9 => change.files.push(Write::new(key("workspace/extra.md"), b"extra".to_vec())),
+                10 => change.removed.push(key("workspace/removed.md")),
+                _ => {},
+            }
             assert!(view.prepare(&change).is_err());
             assert_eq!(view.cursor(), &before);
             assert_eq!(view.files().count(), 0);

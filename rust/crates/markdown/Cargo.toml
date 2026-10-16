@@ -1,0 +1,29 @@
+[package]
+autotests = false
+name = "acyclic-markdown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Incremental Markdown presentation as renderer-independent styled lines"
+
+[[test]]
+name = "streaming"
+path = "tests/streaming.rs"
+
+[[bench]]
+name = "audit"
+harness = false
+
+[dependencies]
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+syntect = { version = "=5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+unicode-width = "0.2"
+unicase = "2.10"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

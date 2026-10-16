@@ -303,6 +303,7 @@ impl PreparedModelRequest {
             io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
         }
         let mut message_tokens = Vec::new();
+        let mut fixed_bytes = self.bytes.len();
         for message in &self.request.messages {
             charge_items(io, 1)?;
             #[cfg(feature = "filesystem")]
@@ -318,6 +319,9 @@ impl PreparedModelRequest {
                     .map_err(|error| Error::Invalid(error.to_string()))?
                     .into(),
             };
+            fixed_bytes = fixed_bytes
+                .checked_sub(bytes.len())
+                .ok_or_else(|| Error::Invalid("message framing exceeds prepared request".into()))?;
             let mut tokens = bytes.len() as u64;
             for file in message.content.file_refs() {
                 charge_items(io, 1)?;
@@ -329,7 +333,7 @@ impl PreparedModelRequest {
                 .map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))?;
             crate::executor::stock_vec_push(&mut message_tokens, tokens, io)?;
         }
-        let fixed_tokens = u32::try_from(self.bytes.len())
+        let fixed_tokens = u32::try_from(fixed_bytes)
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
         let count = crate::context::ModelTokenCount {
             request_digest: self.request_digest,
@@ -350,3 +354,7 @@ impl PreparedModelRequest {
         Ok((count, custody))
     }
 }
+
+#[cfg(test)]
+#[path = "request_tokens_tests.rs"]
+mod tokens_tests;

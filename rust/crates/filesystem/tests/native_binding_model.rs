@@ -2,12 +2,14 @@
 
 #[path = "../src/native_mount/cached_binding.rs"]
 mod cached_binding;
+#[path = "../src/sync.rs"]
+mod sync;
 
-#[cfg(all(not(kani), target_os = "linux"))]
+#[cfg(all(acyclic_fs_loom, not(kani), target_os = "linux"))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;
+    use crate::sync::{Arc, Mutex, RwLock};
     use loom::sync::atomic::{AtomicU8, Ordering};
-    use loom::sync::{Arc, Mutex, RwLock};
     use loom::thread;
     use std::cell::Cell;
 
@@ -20,6 +22,28 @@ mod interleavings {
     #[should_panic(expected = "cached binding disagrees with the leased source state")]
     fn accepting_a_stale_binding_is_detected() {
         check_decisions(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "projection cache must be released before source lease")]
+    fn holding_the_projection_lock_while_acquiring_the_source_is_detected() {
+        loom::model(|| {
+            let cache = Mutex::new(Some(()));
+            let guard = cache.lock().unwrap();
+            // Deliberately broken wrapper keeps its cache guard through admission.
+            let _ = super::cached_binding::cached_binding_decision(
+                *guard,
+                || {
+                    assert!(
+                        cache.try_lock().is_ok(),
+                        "projection cache must be released before source lease"
+                    );
+                    Ok::<_, ()>(())
+                },
+                |()| true,
+                |()| false,
+            );
+        });
     }
 
     fn check_decisions(accept_stale: bool) {
@@ -69,39 +93,48 @@ mod interleavings {
                         // the returned decision. Kani checks its real lifetime.
                         let mut lease = None;
                         let fallback = Cell::new(false);
+                        let mut acquire = || {
+                            lease = Some(gate.read().unwrap());
+                            Ok::<_, ()>(())
+                        };
+                        let current = |expected| {
+                            reports
+                                && (accept_stale && (related || rebound) || sample() == expected)
+                        };
+                        let unchanged = |expected: (u8, u8)| {
+                            fallback.set(true);
+                            let observed = sample();
+                            observed.1 == expected.1 && (observed.0 == expected.0 || !related)
+                        };
                         let matched = cached_binding_matches(
-                            || *cache.lock().unwrap(),
-                            || {
-                                lease = Some(gate.read().unwrap());
-                                Ok::<_, ()>(())
-                            },
-                            // Negative control: a reporting source alone must
-                            // never bypass freshness after a related change.
-                            |expected| {
-                                reports
-                                    && (accept_stale && (related || rebound)
-                                        || sample() == expected)
-                            },
-                            |expected| {
-                                fallback.set(true);
-                                let observed = sample();
-                                observed.1 == expected.1 && (observed.0 == expected.0 || !related)
-                            },
+                            &cache,
+                            |cache| *cache,
+                            &mut acquire,
+                            current,
+                            unchanged,
                         );
                         if lease.is_some() {
                             let observed = sample();
                             assert_eq!(
                                 matched,
-                                observed.1 == 0 && (!related || observed.0 == 0),
+                                Ok(observed.1 == 0 && (!related || observed.0 == 0)),
                                 "cached binding disagrees with the leased source state"
                             );
                             assert_eq!(fallback.get(), !reports || observed != (0, 0));
                         } else {
-                            assert!(!matched, "a missing cache entry cannot be accepted");
+                            assert_eq!(
+                                matched,
+                                Ok(false),
+                                "a missing cache entry cannot be accepted"
+                            );
                             assert!(!fallback.get());
                         }
                         if !changed && !rebound {
-                            assert!(matched, "an unchanged cached binding must be accepted");
+                            assert_eq!(
+                                matched,
+                                Ok(true),
+                                "an unchanged cached binding must be accepted"
+                            );
                         }
                     }
                     writer.join().unwrap();
@@ -113,7 +146,7 @@ mod interleavings {
 
 #[cfg(kani)]
 mod proofs {
-    use super::cached_binding::cached_binding_matches;
+    use super::cached_binding::cached_binding_decision;
     use std::cell::Cell;
 
     struct Lease<'a>(&'a Cell<bool>);
@@ -135,8 +168,8 @@ mod proofs {
         let lease_calls = Cell::new(0_u8);
         let current_calls = Cell::new(0_u8);
         let fallback_calls = Cell::new(0_u8);
-        let matched = cached_binding_matches(
-            || present.then_some(()),
+        let matched = cached_binding_decision(
+            present.then_some(()),
             || {
                 lease_calls.set(lease_calls.get() + 1);
                 live.set(admitted);
@@ -153,7 +186,14 @@ mod proofs {
                 unchanged
             },
         );
-        assert_eq!(matched, present && admitted && (current || unchanged));
+        assert_eq!(
+            matched,
+            if present && !admitted {
+                Err(())
+            } else {
+                Ok(present && (current || unchanged))
+            }
+        );
         assert_eq!(lease_calls.get(), u8::from(present));
         assert_eq!(current_calls.get(), u8::from(present && admitted));
         assert_eq!(
@@ -162,4 +202,30 @@ mod proofs {
         );
         assert!(!live.get());
     }
+}
+
+#[cfg(not(acyclic_fs_loom))]
+#[cfg_attr(kani, kani::proof)]
+#[cfg_attr(not(kani), test)]
+fn projection_copy_releases_its_mutex_and_preserves_lease_errors() {
+    let cache = sync::Mutex::new(Some(()));
+    let decisions = std::cell::Cell::new(0_u8);
+    let result = cached_binding::cached_binding_matches(
+        &cache,
+        |cache| *cache,
+        || {
+            assert!(cache.try_lock().is_ok());
+            Err::<(), _>(7_u8)
+        },
+        |()| {
+            decisions.set(decisions.get() + 1);
+            true
+        },
+        |()| {
+            decisions.set(decisions.get() + 1);
+            true
+        },
+    );
+    assert_eq!(result, Err(7));
+    assert_eq!(decisions.get(), 0);
 }

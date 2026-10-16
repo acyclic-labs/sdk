@@ -82,6 +82,9 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
         "objects/delete" => {
             delete_digest(&decode!(DeleteObjectRequest))?;
         }
+        "objects/restore" => {
+            restore(&decode!(RestoreObjectsRequest))?;
+        }
         "objects/list" => {
             list(&decode!(ListObjectsRequest))?;
         }
@@ -113,6 +116,39 @@ pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
     key(&query.object_key)?;
     read_filters(&query.if_match, &query.if_none_match)?;
     Ok(name)
+}
+
+/// Validates a prefix restore without consulting the serving retention window.
+pub fn restore(query: &wire::RestoreObjectsRequest) -> Result<&str, Error> {
+    if query.encoded_len() > 16 * 1024 * 1024 {
+        return Err(wire::ErrorCode::QuotaExceeded.into());
+    }
+    let name = bucket(&query.bucket)?;
+    if query.prefix.len() > 1024 || query.prefix.contains('\0') {
+        return Err(InvalidArgument.into());
+    }
+    let at = query.at.as_ref().ok_or(Error::from(InvalidArgument))?;
+    super::response::timestamp(at).map_err(|_| Error::from(InvalidArgument))?;
+    if at.seconds < 0 || (at.seconds == 0 && at.nanos < 1000) || at.nanos % 1000 != 0 {
+        return Err(InvalidArgument.into());
+    }
+    let mutation = query
+        .mutation
+        .as_ref()
+        .ok_or(Error::from(InvalidArgument))?;
+    if mutation.idempotency_key.is_empty() {
+        return Err(InvalidArgument.into());
+    }
+    identity(&query.mutation)?;
+    Ok(name)
+}
+
+/// Retry identity excludes the retry key, never the restore time or prefix.
+pub fn restore_digest(query: &wire::RestoreObjectsRequest) -> Result<[u8; 32], Error> {
+    restore(query)?;
+    let mut normalized = query.clone();
+    normalized.mutation = None;
+    Ok(message_digest("restore", &normalized))
 }
 
 pub(crate) fn list(query: &wire::ListObjectsRequest) -> Result<(&str, usize), Error> {
@@ -580,6 +616,63 @@ mod tests {
             assert!(bucket_name(name).is_err());
         }
         assert!(key("a/../b//c").is_ok());
+    }
+    #[test]
+    fn restores_validate_their_target_and_bind_retry_identity_to_prefix_and_time() {
+        let query = wire::RestoreObjectsRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            prefix: "orders/".into(),
+            at: Some(prost_types::Timestamp {
+                seconds: 42,
+                nanos: 1000,
+            }),
+            mutation: Some(wire::MutationIdentity {
+                idempotency_key: "restore-1".into(),
+            }),
+        };
+        assert!(validate_binary("objects/restore", &query.encode_to_vec(), 0).is_ok());
+        let digest = restore_digest(&query).unwrap();
+        let mut changed = query.clone();
+        changed.mutation.as_mut().unwrap().idempotency_key = "restore-2".into();
+        assert_eq!(restore_digest(&changed).unwrap(), digest);
+        changed.prefix.clear();
+        assert_ne!(restore_digest(&changed).unwrap(), digest);
+        changed = query.clone();
+        changed.at.as_mut().unwrap().seconds += 1;
+        assert_ne!(restore_digest(&changed).unwrap(), digest);
+        for invalid in [
+            wire::RestoreObjectsRequest {
+                bucket: None,
+                ..query.clone()
+            },
+            wire::RestoreObjectsRequest {
+                at: None,
+                ..query.clone()
+            },
+            wire::RestoreObjectsRequest {
+                mutation: None,
+                ..query.clone()
+            },
+            wire::RestoreObjectsRequest {
+                prefix: "bad\0prefix".into(),
+                ..query.clone()
+            },
+            wire::RestoreObjectsRequest {
+                prefix: "x".repeat(1025),
+                ..query.clone()
+            },
+            wire::RestoreObjectsRequest {
+                at: Some(prost_types::Timestamp {
+                    seconds: 42,
+                    nanos: 1,
+                }),
+                ..query.clone()
+            },
+        ] {
+            assert_eq!(restore_digest(&invalid).unwrap_err().code, InvalidArgument);
+        }
     }
     #[test]
     fn ranges_clip_suffixes_and_ends_without_wrapping() -> Result<(), Error> {

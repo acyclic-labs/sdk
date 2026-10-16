@@ -123,11 +123,19 @@ impl WasmStream {
         check_command_size(input)?;
         let request = decode::<wire::ChildrenRequest>(input)?;
         let request = wire_codec::children_from_wire(request).map_err(js_error)?;
-        let children = self.provider.children(request).await.map_err(js_error)?;
+        let children = self
+            .provider
+            .children_page(crate::ChildrenPageRequest {
+                parent: request.parent,
+                limit: request.limit,
+                after: None,
+                hierarchy_version: None,
+            })
+            .await
+            .map_err(js_error)?
+            .children;
         let mut output = Vec::new();
-        futures::pin_mut!(children);
-        while let Some(child) = children.next().await {
-            let child = child.map_err(js_error)?;
+        for child in children {
             output.push(
                 wire::ChildrenResponse {
                     child: Some(wire::Child {
@@ -147,12 +155,41 @@ impl WasmStream {
         let request = decode::<wire::FollowRequest>(input)?;
         let (path, from) = wire_codec::follow_from_wire(request).map_err(js_error)?;
         let stream = self.provider.follow(path, from).await.map_err(js_error)?;
-        let (cancel, _) = tokio::sync::watch::channel(false);
         Ok(WasmFollow {
-            state: Rc::new(FollowState {
-                stream: Mutex::new(Some(stream)),
-                cancel,
-            }),
+            state: Rc::new(FollowState::new(
+                stream
+                    .map(|record| {
+                        record.map(|record| {
+                            wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                                .encode_to_vec()
+                        })
+                    })
+                    .boxed_local(),
+            )),
+        })
+    }
+    /// Opens live child discovery; each next yields one canonical ChildrenResponse.
+    #[wasm_bindgen]
+    pub async fn open_children(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        check_command_size(input)?;
+        let request = wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(input)?)
+            .map_err(js_error)?;
+        let children = self.provider.children(request).await.map_err(js_error)?;
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(
+                children
+                    .map(|child| {
+                        child.map(|child| {
+                            wire::ChildrenResponse {
+                                child: Some(wire::Child {
+                                    path: child.path.to_string(),
+                                }),
+                            }
+                            .encode_to_vec()
+                        })
+                    })
+                    .boxed_local(),
+            )),
         })
     }
 }
