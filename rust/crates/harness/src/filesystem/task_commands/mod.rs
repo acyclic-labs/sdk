@@ -25,6 +25,7 @@ use std::sync::Arc;
 mod dispatch;
 mod effects;
 mod mail;
+mod manifest;
 mod model;
 mod preparation;
 #[cfg(test)]
@@ -193,6 +194,7 @@ struct ModelBinding {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
+    tools: Option<crate::tool::ToolRegistry>,
     compaction: crate::context::CompactionPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -265,6 +267,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             model,
             provider,
             context,
+            tools: None,
             compaction,
             #[cfg(not(target_arch = "wasm32"))]
             native_custody,

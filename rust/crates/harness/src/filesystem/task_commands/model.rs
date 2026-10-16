@@ -164,6 +164,10 @@ where
                     &binding.model,
                     Arc::clone(&binding.provider),
                     &binding.context,
+                    binding
+                        .tools
+                        .as_ref()
+                        .unwrap_or_else(|| self.runtime.tool_registry()),
                     journal,
                     work,
                     &binding.compaction,
@@ -198,6 +202,11 @@ where
                     binding.model.clone(),
                     Arc::clone(&binding.provider),
                     binding.context.clone(),
+                    binding
+                        .tools
+                        .as_ref()
+                        .unwrap_or_else(|| self.runtime.tool_registry())
+                        .clone(),
                     command.selected_output_volume.as_ref(),
                 )
                 .await?

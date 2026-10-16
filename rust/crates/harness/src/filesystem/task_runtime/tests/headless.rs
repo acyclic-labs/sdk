@@ -434,6 +434,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?
@@ -465,6 +466,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None
             )
             .await
@@ -941,6 +943,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?

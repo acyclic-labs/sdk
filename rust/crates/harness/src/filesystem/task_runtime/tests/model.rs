@@ -32,6 +32,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
                 model.clone(),
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None,
             )
             .await?
@@ -73,6 +74,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
                 model,
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None,
             )
             .await?
