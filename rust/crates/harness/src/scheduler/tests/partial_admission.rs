@@ -18,6 +18,9 @@ enum Fault {
     Underfunded,
     IgnoreHeld,
     DuplicateHeld,
+    ForeignFullPlacement,
+    ForeignFullReservation,
+    RejectExactFull,
 }
 
 fn resources(amounts: [u8; 2]) -> ResourceRequest {
@@ -216,11 +219,17 @@ fn apply(
         (Fault::Rewind, Some("partial reservation rewound retained capacity")) => {
             actual.reservation.as_mut().unwrap().admitted = resources(input.amounts);
         }
-        (Fault::ForeignPlacement, Some("foreign partial lease was accepted")) => {
+        (
+            Fault::ForeignPlacement | Fault::ForeignFullPlacement,
+            Some("foreign partial lease was accepted"),
+        ) if fault == Fault::ForeignPlacement || input.full => {
             let current = actual.reservation.as_mut().unwrap();
             current.placement = held(input.lease, input.amounts).placement;
         }
-        (Fault::ForeignReservation, Some("foreign partial lease was accepted")) => {
+        (
+            Fault::ForeignReservation | Fault::ForeignFullReservation,
+            Some("foreign partial lease was accepted"),
+        ) if fault == Fault::ForeignReservation || input.full => {
             actual.reservation.as_mut().unwrap().id = held(input.lease, input.amounts).id;
         }
         (Fault::Excess, Some("excess partial reservation was accepted"))
@@ -233,6 +242,13 @@ fn apply(
                     .0
                     .insert("memory".into(), u64::from(input.amounts[1]) + 1);
             }
+        }
+        (Fault::RejectExactFull, None) if input.full && input.amounts == expected.request => {
+            actual
+                .spec
+                .resources
+                .0
+                .insert("cpu".into(), u64::from(input.amounts[0]) + 1);
         }
         _ => {}
     }
@@ -256,7 +272,13 @@ fn apply(
     false
 }
 
-fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, fault: Fault) {
+fn trace(
+    request: [u8; 2],
+    proposals: &[Allocation],
+    sibling: u8,
+    full: Option<[u8; 2]>,
+    fault: Fault,
+) {
     let mut scheduler = Scheduler::new();
     for (op, amounts) in [(1, request), (2, [1, 2])] {
         let mut spec = spec(id(op), Orchestration::Leaf).unwrap();
@@ -333,20 +355,27 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
             full: true,
             ..first
         },
-    ]
-    .into_iter()
-    .chain(proposals.iter().copied())
-    {
+        Allocation {
+            lease: 1,
+            amounts: request,
+            full: true,
+        },
+        Allocation {
+            lease: 2,
+            amounts: request,
+            full: true,
+        },
+    ] {
         if apply(&mut scheduler, &mut expected, proposal, fault) {
             return;
         }
     }
-    if finish {
+    if let Some(amounts) = full {
         if apply(
             &mut scheduler,
             &mut expected,
             Allocation {
-                amounts: [request[0] + 1, request[1] + 1],
+                amounts,
                 full: true,
                 ..first
             },
@@ -355,8 +384,14 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
             return;
         }
     }
+    for &proposal in proposals {
+        if apply(&mut scheduler, &mut expected, proposal, fault) {
+            return;
+        }
+    }
+    let admitted = expected.phase == OperationPhase::Admitted;
     expected.revision += 1;
-    if finish {
+    if admitted {
         expected.held = None;
         expected.phase = OperationPhase::Terminal;
     } else {
@@ -384,7 +419,7 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
     ) {
         return;
     }
-    if !finish {
+    if !admitted {
         expected.revision += 1;
         expected.held = None;
         expected.phase = OperationPhase::Terminal;
@@ -406,53 +441,80 @@ proptest! {
     #[test]
     fn partial_capacity_matches_an_independent_resource_ledger(
         cpu in 1..8_u8, memory in 1..8_u8,
-        proposals in proptest::collection::vec((0..4_u8, 0..10_u8, 0..10_u8), 0..24),
+        proposals in proptest::collection::vec((0..4_u8, 0..10_u8, 0..10_u8, any::<bool>()), 0..24),
     ) {
-        let proposals: Vec<_> = proposals.into_iter().map(|(lease, cpu, memory)| Allocation { lease, amounts: [cpu, memory], full: false }).collect();
+        let proposals: Vec<_> = proposals.into_iter().map(|(lease, cpu, memory, full)| Allocation { lease, amounts: [cpu, memory], full }).collect();
         for sibling in 0..2 {
-            for finish in [false, true] { trace([cpu, memory], &proposals, sibling, finish, Fault::None); }
+            for full in [None, Some([cpu, memory]), Some([cpu + 1, memory + 1])] {
+                trace([cpu, memory], &proposals, sibling, full, Fault::None);
+            }
         }
+    }
+}
+
+#[test]
+fn partial_cancellation_keeps_capacity_until_fenced_release() {
+    for sibling in 0..2 {
+        trace([3, 2], &[], sibling, None, Fault::None);
     }
 }
 
 #[test]
 #[should_panic(expected = "partial reservation rewound retained capacity")]
 fn negative_control_rewinds_partial_capacity() {
-    trace([3, 2], &[], 0, false, Fault::Rewind);
+    trace([3, 2], &[], 0, None, Fault::Rewind);
 }
 
 #[test]
 #[should_panic(expected = "foreign partial lease was accepted")]
 fn negative_control_changes_partial_placement() {
-    trace([3, 2], &[], 0, false, Fault::ForeignPlacement);
+    trace([3, 2], &[], 0, None, Fault::ForeignPlacement);
 }
 
 #[test]
 #[should_panic(expected = "foreign partial lease was accepted")]
 fn negative_control_changes_partial_reservation_identity() {
-    trace([3, 2], &[], 0, false, Fault::ForeignReservation);
+    trace([3, 2], &[], 0, None, Fault::ForeignReservation);
 }
 
 #[test]
 #[should_panic(expected = "excess partial reservation was accepted")]
 fn negative_control_accepts_excess_partial_capacity() {
-    trace([3, 2], &[], 0, false, Fault::Excess);
+    trace([3, 2], &[], 0, None, Fault::Excess);
 }
 
 #[test]
 #[should_panic(expected = "underfunded full reservation was accepted")]
 fn negative_control_starts_underfunded_work() {
-    trace([3, 2], &[], 0, false, Fault::Underfunded);
+    trace([3, 2], &[], 0, None, Fault::Underfunded);
 }
 
 #[test]
 #[should_panic(expected = "readiness ignored independently retained capacity")]
 fn negative_control_ignores_partial_capacity_when_scheduling() {
-    trace([3, 2], &[], 0, false, Fault::IgnoreHeld);
+    trace([3, 2], &[], 0, None, Fault::IgnoreHeld);
 }
 
 #[test]
 #[should_panic(expected = "available capacity differs from independent ledger")]
 fn negative_control_charges_a_reservation_twice() {
-    trace([3, 2], &[], 0, false, Fault::DuplicateHeld);
+    trace([3, 2], &[], 0, None, Fault::DuplicateHeld);
+}
+
+#[test]
+#[should_panic(expected = "foreign partial lease was accepted")]
+fn negative_control_changes_full_admission_placement() {
+    trace([3, 2], &[], 0, None, Fault::ForeignFullPlacement);
+}
+
+#[test]
+#[should_panic(expected = "foreign partial lease was accepted")]
+fn negative_control_changes_full_admission_identity() {
+    trace([3, 2], &[], 0, None, Fault::ForeignFullReservation);
+}
+
+#[test]
+#[should_panic(expected = "valid partial history was rejected")]
+fn negative_control_rejects_an_exact_resource_full_match() {
+    trace([3, 2], &[], 0, Some([3, 2]), Fault::RejectExactFull);
 }
