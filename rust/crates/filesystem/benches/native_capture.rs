@@ -19,6 +19,42 @@ fn main() {
     divan::main();
 }
 
+#[divan::bench(args = [1048576, 16777216], sample_count = 3, sample_size = 1)]
+fn native_range_read(bencher: divan::Bencher, bytes: usize) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let source = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(source.path(), vec![b'x'; bytes]).unwrap();
+    let cancellation = CancellationToken::new();
+    let original =
+        acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let meter = original.runtime_meter();
+    let file = acyclic_native_runtime::NativeFile::from_file(
+        std::fs::File::open(source.path()).unwrap(),
+        Some(acyclic_native_runtime::NativeFileMeter::Owned(
+            meter.clone(),
+        )),
+    )
+    .map_err(|(error, _)| error)
+    .unwrap();
+    bencher
+        .counter(divan::counter::BytesCount::new(bytes as u64))
+        .bench_local(|| {
+            let chunk = runtime
+                .block_on(
+                    file.read_bounded_async(0, bytes, meter.clone(), true)
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(chunk.0.len(), bytes);
+            assert_eq!(chunk.0.first(), Some(&b'x'));
+            assert_eq!(chunk.0.last(), Some(&b'x'));
+            chunk
+        });
+}
+
 #[divan::bench(args = [(128, 0), (128, 80), (1024, 0)], sample_count = 3, sample_size = 1)]
 fn rescan(bencher: divan::Bencher, (count, bytes): (u32, usize)) {
     let runtime = tokio::runtime::Builder::new_current_thread()

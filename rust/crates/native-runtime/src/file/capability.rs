@@ -331,11 +331,11 @@ impl NativeFile {
                     data.try_reserve_exact(length)
                         .map_err(|error| observer.allocation_failed(error))?;
                     allocation.reconcile_capacity(data.capacity())?;
-                    data.resize(length, 0);
-                    let filled = super::range::read_bounded_slice(
+                    let filled = super::range::read_bounded_spare(
                         file,
                         offset,
                         &mut data,
+                        length,
                         require_full,
                         observer.as_ref(),
                     )?;
