@@ -355,6 +355,7 @@ struct Journal(
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
     AtomicUsize,
     AtomicUsize,
+    AtomicUsize,
 );
 
 impl Journal {
@@ -593,6 +594,9 @@ impl ExecutionJournal for Journal {
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.4.fetch_add(1, Ordering::SeqCst);
+            if reference.descriptor().media_type() == "text/plain" {
+                self.5.fetch_add(1, Ordering::SeqCst);
+            }
             self.1
                 .lock()
                 .unwrap()
@@ -694,6 +698,7 @@ mod invocation_bounds;
 mod output_bounds;
 mod recovery;
 mod replay;
+mod summary_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

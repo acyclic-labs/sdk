@@ -301,6 +301,16 @@ impl LocalHarness {
         prompt: &str,
         settings: &Value,
     ) -> Result<Value> {
+        self.retain_settings(operation, settings).await?;
+        let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
+        self.refresh_command_task(task).await?;
+        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+    }
+    pub(super) async fn retain_settings(
+        &self,
+        operation: OperationId,
+        settings: &Value,
+    ) -> Result<()> {
         if !settings.is_object() {
             return Err(Error::Invalid("settings must be an object".into()));
         }
@@ -342,9 +352,7 @@ impl LocalHarness {
                 Err(error) => return Err(storage(error)),
             }
         }
-        let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
-        self.refresh_command_task(task).await?;
-        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
+        Ok(())
     }
     async fn direct_tool(
         &self,

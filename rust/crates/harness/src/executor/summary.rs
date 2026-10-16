@@ -9,7 +9,7 @@ impl StockExecution<'_> {
         step: u32,
         source: crate::context::Context,
         instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
+    ) -> Result<(crate::context::ContextSummary, String)> {
         if parent.is_some_and(|parent| step >= parent.max_steps) {
             return Err(stock_boundary(
                 self.io,
@@ -144,7 +144,7 @@ impl StockExecution<'_> {
         step: u32,
         source: (u32, [u8; 32]),
         text: String,
-    ) -> Result<crate::context::ContextSummary> {
+    ) -> Result<(crate::context::ContextSummary, String)> {
         let (source_messages, source_digest) = source;
         let output_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
@@ -169,6 +169,6 @@ impl StockExecution<'_> {
             crate::executor::preparation_format(format_args!("summary:{step}:provenance"), work)
         })?;
         stage_json(journal, operation_id, &provenance_key, &summary, self.io).await?;
-        Ok(summary)
+        Ok((summary, text))
     }
 }

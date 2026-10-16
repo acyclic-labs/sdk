@@ -79,13 +79,14 @@ impl LocalHarness {
         }
         let prompt = self.prompt_context(Some(parent), prompt).await?;
         let (receive, model) = self.stage_turn(operation, &prompt).await?;
-        self.admit_turn(operation, parent, receive, model).await
+        self.admit_turn(operation, Some(parent), receive, model)
+            .await
     }
 
     pub(super) async fn admit_turn(
         &self,
         operation: OperationId,
-        parent: TaskId,
+        parent: Option<TaskId>,
         receive: WorkflowCommand,
         model: WorkflowCommand,
     ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
@@ -93,17 +94,21 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let record = self.runtime.task_host().observe_admission(parent).await?;
-        self.runtime
-            .harness()
-            .durable_context(parent, record.operation_id, None)
-            .await?
-            .admit(
-                operation,
-                &definition,
-                serde_json::json!({"receive":receive,"model":model}),
-            )
-            .await
+        let input = serde_json::json!({"receive":receive,"model":model});
+        if let Some(parent) = parent {
+            let record = self.runtime.task_host().observe_admission(parent).await?;
+            self.runtime
+                .harness()
+                .durable_context(parent, record.operation_id, None)
+                .await?
+                .admit(operation, &definition, input)
+                .await
+        } else {
+            self.runtime
+                .harness()
+                .admit(operation, &definition, input, None)
+                .await
+        }
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(

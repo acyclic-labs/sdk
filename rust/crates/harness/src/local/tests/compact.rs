@@ -9,7 +9,7 @@ fn admitted(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>) -> c
 }
 
 #[tokio::test]
-async fn manual_summary_recovers_every_publication_cut_and_never_recaptures_published_source()
+async fn manual_summary_recovers_source_command_and_mailbox_publication_cuts_without_recapture()
 -> Result<()> {
     for cut in 0..3 {
         for after in [false, true] {
@@ -21,7 +21,11 @@ async fn manual_summary_recovers_every_publication_cut_and_never_recaptures_publ
             ]);
             let config = || volume_config(directory.path(), project.clone(), provider.clone());
             let local = LocalHarness::open(config()?).await?;
-            let target = admitted(local.submit(OperationId::new(), "original prompt").await?);
+            let target_operation = OperationId::new();
+            local
+                .retain_settings(target_operation, &json!({"model":"selected-summary"}))
+                .await?;
+            let target = admitted(local.submit(target_operation, "original prompt").await?);
             let operation = OperationId::new();
             let publisher = local.input_publisher()?;
             let interrupted = context::crash_cuts::Interrupted::new(publisher.as_ref(), cut, after);
@@ -62,6 +66,7 @@ async fn manual_summary_recovers_every_publication_cut_and_never_recaptures_publ
             );
             assert!(request.tools.is_empty());
             assert!(request.max_output_tokens.is_some());
+            assert_eq!(request.model.name, "selected-summary");
             let requests = provider.requests().len();
             // Replaying the same request reuses its admitted summary task.
             assert_eq!(

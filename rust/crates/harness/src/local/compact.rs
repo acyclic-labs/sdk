@@ -23,7 +23,7 @@ impl LocalHarness {
         };
         let source = model.payload.clone();
         let task = commands::accepted(
-            self.admit_turn(operation, target, receive, model).await?,
+            self.admit_turn(operation, None, receive, model).await?,
             operation,
         )?;
         let summary = self.resume(task).await?.text;
@@ -119,6 +119,11 @@ impl LocalHarness {
         };
         let model = self
             .command_model(self.command_lineage(Some(target)).await?)
+            .await?;
+        self.retain_settings(operation, &json!({"model":model.name}))
+            .await?;
+        let model = self
+            .command_model(vec![crate::runtime::task_id_for_admission(operation)])
             .await?;
         let capacity = self.provider.context_capacity(&model)?;
         let output =

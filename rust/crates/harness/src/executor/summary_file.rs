@@ -60,7 +60,7 @@ impl StockExecution<'_> {
         })?;
         #[cfg(feature = "filesystem")]
         let _instruction_hold = self.io.map(|io| io.guard_owned(_owned)).transpose()?;
-        let summary = self
+        let (_, text) = self
             .summarize(
                 journal,
                 Some(input),
@@ -71,18 +71,6 @@ impl StockExecution<'_> {
             )
             .await?;
         drop(source_hold);
-        let bytes = journal.load(&summary.output, self.io)?.await?;
-        #[cfg(feature = "filesystem")]
-        let _summary_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary output is not UTF-8",
-            )
-        })?;
-        let text = stock_string_copy(text, self.io)?;
-        drop(bytes);
         Ok(ExecutionProgress::Ready(TurnOutput {
             text,
             attachments: Vec::new(),
