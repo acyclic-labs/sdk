@@ -342,9 +342,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                             &options,
                             journal,
                             volume_work,
-                            // This store accepts the live owner fence before
-                            // every physical staging action. Reuse that check.
-                            &mut || std::future::ready(Ok::<(), Error>(())),
+                            &mut { verify },
                         )
                         .await?;
                 }

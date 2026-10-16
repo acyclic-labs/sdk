@@ -34,69 +34,110 @@ pub(crate) fn verify_native_callbacks() -> Result<()> {
     };
     // Property: native callbacks preserve the ordinary state/transition for JSON
     // trees, retain every returned value on the original ledger, and release it.
-    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
-        source_file: Some(file!()),
-        failure_persistence: Some(Box::new(
-            proptest::test_runner::FileFailurePersistence::WithSource("proptest-regressions"),
-        )),
-        ..Default::default()
-    })
-    .run(&values(), |state| {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget {
-                peak_allocation_bytes: 1_000_000,
-                allocation_operations: 10_000,
-                bytes_copied: 1_000_000,
-                bytes_encoded: 1_000_000,
-                items_examined: 10_000,
-                ..Default::default()
-            },
-            &cancellation,
-        )
-        .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
-        let baseline = work.live_allocation_bytes();
-        let mut copied = None;
-        let allocations = allocation_counter::measure(|| {
-            copied = Some(machine.initialize_with_native_work(&state, &work));
-        });
-        let (initial, initial_custody) = copied.unwrap()?;
-        prop_assert!(initial_custody.bytes() >= allocations.bytes_current as u64);
-        prop_assert_eq!(&initial, &machine.initialize(&state)?);
-        prop_assert!(initial_custody.work().shares_ledger(&work));
-        prop_assert_eq!(
-            work.live_allocation_bytes(),
-            baseline + initial_custody.bytes()
-        );
-        drop((initial, initial_custody));
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
-        let mut copied = None;
-        let allocations = allocation_counter::measure(|| {
-            copied = Some(machine.transition_with_native_work(&state, Value::Null, &work));
-        });
-        let (transition, transition_custody) = copied.unwrap()?;
-        prop_assert!(transition_custody.bytes() >= allocations.bytes_current as u64);
-        prop_assert_eq!(&transition, &machine.transition(&state, &Value::Null)?);
-        prop_assert!(transition_custody.work().shares_ledger(&work));
-        prop_assert_eq!(
-            work.live_allocation_bytes(),
-            baseline + transition_custody.bytes()
-        );
-        drop((transition, transition_custody));
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
-        cancellation.cancel();
-        prop_assert!(machine.identity_with_native_work(&work).is_err());
-        prop_assert!(machine.initialize_with_native_work(&state, &work).is_err());
-        prop_assert!(
-            machine
-                .transition_with_native_work(&state, Value::Null, &work)
-                .is_err()
-        );
-        prop_assert_eq!(work.live_allocation_bytes(), baseline);
-        Ok(())
-    })
-    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
-    verify_allocation_boundaries(&machine)
+    runner()
+        .run(&values(), |state| {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                WorkBudget {
+                    peak_allocation_bytes: 1_000_000,
+                    allocation_operations: 10_000,
+                    bytes_copied: 1_000_000,
+                    bytes_encoded: 1_000_000,
+                    items_examined: 10_000,
+                    ..Default::default()
+                },
+                &cancellation,
+            )
+            .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+            let baseline = work.live_allocation_bytes();
+            let before = work.receipt().allocation_operations;
+            let mut copied = None;
+            let allocations = allocation_counter::measure(|| {
+                copied = Some(machine.initialize_with_native_work(&state, &work));
+            });
+            let (initial, initial_custody) = copied.unwrap()?;
+            prop_assert!(work.receipt().allocation_operations - before >= allocations.count_total);
+            prop_assert!(initial_custody.bytes() >= allocations.bytes_current as u64);
+            prop_assert_eq!(&initial, &machine.initialize(&state)?);
+            prop_assert!(initial_custody.work().shares_ledger(&work));
+            prop_assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + initial_custody.bytes()
+            );
+            drop((initial, initial_custody));
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            let mut copied = None;
+            let before = work.receipt().allocation_operations;
+            let allocations = allocation_counter::measure(|| {
+                copied = Some(machine.transition_with_native_work(&state, Value::Null, &work));
+            });
+            let (transition, transition_custody) = copied.unwrap()?;
+            prop_assert!(work.receipt().allocation_operations - before >= allocations.count_total);
+            prop_assert!(transition_custody.bytes() >= allocations.bytes_current as u64);
+            prop_assert_eq!(&transition, &machine.transition(&state, &Value::Null)?);
+            prop_assert!(transition_custody.work().shares_ledger(&work));
+            prop_assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + transition_custody.bytes()
+            );
+            drop((transition, transition_custody));
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            cancellation.cancel();
+            prop_assert!(machine.identity_with_native_work(&work).is_err());
+            prop_assert!(machine.initialize_with_native_work(&state, &work).is_err());
+            prop_assert!(
+                machine
+                    .transition_with_native_work(&state, Value::Null, &work)
+                    .is_err()
+            );
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            Ok(())
+        })
+        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
+    verify_allocation_boundaries(&machine)?;
+    verify_operation_exhaustion(&machine)
+}
+
+fn verify_operation_exhaustion(machine: &Machine) -> Result<()> {
+    // Every allocation attempt, including cleanup after any exhausted operation
+    // prefix, must be admitted. Vary trees and the exhausted prefix independently.
+    runner()
+        .run(&(values(), any::<u16>()), |(state, prefix)| {
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                budget,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .unwrap();
+            let construction = work.receipt().allocation_operations;
+            drop(machine.transition_with_native_work(&state, Value::Null, &work)?);
+            let operations = work.receipt().allocation_operations - construction;
+            let limit = construction + u64::from(prefix) % (operations + 1);
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                WorkBudget {
+                    allocation_operations: limit,
+                    ..budget
+                },
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .unwrap();
+            let baseline = work.live_allocation_bytes();
+            let before = work.receipt().allocation_operations;
+            let measured = allocation_counter::measure(|| {
+                drop(machine.transition_with_native_work(&state, Value::Null, &work));
+            });
+            prop_assert!(
+                work.receipt().allocation_operations - before >= measured.count_total,
+                "{} physical allocations, {} charged operations, limit {}",
+                measured.count_total,
+                work.receipt().allocation_operations - before,
+                limit
+            );
+            prop_assert_eq!(measured.bytes_current, 0);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            Ok(())
+        })
+        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
 }
 
 fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
@@ -126,10 +167,12 @@ fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
                 .collect(),
         );
         let mut copied = None;
+        let before = work.receipt().allocation_operations;
         let measured = allocation_counter::measure(|| {
             copied = Some(machine.initialize_with_native_work(&state, &work));
         });
         let (value, custody) = copied.unwrap()?;
+        assert!(work.receipt().allocation_operations - before >= measured.count_total);
         assert!(custody.bytes() >= measured.bytes_current as u64);
         drop((value, custody));
         assert_eq!(work.live_allocation_bytes(), baseline);
@@ -163,4 +206,14 @@ fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
     assert_eq!(exhausted.live_allocation_bytes(), baseline_exhausted);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
+}
+
+fn runner() -> proptest::test_runner::TestRunner {
+    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        source_file: Some(file!()),
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::WithSource("proptest-regressions"),
+        )),
+        ..Default::default()
+    })
 }

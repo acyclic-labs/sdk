@@ -73,7 +73,7 @@ fn copy_state(
     let mut io =
         HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     io.retain_owned(header_bytes as u64)?;
-    let state = acyclic_harness::executor::json::json_value_bounded(
+    let state = acyclic_harness::executor::json::json_value_copy_bounded(
         state,
         acyclic_harness::executor::json::JsonBounds {
             maximum_bytes: remaining.bytes_encoded,

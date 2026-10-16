@@ -6,7 +6,7 @@ use serde::{
 use serde_json::ser::{CompactFormatter, Formatter};
 use std::{cell::RefCell, io::Write};
 
-struct Scope<'a> {
+pub(super) struct Scope<'a> {
     bounds: JsonBounds,
     code: Option<crate::wire::ErrorCode>,
     charge: &'a mut dyn FnMut(JsonCodecCharge) -> Result<()>,
@@ -15,11 +15,26 @@ struct Scope<'a> {
     lexical: admission::Lexical,
 }
 impl Scope<'_> {
-    fn event(&mut self, event: JsonCodecCharge) -> Result<()> {
+    pub(super) fn event(&mut self, event: JsonCodecCharge) -> Result<()> {
         if self.failed.is_some() && !matches!(event, JsonCodecCharge::Release { .. }) {
             return Err(boundary("JSON admission interrupted", self.code));
         }
         (self.charge)(event)
+    }
+    pub(super) fn map_nodes(&mut self, entries: usize) -> Result<()> {
+        // An insertion can split each ancestor and add a root. Branching is
+        // at least two, so this bounds allocations even with full ancestors.
+        let nodes = if entries == 0 {
+            1
+        } else {
+            1 + usize::BITS - entries.leading_zeros()
+        };
+        for _ in 0..nodes {
+            self.event(JsonCodecCharge::AllocationOperation {
+                bytes: std::mem::size_of::<(String, Value)>() as u64,
+            })?;
+        }
+        Ok(())
     }
     fn retain(&mut self, bytes: u64) -> Result<()> {
         let retained = checked(self.retained.checked_add(bytes), "JSON retention overflow")?;
@@ -390,7 +405,15 @@ impl<'de> Visitor<'de> for Plain<'_, '_, '_> {
             let Value::String(key) = key else {
                 return Err(de::Error::custom("key must be a string"));
             };
-            values.insert(key, map.next_value_seed(Plain(self.0))?);
+            let value = map.next_value_seed(Plain(self.0))?;
+            if !values.contains_key(&key) {
+                let mut scope = self.0.borrow_mut();
+                scope.map_nodes(values.len()).map_err(|error| {
+                    scope.stop(error);
+                    de::Error::custom("JSON admission interrupted")
+                })?;
+            }
+            values.insert(key, value);
         }
         Ok(Value::Object(values))
     }
@@ -535,6 +558,35 @@ pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     scope.retained = 0;
     Ok(value)
+}
+/// Copies a resident Value without a temporary document or decoder scratch.
+pub fn json_value_copy_bounded<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    value: &Value,
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut F,
+) -> Result<Value> {
+    let mut scope = scope(bounds, code, charge);
+    write(
+        value,
+        &mut scope,
+        None,
+        None,
+        None,
+        bounds.maximum_bytes,
+        true,
+    )?;
+    let retained = records::json_value_retained_owned_bytes(value)?;
+    scope.retain(retained)?;
+    let copied = super::copy::value(value, &mut scope)?;
+    let actual = records::json_value_retained_owned_bytes(&copied)?;
+    scope.release(checked(
+        retained.checked_sub(actual),
+        "JSON copy capacity differs",
+    )?)?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    scope.retained = 0;
+    Ok(copied)
 }
 pub(crate) fn count_json_bytes_trusted<
     T: Serialize + ?Sized,

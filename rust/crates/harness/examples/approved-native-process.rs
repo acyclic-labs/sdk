@@ -735,7 +735,7 @@ mod recovery;
 mod task;
 use recovery::Restart;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
         if !std::env::args().any(|arg| arg == "--ignored") {

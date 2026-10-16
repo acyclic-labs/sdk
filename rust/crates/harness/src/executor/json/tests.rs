@@ -23,6 +23,30 @@ mod digest_properties {
     }
 
     proptest! {
+        // Every B-tree split/root allocation must be admitted before insertion.
+        #[test]
+        fn plain_maps_charge_at_least_the_physical_allocations(
+            entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..128),
+        ) {
+            let legacy_operations = 1 + entries.keys().filter(|key| !key.is_empty()).count() as u64;
+            let value = Value::Object(entries.into_iter().map(|(key, value)| (key, Value::from(value))).collect());
+            let mut operations = 0;
+            let mut copied = None;
+            let measured = allocation_counter::measure(|| {
+                copied = Some(json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                    if let JsonCodecCharge::AllocationOperation { bytes } = event {
+                        operations += u64::from(bytes != 0);
+                    }
+                    Ok(())
+                }));
+            });
+            prop_assert_eq!(copied.unwrap().unwrap(), value);
+            prop_assert!(operations >= measured.count_total);
+            // Negative control: the previous buffer/string-only charges omit
+            // at least the root node for every generated nonempty map.
+            prop_assert!(legacy_operations < measured.count_total);
+        }
+
         // Property: canonical identity and hash charges stay exact, while the
         // final encoded buffer is absent and all temporary custody is released.
         #[test]
@@ -57,6 +81,40 @@ const BOUNDS: JsonBounds = JsonBounds {
     maximum_items: 4_096,
     maximum_depth: 32,
 };
+
+#[test]
+fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> {
+    let value = serde_json::json!({"$serde_json::private::RawValue": ["\n", {"": null}]});
+    let copied = json_value_copy_bounded(&value, BOUNDS, None, &mut |_| Ok(()))?;
+    assert_eq!(copied, value);
+    for bounds in [
+        JsonBounds {
+            maximum_bytes: 1,
+            ..BOUNDS
+        },
+        JsonBounds {
+            maximum_items: 1,
+            ..BOUNDS
+        },
+        JsonBounds {
+            maximum_depth: 1,
+            ..BOUNDS
+        },
+    ] {
+        let mut allocations = 0;
+        assert!(
+            json_value_copy_bounded(&value, bounds, None, &mut |event| {
+                if matches!(event, JsonCodecCharge::AllocationOperation { .. }) {
+                    allocations += 1;
+                }
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(allocations, 0);
+    }
+    Ok(())
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
