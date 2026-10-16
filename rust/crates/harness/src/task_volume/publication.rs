@@ -23,12 +23,10 @@ where
                 if model_checking::enabled(model_checking::Fault::StopAfterGenerationConflict) {
                     return Err(Error::Conflict(generation).into());
                 }
-                if current.volume != generation.volume
-                    || current.epoch != generation.epoch
-                    || current.position < generation.position
-                {
-                    return Err(Error::ResetRequired.into());
-                }
+                let current = super::refresh::advanced(current, &generation)?;
+                volume
+                    .validate_anchor(generation.position, &generation.commit)
+                    .await?;
                 generation = current;
             }
             result => return result.map_err(Into::into),
@@ -38,3 +36,6 @@ where
 
 #[cfg(all(test, acyclic_harness_loom))]
 mod models;
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;

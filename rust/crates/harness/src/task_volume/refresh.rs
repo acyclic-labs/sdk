@@ -84,7 +84,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
+pub(super) fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
     if current.volume != expected.volume
         || current.epoch != expected.epoch
         || current.position <= expected.position
