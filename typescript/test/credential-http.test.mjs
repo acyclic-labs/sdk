@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import fc from "fast-check";
+import { credentialGetter, credentialGetterKinds } from "./credential-getters.js";
+import { WorkersDeploymentClient } from "../packages/workers/src/deployment.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { HttpStreamProvider } from "../packages/stream/src/http.js";
 import { HttpObjectsV1 } from "../packages/objects/src/v1-http.js";
@@ -36,7 +38,7 @@ function handshake() {
 }
 
 test("HTTP clients renew for each request and never fall back to fixed credentials", async () => {
-  await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), async values => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), fc.constantFrom(...credentialGetterKinds), async (values, kind) => {
     for (const product of ["streams", "fs", "objects", "machines", "inference"]) {
       let calls = 0;
       const sent = [];
@@ -46,10 +48,7 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         if (product === "fs" && sent.length === 1) return handshake();
         throw new Error("fixture stopped after observing request");
       };
-      const options = { endpoint: "https://service.example.test", token: "stale", bearerToken: "stale", credential: async () => values[calls++], fetcher, fetch: fetcher };
-      let reads = 0;
-      const callback = options.credential;
-      Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
+      const options = credentialGetter({ endpoint: "https://service.example.test", token: "stale", bearerToken: "stale", fetcher, fetch: fetcher }, async () => values[calls++], kind);
       let invoke;
       let release;
       switch (product) {
@@ -66,26 +65,25 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         expect(calls).toBe(values.length);
         await expect(invoke()).rejects.toThrow();
         expect(sent.length).toBe(values.length);
-        expect(reads).toBe(1);
+        expect(options.credentialReads()).toBe(1);
       } finally { release?.(); }
     }
-  }), { numRuns: 32 });
+  }), { numRuns: 32, examples: credentialGetterKinds.map(kind => [["fresh-a", "fresh-b"], kind]) });
 });
 
-test("environment constructors read enumerable credential getters once", async () => {
+test("environment constructors read every credential getter shape once", async () => {
   const originalFetch = globalThis.fetch;
   try {
     for (const product of ["machines", "inference"]) {
+      for (const kind of credentialGetterKinds) {
       let calls = 0;
-      let reads = 0;
       const sent = [];
       globalThis.fetch = async (_input, init) => {
         sent.push(new Headers(init.headers).get("authorization"));
         throw new Error("fixture stopped after header");
       };
       const callback = () => `fresh-${++calls}`;
-      const options = { endpoint: "https://service.example.test", token: "stale" };
-      Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
+      const options = credentialGetter({ endpoint: "https://service.example.test", token: "stale" }, callback, kind);
       let invoke;
       if (product === "machines") {
         const client = HttpMachinesProvider.fromEnv(options);
@@ -95,8 +93,25 @@ test("environment constructors read enumerable credential getters once", async (
         invoke = () => client.client.listModels();
       }
       for (let index = 0; index < 3; index++) await expect(invoke()).rejects.toThrow();
-      expect(reads).toBe(1);
+      expect(options.credentialReads()).toBe(1);
       expect(sent).toEqual(["Bearer fresh-1", "Bearer fresh-2", "Bearer fresh-3"]);
+      }
     }
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("Workers preserves every getter shape through Actors delegation", async () => {
+  for (const kind of credentialGetterKinds) {
+    const sent = [];
+    let calls = 0;
+    const options = credentialGetter({ endpoint: "https://service.example.test", token: "stale",
+      binding: { connect: async () => ({ withCredential: async (_method, _bytes, token) => {
+        sent.push(token); return new Uint8Array();
+      } }) },
+    }, () => `fresh-${++calls}`, kind);
+    const client = new WorkersDeploymentClient(options, { put: async () => {} });
+    for (let i = 0; i < 3; i++) await client.delete({ actorId: "actor-a" });
+    expect(options.credentialReads()).toBe(1);
+    expect(sent).toEqual(["fresh-1", "fresh-2", "fresh-3"]);
+  }
 });
