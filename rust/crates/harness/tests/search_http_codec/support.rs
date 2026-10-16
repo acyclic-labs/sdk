@@ -107,13 +107,16 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     )
     .await
     .unwrap();
-    let published = tokio::time::timeout(std::time::Duration::from_secs(1), client.changes.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .file
-        .unwrap();
+    let published = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let change = client.changes.next().await.unwrap().unwrap();
+            if let Some(file) = change.file {
+                break file;
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(published.key, result);
     let outcome: SearchOutcome = serde_json::from_slice(&published.bytes).unwrap();
     match expected {

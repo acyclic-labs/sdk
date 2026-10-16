@@ -4,7 +4,7 @@ use crate::{
     test_support::{ScriptedSearch, ScriptedSearchProvider},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::FutureExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use serde_json::json;
 use std::cell::Cell;
 
@@ -18,6 +18,24 @@ struct Case {
     authorized: bool,
     steps: Vec<ScriptedSearch>,
     expected: SearchOutcome,
+}
+
+async fn published(client: &mut crate::task_volume::Observation) -> Result<FileValue> {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let change = client
+                .changes
+                .next()
+                .await
+                .expect("live query ended")
+                .map_err(storage)?;
+            if let Some(file) = change.file {
+                return Ok(file);
+            }
+        }
+    })
+    .await
+    .expect("live query did not publish the result")
 }
 
 #[tokio::test]
@@ -96,14 +114,7 @@ async fn search_file_scenarios() -> Result<()> {
                 case.name
             );
             if case.submit {
-                let change =
-                    tokio::time::timeout(std::time::Duration::from_secs(1), client.changes.next())
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .map_err(storage)?
-                        .file
-                        .unwrap();
+                let change = published(&mut client).await?;
                 assert_eq!(change.key, result);
                 let outcome: SearchOutcome = serde_json::from_slice(&change.bytes).unwrap();
                 assert_eq!(outcome, case.expected, "{}", case.name);
@@ -200,14 +211,7 @@ async fn host_worker_follows_requests_and_clients_follow_results() -> Result<()>
                 )
                 .await
                 .map_err(storage)?;
-            let observed =
-                tokio::time::timeout(std::time::Duration::from_secs(1), client.changes.next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .map_err(storage)?
-                    .file
-                    .unwrap();
+            let observed = published(&mut client).await?;
             assert_eq!(observed.key, result);
             assert_eq!(
                 serde_json::from_slice::<SearchOutcome>(&observed.bytes).unwrap(),
