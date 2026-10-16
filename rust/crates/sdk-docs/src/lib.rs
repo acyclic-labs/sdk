@@ -19,6 +19,7 @@ mod concrete_versions;
 pub mod historical;
 mod path_identity;
 mod public_api;
+mod relative_spans;
 mod render_cache;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
