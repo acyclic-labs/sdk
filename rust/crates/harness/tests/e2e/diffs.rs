@@ -19,7 +19,7 @@ pub(super) async fn run(case: DiffCase) -> TestResult {
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
-    let (host, volume, workspace, reader) = diff_workspace::seed(&directory, &case).await?;
+    let (host, volume, workspace, reader) = diff_workspace::seed(&directory, &case.seed).await?;
     let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;

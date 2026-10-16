@@ -1,0 +1,31 @@
+{
+  "responses":[
+    [
+      "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\ndata: {\"typ",
+      "e\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":",
+      "\"reason\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"think\"}]}}\n\ndata: {\"type\":",
+      "\"response.output_text.delta\",\"delta\":\"hé\"}\n\ndata: {\"type\":\"response.output_text.del",
+      "ta\",\"delta\":\"🦀\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",",
+      "\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"reasoning","delta":"think"},
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {
+          "kind":"reasoning_block",
+          "block":{
+            "kind":"summary",
+            "text":"think",
+            "origin":{"provider":"responses","model":"model"},
+            "outcome":"preserved-readable"
+          }
+        },
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ]
+  }
+}

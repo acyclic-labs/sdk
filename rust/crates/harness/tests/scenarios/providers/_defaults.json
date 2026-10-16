@@ -1,0 +1,11 @@
+{
+  "driver":"provider",
+  "prompt":"PROVIDER_FIXTURE_PROMPT_73",
+  "seed":{"plans/a.md":"before\n"},
+  "chunk_bytes":4096,
+  "expect":{
+    "text":"hé🦀",
+    "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed"}],
+    "files":{"plans/a.md":"before\n","plans/missing.md":null}
+  }
+}

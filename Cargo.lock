@@ -306,6 +306,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-providers",
  "acyclic-harness-tui",
  "acyclic-machines",
  "acyclic-markdown",

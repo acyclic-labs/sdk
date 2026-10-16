@@ -1,0 +1,35 @@
+{
+  "responses":[
+    [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"n",
+      "ame\":\"write\",\"arguments\":\"{\\\"path\\\":\\\"plans/a.md\\\",\\\"text\\\":\\\"after\\\\n\\",
+      "\",\\\"media_type\\\":\\\"text/markdown\\\",\\\"display_name\\\":\\\"a.md\\\"}\"}}]}}]}\n\ndat",
+      "a: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\"",
+      ":5,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n"
+    ],
+    [
+      "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\ndata: {\"choices\":",
+      "[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens",
+      "\":1}}\n\ndata: [DONE]\n\n"
+    ]
+  ],
+  "expect":{
+    "text":"done",
+    "events":[
+      [
+        {
+          "kind":"tool_call",
+          "name":"write",
+          "arguments":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"},
+          "metadata":{"provider_call":{"provider":"chat","id":"call"}}
+        },
+        {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
+      ],
+      [
+        {"kind":"content","delta":"done"},
+        {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
+      ]
+    ],
+    "files":{"plans/a.md":"after\n"}
+  }
+}

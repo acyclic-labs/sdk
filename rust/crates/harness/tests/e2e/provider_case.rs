@@ -1,0 +1,50 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{collections::BTreeMap, num::NonZeroUsize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    Anthropic,
+    Responses,
+    Chat,
+    Gemini,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCase {
+    pub protocol: Protocol,
+    pub prompt: String,
+    pub seed: BTreeMap<String, String>,
+    pub responses: Vec<Vec<String>>,
+    pub chunk_bytes: NonZeroUsize,
+    pub expect: Expectations,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expectations {
+    pub text: String,
+    pub events: Vec<Vec<Value>>,
+    pub endpoint: String,
+    pub frames: Vec<Value>,
+    pub files: BTreeMap<String, Option<String>>,
+}
+
+impl ProviderCase {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.prompt.is_empty()
+            || self.responses.is_empty()
+            || self.responses.len() > 8
+            || self.responses.len() != self.expect.events.len()
+            || self.responses.iter().any(|response| {
+                response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
+            })
+            || self.expect.frames.is_empty()
+        {
+            return Err("invalid bounded provider scenario");
+        }
+        Ok(())
+    }
+}

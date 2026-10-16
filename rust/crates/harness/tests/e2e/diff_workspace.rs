@@ -1,4 +1,4 @@
-use super::{TestResult, diff_case::DiffCase};
+use super::TestResult;
 use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey,
@@ -23,7 +23,7 @@ pub(super) fn temporary() -> std::io::Result<tempfile::TempDir> {
 
 pub(super) async fn seed(
     directory: &Path,
-    case: &DiffCase,
+    seed: &std::collections::BTreeMap<String, String>,
 ) -> TestResult<(Arc<Host>, VolumeRef, WorkspaceRef, Arc<Reader>)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = acyclic_harness::resources::ProviderRef::new(
@@ -48,14 +48,10 @@ pub(super) async fn seed(
     let mut writes = vec![WorkspaceMutation::CreateDirectory {
         path: "/plans".into(),
     }];
-    writes.extend(
-        case.seed
-            .iter()
-            .map(|(path, text)| WorkspaceMutation::PutFile {
-                path: format!("/{path}"),
-                bytes: text.as_bytes().to_vec().into(),
-            }),
-    );
+    writes.extend(seed.iter().map(|(path, text)| WorkspaceMutation::PutFile {
+        path: format!("/{path}"),
+        bytes: text.as_bytes().to_vec().into(),
+    }));
     host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)
         .await?;
     let issuer = AuthorityIssuer::new(

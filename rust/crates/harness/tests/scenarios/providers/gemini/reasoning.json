@@ -1,0 +1,30 @@
+{
+  "responses":[
+    [
+      "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"think\",\"thought\":true}]}}]}\n\n",
+      "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hé\"}]}}]}\n\ndata: {\"candidates",
+      "\":[{\"content\":{\"parts\":[{\"text\":\"🦀\"}]}}]}\n\ndata: {\"candidates\":[{\"finishReason\"",
+      ":\"STOP\"}],\"responseId\":\"run\",\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesToken",
+      "Count\":1}}\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"reasoning","delta":"think"},
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {
+          "kind":"reasoning_block",
+          "block":{
+            "kind":"readable",
+            "text":"think",
+            "origin":{"provider":"gemini","model":"model"},
+            "outcome":"preserved-readable"
+          }
+        },
+        {"kind":"completed","metadata":{"usage":{"promptTokenCount":5,"candidatesTokenCount":1}}}
+      ]
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "responses":[
+    [
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"functio",
+      "n_call\",\"id\":\"fc\",\"call_id\":\"call\",\"name\":\"write\",\"arguments\":\"\"}}\n\ndata: {",
+      "\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"path\\",
+      "\":\\\"plans/a.md\\\",\\\"text\\\":\\\"after\\\\n\\\",\\\"media_type\\\":\\\"text/markdown\\\"",
+      ",\\\"display_name\\\":\\\"a.md\\\"}\"}\n\ndata: {\"type\":\"response.function_call_arguments.d",
+      "one\",\"output_index\":1,\"arguments\":\"{\\\"path\\\":\\\"plans/a.md\\\",\\\"text\\\":\\\"aft",
+      "er\\\\n\\\",\\\"media_type\\\":\\\"text/markdown\\\",\\\"display_name\\\":\\\"a.md\\\"}\"}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",\"status\":\"completed\",",
+      "\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+    ],
+    [
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\ndata: {\"type\":\"respon",
+      "se.completed\",\"response\":{\"id\":\"run\",\"status\":\"completed\",\"usage\":{\"input_tokens",
+      "\":5,\"output_tokens\":1}}}\n\n"
+    ]
+  ],
+  "expect":{
+    "text":"done",
+    "events":[
+      [
+        {
+          "kind":"tool_call",
+          "name":"write",
+          "arguments":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"},
+          "metadata":{"provider_call":{"provider":"responses","id":"call"}}
+        },
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ],
+      [
+        {"kind":"content","delta":"done"},
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ],
+    "files":{"plans/a.md":"after\n"}
+  }
+}
