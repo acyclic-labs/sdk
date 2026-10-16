@@ -310,7 +310,13 @@ fn separate_queue_mutant_fails_the_same_oracle_and_shrinks() {
         failure_persistence: None,
         ..Config::default()
     });
-    let strategy = (actions(), 0_u8..8);
+    // The mutant has a known one-replacement minimum. Shrink arbitrary
+    // prehistory directly to that minimum rather than spending the shrink
+    // budget simplifying irrelevant fields in every preceding command.
+    let strategy = prop_oneof![
+        Just((Vec::<Action>::new(), 0_u8)),
+        (actions(), 0_u8..8).no_shrink(),
+    ];
     let result = runner.run(&strategy, |(mut actions, wakes)| {
         // The final replacement selects Open before the independent drop queue.
         actions.push((2, 0, wakes << 3));
