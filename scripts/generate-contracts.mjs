@@ -8,7 +8,8 @@ import { buildContractTargets, runContractTarget } from "./contract-targets.mjs"
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
 const modules = [
-  "generate-runtime-routes.mjs",
+  "generate-actors-routes.mjs",
+  "generate-inference-routes.mjs",
   "filesystem-napi-types.mjs",
   "stream-napi-types.mjs",
   "actors-napi-types.mjs",
@@ -31,7 +32,6 @@ const modules = [
 ].filter(name => {
   const families = process.argv.slice(3);
   if (!families.length) return true;
-  if (name === "generate-runtime-routes.mjs") return families.some(name => ["actors", "inference"].includes(name));
   return families.some(family => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`));
 });
 
