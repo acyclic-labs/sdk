@@ -388,6 +388,7 @@ fn lease_expiry_and_authority_changes_fence_the_atomic_publication() {
                     expected: 1,
                 }],
                 expiry.then_some(2),
+                None,
             ));
             worker.join().map_err(|_| "owner panicked")??;
             let committed = result.is_ok();

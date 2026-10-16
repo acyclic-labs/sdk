@@ -127,6 +127,16 @@ name = "e2e"
 path = "tests/e2e/main.rs"
 required-features = ["filesystem", "test-support"]
 
+[[test]]
+name = "search-http-codec"
+path = "tests/search_http_codec.rs"
+required-features = ["filesystem", "search-http", "test-support"]
+
+[[test]]
+name = "search-request"
+path = "tests/search_request.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 
@@ -167,6 +177,7 @@ hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
 mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
+search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
@@ -226,6 +237,13 @@ getrandom = { workspace = true, optional = true }
 loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
+keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
 tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }

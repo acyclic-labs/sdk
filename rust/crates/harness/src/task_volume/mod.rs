@@ -15,7 +15,9 @@ pub use schema::{
 };
 pub use source::FileQuerySource;
 
-use acyclic_stream::query_sync::Mutex;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::NativeWork;
+use crate::sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -24,6 +26,8 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+type NativeWork<'a> = Option<&'a ()>;
 
 #[cfg(feature = "test-support")]
 use crate::test_support::TaskVolumeFiles as FileIndex;
@@ -39,7 +43,7 @@ fn item_examined() {
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Authorization, work or storage failure reading ordinary volume files.
+    /// Authorization, work or storage failure accessing volume files.
     #[cfg(feature = "filesystem")]
     #[error(transparent)]
     FileRead(#[from] crate::Error),
@@ -120,7 +124,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if header.schema != SCHEMA {
+            if !matches!(header.schema, 2 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -193,6 +197,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self.path
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
+        Arc::ptr_eq(&self.provider, provider)
+    }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {
@@ -238,7 +246,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if header.schema != SCHEMA {
+        if !matches!(header.schema, 2 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
@@ -320,16 +328,19 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     /// Accepts one file event in its own append, without a batching boundary.
     pub async fn append(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.append_if(expected, write, Vec::new(), None).await
+        self.append_if(expected, write, Vec::new(), None, None)
+            .await
     }
 
     /// Accepts one delta, tool event or status change in its own append.
+    /// Native callers supply their original ledger for packing and retained bytes.
     pub async fn append_if(
         &self,
         expected: Generation,
         write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
@@ -340,9 +351,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.files.get(&write.key) == Some(write) {
             return Ok(self.generation(&index));
         }
-        let segment = segment::encode(write)?;
-        // Decode before durable action, so the accepted event is locally applicable.
-        let files = segment::decode(&segment)?;
+        let (segment, files) = segment::encode(write, work)?;
         conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,

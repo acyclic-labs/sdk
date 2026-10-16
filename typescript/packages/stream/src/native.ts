@@ -241,7 +241,7 @@ export class NativeStreamProvider implements StreamProvider {
     request.signal?.addEventListener("abort", abort, { once: true });
     if (request.signal?.aborted) abort();
     try {
-      const opened = await this.client.openChildrenResult(Buffer.from(wireRequest(input)), cancellation);
+      const opened = await (await this.requestClient(request.signal)).openChildrenResult(Buffer.from(wireRequest(input)), cancellation);
       if (request.signal?.aborted) { follow = opened.follow; return; }
       if (opened.error !== undefined) throw nativeError(opened.error, "children");
       if (opened.follow === undefined) throw new StreamError("invalid_response", "native discovery omitted its cursor");
@@ -253,6 +253,8 @@ export class NativeStreamProvider implements StreamProvider {
         if (result.value === undefined) return;
         yield checkedChild(fromBinary(wire.ChildrenResponseSchema, result.value).child, request.parent);
       }
+    } catch (error) {
+      if (!request.signal?.aborted) throw error;
     } finally {
       request.signal?.removeEventListener("abort", abort);
       if (follow !== undefined) await follow.close();

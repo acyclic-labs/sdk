@@ -137,6 +137,16 @@ struct Fence {
 }
 
 impl Markdown {
+    /// Create a stream with tables bounded to this many display columns.
+    /// Zero selects one column; the default presentation uses 80 columns.
+    /// Recreate the presentation from its source when the viewport width changes.
+    pub fn with_width(width: u16) -> Self {
+        Self {
+            state: render::Renderer::with_width(width),
+            ..Self::default()
+        }
+    }
+
     /// Append a UTF-8 text delta and return the first changed display line.
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
@@ -192,6 +202,7 @@ impl Markdown {
         if (self.inline.is_some() || self.table.is_some())
             && appended.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
         {
+            self.plain &= !appended.contains('\t');
             return old_len.min(self.visible_lines).min(budget_line);
         }
         if let Some(changed) = self.advance_inline(previous) {
@@ -285,7 +296,7 @@ impl Markdown {
 
     /// Discard this presentation when a query resets or selects another turn.
     pub fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self::with_width(self.state.render_width());
     }
 
     fn append(&mut self, delta: &str) {

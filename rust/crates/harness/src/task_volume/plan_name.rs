@@ -11,8 +11,11 @@ impl PlanName {
     /// Validates one filename in plans/, preserving spaces and Unicode.
     pub fn new(value: impl AsRef<str>) -> Result<Self> {
         let value = value.as_ref();
+        if value.is_empty() {
+            return Err(Error::InvalidPath);
+        }
         let path = format!("plans/{value}.md");
-        if value.is_empty() || value.contains('/') || path.len() > 4096 {
+        if value.contains('/') || path.len() > 4096 {
             return Err(Error::InvalidPath);
         }
         crate::conversation::validate_content_path(&path, &mut None)

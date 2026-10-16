@@ -1,4 +1,9 @@
 //! Synchronization selected only by the dedicated model command's cfg.
+#[cfg(acyclic_loom)]
+pub(crate) use acyclic_stream::query_sync::Mutex;
+#[cfg(not(acyclic_loom))]
+pub(crate) use tokio::sync::Mutex;
+
 #[path = "sync/primitives.rs"]
 mod primitives;
 pub(crate) use primitives::{Arc, atomic};

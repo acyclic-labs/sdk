@@ -779,7 +779,7 @@ async fn append_receipt<P: StreamProvider>(
         .append(
             path,
             tail,
-            &key,
+            Some(&key),
             acyclic_stream::OwnedBytes::from(bytes),
             write,
             &mut None,

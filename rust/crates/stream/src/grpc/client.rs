@@ -6,15 +6,10 @@ impl Client {
         tokio::time::timeout(
             Duration::from_secs(4),
             self.sessions.get_or_try_init(|| async {
-                let request = self.request(()).await.map_err(|error| status(&error))?;
-                let authorization = request
-                    .metadata()
-                    .get("authorization")
-                    .cloned()
-                    .ok_or(StreamError::AccessDenied)?;
                 crate::session::Client::open(
                     self.channel.clone(),
-                    authorization,
+                    self.authorization.clone(),
+                    self.credential.clone(),
                     self.session_ca.clone(),
                     self.session_verifier.clone(),
                 )
@@ -123,6 +118,7 @@ impl StreamProvider for Client {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),
+            ..Default::default()
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -136,6 +132,20 @@ impl StreamProvider for Client {
         Ok(StreamBounds {
             tail: self.tail(path).await?,
         })
+    }
+
+    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
+        let response = self
+            .unary(
+                ATTEMPT_TIMEOUT,
+                wire::TailRequest {
+                    path: path.to_string(),
+                    accepted: true,
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
+        decode_response(response, crate::wire_codec::watermarks_from_wire)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

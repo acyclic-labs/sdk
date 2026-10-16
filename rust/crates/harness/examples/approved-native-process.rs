@@ -110,6 +110,8 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    acyclic_fs::initialize_native_mount_services()?;
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -196,12 +198,23 @@ where
             None,
         )
         .await?;
+    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+    if let Some(fields) = allowances.as_object_mut() {
+        for value in fields.values_mut() {
+            *value = json!(1_000_000);
+        }
+    }
+    let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
+        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
         &issuer,
         &scope,
+        Some(&work),
     )
     .await?;
     let WorkPull::Claimed(lease) = runtime
@@ -258,16 +271,6 @@ where
     } else {
         tempfile::tempdir()?
     };
-    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    if let Some(fields) = allowances.as_object_mut() {
-        for value in fields.values_mut() {
-            *value = json!(1_000_000);
-        }
-    }
-    let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = LeaseFence::from(&lease.reservation);
     let owner = runtime
@@ -732,13 +735,17 @@ mod recovery;
 mod task;
 use recovery::Restart;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
         if !std::env::args().any(|arg| arg == "--ignored") {
             println!("approved_native_process: test");
         }
         return Ok(());
+    }
+    #[cfg(test)]
+    if std::env::args().any(|arg| arg == "--native-properties") {
+        return task::properties::verify_native_callbacks().map_err(Into::into);
     }
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
@@ -755,6 +762,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if cfg!(test) {
+        #[cfg(test)]
+        task::properties::verify_native_callbacks()?;
         run(None).await?;
         run(Some("tools/call")).await?;
         run(Some("tools/list")).await?;
