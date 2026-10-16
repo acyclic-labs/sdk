@@ -2,40 +2,44 @@ use super::*;
 
 #[test]
 fn registry_published_and_missing_locks_ignore_ambient_lock_selection() {
-    for published in [true, false] {
-        let (fixture, support) = registry_archive_fixture(false, published, None, true);
-        let foreign = support.join("foreign/Cargo.lock");
-        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
-        fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
-        let archive = support.join("registry/demo-1.0.0.crate");
-        let original_archive = fs::read(&archive).unwrap();
-        let result = run_historical_generate_mode_with_env(
-            &fixture,
-            &support,
-            Some("registry-archives"),
-            Some(&foreign),
-        );
-        assert!(result.status.success(), "{}", output_message(&result));
-        assert_eq!(
-            fs::read(&foreign).unwrap(),
-            b"invalid foreign lock must never be selected\n"
-        );
-        assert_eq!(fs::read(&archive).unwrap(), original_archive);
-        let data: Value = serde_json::from_slice(
-            &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v1.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
-            if published {
-                "published"
-            } else {
-                "docsProducer"
-            }
-        );
-        let _ = fs::remove_dir_all(fixture.root);
-        let _ = fs::remove_dir_all(fixture.output);
-    }
+    std::thread::scope(|scope| {
+        for published in [true, false] {
+            scope.spawn(move || {
+                let (fixture, support) = registry_archive_fixture(false, published, None, true);
+                let foreign = support.join("foreign/Cargo.lock");
+                fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+                fs::write(&foreign, "invalid foreign lock must never be selected\n").unwrap();
+                let archive = support.join("registry/demo-1.0.0.crate");
+                let original_archive = fs::read(&archive).unwrap();
+                let result = run_historical_generate_mode_with_env(
+                    &fixture,
+                    &support,
+                    Some("registry-archives"),
+                    Some(&foreign),
+                );
+                assert!(result.status.success(), "{}", output_message(&result));
+                assert_eq!(
+                    fs::read(&foreign).unwrap(),
+                    b"invalid foreign lock must never be selected\n"
+                );
+                assert_eq!(fs::read(&archive).unwrap(), original_archive);
+                let data: Value = serde_json::from_slice(
+                    &fs::read(fixture.output.join("releases/1.0.0/sdk-docs-data.v1.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    data["source"]["capturedSource"]["archives"][0]["resolutionLock"]["kind"],
+                    if published {
+                        "published"
+                    } else {
+                        "docsProducer"
+                    }
+                );
+                let _ = fs::remove_dir_all(fixture.root);
+                let _ = fs::remove_dir_all(fixture.output);
+            });
+        }
+    });
 }
 
 #[test]
@@ -144,47 +148,52 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
         .unwrap();
         fs::write(package.join("build.rs"), "fn main() { std::fs::write(std::path::Path::new(&std::env::var(\"CARGO_MANIFEST_DIR\").unwrap()).join(\"unverified-added.json\"), \"{}\").unwrap(); }\n").unwrap();
     }
-    for during_profile in [false, true] {
-        let (fixture, support) = registry_archive_fixture_configured(
-            false,
-            true,
-            None,
-            true,
-            "demo",
-            if during_profile {
-                Some(add_input_during_profile)
-            } else {
-                None
-            },
-        );
-        if !during_profile {
-            let unknown = fixture
-                .output
-                .join("releases/1.0.0/sources/.docs-producer/unknown-owner/config.toml");
-            fs::create_dir_all(unknown.parent().unwrap()).unwrap();
-            fs::write(unknown, "unknown producer input").unwrap();
+    std::thread::scope(|scope| {
+        for during_profile in [false, true] {
+            scope.spawn(move || {
+                let (fixture, support) = registry_archive_fixture_configured(
+                    false,
+                    true,
+                    None,
+                    true,
+                    "demo",
+                    if during_profile {
+                        Some(add_input_during_profile)
+                    } else {
+                        None
+                    },
+                );
+                if !during_profile {
+                    let unknown = fixture
+                        .output
+                        .join("releases/1.0.0/sources/.docs-producer/unknown-owner/config.toml");
+                    fs::create_dir_all(unknown.parent().unwrap()).unwrap();
+                    fs::write(unknown, "unknown producer input").unwrap();
+                }
+                let result =
+                    run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+                assert!(!result.status.success());
+                assert!(
+                    output_message(&result).contains(if during_profile {
+                        "source closure changed during qualification before manifest admission"
+                    } else {
+                        "initial imported source closure differs from verified archive inputs"
+                    }),
+                    "{}",
+                    output_message(&result)
+                );
+                assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+                if during_profile {
+                    assert!(fixture
+                        .output
+                        .join("releases/1.0.0/sources/demo-1.0.0/unverified-added.json")
+                        .exists());
+                }
+                let _ = fs::remove_dir_all(fixture.root);
+                let _ = fs::remove_dir_all(fixture.output);
+            });
         }
-        let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
-        assert!(!result.status.success());
-        assert!(
-            output_message(&result).contains(if during_profile {
-                "source closure changed during qualification before manifest admission"
-            } else {
-                "initial imported source closure differs from verified archive inputs"
-            }),
-            "{}",
-            output_message(&result)
-        );
-        assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
-        if during_profile {
-            assert!(fixture
-                .output
-                .join("releases/1.0.0/sources/demo-1.0.0/unverified-added.json")
-                .exists());
-        }
-        let _ = fs::remove_dir_all(fixture.root);
-        let _ = fs::remove_dir_all(fixture.output);
-    }
+    });
 }
 
 #[test]
@@ -210,93 +219,102 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
         let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
         fs::write(package.join("Cargo.toml"), format!("{manifest}\n[package.metadata.docs.rs]\nno-default-features=true\nfeatures=['extra']\n")).unwrap();
     }
-    for required_failure in [false, true] {
-        let (fixture, support) = registry_archive_fixture_configured(
-            false,
-            true,
-            None,
-            true,
-            "demo",
-            Some(if required_failure {
-                required_no_defaults
-            } else {
-                setup
-            }),
-        );
-        let result = run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
-        if required_failure {
-            assert!(!result.status.success());
-            assert!(output_message(&result).contains("original package requires base"));
-            assert!(
-                !fixture.output.join("sdk-docs-versions.v1.json").exists(),
-                "required upstream profile failure cannot admit the version"
-            );
-        } else {
-            assert!(result.status.success(), "{}", output_message(&result));
-            let output = fixture.output.join("releases/1.0.0");
-            let profiles: Value = serde_json::from_slice(
-                &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
-            )
-            .unwrap();
-            assert!(profiles
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|profile| profile["defaultFeatures"] == true));
-            let data: Value =
-                serde_json::from_slice(&fs::read(output.join("sdk-docs-data.v1.json")).unwrap())
+    std::thread::scope(|scope| {
+        for required_failure in [false, true] {
+            scope.spawn(move || {
+                let (fixture, support) = registry_archive_fixture_configured(
+                    false,
+                    true,
+                    None,
+                    true,
+                    "demo",
+                    Some(if required_failure {
+                        required_no_defaults
+                    } else {
+                        setup
+                    }),
+                );
+                let result =
+                    run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
+                if required_failure {
+                    assert!(!result.status.success());
+                    assert!(output_message(&result).contains("original package requires base"));
+                    assert!(
+                        !fixture.output.join("sdk-docs-versions.v1.json").exists(),
+                        "required upstream profile failure cannot admit the version"
+                    );
+                } else {
+                    assert!(result.status.success(), "{}", output_message(&result));
+                    let output = fixture.output.join("releases/1.0.0");
+                    let profiles: Value = serde_json::from_slice(
+                        &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+                    )
                     .unwrap();
-            for name in ["DefaultWire", "ExtraWire"] {
-                let item = data["families"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .flat_map(|family| family["items"].as_array().unwrap())
-                    .find(|item| item["name"] == name)
+                    assert!(profiles
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|profile| profile["defaultFeatures"] == true));
+                    let data: Value = serde_json::from_slice(
+                        &fs::read(output.join("sdk-docs-data.v1.json")).unwrap(),
+                    )
                     .unwrap();
-                let path = item["source"]["path"].as_str().unwrap();
-                assert!(path.starts_with("releases/1.0.0/generated/rustdoc/"));
-                assert!(fs::read_to_string(fixture.output.join(path))
-                    .unwrap()
-                    .contains(name));
-            }
-            let aliases: Value =
-                serde_json::from_slice(
-                    &fs::read(output.join(
-                        "sources/target/sdk-generation-generated-sources/retained/aliases.json",
-                    ))
-                    .unwrap(),
-                )
-                .unwrap();
-            assert!(
-                aliases
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .filter(|path| path.ends_with("wire.rs"))
-                    .count()
-                    >= 2,
-                "actual Cargo profiles must use distinct OUT_DIR aliases"
-            );
-            let drift = run_historical_drift(
-                &Fixture {
-                    root: fixture.root.clone(),
-                    rustdoc: output.join(".rustdoc"),
-                    output,
-                },
-                &support,
-            );
-            assert!(drift.status.success(), "{}", output_message(&drift));
+                    for name in ["DefaultWire", "ExtraWire"] {
+                        let item = data["families"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .flat_map(|family| family["items"].as_array().unwrap())
+                            .find(|item| item["name"] == name)
+                            .unwrap();
+                        let path = item["source"]["path"].as_str().unwrap();
+                        assert!(path.starts_with("releases/1.0.0/generated/rustdoc/"));
+                        assert!(fs::read_to_string(fixture.output.join(path))
+                            .unwrap()
+                            .contains(name));
+                    }
+                    let aliases: Value = serde_json::from_slice(
+                        &fs::read(output.join(
+                            "sources/target/sdk-generation-generated-sources/retained/aliases.json",
+                        ))
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    assert!(
+                        aliases
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .filter(|path| path.ends_with("wire.rs"))
+                            .count()
+                            >= 2,
+                        "actual Cargo profiles must use distinct OUT_DIR aliases"
+                    );
+                    let drift = run_historical_drift(
+                        &Fixture {
+                            root: fixture.root.clone(),
+                            rustdoc: output.join(".rustdoc"),
+                            output,
+                        },
+                        &support,
+                    );
+                    assert!(drift.status.success(), "{}", output_message(&drift));
+                }
+                let _ = fs::remove_dir_all(fixture.root);
+                let _ = fs::remove_dir_all(fixture.output);
+            });
         }
-        let _ = fs::remove_dir_all(fixture.root);
-        let _ = fs::remove_dir_all(fixture.output);
-    }
+    });
 }
 
 #[test]
 fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
-    let fixtures = ["demo-a", "demo-b", "demo-c"]
-        .map(|name| registry_archive_fixture_named(false, true, None, true, name));
+    let fixtures = std::thread::scope(|scope| {
+        let jobs = ["demo-a", "demo-b", "demo-c"].map(|name| {
+            scope.spawn(move || registry_archive_fixture_named(false, true, None, true, name))
+        });
+        jobs.map(|job| job.join().unwrap())
+    });
     let (fixture, support) = &fixtures[0];
     let mut anchors = vec![git_revision(&fixture.root)];
     for (index, (other_fixture, other)) in fixtures.iter().enumerate().skip(1) {
@@ -655,41 +673,46 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
 
 #[test]
 fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog() {
-    for mutation in ["descriptor.bin", "input.json", "schema.proto"] {
-        let (fixture, support) = historical_fixture(Some(mutation));
-        let result = run_historical_generate(&fixture, &support);
-        assert!(!result.status.success(), "{mutation} was admitted");
-        assert!(
-            output_message(&result)
-                .contains("source closure changed during qualification before manifest admission"),
-            "{mutation}: {}",
-            output_message(&result)
-        );
-        assert_eq!(
-            fs::read(fixture.root.join("rust/crates/demo").join(mutation)).unwrap(),
-            b"changed archived input"
-        );
-        let executions: Value = serde_json::from_slice(
-            &fs::read(
-                fixture
-                    .output
-                    .join("releases/1.0.0/sdk-docs-scenario-executions.v1.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            executions.as_array().unwrap().len(),
-            1,
-            "example must really execute successfully before outer drift rejects"
-        );
-        assert!(
-            !fixture.output.join("sdk-docs-versions.v1.json").exists(),
-            "mutated historical source must remain unadmitted"
-        );
-        let _ = fs::remove_dir_all(fixture.root);
-        let _ = fs::remove_dir_all(fixture.output);
-    }
+    std::thread::scope(|scope| {
+        for mutation in ["descriptor.bin", "input.json", "schema.proto"] {
+            scope.spawn(move || {
+                let (fixture, support) = historical_fixture(Some(mutation));
+                let result = run_historical_generate(&fixture, &support);
+                assert!(!result.status.success(), "{mutation} was admitted");
+                assert!(
+                    output_message(&result).contains(
+                        "source closure changed during qualification before manifest admission"
+                    ),
+                    "{mutation}: {}",
+                    output_message(&result)
+                );
+                assert_eq!(
+                    fs::read(fixture.root.join("rust/crates/demo").join(mutation)).unwrap(),
+                    b"changed archived input"
+                );
+                let executions: Value = serde_json::from_slice(
+                    &fs::read(
+                        fixture
+                            .output
+                            .join("releases/1.0.0/sdk-docs-scenario-executions.v1.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    executions.as_array().unwrap().len(),
+                    1,
+                    "example must really execute successfully before outer drift rejects"
+                );
+                assert!(
+                    !fixture.output.join("sdk-docs-versions.v1.json").exists(),
+                    "mutated historical source must remain unadmitted"
+                );
+                let _ = fs::remove_dir_all(fixture.root);
+                let _ = fs::remove_dir_all(fixture.output);
+            });
+        }
+    });
 }
 
 #[test]

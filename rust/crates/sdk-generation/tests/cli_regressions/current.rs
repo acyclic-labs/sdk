@@ -417,40 +417,89 @@ fn release_generation_requires_executed_profiles() {
     assert!(!fixture.output.join("generation-manifest.v1.json").exists());
 }
 
+fn assert_publishers_succeeded(results: &[std::process::Output; 2]) {
+    for (writer, result) in results.iter().enumerate() {
+        assert_eq!(
+            result.status.code(),
+            Some(0),
+            "publisher {writer}: {}",
+            output_message(result)
+        );
+        assert!(
+            result.stderr.is_empty(),
+            "publisher {writer}: {}",
+            output_message(result)
+        );
+    }
+}
+
 #[test]
 fn concurrent_preview_publications_are_idempotent() {
     let fixture = fixture(false);
-    let root_a = fixture.root.clone();
-    let rustdoc_a = fixture.rustdoc.clone();
-    let output_a = fixture.output.clone();
-    let first = std::thread::spawn(move || {
-        run_generate(
-            &root_a,
-            &rustdoc_a,
-            &output_a,
+    let spawn = || {
+        generate_command(
+            &fixture.root,
+            &fixture.rustdoc,
+            &fixture.output,
             "concurrent-preview",
             "preview",
             true,
         )
-    });
-    let root_b = fixture.root.clone();
-    let rustdoc_b = fixture.rustdoc.clone();
-    let output_b = fixture.output.clone();
-    let second = std::thread::spawn(move || {
-        run_generate(
-            &root_b,
-            &rustdoc_b,
-            &output_b,
-            "concurrent-preview",
-            "preview",
-            true,
-        )
-    });
-    let first = first.join().unwrap();
-    let second = second.join().unwrap();
-    assert!(first.status.success() || second.status.success());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+    };
+    let first = spawn();
+    let second = spawn();
+    assert_ne!(
+        first.id(),
+        second.id(),
+        "publication writers must be independent processes"
+    );
+    let results = [
+        first.wait_with_output().unwrap(),
+        second.wait_with_output().unwrap(),
+    ];
+    assert_publishers_succeeded(&results);
     let drift = run_drift(&fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
+fn broken_publication_lock_cannot_be_hidden_by_another_success() {
+    let fixture = fixture(false);
+    let lock = fixture.output.join(".sdk-docs-versions.v1.lock");
+    fs::create_dir_all(&lock).unwrap();
+    let run = || {
+        generate_command(
+            &fixture.root,
+            &fixture.rustdoc,
+            &fixture.output,
+            "broken-lock",
+            "preview",
+            true,
+        )
+        .output()
+        .unwrap()
+    };
+    let failed = run();
+    assert_eq!(failed.status.code(), Some(1), "{}", output_message(&failed));
+    assert!(!failed.stderr.is_empty());
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+    fs::remove_dir(lock).unwrap();
+    let succeeded = run();
+    assert_eq!(
+        succeeded.status.code(),
+        Some(0),
+        "{}",
+        output_message(&succeeded)
+    );
+    let outcomes = [failed, succeeded];
+    assert!(
+        std::panic::catch_unwind(|| assert_publishers_succeeded(&outcomes)).is_err(),
+        "the publication oracle must reject a broken lock even when the other publisher succeeds"
+    );
 }
 
 #[test]
@@ -683,7 +732,7 @@ fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims
 
 #[test]
 fn clean_relocated_profile_builds_share_generated_source_content_identity() {
-    let fixture = native_profile_fixture();
+    let fixture = feature_profile_fixture();
     fs::create_dir_all(fixture.root.join("rust/crates/helper/src")).unwrap();
     fs::write(
         fixture.root.join("rust/crates/helper/Cargo.toml"),
@@ -697,6 +746,10 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     .unwrap();
     let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
     let mut contents = fs::read_to_string(&manifest).unwrap();
+    contents = contents.replace(
+        "default = []\nextra = []",
+        "default = [\"base\"]\nbase = []\nextra = []",
+    );
     contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
     fs::write(manifest, contents).unwrap();
     assert!(Command::new("cargo")
@@ -752,20 +805,83 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
             });
         }
     });
+    let metadata = sdk_docs::rustdoc_profiles::load_metadata(
+        fixture.root.join("Cargo.toml"),
+        sdk_docs::rustdoc_profiles::CargoExecutionContext {
+            cargo_path: Some(Path::new(env!("CARGO"))),
+            lock_selection: None,
+        },
+    )
+    .unwrap();
     let dependency_paths = |checkout: &Fixture| {
+        let receipts: Value = serde_json::from_slice(
+            &fs::read(checkout.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let receipts = receipts.as_array().unwrap();
+        let host = receipts[0]["target"].as_str().unwrap();
+        let mut expected = sdk_docs::rustdoc_profiles::profiles_for_package(
+            &metadata,
+            "demo",
+            host,
+            &std::collections::BTreeSet::from([host.to_owned()]),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|profile| profile.id().0)
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            expected.len(),
+            5,
+            "the full original relocation matrix must remain"
+        );
+        expected.extend(
+            sdk_docs::rustdoc_profiles::profiles_for_package(
+                &metadata,
+                "relocation-helper",
+                host,
+                &std::collections::BTreeSet::from([host.to_owned()]),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|profile| profile.id().0),
+        );
+        assert_eq!(
+            expected.len(),
+            6,
+            "five demo profiles plus the native helper profile"
+        );
+        let actual = receipts
+            .iter()
+            .map(|receipt| receipt["profile"].as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            actual, expected,
+            "every planned profile must have an executed receipt"
+        );
         let mut paths = Vec::new();
-        for entry in fs::read_dir(&checkout.rustdoc).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-                continue;
-            }
+        for receipt in receipts {
+            let path = checkout.rustdoc.join(
+                receipt["rustdocFile"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("rustdoc/")
+                    .unwrap(),
+            );
             let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            let before = paths.len();
             for record in raw["external_crates"].as_object().unwrap().values() {
                 if record["name"] == "relocation_helper" {
                     let physical = record["path"].as_str().unwrap();
                     assert!(physical.contains(".profile-build"), "{physical}");
                     paths.push(physical.to_string());
                 }
+            }
+            if receipt["package"] == "demo" {
+                assert!(
+                    paths.len() > before,
+                    "every demo profile must retain its real dependency load path"
+                );
             }
         }
         paths.sort();

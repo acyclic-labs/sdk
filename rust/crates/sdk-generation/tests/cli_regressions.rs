@@ -361,14 +361,14 @@ fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Outp
         .unwrap()
 }
 
-fn run_generate(
+fn generate_command(
     root: &Path,
     rustdoc: &Path,
     output: &Path,
     version: &str,
     channel: &str,
     skip_scenarios: bool,
-) -> std::process::Output {
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
     command.args([
         "generate",
@@ -386,7 +386,25 @@ fn run_generate(
     if skip_scenarios {
         command.arg("--skip-scenarios");
     }
-    invoke(&mut command)
+    command
+}
+
+fn run_generate(
+    root: &Path,
+    rustdoc: &Path,
+    output: &Path,
+    version: &str,
+    channel: &str,
+    skip_scenarios: bool,
+) -> std::process::Output {
+    invoke(&mut generate_command(
+        root,
+        rustdoc,
+        output,
+        version,
+        channel,
+        skip_scenarios,
+    ))
 }
 
 fn generated_span_fixture_pair() -> (Fixture, Fixture) {
