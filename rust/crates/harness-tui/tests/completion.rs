@@ -96,6 +96,15 @@ fn quoted_and_mid_token_requests_replace_the_whole_token() {
     let request = completion_request(&editor);
     assert_eq!(request.as_ref().map(|r| r.query.as_str()), Some("src"));
     assert_eq!(request.as_ref().map(|r| r.range.clone()), Some(5..16));
+    let mut menu = CompletionMenu::default();
+    menu.refresh(&editor, &[&Files]);
+    assert!(menu.accept(&mut editor, 0));
+    assert_eq!(editor.text(), "read @src/readme.md old");
+    assert!(editor.undo());
+    assert_eq!(
+        (editor.text(), editor.cursor(), editor.anchor()),
+        ("read @src/readme old", 9, 9)
+    );
     let mut editor = Editor::new("@\"src/a b\"");
     assert_eq!(
         completion_request(&editor).map(|r| r.query),
@@ -386,8 +395,11 @@ proptest! {
     #[test]
     fn completion_round_trip_preserves_original_text_and_cursor(path in prop::collection::vec(
         any::<char>().prop_filter("path syntax", |c| !c.is_control() && *c != '"'), 1..24
-    ).prop_map(|chars| chars.into_iter().collect::<String>())) {
-        let mut editor = Editor::new("@");
+    ).prop_map(|chars| chars.into_iter().collect::<String>()), suffix in "[a-z]{0,12}") {
+        use unicode_segmentation::UnicodeSegmentation;
+        let original = format!("before @x{suffix} after");
+        let mut editor = Editor::new(&original);
+        editor.set_cursor(8, false);
         struct Single(String);
         impl CompletionProvider for Single {
             fn complete(&self, _: &CompletionRequest) -> Vec<Completion> {
@@ -397,13 +409,19 @@ proptest! {
         let provider = Single(path.clone());
         let mut menu = CompletionMenu::default(); menu.refresh(&editor, &[&provider]);
         prop_assert!(menu.accept(&mut editor, 0));
-        let accepted = editor.text().to_owned();
-        let request = completion_request(&Editor::new(accepted.trim_end()));
+        let token = if path.chars().any(char::is_whitespace) { format!("@\"{path}\"") } else { format!("@{path}") };
+        let accepted = format!("before {token} after");
+        let desired = 7 + token.len();
+        let cursor = accepted.grapheme_indices(true).map(|(i, _)| i).chain([accepted.len()]).find(|i| *i >= desired).unwrap_or(accepted.len());
+        prop_assert_eq!(editor.text(), &accepted);
+        prop_assert_eq!((editor.cursor(), editor.anchor()), (cursor, cursor));
+        let request = completion_request(&Editor::new(&token));
         prop_assert_eq!(request.map(|r| r.query), Some(path));
         prop_assert!(editor.undo());
-        prop_assert_eq!(editor.text(), "@");
-        prop_assert_eq!(editor.cursor(), 1);
+        prop_assert_eq!(editor.text(), original);
+        prop_assert_eq!((editor.cursor(), editor.anchor()), (8, 8));
         prop_assert!(editor.redo()); prop_assert_eq!(editor.text(), accepted);
+        prop_assert_eq!((editor.cursor(), editor.anchor()), (cursor, cursor));
     }
 
     #[test]
