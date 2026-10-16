@@ -197,3 +197,8 @@ pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_pro
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local_identity;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local_identity::local_identity;

@@ -15,9 +15,14 @@ pub async fn run(
     inline: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let authority = local.client_owner();
-    let mut client =
-        client::TaskFileClient::observe(local.task_files().as_ref(), &authority, 4096, 65_536)
-            .await?;
+    let mut client = client::TaskFileClient::observe_task(
+        local.task_files().as_ref(),
+        &authority,
+        acyclic_harness::TaskId::parse(&authority.id)?,
+        1024,
+        4 * 1024 * 1024,
+    )
+    .await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut tty = Tty::open()?;
@@ -39,6 +44,15 @@ pub async fn run(
     let start = Instant::now();
     let mut documents = client::local_documents(&local, &authority).await?;
     loop {
+        client
+            .follow_task(
+                local.task_files().as_ref(),
+                &authority,
+                commands
+                    .active_task()
+                    .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
+            )
+            .await?;
         client.project_commands(&commands, &authority)?;
         renderer.update(client.views(), &authority);
         if commands.exit_requested()? {

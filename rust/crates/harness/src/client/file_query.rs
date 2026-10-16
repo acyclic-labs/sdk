@@ -434,7 +434,7 @@ impl super::ClientViews {
         maximum_bytes: usize,
     ) -> Result<()> {
         let view = FileQueryView::from_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
-        super::task_projection::project(self, &view);
+        super::task_projection::snapshot(self, &view);
         self.queries
             .insert((view.cursor.volume, view.cursor.query), view);
         Ok(())
@@ -443,16 +443,17 @@ impl super::ClientViews {
     /// Updates the same shared views consumed by terminal, headless and browser renderers.
     pub fn query_change(&mut self, change: Change) -> Result<bool> {
         let key = (change.cursor.volume, change.cursor.query);
-        let mut view = self
+        let updates: Vec<_> = change.file.iter().chain(&change.files).cloned().collect();
+        let view = self
             .queries
-            .get(&key)
-            .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?
-            .clone();
+            .get_mut(&key)
+            .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?;
         let changed = view.apply(change)?;
         if changed {
-            super::task_projection::project(self, &view);
+            for file in updates {
+                super::task_projection::append(self, &file);
+            }
         }
-        self.queries.insert(key, view);
         Ok(changed)
     }
 }

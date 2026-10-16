@@ -15,6 +15,7 @@ pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;
+pub(crate) use segment::record_bytes;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;

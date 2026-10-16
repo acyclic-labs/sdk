@@ -425,9 +425,16 @@ impl<S: ClientStateStore> ClientSession<S> {
         &self.views
     }
 
+    pub(super) fn replace_task_views(&mut self, replacement: Self) {
+        self.views.queries = replacement.views.queries;
+        self.views.transcripts.extend(replacement.views.transcripts);
+        self.views.task_folds = replacement.views.task_folds;
+        self.views.tools = replacement.views.tools;
+    }
+
     pub(super) fn project_commands(
         &mut self,
-        projection: &super::command_output::Projection,
+        projection: &mut super::command_output::Projection,
         active: Option<crate::TaskId>,
     ) {
         projection.apply(&mut self.views, active);

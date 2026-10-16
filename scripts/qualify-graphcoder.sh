@@ -17,6 +17,7 @@ node --test scripts/graphcoder-pty/screen.test.mjs
 
 node scripts/test-graphcoder.mjs "$artifact_dir/debug/graphcoder"
 node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder"
+node scripts/test-graphcoder-resume.mjs "$artifact_dir/debug/graphcoder" interactive
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder"
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder" command-recovery
 node scripts/test-graphcoder-pty.mjs "$artifact_dir/debug/graphcoder" uncertain

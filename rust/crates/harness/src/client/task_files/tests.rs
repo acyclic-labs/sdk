@@ -207,3 +207,61 @@ proptest! {
         });
     }
 }
+
+#[tokio::test]
+async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("bounded-current-task").unwrap(),
+    )
+    .await
+    .unwrap();
+    let task = crate::TaskId::new();
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let current = Component::new(task.to_string()).unwrap();
+    let foreign = Component::new(crate::TaskId::new().to_string()).unwrap();
+    let mut generation = volume.snapshot(&Query::Root, 1).await.unwrap().generation;
+    for target in [current.clone(), foreign] {
+        let file = FileValue::new(
+            FileKey::Task {
+                task: target,
+                file: TaskFile::Request(Component::new("large").unwrap()),
+            },
+            vec![b'x'; 40_000],
+        );
+        generation = volume.append(generation, &file).await.unwrap();
+    }
+    let mut client = TaskFileClient::observe_task(&volume, &owner, task, 16, 128)
+        .await
+        .unwrap();
+    let file = FileValue {
+        publication: None,
+        key: FileKey::Task {
+            task: current,
+            file: TaskFile::Chunk {
+                turn: 0,
+                sequence: 0,
+            },
+        },
+        channel: Some(Channel::Text),
+        bytes: b"visible".to_vec().into(),
+    };
+    volume.append(generation, &file).await.unwrap();
+    client.next_change().await.unwrap();
+    assert_eq!(
+        client.views().transcripts[&format!("AGGREGATE_KIND_TASK:{task}")].streaming_text,
+        "visible"
+    );
+    assert_eq!(
+        client
+            .views()
+            .queries
+            .values()
+            .map(|query| query.files().len())
+            .sum::<usize>(),
+        1
+    );
+}

@@ -13,6 +13,8 @@ use std::{future::Future, io::Write, pin::Pin, sync::Arc};
 
 const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
 const MAXIMUM_FILES: usize = 4096;
+// Request size is a per-file admission bound, independent of retained display.
+const OBSERVATION_BYTES: u64 = 4 * 1024 * 1024;
 
 fn session(operation: OperationId) -> Result<Component> {
     Ok(Component::new(
@@ -54,7 +56,12 @@ fn validate(file: &FileValue, operation: OperationId) -> Result<()> {
             "stdin request targets another session or execution owner".into(),
         ));
     }
-    if file.bytes.len() > MAXIMUM_BYTES {
+    let mut claim = file.clone();
+    claim.key = key(operation, TaskFile::ExecutionClaim)?;
+    if file.bytes.len() > MAXIMUM_BYTES
+        || crate::task_volume::record_bytes(file)? > acyclic_stream::MAX_RECORD_BYTES
+        || crate::task_volume::record_bytes(&claim)? > acyclic_stream::MAX_RECORD_BYTES
+    {
         return Err(Error::Invalid("local request exceeds byte bound".into()));
     }
     serde_json::from_slice::<CommandResolution>(&file.bytes)
@@ -100,7 +107,7 @@ impl LocalFileClient {
             QueryViewLimits {
                 files: MAXIMUM_FILES,
                 segments: MAXIMUM_FILES,
-                bytes: MAXIMUM_BYTES as u64,
+                bytes: OBSERVATION_BYTES,
             },
         )
         .await?;

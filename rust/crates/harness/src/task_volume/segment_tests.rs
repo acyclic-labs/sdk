@@ -14,6 +14,7 @@ proptest! {
         let mut file = FileValue::new(FileKey::Goal, bytes);
         file.publication = publication.map(crate::OperationId::from_bytes);
         let (encoded, accepted) = encode(&file, None).unwrap();
+        prop_assert_eq!(record_bytes(&file).unwrap(), encoded.len());
         prop_assert_eq!(&accepted, &file);
         prop_assert_eq!(decode(&encoded).unwrap(), file.clone());
         let json = serde_json::to_vec(&file).unwrap();

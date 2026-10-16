@@ -59,6 +59,26 @@ pub(super) fn record(index: &mut Index, file: &FileValue, position: u64) {
     }
 }
 pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<Vec<FileValue>> {
+    if let Query::TaskSession { task, session } = query {
+        let display = Query::TaskView {
+            task: task.clone(),
+            recent: 128,
+            reasoning: true,
+            details: true,
+            terminal: true,
+        };
+        let mut files = snapshot(index, &display, maximum.saturating_sub(3))?;
+        for (_, stored) in index
+            .files
+            .range(Query::Session(session.clone()).ranges().remove(0))
+        {
+            if files.len() == maximum {
+                return Err(Error::LimitExceeded);
+            }
+            files.push(stored.file.clone());
+        }
+        return Ok(files);
+    }
     if let Query::TaskView { task, recent, .. } = query {
         if *recent == 0 {
             return Err(Error::LimitExceeded);

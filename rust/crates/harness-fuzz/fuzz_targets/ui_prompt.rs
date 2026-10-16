@@ -172,6 +172,7 @@ fuzz_target!(|data: &[u8]| {
                     .append(
                         cut,
                         &Write {
+                            publication: None,
                             key: FileKey::Task {
                                 task: acyclic_harness::task_volume::Component::new(&owner.id)
                                     .unwrap(),

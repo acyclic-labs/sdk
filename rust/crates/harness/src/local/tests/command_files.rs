@@ -122,10 +122,11 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
     if crate::TaskId::from_bytes(bytes).to_string() == harness.client_owner().id {
         bytes[0] ^= 1;
     }
+    let operation = OperationId::new();
     let request = FileValue::new(
         FileKey::Task {
             task: Component::new(crate::TaskId::from_bytes(bytes).to_string())?,
-            file: TaskFile::Request(Component::new(OperationId::new().to_string())?),
+            file: TaskFile::Request(Component::new(operation.to_string())?),
         },
         serde_json::to_vec(&CommandResolution::Prompt {
             text: "foreign request".into(),
@@ -144,9 +145,17 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
         128,
     )
     .await?;
+    // A missing target is NotFound; authority checks on existing targets remain
+    // in the runtime. Neither rejection may create a child admission or dispatch.
+    let rejected = consume_local_command(&mut owner, &harness, &request).await;
+    assert!(matches!(rejected, Err(Error::NotFound(_))), "{rejected:?}");
     assert!(matches!(
-        consume_local_command(&mut owner, &harness, &request).await,
-        Err(Error::Unauthorized(_))
+        harness
+            .runtime
+            .task_host()
+            .observe_admission(crate::runtime::task_id_for_admission(operation))
+            .await,
+        Err(Error::NotFound(_))
     ));
     assert_eq!(provider.requests().len(), 0);
     drop(owner);

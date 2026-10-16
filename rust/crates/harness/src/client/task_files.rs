@@ -13,6 +13,8 @@ pub struct TaskFileClient {
     changes: ChangeStream,
     command_projection: super::command_output::Projection,
     commands_dirty: bool,
+    selected: Option<crate::TaskId>,
+    bounds: (usize, usize),
 }
 impl TaskFileClient {
     /// Observe an authorized task selection at one atomic cut.
@@ -22,8 +24,18 @@ impl TaskFileClient {
         maximum_files: usize,
         maximum_bytes: usize,
     ) -> Result<Self> {
+        Self::observe_query(files, owner, Query::Tasks, maximum_files, maximum_bytes).await
+    }
+
+    async fn observe_query(
+        files: &impl FileQuerySource,
+        owner: &wire::Authority,
+        query: Query,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
         let mut observation = files
-            .observe_files(Query::Tasks, None, maximum_files, maximum_bytes)
+            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
             .await?;
         let snapshot = observation
             .snapshot
@@ -35,14 +47,55 @@ impl TaskFileClient {
             generation: "task-files".into(),
             revision: 0,
         })?;
-        session.query_snapshot(Query::Tasks, snapshot, maximum_files, maximum_bytes)?;
+        session.query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
         Ok(Self {
             session,
             changes: observation.changes,
             command_projection: super::command_output::Projection::default(),
             commands_dirty: false,
+            selected: None,
+            bounds: (maximum_files, maximum_bytes),
         })
     }
+    /// Follow only the current task's bounded display tail, excluding inbox archives.
+    pub async fn observe_task(
+        files: &impl FileQuerySource,
+        owner: &wire::Authority,
+        task: crate::TaskId,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self> {
+        let query = Query::TaskView {
+            task: crate::task_volume::Component::new(task.to_string())?,
+            recent: 128,
+            reasoning: true,
+            details: true,
+            terminal: true,
+        };
+        let mut client =
+            Self::observe_query(files, owner, query, maximum_files, maximum_bytes).await?;
+        client.selected = Some(task);
+        Ok(client)
+    }
+
+    /// Replace the disposable tail subscription when the followed session selects a task.
+    pub async fn follow_task(
+        &mut self,
+        files: &impl FileQuerySource,
+        owner: &wire::Authority,
+        task: crate::TaskId,
+    ) -> Result<()> {
+        if self.selected != Some(task) {
+            let replacement =
+                Self::observe_task(files, owner, task, self.bounds.0, self.bounds.1).await?;
+            self.session.replace_task_views(replacement.session);
+            self.changes = replacement.changes;
+            self.selected = Some(task);
+            self.commands_dirty = true;
+        }
+        Ok(())
+    }
+
     /// Presentation state reconstructed from the followed files.
     pub fn views(&self) -> &ClientViews {
         self.session.views()
@@ -56,7 +109,7 @@ impl TaskFileClient {
         let changed = self.command_projection.refresh(files, owner)?;
         if changed || self.commands_dirty {
             self.session
-                .project_commands(&self.command_projection, files.active_task());
+                .project_commands(&mut self.command_projection, files.active_task());
             self.commands_dirty = false;
         }
         Ok(())

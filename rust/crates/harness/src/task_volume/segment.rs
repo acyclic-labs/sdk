@@ -17,6 +17,20 @@ struct Entry {
     publication: Option<crate::OperationId>,
 }
 
+/// Exact framed size, for rejecting oversized requests before publication.
+pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
+    let metadata = serde_json::to_vec(&Entry {
+        key: file.key.clone(),
+        channel: file.channel,
+        publication: file.publication,
+    })
+    .map_err(|_| Error::InvalidSegment)?;
+    PREFIX
+        .checked_add(metadata.len())
+        .and_then(|size| size.checked_add(file.bytes.len()))
+        .ok_or(Error::LimitExceeded)
+}
+
 pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
     let entry = Entry {
         key: write.key.clone(),

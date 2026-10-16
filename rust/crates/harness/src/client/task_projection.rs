@@ -1,110 +1,210 @@
-//! Presentation of task text files; bytes are combined before UTF-8 projection.
-use super::{ClientViews, FileQueryView, TranscriptView};
-use crate::task_volume::{Channel, FileKey, Query, TaskFile, ToolFile};
+//! Incremental folds over immutable task segments and their sequence cursors.
+use super::{ClientViews, FileQueryView};
+use crate::task_volume::{Channel, FileKey, FileValue, TaskFile, ToolFile};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(super) fn project(views: &mut ClientViews, files: &FileQueryView) {
-    if !matches!(files.query(), Query::Tasks) {
-        return;
-    }
-    let mut text = BTreeMap::<(String, u64, bool), Vec<u8>>::new();
-    let streamed: BTreeSet<_> = files
-        .files()
-        .values()
-        .filter_map(|file| match &file.key {
-            FileKey::Task {
-                task,
-                file: TaskFile::Chunk { .. },
-            } if file.channel == Some(Channel::Text) => Some(task.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut output = BTreeMap::<(crate::task_volume::Component, String), Vec<u8>>::new();
-    for file in files.files().values() {
-        let FileKey::Task { task, file: kind } = &file.key else {
-            continue;
-        };
-        let owner = format!("AGGREGATE_KIND_TASK:{}", task.as_str());
-        match kind {
-            TaskFile::Chunk { turn, .. } => {
-                if let Some(channel) = file.channel {
-                    text.entry((owner, *turn, channel == Channel::Reasoning))
-                        .or_default()
-                        .extend_from_slice(&file.bytes);
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Fold {
+    streams: BTreeMap<(u64, Channel), Tail>,
+    tools: BTreeMap<(u64, String, bool), Tail>,
+    results: BTreeSet<u64>,
+    streamed: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Tail {
+    through: Option<u64>,
+    pending: Vec<u8>,
+    pending_text: usize,
+    frozen: bool,
+}
+impl Tail {
+    // Each accepted byte is visited once, plus at most three UTF-8 boundary bytes.
+    fn append(&mut self, sequence: u64, bytes: &[u8], target: &mut String) -> usize {
+        if self.frozen || self.through.is_some_and(|through| sequence <= through) {
+            return 0;
+        }
+        self.through = Some(sequence);
+        target.truncate(target.len().saturating_sub(self.pending_text));
+        self.pending_text = 0;
+        let mut input = std::mem::take(&mut self.pending);
+        input.extend_from_slice(bytes);
+        let work = input.len();
+        let mut at = 0;
+        while at < input.len() {
+            match std::str::from_utf8(&input[at..]) {
+                Ok(text) => {
+                    target.push_str(text);
+                    break;
+                }
+                Err(error) => {
+                    let valid = at + error.valid_up_to();
+                    target.push_str(
+                        std::str::from_utf8(&input[at..valid]).expect("validated prefix"),
+                    );
+                    target.push('\u{fffd}');
+                    if let Some(length) = error.error_len() {
+                        at = valid + length;
+                    } else {
+                        self.pending.extend_from_slice(&input[valid..]);
+                        self.pending_text = '\u{fffd}'.len_utf8();
+                        break;
+                    }
                 }
             }
-            TaskFile::Tool {
-                call,
-                file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
-                ..
-            } => {
-                output
-                    .entry((task.clone(), call.as_str().to_owned()))
-                    .or_default()
-                    .extend_from_slice(&file.bytes);
-            }
-            TaskFile::ExecutionResult(_) if !streamed.contains(task) => {
-                if let Some((sequence, completed)) = super::command_output::text(file) {
-                    text.insert((owner, sequence, false), completed.into_bytes());
-                }
-            }
-            // TODO(#645): fold host-published request/status/completion schemas
-            // when task-file execution admission publishes these records.
-            _ => {}
         }
-    }
-    let owners: BTreeSet<_> = views
-        .queries
-        .get(&(files.cursor().volume, files.cursor().query))
-        .into_iter()
-        .chain(std::iter::once(files))
-        .flat_map(|query| query.files().values())
-        .filter_map(|file| match &file.key {
-            FileKey::Task {
-                task,
-                file:
-                    TaskFile::Chunk { .. }
-                    | TaskFile::Tool {
-                        file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
-                        ..
-                    },
-            } => Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str())),
-            FileKey::Task {
-                task,
-                file: TaskFile::ExecutionResult(_),
-            } if super::command_output::text(file).is_some() => {
-                Some(format!("AGGREGATE_KIND_TASK:{}", task.as_str()))
-            }
-            _ => None,
-        })
-        .collect();
-    for owner in owners {
-        views.transcripts.remove(&owner);
-        views.tools.remove(&owner);
-    }
-    for ((owner, turn, reasoning), bytes) in text {
-        let transcript = views
-            .transcripts
-            .entry(owner)
-            .or_insert_with(TranscriptView::default);
-        let target = if reasoning {
-            &mut transcript.reasoning
-        } else {
-            &mut transcript.streaming_text
-        };
-        if !target.is_empty() {
-            target.push_str("\n\n");
-        }
-        target.push_str(&String::from_utf8_lossy(&bytes));
-        transcript.streaming_turn = Some(crate::OperationId::from_bytes(
-            u128::from(turn).to_be_bytes(),
-        ));
-    }
-    for ((task, call), bytes) in output {
-        let authority = crate::wire::Authority {
-            kind: crate::wire::AggregateKind::Task as i32,
-            id: task.as_str().to_owned(),
-        };
-        views.tool_output(&authority, &call, &String::from_utf8_lossy(&bytes));
+        work
     }
 }
+fn owner(task: &crate::task_volume::Component) -> String {
+    format!("AGGREGATE_KIND_TASK:{}", task.as_str())
+}
+
+pub(super) fn snapshot(views: &mut ClientViews, files: &FileQueryView) {
+    let previous = views
+        .queries
+        .get(&(files.cursor().volume, files.cursor().query));
+    let owners: BTreeSet<_> = previous
+        .into_iter()
+        .chain(std::iter::once(files))
+        .flat_map(|query| query.files().keys())
+        .filter_map(|key| match key {
+            FileKey::Task {
+                task,
+                file: TaskFile::Chunk { .. } | TaskFile::ExecutionResult(_) | TaskFile::Tool { .. },
+            } => Some(owner(task)),
+            _ => None,
+        })
+        .collect();
+    for key in owners {
+        views.transcripts.remove(&key);
+        views.tools.remove(&key);
+        views.task_folds.remove(&key);
+    }
+    // Chunk keys are ordered by turn/sequence. Fallback outcomes use committed
+    // order, independent of their request UUID's lexical order.
+    for file in files.files().values().filter(|file| {
+        !matches!(
+            file.key,
+            FileKey::Task {
+                file: TaskFile::ExecutionResult(_),
+                ..
+            }
+        )
+    }) {
+        append(views, file);
+    }
+    let mut results: Vec<_> = files
+        .files()
+        .values()
+        .filter_map(|file| super::command_output::text(file).map(|(sequence, _)| (sequence, file)))
+        .collect();
+    results.sort_by_key(|(sequence, _)| *sequence);
+    for (_, file) in results {
+        append(views, file);
+    }
+}
+
+pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
+    let FileKey::Task { task, file: kind } = &file.key else {
+        return 0;
+    };
+    let key = owner(task);
+    match kind {
+        TaskFile::Chunk { turn, sequence } => {
+            let Some(channel) = file.channel else {
+                return 0;
+            };
+            let fold = views.task_folds.entry(key.clone()).or_default();
+            let tail = fold.streams.entry((*turn, channel)).or_default();
+            let transcript = views.transcripts.entry(key).or_default();
+            let target = if channel == Channel::Reasoning {
+                &mut transcript.reasoning
+            } else {
+                &mut transcript.streaming_text
+            };
+            if tail.through.is_none() && !target.is_empty() {
+                target.push_str("\n\n");
+            }
+            if channel == Channel::Text {
+                fold.streamed = true;
+            }
+            transcript.streaming_turn = Some(crate::OperationId::from_bytes(
+                u128::from(*turn).to_be_bytes(),
+            ));
+            tail.append(*sequence, &file.bytes, target)
+        }
+        TaskFile::Tool {
+            turn,
+            call,
+            file: leaf @ (ToolFile::Stdout(_) | ToolFile::Stderr(_)),
+        } => {
+            let (sequence, stderr) = match leaf {
+                ToolFile::Stdout(n) => (*n, false),
+                ToolFile::Stderr(n) => (*n, true),
+                _ => unreachable!(),
+            };
+            let tail = views
+                .task_folds
+                .entry(key.clone())
+                .or_default()
+                .tools
+                .entry((*turn, call.as_str().to_owned(), stderr))
+                .or_default();
+            let tool = views
+                .tools
+                .entry(key)
+                .or_default()
+                .entry(call.as_str().to_owned())
+                .or_default();
+            let crate::model::ToolResultContent::Parts { parts } = &mut tool.output else {
+                return 0;
+            };
+            // Keep each channel's UTF-8 boundary independent even when stdout
+            // and stderr publications interleave. Fixed slots also make reopen
+            // independent of the publication order between the two streams.
+            while parts.len() < 2 {
+                parts.push(crate::model::ModelDataPart::Text {
+                    text: String::new(),
+                });
+            }
+            let Some(crate::model::ModelDataPart::Text { text }) =
+                parts.get_mut(usize::from(stderr))
+            else {
+                return 0;
+            };
+            tail.append(sequence, &file.bytes, text)
+        }
+        TaskFile::ExecutionResult(_) => {
+            let Some((sequence, text)) = super::command_output::text(file) else {
+                return 0;
+            };
+            let fold = views.task_folds.entry(key.clone()).or_default();
+            if fold.streamed || !fold.results.insert(sequence) {
+                return 0;
+            }
+            let transcript = views.transcripts.entry(key).or_default();
+            if !transcript.streaming_text.is_empty() {
+                transcript.streaming_text.push_str("\n\n");
+            }
+            transcript.streaming_text.push_str(&text);
+            transcript.streaming_turn = Some(crate::OperationId::from_bytes(
+                u128::from(sequence).to_be_bytes(),
+            ));
+            text.len()
+        }
+        TaskFile::Completion(turn) => {
+            if let Some(fold) = views.task_folds.get_mut(&key) {
+                for channel in [Channel::Text, Channel::Reasoning] {
+                    if let Some(tail) = fold.streams.get_mut(&(*turn, channel)) {
+                        tail.frozen = true;
+                    }
+                }
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests;

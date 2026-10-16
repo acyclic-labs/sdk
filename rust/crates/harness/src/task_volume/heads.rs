@@ -161,7 +161,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.commit.as_bytes() != &cursor.commit {
             return Err(Error::ResetRequired);
         }
-        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+        let files = if matches!(
+            query,
+            Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
+        ) {
             super::recent::snapshot(&index, query, maximum_files)?
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?

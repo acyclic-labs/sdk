@@ -279,7 +279,7 @@ impl Query {
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
             (Self::TaskSession { task: selected, .. }, FileKey::Task { task, .. }) => {
-                selected == task
+                selected == task && super::super::recent::kind(key).is_some()
             }
             (
                 Self::TaskSession {

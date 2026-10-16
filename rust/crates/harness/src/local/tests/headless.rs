@@ -325,3 +325,95 @@ async fn disconnect_preserves_an_unfinished_admission_and_releases_its_mounts() 
     drop(retained);
     Ok(())
 }
+
+#[tokio::test]
+async fn workspace_launch_identity_reuses_only_unfinished_requests() -> Result<()> {
+    let (_directory, harness, provider) = local().await?;
+    let prompt = "resume private request";
+    let operation = crate::client::local_identity(&harness, Some(prompt), None).await?;
+    assert_eq!(
+        operation,
+        crate::client::local_identity(&harness, Some(prompt), None).await?
+    );
+    assert_ne!(
+        operation,
+        crate::client::local_identity(&harness, Some("another"), None).await?
+    );
+    let interactive = crate::client::local_identity(&harness, None, None).await?;
+    assert_eq!(
+        interactive,
+        crate::client::local_identity(&harness, None, None).await?
+    );
+    let explicit = OperationId::new();
+    assert_eq!(
+        explicit,
+        crate::client::local_identity(&harness, Some(prompt), Some(explicit)).await?
+    );
+    assert!(
+        provider.requests().is_empty(),
+        "identity lookup cannot admit work"
+    );
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    let request = local_prompt(&harness, operation, prompt).await?;
+    assert_eq!(
+        run_headless(&mut client, request, target, &mut Vec::new()).await?,
+        HeadlessOutcome::Completed
+    );
+    drop(client);
+    assert_ne!(
+        operation,
+        crate::client::local_identity(&harness, Some(prompt), None).await?
+    );
+    assert_eq!(provider.requests().len(), 1);
+    close(harness).await
+}
+
+#[tokio::test]
+async fn prompt_just_under_request_bound_has_independent_observation_budget() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    // This boundary exercises request bytes, not the small-context fixture's
+    // deliberately conservative one-byte-per-token upper bound.
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_context_capacity(
+            ModelContextCapacity {
+                context_tokens: 131_072,
+                output_tokens: 4096,
+            },
+        ),
+    );
+    let harness = Arc::new(
+        LocalHarness::open(
+            crate::test_support::local_harness_config(
+                directory.path(),
+                (model()?, provider.clone()),
+            )?
+            .without_default_tools(),
+        )
+        .await?,
+    );
+    let operation = OperationId::new();
+    let one = crate::client::prepare_local_prompt(operation, "x")?;
+    let mut claim = one.clone();
+    if let crate::task_volume::FileKey::Session { file, .. } = &mut claim.key {
+        *file = crate::task_volume::TaskFile::ExecutionClaim(crate::task_volume::Component::new(
+            operation.to_string(),
+        )?);
+    }
+    let framing = crate::task_volume::record_bytes(&claim)? - 1;
+    let text = "x".repeat(acyclic_stream::MAX_RECORD_BYTES - framing - 1);
+    let request = local_prompt(&harness, operation, &text).await?;
+    claim.bytes = request.bytes.clone();
+    assert_eq!(
+        crate::task_volume::record_bytes(&claim)?,
+        acyclic_stream::MAX_RECORD_BYTES - 1
+    );
+    assert!(crate::client::prepare_local_prompt(operation, &(text.clone() + "xx")).is_err());
+    let (mut client, target) = connect_local(harness.clone(), operation).await?;
+    assert_eq!(
+        run_headless(&mut client, request, target, &mut Vec::new()).await?,
+        HeadlessOutcome::Completed
+    );
+    assert_eq!(provider.requests().len(), 1);
+    drop(client);
+    close(harness).await
+}

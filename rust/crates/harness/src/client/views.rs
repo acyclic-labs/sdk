@@ -140,6 +140,7 @@ pub struct ClientViews {
     /// Provider usage metadata, keyed by conversation. Providers retain their exact units.
     pub usage: BTreeMap<String, serde_json::Value>,
     usage_state: BTreeMap<String, Usage>,
+    pub(super) task_folds: BTreeMap<String, super::task_projection::Fold>,
 }
 
 impl Serialize for ClientViews {
