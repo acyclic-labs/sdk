@@ -20,13 +20,21 @@ export function credentialProvider(options: CredentialOptions): CredentialProvid
   const provider = options.credential;
   if (provider !== undefined) {
     if (typeof provider !== "function") throw new TypeError("credential must be a function");
-    return async signal => {
-      signal?.throwIfAborted();
-      const token = await provider(signal);
-      signal?.throwIfAborted();
-      validateCredential(token);
-      return token;
-    };
+    return signal => new Promise<string>((resolve, reject) => {
+      if (signal?.aborted) { reject(signal.reason); return; }
+      const cleanup = () => signal?.removeEventListener("abort", abort);
+      // Deadlines use the same AbortSignal as transport cancellation.
+      const abort = () => { cleanup(); reject(signal?.reason); };
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
+        Promise.resolve(provider(signal)).then(token => {
+          cleanup();
+          if (signal?.aborted) { reject(signal.reason); return; }
+          try { validateCredential(token); resolve(token); }
+          catch (error) { reject(error); }
+        }, error => { cleanup(); reject(error); });
+      } catch (error) { cleanup(); reject(error); }
+    });
   }
   const token = options.token;
   validateCredential(token);

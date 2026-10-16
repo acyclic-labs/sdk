@@ -7,6 +7,7 @@ import { HeadBucketRequestSchema } from "../packages/objects/generated/proto/obj
 import { HttpMachinesProvider } from "../packages/machines/src/http.js";
 import { machineId } from "../packages/machines/src/index.js";
 import { HttpInferenceTransport } from "../packages/inference/src/index.js";
+import { Inference } from "../packages/inference/src/handles.js";
 import { openHostedFs } from "../packages/filesystem/src/hosted.js";
 import { HandshakeResponseSchema, FilesystemProfile } from "../packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js";
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../packages/filesystem/generated/descriptor-digest.js";
@@ -47,10 +48,8 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
       };
       const options = { endpoint: "https://service.example.test", token: "stale", bearerToken: "stale", credential: async () => values[calls++], fetcher, fetch: fetcher };
       let reads = 0;
-      if (product === "fs") {
-        const callback = options.credential;
-        Object.defineProperty(options, "credential", { get: () => ++reads === 1 ? callback : undefined });
-      }
+      const callback = options.credential;
+      Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
       let invoke;
       let release;
       switch (product) {
@@ -60,7 +59,6 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         case "machines": { const client = new HttpMachinesProvider(options); invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003")); break; }
         case "inference": { const client = new HttpInferenceTransport(options.endpoint, options, fetcher); invoke = () => client.listModels(); break; }
       }
-      if (product !== "fs") options.credential = async () => "mutated";
       try {
         const initial = product === "fs" ? 1 : 0;
         for (let index = initial; index < values.length; index++) await expect(invoke()).rejects.toThrow();
@@ -68,8 +66,37 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         expect(calls).toBe(values.length);
         await expect(invoke()).rejects.toThrow();
         expect(sent.length).toBe(values.length);
-        if (product === "fs") expect(reads).toBe(1);
+        expect(reads).toBe(1);
       } finally { release?.(); }
     }
   }), { numRuns: 32 });
+});
+
+test("environment constructors read enumerable credential getters once", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const product of ["machines", "inference"]) {
+      let calls = 0;
+      let reads = 0;
+      const sent = [];
+      globalThis.fetch = async (_input, init) => {
+        sent.push(new Headers(init.headers).get("authorization"));
+        throw new Error("fixture stopped after header");
+      };
+      const callback = () => `fresh-${++calls}`;
+      const options = { endpoint: "https://service.example.test", token: "stale" };
+      Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
+      let invoke;
+      if (product === "machines") {
+        const client = HttpMachinesProvider.fromEnv(options);
+        invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003"));
+      } else {
+        const client = await Inference.fromEnv({ ACYCLIC_INFERENCE_ENDPOINT: options.endpoint }, options);
+        invoke = () => client.client.listModels();
+      }
+      for (let index = 0; index < 3; index++) await expect(invoke()).rejects.toThrow();
+      expect(reads).toBe(1);
+      expect(sent).toEqual(["Bearer fresh-1", "Bearer fresh-2", "Bearer fresh-3"]);
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });

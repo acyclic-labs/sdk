@@ -16,11 +16,12 @@ export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
   readonly #endpoint: string; readonly #credential: CredentialProvider; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
   static fromEnv(environment?: Partial<Pick<HttpMachinesOptions, "endpoint" | "token" | "credential">>): HttpMachinesProvider {
+    const callback = environment?.credential;
     return new HttpMachinesProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_MACHINES_ENDPOINT"),
-      ...(environment?.credential === undefined
+      ...(callback === undefined
         ? { token: environment?.token ?? environmentValue("ACYCLIC_MACHINES_TOKEN") }
-        : { credential: environment.credential }),
+        : { credential: callback }),
     });
   }
   constructor(options: HttpMachinesOptions) {
