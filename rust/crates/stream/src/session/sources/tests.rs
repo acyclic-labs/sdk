@@ -278,7 +278,7 @@ fn unchanged_admission_does_no_queue_edits_and_preserves_turn_order() {
             sources.insert(identity, source(identity), Some(ALL));
         }
         for channel_id in 1..=10_000 {
-            assert!(matches!(sources.poll((true, true, true), &mut cx),
+            assert!(matches!(sources.poll((false, false, false), &mut cx),
                 Poll::Ready(Ok(Some((identity, Ok(Event::Opened(_)))))) if identity.channel_id == channel_id));
         }
         sources.queue_edits = 0;
