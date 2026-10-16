@@ -212,14 +212,24 @@ async fn ten_thousand_agents_use_stream_transactions_and_one_session_per_node() 
         let edge = Fixture::open(routed, "node-0").await?;
         let client = edge.client()?;
         run_swarm(&client, Arc::clone(&memory), "grpc-eight-nodes").await?;
-        assert_eq!(edge.counts.follows.load(Ordering::Relaxed), AGENTS);
-        for node in std::iter::once(&edge).chain(owners.iter()) {
-            assert_eq!(node.counts.connections.load(Ordering::Relaxed), 1);
-            assert_eq!(node.counts.sessions.load(Ordering::Relaxed), 1);
-            assert_eq!(node.counts.actors.load(Ordering::Relaxed), 0);
-        }
-        for node in &owners {
-            assert_eq!(node.counts.follows.load(Ordering::Relaxed), AGENTS / NODES);
+        for (node, follows) in
+            std::iter::once((&edge, AGENTS)).chain(owners.iter().map(|node| (node, AGENTS / NODES)))
+        {
+            // Include cancellation/credit frames after the last application yield.
+            loop {
+                let changed = node.counts.changed.notified();
+                if node.counts.closed_sessions.load(Ordering::Relaxed) == 1 {
+                    break;
+                }
+                changed.await;
+            }
+            assert_eq!(node_work(&node.counts, follows), Ok(()));
+            eprintln!(
+                "swarm_bytes follows={follows} received={} transmitted={} budget={}",
+                node.counts.received_bytes.load(Ordering::Relaxed),
+                node.counts.transmitted_bytes.load(Ordering::Relaxed),
+                byte_budget(follows)
+            );
         }
         eprintln!(
             "swarm_connections client=1 node_pair={} total={} actor_channels=0",
@@ -229,5 +239,89 @@ async fn ten_thousand_agents_use_stream_transactions_and_one_session_per_node() 
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
     .await??;
+    Ok(())
+}
+
+// Paths are at most "agents/9999"; each follow carries two 12-byte records.
+// One KiB covers the bidirectional open/data/ack/credit/remove exchange;
+// 256 bytes cover Hello/Welcome and aggregate-window overhead.
+const SESSION_BYTES: usize = 256;
+const BYTES_PER_FOLLOW: usize = 1024;
+fn byte_budget(follows: usize) -> usize {
+    SESSION_BYTES + BYTES_PER_FOLLOW * follows
+}
+
+fn node_work(counts: &Counts, follows: usize) -> Result<(), &'static str> {
+    if counts.sessions.load(Ordering::Relaxed) != 1 {
+        return Err("sessions per node");
+    }
+    if counts.connections.load(Ordering::Relaxed) != 1 {
+        return Err("connections per node");
+    }
+    if counts.follows.load(Ordering::Relaxed) != follows {
+        return Err("follow count");
+    }
+    if counts.actors.load(Ordering::Relaxed) != 0 {
+        return Err("actor channels");
+    }
+    let received = counts.received_bytes.load(Ordering::Relaxed);
+    let transmitted = counts.transmitted_bytes.load(Ordering::Relaxed);
+    if received == 0 || transmitted == 0 {
+        return Err("missing byte accounting");
+    }
+    if received + transmitted > byte_budget(follows) {
+        return Err("bytes per follow");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unshared_session_control_is_rejected_by_the_same_node_work_counters() -> TestResult {
+    let memory = Arc::new(MemoryStream::default());
+    append(&memory, "agents/0", 1).await?;
+    let fixture = Fixture::open(memory, "unshared").await?;
+    // Distinct SDK clients prevent Session cache sharing. The fixture's transport
+    // still shares its TCP connection, and four interests suffice for rejection.
+    let clients = (0..4)
+        .map(|_| fixture.client())
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut follows = Vec::new();
+    for client in &clients {
+        follows.push(client.follow(StreamPath::new("agents/0")?, 1).await?);
+    }
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 4);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 4);
+    assert_eq!(node_work(&fixture.counts, 4), Err("sessions per node"));
+    drop(follows);
+    Ok(())
+}
+
+#[tokio::test]
+async fn redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget() -> TestResult {
+    let memory = Arc::new(MemoryStream::default());
+    append(&memory, "agents/0", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&memory), "redundant").await?;
+    let client = fixture.client()?;
+    let mut follow = client.follow(StreamPath::new("agents/0")?, 1).await?;
+    assert_eq!(node_work(&fixture.counts, 1), Ok(()));
+    let redundant = frame(0, 0, Body::Window(wire::SessionWindow::default()));
+    // Valid zero-credit controls do not change delivery or exhaust a queue.
+    // Wait on each publication so the broadcast fixture cannot overflow.
+    for _ in 0..=byte_budget(1) / (5 + redundant.encoded_len()) {
+        let before = fixture.counts.transmitted_bytes.load(Ordering::Relaxed);
+        fixture.controls.send(Ok(redundant.clone()))?;
+        loop {
+            let changed = fixture.counts.changed.notified();
+            if fixture.counts.transmitted_bytes.load(Ordering::Relaxed) > before {
+                break;
+            }
+            changed.await;
+        }
+    }
+    append(&memory, "agents/0", 1).await?;
+    assert_eq!(next(&mut follow).await?.sequence, 1);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(node_work(&fixture.counts, 1), Err("bytes per follow"));
     Ok(())
 }
