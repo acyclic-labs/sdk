@@ -460,6 +460,46 @@ async fn a_stale_publisher_never_uses_old_catalog_or_settings() -> Result<()> {
 }
 
 #[tokio::test]
+async fn loading_missing_task_settings_cannot_publish_an_outdated_action() -> Result<()> {
+    let volume = volume().await?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    client
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":TaskId::from_bytes([3;16])}),
+        )
+        .await?;
+    let mut definitions: Vec<Value> =
+        serde_json::from_slice(acyclic_harness::client::DEFAULT_COMMANDS_JSON).unwrap();
+    definitions
+        .iter_mut()
+        .find(|spec| spec["name"] == "shell")
+        .unwrap()["action"] = json!({"kind":"tool","tool":"web_search"});
+    publish(
+        &volume,
+        "commands/catalog.json",
+        serde_json::to_vec(&definitions).unwrap(),
+    )
+    .await?;
+    assert!(matches!(
+        client.submit("/shell new action", &DeniedReader).await,
+        Err(Error::Conflict(_))
+    ));
+    assert!(
+        client.take_request().is_none(),
+        "stale action was published"
+    );
+    client.submit("/shell new action", &DeniedReader).await?;
+    let request = client.next_request().await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.bytes).unwrap()["tool"],
+        "web_search"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn archive_selection_and_recovery_fold_the_outcome_files() -> Result<()> {
     let volume = volume().await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;

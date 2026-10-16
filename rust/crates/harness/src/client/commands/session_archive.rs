@@ -89,14 +89,26 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     pub(super) async fn persist_activity(&mut self) -> Result<()> {
-        if let Some(value) = &self.activity_cursor {
+        while let Some(value) = &self.activity_cursor {
+            let previous = self.generation;
             let bytes = serde_json::to_vec(value).map_err(codec)?;
-            self.publish(
-                self.state_key(CommandFileRoot::Session, "activity.json")?,
-                bytes,
-                false,
-            )
-            .await?;
+            match self
+                .publish(
+                    self.state_key(CommandFileRoot::Session, "activity.json")?,
+                    bytes,
+                    false,
+                )
+                .await
+            {
+                Ok(()) => break,
+                Err(Error::Conflict(_))
+                    if self.generation.position > previous.position
+                        && self.next_change.is_none() =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }

@@ -298,11 +298,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         input: &str,
         reader: &dyn ContentResidencyVerifier,
     ) -> Result<OperationId> {
+        let cut = self.generation;
         let resolution = self
             .catalog
             .resolve(input, reader, self.maximum_bytes)
             .await?;
         self.load_task_settings().await?;
+        if self.generation != cut {
+            return Err(Error::Conflict(
+                "command query advanced during resolution; retry from the new cut".into(),
+            ));
+        }
         let operation = OperationId::new();
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
@@ -649,3 +655,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .unwrap_or(false))
     }
 }
+
+#[cfg(all(test, acyclic_loom))]
+#[path = "session_models.rs"]
+mod models;
