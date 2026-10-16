@@ -1,3 +1,4 @@
+//! Model-choice rendering is a fold over canonical request files.
 use acyclic_harness::{
     client::{ClientViews, ModelFileView},
     model::{Model, ModelContent, ModelMessage, ModelRequest, ModelRole},
@@ -208,4 +209,113 @@ fn negative_control_skipping_removal_fails_the_same_file_oracle() {
     assert_current_models(&views, &files).unwrap();
     // Broken fold: retain the old model cache after its authoritative file is removed.
     assert_current_models(&views, &BTreeMap::new()).unwrap();
+}
+
+#[tokio::test]
+async fn live_turn_files_publish_choices_and_reopen_at_the_same_cut() {
+    use acyclic_harness::task_volume::{FileQuerySource, TaskVolume, Write};
+    use acyclic_stream::{MemoryStream, StreamPath};
+    use futures::StreamExt as _;
+    use std::sync::Arc;
+
+    let streams = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("models/live").unwrap();
+    let volume = TaskVolume::open(streams.clone(), path.clone())
+        .await
+        .unwrap();
+    let mut observation = volume
+        .observe_files(Query::Root, None, 8, 8192)
+        .await
+        .unwrap();
+    let mut views = ClientViews::default();
+    views
+        .query_snapshot(Query::Root, observation.snapshot.take().unwrap(), 8, 8192)
+        .unwrap();
+    for (ordinal, provider) in ["anthropic", "openai", "gemini", "openrouter", "anthropic"]
+        .into_iter()
+        .enumerate()
+    {
+        let write = Write::new(
+            key("task", ordinal as u64),
+            request(provider, "chosen", "1", "private"),
+        );
+        volume
+            .append(volume.head().await.unwrap(), &write)
+            .await
+            .unwrap();
+        views
+            .query_change(observation.changes.next().await.unwrap().unwrap())
+            .unwrap();
+        let observed = views
+            .models()
+            .find(|view| view.turn == ordinal as u64)
+            .unwrap();
+        assert_eq!(
+            observed.model,
+            &ModelFileView::Selected {
+                provider: provider.into(),
+                name: "chosen".into(),
+                revision: "1".into(),
+            }
+        );
+    }
+    let cursor = views.models().next().unwrap().cursor.clone();
+    let reopened = TaskVolume::open_existing(streams, path).await.unwrap();
+    let snapshot = reopened
+        .observe_files(Query::Root, None, 8, 8192)
+        .await
+        .unwrap()
+        .snapshot
+        .unwrap();
+    assert_eq!(snapshot.cursor, cursor);
+    let mut replay = ClientViews::default();
+    replay
+        .query_snapshot(Query::Root, snapshot, 8, 8192)
+        .unwrap();
+    assert_eq!(export(&replay), export(&views));
+    let resumed = reopened
+        .observe_files(Query::Root, Some(cursor.clone()), 8, 8192)
+        .await
+        .unwrap();
+    assert!(resumed.snapshot.is_none());
+    assert!(!resumed.reset);
+}
+
+#[test]
+fn invalid_request_identity_never_inherits_an_earlier_selection() {
+    for bytes in [
+        br#"{"model":{"provider":"openai","name":"x","revision":"1"},"model":null}"#.as_slice(),
+        br#"{"model":{"provider":"openai","provider":"gemini","name":"x","revision":"1"}}"#,
+        br#"{"model":{"provider":"openai","name":"x","revision":"1"}} trailing"#,
+        br#"{"model":{"provider":"openai","name":"x","revision":"\ud800"}}"#,
+        br#"{"model":{"provider":"openai","name":"x","revision":" "}}"#,
+    ] {
+        let mut views = ClientViews::default();
+        views
+            .query_snapshot(
+                Query::Root,
+                snapshot(
+                    cut([4; 32], 1),
+                    &BTreeMap::from([(
+                        key("task", 0),
+                        request("openai", "chosen", "1", "private"),
+                    )]),
+                ),
+                1,
+                4096,
+            )
+            .unwrap();
+        views
+            .query_change(Change {
+                cursor: cut([4; 32], 2),
+                file: Some(FileValue::new(key("task", 0), bytes.to_vec())),
+                files: vec![],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(
+            views.models().next().unwrap().model,
+            &ModelFileView::Invalid
+        );
+    }
 }
