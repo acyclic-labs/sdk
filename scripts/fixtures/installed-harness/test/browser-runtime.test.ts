@@ -90,7 +90,8 @@ test("installed browser entry executes the ordinary registered runtime", async (
     if (stock.kind !== "accepted") throw new Error(`stock admission ${stock.kind}`);
     expect(await runtime.admit(operation, "acyclic.stock_turn", "1", input)).toEqual(stock);
     await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, model: { ...input.model, operation_id: crypto.randomUUID() } })).rejects.toThrow();
-    expect((await runtime.runOperation(worker, stock.task_id, 4))?.kind).toBe("completed");
+    const work = await runtime.runOperation(worker, stock.task_id, 4);
+    expect({ kind: work?.kind, modelCalls: generations }).toEqual({ kind: "completed", modelCalls: 1 });
     expect(await runtime.outcome(stock.task_id)).toEqual({ Succeeded: { text: "stock result", metadata: {}, attachments: [], steps: 1n } });
     expect(generations).toBe(1);
     expect(await runtime.runOperation(worker, stock.task_id, 4)).toBeNull();

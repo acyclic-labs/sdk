@@ -7,6 +7,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
+ "acyclic-proto-build",
  "ed25519-dalek",
  "prost",
  "sha2",
@@ -42,11 +43,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-proto-build"
+version = "0.2.0"
+dependencies = [
+ "prost",
+ "prost-reflect",
+ "protoc-bin-vendored",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "async-trait",
  "base64",
  "bytes",
@@ -55,14 +67,12 @@ dependencies = [
  "loom",
  "pin-project-lite",
  "prost",
- "protoc-bin-vendored",
  "ruzstd",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror",
  "tokio",
- "tonic-prost-build",
  "tracing",
  "uuid",
 ]
@@ -804,6 +814,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prost-reflect"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b80ea363c31af2de2b92e3c07ed1156628f7838c4afb4df75ee78a37fedbd1"
+dependencies = [
+ "prost",
+ "prost-types",
 ]
 
 [[package]]
