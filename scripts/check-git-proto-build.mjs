@@ -11,6 +11,8 @@ const consumer = mkdtempSync(join(parent, "git-proto-consumer-"));
 const vendor = join(consumer, "vendor");
 const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["PROTOC", "PROTOC_INCLUDE", "PATH"].includes(name.toUpperCase())));
 environment.PATH = process.env.PATH ?? "";
+// The CLI follows linked-worktree object stores as well as ordinary clones.
+environment.CARGO_NET_GIT_FETCH_WITH_CLI = "true";
 environment.CARGO_TARGET_DIR = resolve(root, process.env.CARGO_TARGET_DIR ?? "target");
 environment.RUSTUP_TOOLCHAIN ??= execFileSync("rustup", ["show", "active-toolchain"], { cwd: root, encoding: "utf8", windowsHide: true }).trim().split(" ")[0];
 
