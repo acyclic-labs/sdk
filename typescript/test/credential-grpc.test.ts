@@ -10,6 +10,8 @@ import { DefaultStreamProvider } from "../packages/stream/src/default.js";
 import { createFilesystemGrpcClient } from "../packages/filesystem/src/grpc.js";
 import { createObjectsV1GrpcClients } from "../packages/objects/src/v1-grpc.js";
 import { createMachinesGrpcClient } from "../packages/machines/src/grpc.js";
+import { ActorsService } from "../packages/actors/generated/proto/actors/v1/actors_pb.js";
+import { ActorsClient } from "../packages/actors/src/client.js";
 
 test("every product gRPC client resolves current credentials and stops on failure", async () => {
   const sent: string[] = [];
@@ -44,6 +46,30 @@ test("every product gRPC client resolves current credentials and stops on failur
         } finally { release?.(); }
       }
     }), { numRuns: 16 });
+  } finally { await close(); }
+});
+
+test("Actors sends renewed credentials through the native Rust bridge", async () => {
+  const sent: string[] = [];
+  const { endpoint, certificate, close } = await credentialTlsFixture(router => {
+    router.service(ActorsService, { inspectActor(_request, context) {
+      sent.push(context.requestHeader.get("authorization") ?? "");
+      // Missing semantic response identity must remain a rejection after transport.
+      return {};
+    } });
+  });
+  const actor = { actorId: "actor-a" as Parameters<ActorsClient["inspectActor"]>[0]["actorId"] };
+  try {
+    await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 6 }), async values => {
+      let calls = 0;
+      const client = new ActorsClient({ endpoint, token: "stale", caCertificate: Buffer.from(certificate), credential: () => values[calls++]! });
+      const start = sent.length;
+      for (const _value of values) await expect(client.inspectActor(actor)).rejects.toThrow();
+      expect(sent.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
+      expect(calls).toBe(values.length);
+      await expect(client.inspectActor(actor)).rejects.toThrow();
+      expect(sent.length).toBe(start + values.length);
+    }), { numRuns: 8 });
   } finally { await close(); }
 });
 
