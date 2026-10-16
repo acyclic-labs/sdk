@@ -36,10 +36,10 @@ fn check_cursor(previous: &Cursor, next: &Cursor) -> TestResult {
 }
 
 // All required records have already been accepted by the in-memory provider.
-// A pending follow is missing delivery, rather than work to wait for.
+// A pending follow is missing delivery, rather than work to wait for. Check one
+// record independently of the enclosing Tokio task's cooperative yield budget.
 pub(super) fn next_published(changes: &mut ChangeStream) -> TestResult<Change> {
-    changes
-        .next()
+    tokio::task::unconstrained(changes.next())
         .now_or_never()
         .ok_or("published follow is pending")?
         .ok_or("published follow ended")?
