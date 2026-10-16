@@ -179,6 +179,19 @@ impl<'a> ResolutionView<'a> {
             } => directory_id.cmp(&directory).then_with(|| key.cmp(name)),
         })
     }
+
+    fn has_bindings(
+        self,
+        directory: FileId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, FsError> {
+        Ok(self
+            .get_by(accounting, |key| match key {
+                MergeConflict::File(_) => std::cmp::Ordering::Less,
+                MergeConflict::Binding { directory_id, .. } => directory_id.cmp(&directory),
+            })?
+            .is_some())
+    }
 }
 
 /// Terminal result of canonical merge preparation.

@@ -27,11 +27,11 @@ pub(super) async fn run(case: DiffCase) -> TestResult {
     let mut view = DiffView::new(volume.clone(), base.clone())?;
     let model = Model::new("scripted".into(), "diff".into(), "1".into(), Value::Null)?;
     let provider = Arc::new(ScriptedModelProvider::new(case.turns));
-    let mut config = local_harness_config(&directory, (model, provider.clone()))?
+    let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
         .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled);
-    config.goal_continuations = None;
+        .compaction(CompactionPolicy::Disabled)
+        .goal_continuations(None);
     let harness = LocalHarness::open(config).await?;
     if !state.join("owner.json").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());

@@ -112,35 +112,6 @@ impl FileTool {
                 }
                 return Ok((None, input.1));
             }
-            Self::ReadRange {
-                options,
-                maximum_result_bytes,
-            } => {
-                let input =
-                    decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
-                let length = input
-                    .0
-                    .range
-                    .end
-                    .checked_sub(input.0.range.start)
-                    .ok_or_else(|| {
-                        error(crate::wire::ErrorCode::Invalid, "read range is reversed")
-                    })?;
-                options.validate()?;
-                if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
-                    || input.0.range.end > input.0.file.descriptor().byte_length()
-                    || length
-                        > options
-                            .maximum_text_bytes
-                            .min(maximum_result_bytes.min(scope.limits().file_bytes))
-                {
-                    return Err(error(
-                        crate::wire::ErrorCode::Invalid,
-                        "read exceeds its admitted byte bounds",
-                    ));
-                }
-                (input.0.file, input.1)
-            }
             Self::Search {
                 options,
                 maximum_result_bytes,

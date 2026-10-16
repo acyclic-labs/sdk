@@ -2,16 +2,14 @@ use super::*;
 use crate::filesystem::NativeDirectory;
 use acyclic_fs::MaterializeOptions;
 
-/// Publishes git facade mutations into the ordinary checkout.
+/// Fences every facade effect and optionally materializes an ordinary checkout.
 pub(crate) struct RootMaterializingGitExecutor<'a, F> {
     /// Managed workspace executor.
-    pub inner: &'a WorkspaceGitExecutor<'a>,
+    pub inner: &'a WorkspaceGitExecutor<'a, F>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
     pub source_root_identity: acyclic_fs::NativeRootIdentity,
-    /// Revalidates the admitted task and its publication permit before each effect.
-    pub before_effect: F,
 }
 
 impl<F, Fut> RootMaterializingGitExecutor<'_, F>
@@ -29,7 +27,9 @@ where
             .inner
             .switched
             .lock()
-            .map_err(|_| WorkspaceGitExecutor::error("Git workspace switch lock is unavailable"))?
+            .map_err(|_| {
+                WorkspaceGitExecutor::<F>::error("Git workspace switch lock is unavailable")
+            })?
             .as_ref()
             .map_or_else(
                 || self.inner.current.clone(),
@@ -52,6 +52,19 @@ where
         )
         .await
     }
+}
+
+// Preparation can await storage and merge drivers. Revalidate after it,
+// before handing any prepared result to a publication using the lease permit.
+pub(super) async fn prepared<T, P, F, Fut>(preparation: P, before_effect: &F) -> Result<T, Error>
+where
+    P: Future<Output = Result<T, Error>>,
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<(), Error>>,
+{
+    let value = preparation.await?;
+    before_effect().await?;
+    Ok(value)
 }
 
 pub(crate) async fn publish_checkout_transition<F, Fut>(
@@ -205,8 +218,18 @@ where
     type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
-        (self.before_effect)().await?;
         self.inner.validate().await
+    }
+
+    async fn validate_merge_resolution(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        self.inner
+            .validate_merge_resolution(operation, action, tree)
+            .await
     }
 
     async fn execute(
@@ -217,14 +240,11 @@ where
         let from = self
             .inner
             .current
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(Error::from)?;
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        self.validate().await?;
         let result = self.inner.execute(operation_id, action).await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so

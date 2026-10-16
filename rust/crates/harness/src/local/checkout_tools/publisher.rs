@@ -57,11 +57,14 @@ impl CheckoutPublisher {
         }
     }
 
-    fn writer(&self, view: &workspace::View) -> Result<Arc<Publisher>> {
+    fn writer_for(
+        &self,
+        volume: &VolumeRef,
+        workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> Result<Arc<Publisher>> {
         Publisher::new(
-            self.files
-                .for_workspace(&self.volume, view.workspace().clone())?,
-            &self.volume,
+            self.files.for_workspace(volume, workspace.clone())?,
+            volume,
             &self.verifier,
             &self.signed,
             self.maximum,
@@ -75,52 +78,55 @@ impl CheckoutPublisher {
         bytes: &[u8],
         publication: Publication<'_>,
     ) -> Result<FileRef> {
+        let (volume, path) = match &publication {
+            Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
+            Publication::Replace(source) => (Some(source.volume()), source.path()),
+        };
+        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
+        mount.check(
+            acyclic_fs::access::Action::Write,
+            &relative,
+            self.tools.clock.now_unix_millis() / 1000,
+        )?;
         serialized(&self.tools.state, async |mut state| {
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
             if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
                 state.watcher = None;
             }
-            let State { active, watcher } = &mut *state;
-            let view = active
-                .as_ref()
-                .unwrap_or_else(|| self.tools.workspace.view());
-            let writer = self.writer(view)?;
-            // Recover the original committed generation before reading the
-            // checkout: capture must not import a missing physical write as a deletion.
+            let State { active, watcher, .. } = &mut *state;
+            let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
+            let native = mount.view.source.as_ref().and_then(|source| source.native.as_ref());
+            let workspace = mount.view.source.as_ref()
+                .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+            let writer = self.writer_for(&mount.view.volume, workspace)?;
+            // Recover the original committed generation before capture: a
+            // missing physical publication must not become a deletion.
             let original = match &publication {
                 Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, None)?.await?.0,
-                Publication::Path { path, .. } => writer.observe_staged_path(operation, path, self.maximum).await?,
+                Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum).await?,
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum).await?,
             };
             if original.is_none() {
-                self.tools.capture(view, watcher, operation, 0, PublicationPermit::Unrestricted).await?;
+                if let Some(native) = native {
+                    native.sync().await?;
+                } else {
+                    self.tools.capture(view, watcher, operation, 0, PublicationPermit::Unrestricted).await?;
+                }
             }
             let file = match publication {
-                Publication::Once {
-                    path,
-                    media,
-                    display,
-                } => {
-                    writer
-                        .stage_once(operation, path, bytes, media, display, None)?
-                        .await?
-                        .0
+                Publication::Once { media, display, .. } => {
+                    writer.stage_once(operation, &relative, bytes, media, display, None)?.await?.0
                 }
-                Publication::Path {
-                    path,
-                    media,
-                    display,
-                } => {
-                    writer
-                        .stage(operation, path, bytes, media, display, None)?
-                        .await?
-                        .0
+                Publication::Path { media, display, .. } => {
+                    writer.stage(operation, &relative, bytes, media, display, None)?.await?.0
                 }
-                Publication::Replace(source) => {
-                    writer.stage_at(operation, source, bytes, None)?.await?.0
-                }
+                Publication::Replace(source) => writer.stage_at(operation, source, bytes, None)?.await?.0,
             };
-            self.materialize(view, operation, &file).await?;
+            if let Some(native) = native {
+                native.advance_to_head().await?;
+            } else {
+                self.materialize(view, operation, &file).await?;
+            }
             Ok(file)
         })
         .await
@@ -179,6 +185,22 @@ impl CheckoutPublisher {
 impl ContentPublisher for CheckoutPublisher {
     fn volume(&self) -> &VolumeRef {
         &self.volume
+    }
+
+    fn destination<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.supports_stage(io)?;
+        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
+        mount.check(
+            acyclic_fs::access::Action::Write,
+            &relative,
+            self.tools.clock.now_unix_millis() / 1000,
+        )?;
+        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
     }
 
     fn supports_stage(&self, io: Option<&ContentIo>) -> Result<()> {
@@ -271,15 +293,37 @@ impl ContentPublisher for CheckoutPublisher {
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.tools.workspace.view());
-                let file = self
-                    .writer(view)?
-                    .observe_staged_once(operation, maximum, None)?
-                    .await?
-                    .0;
-                if let Some(file) = &file {
-                    self.materialize(view, operation, file).await?;
+                for (_, mount) in self.tools.workspace.mounts.mounts() {
+                    let workspace = mount
+                        .view
+                        .source
+                        .as_ref()
+                        .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+                    let file = self
+                        .writer_for(&mount.view.volume, workspace)?
+                        .observe_staged_once(operation, maximum, None)?
+                        .await?
+                        .0;
+                    if let Some(file) = file {
+                        mount.check(
+                            acyclic_fs::access::Action::Write,
+                            file.path(),
+                            self.tools.clock.now_unix_millis() / 1000,
+                        )?;
+                        if let Some(native) = mount
+                            .view
+                            .source
+                            .as_ref()
+                            .and_then(|source| source.native.as_ref())
+                        {
+                            native.advance_to_head().await?;
+                        } else {
+                            self.materialize(view, operation, &file).await?;
+                        }
+                        return Ok((Some(file), None));
+                    }
                 }
-                Ok((file, None))
+                Ok((None, None))
             })
             .await
         })

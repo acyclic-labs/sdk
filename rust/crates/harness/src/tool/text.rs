@@ -1,6 +1,6 @@
 //! Bounded UTF-8 selections and literal search, independent of storage or models.
 
-use super::edit::{charge, invalid, reserve_string, reserve_vec};
+use super::edit::{charge, invalid, reserve_vec};
 use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -27,95 +27,6 @@ pub struct TextRange {
     #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
     #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub end: u64,
-}
-
-/// Consumer-selected ceilings for an explicit partial read.
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadOptions {
-    /// Maximum verified source bytes, checked before source I/O by adapters.
-    #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
-    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
-    pub maximum_input_bytes: u64,
-    /// Maximum selected UTF-8 bytes, independent of the source allowance.
-    #[schemars(range(min = 1, max = crate::conversation::MAX_EXACT_JS_INTEGER))]
-    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
-    pub maximum_text_bytes: u64,
-}
-
-impl ReadOptions {
-    /// Validates positive portable finite allowances.
-    pub fn validate(self) -> Result<()> {
-        finite(self.maximum_input_bytes, "read input byte bound")?;
-        finite(self.maximum_text_bytes, "read text byte bound")
-    }
-}
-
-/// One explicit partial read, including the exact omitted source intervals.
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TextSelection {
-    /// Selected source interval.
-    pub range: TextRange,
-    /// Exact selected UTF-8 with original line endings.
-    pub text: String,
-    /// Bytes excluded before the selection.
-    #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
-    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
-    pub omitted_before: u64,
-    /// Bytes excluded after the selection.
-    #[schemars(range(max = crate::conversation::MAX_EXACT_JS_INTEGER))]
-    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
-    pub omitted_after: u64,
-}
-
-/// Selects exactly the requested interval, rejecting invalid UTF-8 boundaries.
-pub(crate) fn read_range(
-    source: &str,
-    range: TextRange,
-    options: ReadOptions,
-    work: &mut NativeCustody,
-) -> Result<TextSelection> {
-    if options.maximum_input_bytes == 0
-        || options.maximum_input_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
-        || options.maximum_text_bytes == 0
-        || options.maximum_text_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
-    {
-        return Err(invalid(
-            work,
-            "read byte bounds must be positive and exactly representable",
-        ));
-    }
-    let source_bytes = source.len() as u64;
-    let selected = range
-        .end
-        .checked_sub(range.start)
-        .ok_or_else(|| invalid(work, "read range is reversed"))?;
-    if source_bytes > options.maximum_input_bytes
-        || range.end > source_bytes
-        || selected > options.maximum_text_bytes
-    {
-        return Err(invalid(work, "read range exceeds its explicit byte bounds"));
-    }
-    let start = usize::try_from(range.start)
-        .map_err(|_| invalid(work, "read start cannot be represented"))?;
-    let end =
-        usize::try_from(range.end).map_err(|_| invalid(work, "read end cannot be represented"))?;
-    let text = source
-        .get(start..end)
-        .ok_or_else(|| invalid(work, "read range splits a UTF-8 character"))?;
-    let mut selected_text = String::new();
-    reserve_string(work, &mut selected_text, text.len())?;
-    charge(work, (text.len()) as u64, 0)?;
-    selected_text.push_str(text);
-    Ok(TextSelection {
-        range,
-        text: selected_text,
-        omitted_before: range.start,
-        omitted_after: source_bytes - range.end,
-    })
 }
 
 /// Consumer-selected finite literal-search allowances.
@@ -264,55 +175,6 @@ mod tests {
         maximum_work: 4096,
         maximum_matches: 1,
     };
-    const READ: ReadOptions = ReadOptions {
-        maximum_input_bytes: 64,
-        maximum_text_bytes: 8,
-    };
-
-    #[test]
-    fn read_records_omissions_and_preserves_exact_utf8_and_crlf() -> Result<()> {
-        let mut work = None;
-        assert_eq!(
-            read_range(
-                "a\r\n🦀\r\nb",
-                TextRange { start: 3, end: 9 },
-                READ,
-                &mut work
-            )?,
-            TextSelection {
-                range: TextRange { start: 3, end: 9 },
-                text: "🦀\r\n".into(),
-                omitted_before: 3,
-                omitted_after: 1
-            }
-        );
-        for range in [
-            TextRange { start: 4, end: 9 },
-            TextRange { start: 3, end: 6 },
-            TextRange { start: 9, end: 8 },
-            TextRange { start: 0, end: 11 },
-        ] {
-            assert!(read_range("a\r\n🦀\r\nb", range, READ, &mut work).is_err());
-        }
-        assert_eq!(
-            read_range("abc", TextRange { start: 3, end: 3 }, READ, &mut work)?.text,
-            ""
-        );
-        assert!(
-            read_range(
-                "abc",
-                TextRange { start: 0, end: 3 },
-                ReadOptions {
-                    maximum_text_bytes: 2,
-                    ..READ
-                },
-                &mut work,
-            )
-            .is_err()
-        );
-        Ok(())
-    }
-
     #[test]
     fn overlaps_omissions_and_work_are_explicit() -> Result<()> {
         let mut work = None;

@@ -123,6 +123,20 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Reads an authenticated interval without loading the remaining body.
+    fn read_range<'a>(
+        &'a self,
+        _reference: &'a FileRef,
+        _range: acyclic_fs::ByteRange,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "authenticated range resolution is unavailable",
+        ))
+    }
+
     /// Checks exact content length and digest under the selected byte allowance.
     fn verify<'a>(
         &'a self,
@@ -221,6 +235,16 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
 
 /// Owner-bound, bounded publication on the caller's existing ledger.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
+    /// Resolves the exact destination before the caller checks write authority.
+    /// Paths remain relative to the selected volume in returned file references.
+    fn destination<'a>(
+        &'a self,
+        _volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
+    }
     /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
     /// Rejects unavailable bounded publication before external side effects.
@@ -393,6 +417,29 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             Ok(bytes)
         })
     }
+    fn read_range<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() || self.volumes.contains_key(reference.volume()) {
+            return self
+                .bound_reader(reference.volume(), io)?
+                .read_range(reference, range, io);
+        }
+        reference.validate(&mut None)?;
+        let mount = self
+            .mount
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("content volume is not registered".into()))?;
+        BoundedContentFuture::new(io, || async move {
+            let (grant, reader) = mount.mount(reference).await?;
+            grant.require_file_read(reference, None)?;
+            reader.read_range(reference, range, io)?.await
+        })
+    }
+
     fn read_private_prefix<'a>(
         &'a self,
         volume: &'a VolumeRef,

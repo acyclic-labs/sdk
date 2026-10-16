@@ -20,17 +20,105 @@ proptest! {
             }
             registry
         };
-        let mut merged = registry(&left);
-        let before = merged.definitions(None).unwrap();
-        let accepted = merged.extend(registry(&right)).is_ok();
+        let mut original = registry(&left);
+        let before = original.definitions(None).unwrap();
+        let result = original.extend(registry(&right));
+        let accepted = result.is_ok();
         prop_assert_eq!(accepted, left.is_disjoint(&right));
-        if accepted {
-            let actual: BTreeSet<_> = merged.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
+        if result.is_ok() {
+            let actual: BTreeSet<_> = original.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
             prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
         } else {
-            prop_assert_eq!(merged.definitions(None).unwrap(), before);
+            prop_assert_eq!(original.definitions(None).unwrap(), before);
         }
     }
+
+    #[test]
+    fn task_file_errors_preserve_file_read_classification(kind in 0u8..8, message in ".{0,64}") {
+        if kind < 6 {
+        let cause = match kind {
+            0 => Error::NotFound(message),
+            1 => Error::Conflict(message),
+            2 => Error::Unsupported(message),
+            3 => Error::Invalid(message),
+            4 => Error::Unauthorized(message),
+            _ => Error::Storage(message),
+        };
+        let expected = cause.code();
+        let display = cause.to_string();
+        let wrapped = Error::from(acyclic_harness::task_volume::Error::from(cause));
+        prop_assert_eq!(wrapped.code(), expected);
+        prop_assert_eq!(wrapped.to_string(), display);
+        } else {
+            let cause = if kind == 6 { acyclic_harness::task_volume::Error::Unauthorized }
+                else { acyclic_harness::task_volume::Error::FenceConflict };
+            let display = cause.to_string();
+            let wrapped = Error::from(cause);
+            prop_assert_eq!(wrapped.code(), acyclic_harness::wire::ErrorCode::Unauthorized);
+            prop_assert_eq!(wrapped.to_string(), display);
+        }
+    }
+
+    // A complete replacement preserves exactly the selected contracts for any
+    // subset of builtin names and never synthesizes registrations or grants.
+    #[test]
+    fn registry_replacement_preserves_selections_with_any_bindings(
+        names in proptest::collection::btree_set(0usize..5, 0..=5),
+        volume in any::<bool>(), workspace in any::<bool>(), hidden in any::<bool>(),
+        revision in 1u8..=2, description in ".{0,32}",
+    ) {
+        let builtins = ["bash", "fs", "read", "write", "edit"];
+        let mut registry = ToolRegistry::default();
+        for &index in &names {
+            for version in 1..=2 {
+                let mut tool = example_tool();
+                tool.definition.name = builtins[index].into();
+                tool.definition.revision = version.to_string();
+                tool.definition.description = format!("Custom {description}");
+                registry.register((tool, None), &mut None, None).unwrap();
+            }
+            registry.select_model_version(builtins[index], &revision.to_string()).unwrap();
+            if hidden {
+                registry.remove_from_model(builtins[index]).unwrap();
+            }
+        }
+        let expected = registry.definitions(None).unwrap();
+        let mut builder = HarnessBuilder::new()
+            .agent_loop(Arc::new(DelegatingLoop))
+            .tool(example_tool())
+            .replace_tools(registry)
+            .tool(example_tool());
+        if volume { builder = builder.content(content()); }
+        if workspace { builder = builder.workspace(Arc::new(Echo)); }
+        let bundle = builder.build().unwrap();
+        for (index, name) in builtins.into_iter().enumerate() {
+            let actual = bundle.runtime().tool(name);
+            match expected.iter().find(|tool| tool.name == name) {
+                Some(definition) => prop_assert_eq!(&actual.unwrap(), definition),
+                None => prop_assert!(matches!(actual, Err(Error::NotFound(_)))),
+            }
+            let capability = format!("tool:call:{name}");
+            prop_assert!(!bundle.capabilities().contains(&capability));
+            prop_assert_eq!(expected.iter().any(|tool| tool.name == name), names.contains(&index) && !hidden);
+        }
+        prop_assert_eq!(bundle.runtime().tool("example.echo").unwrap(), example_tool().definition);
+    }
+}
+
+#[test]
+fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
+    let defaults = crate::tools::defaults()?;
+    let expected = defaults.definitions(None)?;
+    let bundle = HarnessBuilder::new()
+        .agent_loop(Arc::new(DelegatingLoop))
+        .content(content())
+        .workspace(Arc::new(Echo))
+        .replace_tools(defaults)
+        .build()?;
+    for definition in expected {
+        assert_eq!(bundle.runtime().tool(&definition.name)?, definition);
+    }
+    Ok(())
 }
 
 #[test]
@@ -45,14 +133,14 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
             Some(name)
         );
     }
-    let mut custom = ToolRegistry::default();
-    custom.register((example_tool(), None), &mut None, None)?;
     let mut second = example_tool();
     second.definition.name = "example.second".into();
     let enabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .tool(second)?
-        .tools(custom)?
+        .content(content())
+        .workspace(Arc::new(Echo))
+        .tool(second)
+        .tools([example_tool()])
         .build()?;
     for name in names {
         assert_eq!(enabled.runtime().tool(name)?.name, name);
@@ -69,8 +157,8 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     );
     let disabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .default_tools(false)
-        .tool(example_tool())?
+        .without_default_tools()
+        .tool(example_tool())
         .build()?;
     for name in names {
         assert!(matches!(
@@ -92,10 +180,26 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
 
 #[test]
 fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<()> {
+    let artifacts = HarnessBuilder::new()
+        .agent_loop(Arc::new(DelegatingLoop))
+        .artifacts(content())
+        .build()?;
+    for name in ["read", "write", "edit"] {
+        assert!(matches!(
+            artifacts.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
+        assert!(
+            !artifacts
+                .capabilities()
+                .contains(&format!("tool:call:{name}"))
+        );
+    }
     assert!(matches!(
         HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .tool(crate::tool::files::read()?)?
+            .content(content())
+            .tool(crate::tool::files::read()?)
             .build(),
         Err(Error::Conflict(_))
     ));
@@ -104,8 +208,68 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
     for name in ["bash", "fs", "read", "write", "edit"] {
-        assert_eq!(bound.runtime().tool(name)?.name, name);
+        assert!(matches!(
+            bound.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
         assert!(!bound.capabilities().contains(&format!("tool:call:{name}")));
+    }
+    Ok(())
+}
+
+struct Reader;
+impl conversation::ContentResidencyVerifier for Reader {}
+fn content() -> runtime::ContentBindings {
+    runtime::ContentBindings {
+        reader: Arc::new(Reader),
+        writer: None,
+    }
+}
+
+#[test]
+fn registration_and_grants_follow_available_bindings() -> Result<()> {
+    for volume in [false, true] {
+        for workspace in [false, true] {
+            let mut builder = HarnessBuilder::new().agent_loop(Arc::new(DelegatingLoop));
+            if volume {
+                builder = builder.content(content());
+            }
+            if workspace {
+                builder = builder.workspace(Arc::new(Echo));
+            }
+            let harness = builder.build()?;
+            for (name, available) in [
+                ("bash", workspace),
+                ("fs", workspace),
+                ("read", volume),
+                ("write", volume),
+                ("edit", volume),
+            ] {
+                assert_eq!(harness.runtime().tool(name).is_ok(), available);
+                assert_eq!(
+                    harness
+                        .capabilities()
+                        .contains(&format!("tool:call:{name}")),
+                    available
+                );
+            }
+        }
+    }
+    let mut bindings = Bindings::local();
+    bindings.content = Some(content());
+    bindings.workspace_tools = Some(Arc::new(Echo));
+    bindings.scope =
+        runtime::RuntimeScope::new(Capabilities::new(["tool:call:read"]), Limits::default())?;
+    let harness = HarnessBuilder::new()
+        .bindings(bindings)
+        .agent_loop(Arc::new(DelegatingLoop))
+        .build()?;
+    assert_eq!(harness.runtime().tool("read")?.name, "read");
+    for name in ["bash", "fs", "write", "edit"] {
+        assert!(matches!(
+            harness.runtime().tool(name),
+            Err(Error::NotFound(_))
+        ));
     }
     Ok(())
 }
@@ -248,7 +412,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
     for workspace in ["checkout", "child-view"] {
         let bundle = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .workspace_tools(Arc::new(Workspace(workspace)))
+            .workspace(Arc::new(Workspace(workspace)))
             .grant("task:spawn:commands@1")
             .task(TaskDefinition::live(
                 "commands",

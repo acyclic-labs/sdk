@@ -158,6 +158,13 @@ pub struct FileRef {
 }
 
 impl FileRef {
+    #[cfg(feature = "objects")]
+    pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
+        validate_label(&version, &mut None)?;
+        self.version = version;
+        Ok(self)
+    }
+
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
         volume: VolumeRef,

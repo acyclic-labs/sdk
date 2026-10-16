@@ -79,9 +79,6 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             model.clone(),
         )
         .grant("model:generate")
-        .grant("tool:call:read")
-        .grant("tool:call:write")
-        .grant("tool:call:edit")
         .compaction(CompactionPolicy::Disabled)
         .limits(limits)
         .build()?;

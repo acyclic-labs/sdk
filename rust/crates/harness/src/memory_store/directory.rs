@@ -1,6 +1,8 @@
 use super::*;
+pub(super) mod conflicts;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::MAX_PRIVATE_DIRECTORY_PAGE;
+pub(super) use conflicts::paths_conflict;
 
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 mod page;
@@ -66,9 +68,7 @@ impl MemoryStore {
 
     #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn path_conflicts(&self, path: &str) -> bool {
-        self.paths
-            .keys()
-            .any(|existing| paths_conflict(existing, path))
+        conflicts::conflicts(&self.paths, path)
     }
 
     pub(super) fn retain_path(
@@ -195,14 +195,4 @@ impl MemoryStore {
         }
         Ok(())
     }
-}
-
-pub(super) fn paths_conflict(existing: &str, path: &str) -> bool {
-    existing != path
-        && (existing
-            .strip_prefix(path)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-            || path
-                .strip_prefix(existing)
-                .is_some_and(|suffix| suffix.starts_with('/')))
 }

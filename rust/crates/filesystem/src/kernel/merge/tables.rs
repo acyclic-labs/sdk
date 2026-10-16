@@ -177,10 +177,11 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         } else {
                             base
                         };
-                        if matches!(resolved, OptionalResolution::Conflict)
-                            && is_directory(base)
+                        if is_directory(base)
                             && is_directory(ours_value)
                             && is_directory(theirs_value)
+                            && (matches!(resolved, OptionalResolution::Conflict)
+                                || resolutions.has_bindings(file, accounting)?)
                         {
                             if state.remaining_changes == 0 {
                                 return Err(FsError::MergeChangeLimit);

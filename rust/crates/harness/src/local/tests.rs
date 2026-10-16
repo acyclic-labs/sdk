@@ -33,6 +33,16 @@ fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
+#[cfg(feature = "native-execution")]
+fn checkout_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<LocalHarnessConfig> {
+    // These scripts exercise filesystem commands, not summary-model requests.
+    Ok(crate::test_support::local_harness_config(workspace, model)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
+}
+
 fn capacity() -> ModelContextCapacity {
     ModelContextCapacity {
         context_tokens: 32_768,
@@ -151,11 +161,15 @@ pub(super) fn volume_config(
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
+    let state = directory
+        .join("state")
+        .join(volume.storage_name(&mut None)?);
     Ok(crate::test_support::local_harness_config(
         directory.join("filesystem"),
         (model()?, provider),
     )?
-    .volume(volume))
+    .volume(volume)
+    .state_directory(state))
 }
 
 pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
@@ -755,8 +769,13 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
 
 #[cfg(feature = "native-execution")]
 mod checked_commands;
+#[cfg(all(feature = "native-execution", windows))]
+mod bash_environment;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volumes;
 
 #[cfg(feature = "native-execution")]
 #[path = "tests/checkout_reopen.rs"]

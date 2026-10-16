@@ -1,4 +1,4 @@
-use super::super::text_files::{ReadInput, ReadResult, SearchInput, SearchResult};
+use super::super::text_files::{SearchInput, SearchResult};
 use super::*;
 use schema::ProjectionMode;
 
@@ -49,15 +49,6 @@ impl FileTool {
                 mode.schema::<FileResult>()?,
                 FileProjection::Publication(mode),
             ),
-            Self::ReadRange { .. } => (
-                "acyclic.read_file_range",
-                "portable-text-1",
-                "Read one exact bounded UTF-8 byte interval from an authorized immutable source",
-                schema::input::<ReadInput>()?,
-                schema::output::<ReadResult>()?,
-                mode.schema::<ReadResult>()?,
-                FileProjection::Range(mode),
-            ),
             Self::Search { .. } => (
                 "acyclic.search_file",
                 "portable-text-1",
@@ -80,7 +71,7 @@ impl FileTool {
         definition.validate(&mut None)?;
         Ok(Tool {
             hook_names: match self {
-                Self::Read | Self::ReadRange { .. } => &["Read"],
+                Self::Read => &["Read"],
                 Self::Write => &["Write"],
                 Self::Edit | Self::Patch { .. } => &["Edit"],
                 Self::Search { .. } => &[],
@@ -99,13 +90,6 @@ impl FileTool {
             } => Some((
                 "x-harness-patch-limits",
                 json!({"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}),
-            )),
-            Self::ReadRange {
-                options,
-                maximum_result_bytes,
-            } => Some((
-                "x-harness-text-configuration",
-                json!({"read":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
             )),
             Self::Search {
                 options,

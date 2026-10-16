@@ -105,13 +105,13 @@ impl LocalHarness {
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            manifest.conventions.push(workspace.context_line().to_owned());
+        }
         #[cfg(feature = "hooks")]
-        let manifest = {
-            let mut manifest = manifest;
-            manifest.sources.extend(hook_configuration);
-            manifest
-        };
+        manifest.sources.extend(hook_configuration);
         let bytes = manifest.encode(self.limits)?;
         Ok(publisher
             .stage_once(

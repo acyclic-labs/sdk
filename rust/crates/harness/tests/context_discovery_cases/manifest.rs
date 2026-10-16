@@ -7,24 +7,14 @@ use acyclic_harness::{
     filesystem::FilesystemContentPublisher,
     model::{Model, ModelRole},
     runtime::RuntimeScope,
-    tool::{ToolRegistry, files, schema::ProjectionMode, text::ReadOptions, text_files},
+    tool::{ToolRegistry, files},
 };
 use acyclic_stream::MemoryStream;
 use serde_json::Value;
 
 fn tools() -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
-    for tool in [
-        files::write()?,
-        text_files::read_file_range(
-            ReadOptions {
-                maximum_input_bytes: 512,
-                maximum_text_bytes: 512,
-            },
-            8192,
-            ProjectionMode::Full,
-        )?,
-    ] {
+    for tool in [files::write()?, files::read()?] {
         tools.register((tool, None), &mut None, None)?;
     }
     Ok(tools)
@@ -105,9 +95,7 @@ async fn seed(fixture: &Fixture) -> Result<ContextManifest> {
         .capture(fixture.reader.as_ref())
         .await?;
     let mut manifest = ContextManifest::new(discovered, vec!["inspect".into()], &tools()?)?;
-    manifest
-        .tools
-        .retain(|tool| tool.name == "write");
+    manifest.tools.retain(|tool| tool.name == "write");
     Ok(manifest)
 }
 
