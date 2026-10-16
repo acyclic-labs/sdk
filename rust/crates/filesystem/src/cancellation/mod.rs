@@ -31,6 +31,7 @@ struct CancellationWaiter {
     // State lock protects list edits; the waiting future owns the node.
     links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
     #[cfg(not(target_arch = "wasm32"))]
+    // Head may precede cleanup; links and waker guards never span cleanup.
     cleanup: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     #[cfg(not(target_arch = "wasm32"))]
