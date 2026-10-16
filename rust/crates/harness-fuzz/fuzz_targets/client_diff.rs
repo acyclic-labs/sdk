@@ -2,8 +2,10 @@
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../harness/tests/e2e/diff_case.rs"]
+#[path = "../../harness/tests/support/file_diff_case.rs"]
 mod diff_case;
+#[path = "../../harness/tests/e2e/diff_case.rs"]
+mod local_case;
 
 // Compile the production pure module without pulling in unrelated providers.
 #[path = "../../harness/src/client/diff/compute.rs"]
@@ -37,6 +39,15 @@ fn check(before: Option<&[u8]>, after: Option<&[u8]>, render: usize, work: usize
 }
 
 fuzz_target!(|input: &[u8]| {
+    if let Ok(case) = serde_json::from_slice::<local_case::DiffCase>(input) {
+        let encoded = serde_json::to_vec(&case).expect("encode local case");
+        let decoded: local_case::DiffCase =
+            serde_json::from_slice(&encoded).expect("decode local case");
+        assert_eq!(
+            serde_json::to_value(case).unwrap(),
+            serde_json::to_value(decoded).unwrap()
+        );
+    }
     if let Ok(case) = serde_json::from_slice::<diff_case::DiffCase>(input) {
         let encoded = serde_json::to_vec(&case).expect("encode diff case");
         assert_eq!(

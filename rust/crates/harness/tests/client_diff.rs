@@ -934,3 +934,13 @@ async fn rejected_publications_leave_the_view_and_cursor_unchanged() -> Result<(
     );
     Ok(())
 }
+
+#[path = "client_diff_data.rs"]
+mod data;
+#[path = "support/file_diff_case.rs"]
+mod diff_case;
+#[path = "support/file_diff_oracle.rs"]
+mod diff_oracle;
+#[path = "support/scenario_data.rs"]
+mod scenario_data;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

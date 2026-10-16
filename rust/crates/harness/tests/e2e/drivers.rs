@@ -57,7 +57,7 @@ impl Driver for TaskQueryCase {
 impl Driver for super::diff_case::DiffCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        super::diffs::run(case)
+        super::diffs::run(case).await
     }
 }
 
