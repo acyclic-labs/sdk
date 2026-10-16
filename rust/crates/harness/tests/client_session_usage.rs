@@ -167,7 +167,7 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
                     .read(reference, 65_536, None)?
                     .await?;
                 assert_eq!(
-                    serde_json::from_slice::<Value>(&metadata)?,
+                    serde_json::from_slice::<Value>(&metadata).expect("canonical writer metadata"),
                     expected,
                     "finished turn must retain all step usage"
                 );
