@@ -928,7 +928,7 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read exact bounded UTF-8 from an authorized immutable file",
+        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -1013,6 +1013,31 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "TextRange": {
+              "additionalProperties": false,
+              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Inclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end"
               ],
               "type": "object"
             },
@@ -1125,6 +1150,17 @@
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
+            },
+            "range": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextRange"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
             }
           },
           "required": [
@@ -1133,7 +1169,7 @@
           "title": "ReadFileInput",
           "type": "object"
         },
-        "name": "acyclic.read_file",
+        "name": "read",
         "output_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
@@ -1162,47 +1198,47 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-5"
+        "revision": "portable-6"
       },
       "definition_digest": [
-        226,
-        218,
-        5,
-        93,
-        230,
-        91,
-        145,
-        226,
-        51,
-        103,
-        119,
-        86,
-        198,
+        104,
+        78,
+        60,
+        172,
         30,
-        109,
-        227,
-        233,
-        9,
-        47,
-        213,
-        191,
-        219,
+        207,
+        7,
+        4,
+        137,
+        238,
+        1,
         161,
-        46,
-        75,
+        58,
+        86,
+        206,
+        255,
+        164,
+        16,
+        161,
+        251,
+        29,
+        0,
+        77,
+        127,
+        225,
         227,
-        214,
-        182,
-        183,
-        47,
-        147,
-        70
+        101,
+        251,
+        143,
+        206,
+        38,
+        146
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read exact bounded UTF-8 from an authorized immutable file",
+        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -1287,6 +1323,31 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "TextRange": {
+              "additionalProperties": false,
+              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Inclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end"
               ],
               "type": "object"
             },
@@ -1399,6 +1460,17 @@
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
+            },
+            "range": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextRange"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
             }
           },
           "required": [
@@ -1407,7 +1479,7 @@
           "title": "ReadFileInput",
           "type": "object"
         },
-        "name": "acyclic.read_file",
+        "name": "read",
         "output_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
@@ -1677,41 +1749,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-5"
+        "revision": "portable-6"
       },
       "definition_digest": [
-        238,
-        87,
-        118,
+        104,
+        245,
         166,
-        75,
-        45,
-        13,
-        236,
-        99,
-        223,
-        243,
-        160,
-        18,
-        211,
-        190,
-        204,
-        202,
-        130,
-        105,
-        14,
-        173,
-        246,
-        12,
-        189,
-        166,
-        251,
-        140,
-        2,
-        92,
+        187,
+        58,
+        134,
+        91,
+        154,
+        208,
+        161,
+        206,
+        153,
+        40,
+        159,
+        232,
+        0,
         82,
-        90,
-        232
+        3,
+        119,
+        30,
+        187,
+        32,
+        145,
+        201,
+        167,
+        236,
+        129,
+        78,
+        214,
+        36,
+        12,
+        159
       ],
       "variant": "exact_read_reference"
     },
@@ -1749,7 +1821,7 @@
           "title": "WriteFileInput",
           "type": "object"
         },
-        "name": "acyclic.write_file",
+        "name": "write",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -2182,38 +2254,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        19,
-        122,
-        57,
-        236,
-        188,
-        248,
-        1,
-        102,
-        13,
-        29,
-        8,
-        214,
-        6,
+        135,
         118,
+        7,
+        95,
+        203,
+        58,
+        51,
+        208,
+        159,
+        89,
+        124,
+        221,
+        205,
+        211,
+        172,
+        184,
+        38,
+        252,
+        190,
+        12,
+        3,
+        189,
+        247,
+        84,
+        121,
+        113,
+        186,
+        202,
+        246,
         87,
-        130,
-        210,
-        214,
-        133,
-        26,
-        175,
-        32,
-        26,
-        195,
-        44,
-        125,
-        131,
-        106,
-        106,
-        197,
-        44,
-        129
+        207,
+        63
       ],
       "variant": "write_full"
     },
@@ -2251,7 +2323,7 @@
           "title": "WriteFileInput",
           "type": "object"
         },
-        "name": "acyclic.write_file",
+        "name": "write",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -2723,38 +2795,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        189,
-        107,
-        73,
-        156,
-        184,
-        217,
-        144,
-        12,
-        212,
-        214,
-        115,
-        90,
-        84,
-        118,
-        49,
-        208,
-        17,
-        108,
-        82,
-        31,
         15,
+        173,
+        246,
+        150,
+        229,
+        177,
+        125,
         87,
-        215,
-        152,
-        13,
-        240,
-        52,
-        155,
+        140,
+        221,
+        176,
+        69,
+        65,
         92,
-        144,
-        4,
-        239
+        210,
+        214,
+        248,
+        108,
+        46,
+        201,
+        86,
+        133,
+        174,
+        32,
+        102,
+        7,
+        183,
+        105,
+        48,
+        213,
+        29,
+        233
       ],
       "variant": "write_reference"
     },
@@ -2976,7 +3048,7 @@
           "title": "EditFileInput",
           "type": "object"
         },
-        "name": "acyclic.edit_file",
+        "name": "edit",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -3409,38 +3481,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        55,
-        177,
-        211,
-        160,
-        17,
-        58,
-        136,
-        250,
-        226,
-        157,
-        102,
-        124,
+        3,
+        37,
+        166,
+        227,
         194,
-        114,
-        59,
-        243,
-        86,
-        156,
-        180,
-        172,
-        116,
-        252,
-        182,
-        38,
-        5,
-        185,
-        200,
-        116,
-        89,
-        118,
-        165,
-        204
+        191,
+        249,
+        209,
+        71,
+        175,
+        142,
+        212,
+        186,
+        128,
+        198,
+        12,
+        242,
+        148,
+        56,
+        202,
+        68,
+        134,
+        35,
+        254,
+        120,
+        170,
+        111,
+        194,
+        174,
+        75,
+        148,
+        38
       ],
       "variant": "exact_edit_full"
     },
