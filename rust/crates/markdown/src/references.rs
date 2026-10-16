@@ -1,8 +1,11 @@
 use pulldown_cmark::{BrokenLink, Event, Parser, Tag};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 pub(crate) type Key = unicase::UniCase<String>;
-type Definition = (String, String, usize);
+type Definition = (Arc<str>, Arc<str>, usize);
 
 // All callers receive labels already normalized by pulldown-cmark. In particular,
 // its ASCII whitespace rules must not be applied again as Unicode whitespace.
@@ -12,8 +15,8 @@ pub(crate) fn normalize(label: &str) -> Key {
 
 #[derive(Default)]
 pub(crate) struct References {
-    committed: HashMap<Key, Definition>,
-    pending: HashMap<Key, Definition>,
+    pub(super) committed: HashMap<Key, Definition>,
+    pub(super) pending: HashMap<Key, Definition>,
     #[cfg(test)]
     pub(crate) work: usize,
 }
@@ -39,14 +42,15 @@ impl References {
             .reference_definitions()
             .iter()
             .map(|(key, value)| {
+                #[cfg(test)]
+                crate::work::copy(
+                    value.dest.len() + value.title.as_ref().map_or(0, |title| title.len()),
+                );
                 (
                     normalize(key),
                     (
-                        value.dest.to_string(),
-                        value
-                            .title
-                            .as_ref()
-                            .map_or_else(String::new, ToString::to_string),
+                        Arc::from(value.dest.as_ref()),
+                        Arc::from(value.title.as_deref().unwrap_or_default()),
                         offset + value.span.start.saturating_sub(prefix),
                     ),
                 )
@@ -89,7 +93,7 @@ impl References {
 // an inner or following candidate. A changed definition parses each dependent
 // block once with the actual complete definition map.
 pub(crate) struct Template {
-    source: String,
+    pub(super) source: String,
     paragraph: bool,
     task: bool,
     pub(crate) keys: HashSet<Key>,
@@ -122,6 +126,8 @@ impl Template {
             }
             normalized.push_str(line);
         }
+        #[cfg(test)]
+        crate::work::copy(normalized.len());
         let mut keys = HashSet::new();
         let mut callback = |link: BrokenLink<'_>| {
             keys.insert(normalize(&link.reference));
@@ -148,7 +154,7 @@ impl Template {
         let mut callback = |link: BrokenLink<'_>| {
             references
                 .get(&normalize(&link.reference))
-                .map(|(dest, title, _)| (dest.clone().into(), title.clone().into()))
+                .map(|_| ("".into(), "".into()))
         };
         let mut events: Vec<_> = Parser::new_with_broken_link_callback(
             &self.source,

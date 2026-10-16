@@ -25,7 +25,7 @@ impl Markdown {
             };
             let mut renderer = cache.state.checkpoint();
             for event in cache.template.events(&self.references) {
-                renderer.event(&event);
+                renderer.event_in(&event, Some(&self.references));
             }
             renderer.flush();
             changed = changed.min(cache.lines.start);
@@ -41,6 +41,7 @@ impl Markdown {
                 {
                     self.reference_cache_visits += 1;
                     self.reference_moved_lines += lines.len();
+                    work::copy(lines.len() * std::mem::size_of::<Line>());
                 }
                 if let Some(cache) = self.cached.get(index) {
                     for (target, line) in self
@@ -52,10 +53,13 @@ impl Markdown {
                     {
                         *target = line;
                     }
+                    let range = cache.lines.clone();
+                    for index in range {
+                        self.index_visible(index);
+                    }
                 }
             }
         }
-        self.stable_visible_lines = self.visible_end(0, self.stable_lines, 0);
         changed
     }
 
@@ -64,14 +68,26 @@ impl Markdown {
         mut replacements: HashMap<usize, Vec<Line>>,
         length: usize,
     ) {
-        let previous = std::mem::take(&mut self.lines);
-        let previous_length = previous.len();
-        let mut previous = previous.into_iter();
-        let mut cursor = 0;
-        let mut lines = Vec::with_capacity(length);
+        let first_cache = replacements.keys().copied().min().unwrap_or_default();
+        let first_line = self
+            .cached
+            .get(first_cache)
+            .map_or(0, |cache| cache.lines.start);
+        let previous_length = self.lines.len();
+        let previous_stable = self.stable_lines;
+        #[cfg(test)]
+        work::copy((previous_length - first_line) * std::mem::size_of::<Line>());
+        let mut previous = self.lines.split_off(first_line).into_iter();
+        let mut cursor = first_line;
+        let mut lines = std::mem::take(&mut self.lines);
+        #[cfg(test)]
+        if length > lines.capacity() {
+            work::copy(lines.len() * std::mem::size_of::<Line>());
+        }
+        lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.
-        for (index, cache) in self.cached.iter_mut().enumerate() {
+        for (index, cache) in self.cached.iter_mut().enumerate().skip(first_cache) {
             #[cfg(test)]
             {
                 self.reference_cache_visits += 1;
@@ -92,9 +108,16 @@ impl Markdown {
         lines.extend(previous);
         #[cfg(test)]
         {
-            self.reference_moved_lines += lines.len();
+            self.reference_moved_lines += lines.len() - first_line;
+            work::copy((lines.len() - first_line) * std::mem::size_of::<Line>());
         }
         self.stable_lines = self.stable_lines - previous_length + lines.len();
         self.lines = lines;
+        for index in self.stable_lines..previous_stable {
+            self.visibility.set(index, false);
+        }
+        for index in first_line..self.stable_lines {
+            self.index_visible(index);
+        }
     }
 }

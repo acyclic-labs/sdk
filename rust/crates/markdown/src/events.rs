@@ -10,7 +10,7 @@ pub(crate) fn parse<'a>(
     let mut callback = |link: BrokenLink<'_>| {
         references
             .get(&crate::normalize(&link.reference))
-            .map(|(dest, title, _)| (dest.clone().into(), title.clone().into()))
+            .map(|_| ("".into(), "".into()))
     };
     let events: Vec<_> =
         Parser::new_with_broken_link_callback(source, crate::options(), Some(&mut callback))
@@ -31,10 +31,10 @@ pub(crate) fn parse<'a>(
                     },
                 ) = &mut event
                     && !id.is_empty()
-                    && let Some((destination, label, _)) = references.get(&crate::normalize(id))
+                    && references.get(&crate::normalize(id)).is_some()
                 {
-                    *dest_url = destination.clone().into();
-                    *title = label.clone().into();
+                    *dest_url = "".into();
+                    *title = "".into();
                 }
                 (event, range)
             })

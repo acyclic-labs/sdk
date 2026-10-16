@@ -46,6 +46,8 @@ impl Line {
         if text.is_empty() {
             return;
         }
+        #[cfg(test)]
+        crate::work::copy(text.len());
         if let Some(last) = self.spans.last_mut()
             && last.style == style
             && match (&last.link, link) {
@@ -54,8 +56,22 @@ impl Line {
                 _ => false,
             }
         {
+            #[cfg(test)]
+            if last.text.capacity() - last.text.len() < text.len() {
+                crate::work::copy(last.text.len());
+            }
             last.text.push_str(text);
         } else {
+            self.push_new(text, style, link);
+        }
+    }
+
+    pub(crate) fn push_new(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
+        if !text.is_empty() {
+            #[cfg(test)]
+            if self.spans.len() == self.spans.capacity() {
+                crate::work::copy(self.spans.len() * std::mem::size_of::<Span>());
+            }
             self.spans.push(Span {
                 text: text.into(),
                 style,

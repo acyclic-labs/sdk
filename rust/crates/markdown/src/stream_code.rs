@@ -218,6 +218,8 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
         let source = format!("{}{}{line}", fence.parser_opening, fence.pending);
         let mut text = String::new();
         let mut inside = false;
+        #[cfg(test)]
+        references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
         for event in Parser::new_ext(&source, options()) {
             match event {
                 Event::Start(Tag::CodeBlock(_)) => inside = true,
@@ -238,6 +240,8 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
                 .is_empty()
         {
             let source = format!("{}{line}", fence.parser_opening);
+            #[cfg(test)]
+            references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
             let text = Parser::new_ext(&source, options())
                 .filter_map(|event| match event {
                     Event::Text(text) => Some(text.to_string()),
@@ -255,6 +259,8 @@ fn fence_line<'a>(line: &'a str, fence: &Fence) -> FenceLine<'a> {
     let source = format!("{}{line}", fence.parser_opening);
     let mut inside = false;
     let mut text = String::new();
+    #[cfg(test)]
+    references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     for (event, range) in Parser::new_ext(&source, options()).into_offset_iter() {
         match event {
             Event::Start(Tag::CodeBlock(_)) => inside = true,

@@ -19,21 +19,19 @@ impl Table {
         }
     }
 
-    pub(crate) fn event(&mut self, event: &Event<'_>) {
+    pub(crate) fn event(&mut self, event: &Event<'_>, references: Option<&crate::References>) {
         match event {
             Event::Start(Tag::TableHead | Tag::TableRow) => self.rows.push(Vec::new()),
             Event::Start(Tag::TableCell) => self.cell.clear(),
             Event::End(TagEnd::TableCell) => {
-                let lines = render::render_styled(&self.cell, self.style);
+                let lines = render::render_styled_in(&self.cell, self.style, references);
                 if let Some(row) = self.rows.last_mut() {
                     let mut cell = Line::default();
                     for (index, line) in lines.into_iter().enumerate() {
                         if index > 0 {
                             cell.push(" ↵ ", self.style, None);
                         }
-                        for span in line.spans {
-                            cell.push(&span.text, span.style, span.link.as_ref());
-                        }
+                        cell.spans.extend(line.spans);
                     }
                     row.push(cell);
                 }
@@ -56,10 +54,11 @@ impl Table {
             })
             .collect();
         let mut lines = vec![border('┌', '┬', '┐', &widths)];
-        for (index, row) in self.rows.iter().enumerate() {
+        for (index, row) in self.rows.into_iter().enumerate() {
             let mut line = Line::plain("│", MUTED);
+            let mut row = row.into_iter();
             for (column, &size) in widths.iter().enumerate() {
-                let cell = row.get(column).cloned().unwrap_or_default();
+                let cell = row.next().unwrap_or_default();
                 let padding = size.saturating_sub(width(&cell));
                 let left = match self.alignments.get(column) {
                     Some(Alignment::Right) => padding,
@@ -69,7 +68,7 @@ impl Table {
                 line.push(&" ".repeat(left + 1), Style::default(), None);
                 for mut span in cell.spans {
                     span.style.bold |= index == 0;
-                    line.push(&span.text, span.style, span.link.as_ref());
+                    line.spans.push(span);
                 }
                 line.push(&" ".repeat(padding - left + 1), Style::default(), None);
                 line.push("│", MUTED, None);

@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "sequence_work.rs"]
+mod sequence_work;
+
 #[path = "maintenance_work.rs"]
 mod maintenance_work;
 

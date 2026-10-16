@@ -3,12 +3,16 @@
 
 mod code;
 mod events;
+mod inline;
 mod reference_render;
 mod references;
 mod render;
 mod stream_code;
 mod style;
 mod table;
+mod visibility;
+#[cfg(test)]
+mod work;
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use references::{Key, References, Template, normalize};
@@ -26,7 +30,7 @@ pub struct Markdown {
     source: String,
     offset: usize,
     stable_lines: usize,
-    stable_visible_lines: usize,
+    visibility: visibility::Visibility,
     visible_lines: usize,
     lines: Vec<Line>,
     state: render::Renderer,
@@ -35,6 +39,7 @@ pub struct Markdown {
     dependencies: HashMap<Key, Vec<usize>>,
     cached: Vec<Cached>,
     fence: Option<Fence>,
+    inline: Option<inline::Inline>,
     plain: bool,
     plain_links: bool,
     plain_entity: bool,
@@ -146,8 +151,19 @@ impl Markdown {
                     self.plain_spaces += appended.len();
                 } else {
                     if let Some(span) = line.spans.last_mut() {
+                        #[cfg(test)]
+                        {
+                            work::copy(self.plain_spaces + visible.len());
+                            if self.plain_spaces > span.text.capacity() - span.text.len() {
+                                work::copy(span.text.len());
+                            }
+                        }
                         span.text
                             .extend(std::iter::repeat_n(' ', self.plain_spaces));
+                        #[cfg(test)]
+                        if visible.len() > span.text.capacity() - span.text.len() {
+                            work::copy(span.text.len());
+                        }
                         span.text.push_str(visible);
                     }
                     self.plain_spaces = appended.len() - visible.len();
@@ -155,6 +171,10 @@ impl Markdown {
             }
             return old_len.saturating_sub(1);
         }
+        if self.advance_inline(previous) {
+            return self.stable_lines.min(old_len);
+        }
+        self.inline = None;
         self.plain = false;
         let mut changed = self.stable_lines.min(old_len);
         self.lines.truncate(self.stable_lines);
@@ -166,6 +186,8 @@ impl Markdown {
             let tail = self.source.get(self.offset..).unwrap_or_default();
             let prefix = context_prefix(&self.context);
             let source = format!("{prefix}{tail}");
+            #[cfg(test)]
+            work::copy(source.len());
             let keys = self.references.update(&source, self.offset, prefix.len());
             changed = changed.min(self.resolve(&keys));
             if !self.parse_tail() {
@@ -196,16 +218,25 @@ impl Markdown {
     }
 
     fn finish_visible(&mut self) {
-        self.visible_lines = self.visible_end(
-            self.stable_lines,
-            self.lines.len(),
-            self.stable_visible_lines,
+        self.visible_lines =
+            self.visible_end(self.stable_lines, self.lines.len(), self.visibility.end);
+    }
+
+    fn index_visible(&mut self, index: usize) {
+        #[cfg(test)]
+        self.visible_work.set(self.visible_work.get() + 1);
+        self.visibility.set(
+            index,
+            self.lines
+                .get(index)
+                .is_some_and(|line| !line.spans.is_empty()),
         );
     }
 
     fn set_stable_lines(&mut self, length: usize) {
-        self.stable_visible_lines =
-            self.visible_end(self.stable_lines, length, self.stable_visible_lines);
+        for index in self.stable_lines..length {
+            self.index_visible(index);
+        }
         self.stable_lines = length;
     }
 
@@ -220,7 +251,13 @@ impl Markdown {
     }
 
     fn append(&mut self, delta: &str) {
+        #[cfg(test)]
+        work::copy(delta.len());
         if !self.cr && !delta.contains('\r') {
+            #[cfg(test)]
+            if delta.len() > self.source.capacity() - self.source.len() {
+                work::copy(self.source.len());
+            }
             self.source.push_str(delta);
             return;
         }
@@ -260,6 +297,8 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
+        #[cfg(test)]
+        work::copy(source.len());
         #[cfg(test)]
         {
             self.parsed_bytes += source.len();
@@ -308,7 +347,7 @@ impl Markdown {
                 }
                 stack.push(container(&source, range.start, tag));
             }
-            out.event(event);
+            out.event_in(event, Some(&self.references));
             if let Event::End(end) = event {
                 if stack.last().is_some_and(|container| container.end == *end) {
                     stack.pop();
@@ -354,6 +393,7 @@ impl Markdown {
         self.lines.extend(out.lines);
         self.finish_tail(candidate, caches, (base, prefix.len()));
         self.finish_definitions(&source, &events, (base, prefix.len()));
+        self.begin_inline(&source, &events, base);
         false
     }
 
@@ -574,13 +614,19 @@ fn container(source: &str, position: usize, tag: &Tag<'_>) -> Container {
         Tag::Item => {
             let marker = line.get(before..).unwrap_or_default();
             let end = marker.find([' ', '\t', '\n']).unwrap_or(marker.len());
+            let padding = marker
+                .get(end..)
+                .unwrap_or_default()
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
             before
                 + end
-                + usize::from(
-                    marker
-                        .get(end..)
-                        .is_some_and(|tail| tail.starts_with([' ', '\t'])),
-                )
+                + if (1..=4).contains(&padding) {
+                    padding
+                } else {
+                    usize::from(padding > 0)
+                }
         }
         Tag::BlockQuote(_) => before + 1,
         _ => {
@@ -597,7 +643,13 @@ fn container(source: &str, position: usize, tag: &Tag<'_>) -> Container {
         if matches!(tag, Tag::Item) { "x" } else { "" }
     );
     let continuation = if matches!(tag, Tag::Item) {
-        format!("{parent}{}\n", " ".repeat(marker.len()))
+        format!(
+            "{parent}{}\n",
+            marker
+                .chars()
+                .map(|c| if c.is_ascii_whitespace() { c } else { ' ' })
+                .collect::<String>()
+        )
     } else {
         opening.clone()
     };

@@ -5,16 +5,37 @@ use crate::{
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 use std::sync::Arc;
 
+#[cfg(test)]
 pub(crate) fn render_styled(events: &[Event<'_>], style: Style) -> Vec<Line> {
+    render_styled_in(events, style, None)
+}
+
+pub(crate) fn render_styled_in(
+    events: &[Event<'_>],
+    style: Style,
+    references: Option<&crate::References>,
+) -> Vec<Line> {
     let mut out = Renderer {
         style,
         ..Renderer::default()
     };
     for event in events {
-        out.event(event);
+        out.event_in(event, references);
     }
     out.flush();
     out.lines
+}
+
+fn destination(url: &str, id: &str, references: Option<&crate::References>) -> Arc<str> {
+    if !id.is_empty()
+        && let Some((destination, _, _)) =
+            references.and_then(|references| references.get(&crate::normalize(id)))
+    {
+        return destination.clone();
+    }
+    #[cfg(test)]
+    crate::work::copy(url.len());
+    Arc::from(url)
 }
 
 #[derive(Default)]
@@ -24,6 +45,7 @@ pub(crate) struct Renderer {
     styles: Vec<(Style, Option<Arc<str>>)>,
     style: Style,
     link: Option<Arc<str>>,
+    new_link: bool,
     lists: Vec<Option<u64>>,
     prefixes: Vec<String>,
     code: Option<code::Code>,
@@ -32,12 +54,35 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
+    pub(super) fn inline(line: Line) -> Self {
+        Self {
+            line,
+            ..Self::default()
+        }
+    }
+    pub(super) fn inline_line(&self) -> &Line {
+        &self.line
+    }
+    pub(super) fn into_inline(self) -> Line {
+        self.line
+    }
+
     pub(crate) fn checkpoint(&self) -> Self {
+        #[cfg(test)]
+        crate::work::copy(
+            self.line
+                .spans
+                .iter()
+                .map(|span| span.text.len())
+                .sum::<usize>()
+                + self.prefixes.iter().map(String::len).sum::<usize>(),
+        );
         Self {
             line: self.line.clone(),
             styles: self.styles.clone(),
             style: self.style,
             link: self.link.clone(),
+            new_link: self.new_link,
             lists: self.lists.clone(),
             prefixes: self.prefixes.clone(),
             ..Self::default()
@@ -55,11 +100,15 @@ impl Renderer {
             if self.line.spans.is_empty() {
                 self.line.push(&self.prefix(), MUTED, None);
             }
-            self.line.push(
-                part.trim_end_matches(['\r', '\n']),
-                self.style,
-                self.link.as_ref(),
-            );
+            let text = part.trim_end_matches(['\r', '\n']);
+            if self.new_link && self.link.is_some() && !text.is_empty() {
+                #[cfg(test)]
+                crate::work::copy(text.len());
+                self.line.push_new(text, self.style, self.link.as_ref());
+                self.new_link = false;
+            } else {
+                self.line.push(text, self.style, self.link.as_ref());
+            }
             if part.ends_with(['\r', '\n']) {
                 if self.line.spans.is_empty() {
                     self.lines.push(Line::default());
@@ -81,6 +130,10 @@ impl Renderer {
     }
 
     pub(crate) fn event(&mut self, event: &Event<'_>) {
+        self.event_in(event, None);
+    }
+
+    pub(crate) fn event_in(&mut self, event: &Event<'_>, references: Option<&crate::References>) {
         if let Some(table) = &mut self.table {
             if matches!(event, Event::End(TagEnd::Table)) {
                 if let Some(table) = self.table.take() {
@@ -93,12 +146,12 @@ impl Renderer {
                     self.link = link;
                 }
             } else {
-                table.event(event);
+                table.event(event, references);
             }
             return;
         }
         match event {
-            Event::Start(tag) => self.start(tag),
+            Event::Start(tag) => self.start(tag, references),
             Event::End(tag) => self.end(*tag),
             Event::Text(text) => {
                 if self.code.is_some() {
@@ -137,7 +190,7 @@ impl Renderer {
         }
     }
 
-    fn start(&mut self, tag: &Tag<'_>) {
+    fn start(&mut self, tag: &Tag<'_>, references: Option<&crate::References>) {
         self.styles.push((self.style, self.link.clone()));
         match tag {
             Tag::Heading { level, .. } => {
@@ -161,10 +214,11 @@ impl Renderer {
                 self.style.dim = true;
                 self.style.strikethrough = true;
             }
-            Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
+            Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => {
                 self.style.foreground = Some(BLUE);
                 self.style.underline = true;
-                self.link = Some(Arc::from(dest_url.as_ref()));
+                self.new_link = true;
+                self.link = Some(destination(dest_url, id, references));
             }
             Tag::BlockQuote(_) => {
                 self.flush();
@@ -242,6 +296,9 @@ impl Renderer {
         if let Some((style, link)) = self.styles.pop() {
             self.style = style;
             self.link = link;
+        }
+        if matches!(tag, TagEnd::Link | TagEnd::Image) {
+            self.new_link = self.link.is_some();
         }
     }
 }
