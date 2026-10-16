@@ -41,6 +41,8 @@ use authority::{decode_reference, encode_reference, parse_scope_agent};
 mod admission_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod command_tests;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod event_decode_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod protocol_tests;
 #[cfg(test)]

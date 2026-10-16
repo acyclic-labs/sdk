@@ -18,6 +18,8 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 
 [dependencies]
 acyclic-harness = { path = ".." }
+acyclic-stream = { path = "../../stream", default-features = false }
+futures = "0.3.31"
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
 bytes = "1"
