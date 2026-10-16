@@ -1,8 +1,9 @@
 use super::*;
-use std::sync::{
-    Arc, Mutex,
+use crate::sync::{
+    Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::sync::Arc;
 
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl std::fmt::Debug for NativeDemandReadMeter {
@@ -12,7 +13,10 @@ impl std::fmt::Debug for NativeDemandReadMeter {
     }
 }
 impl NativeDemandReadMeter {
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, DemandWork> {
+    pub(crate) fn new(work: DemandWork) -> Self {
+        Self(Mutex::new(work))
+    }
+    pub(crate) fn lock(&self) -> crate::sync::MutexGuard<'_, DemandWork> {
         self.0.lock().unwrap_or_else(|poisoned| {
             let mut state = poisoned.into_inner();
             state.poison_native_original_work();
@@ -27,9 +31,8 @@ impl NativeDemandReadMeter {
     }
 }
 
-#[cfg(all(test, feature = "model-checking", not(target_arch = "wasm32")))]
+#[cfg(all(test, acyclic_fs_loom))]
 mod model_checking;
-mod retained;
 
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
@@ -52,16 +55,32 @@ impl CaptureTransientCustody {
         self.header.work().shares_allocation_context(work)
     }
     pub(crate) fn take_retained_bytes(&self) -> u64 {
-        retained::take(&self.retained)
+        self.retained.swap(0, Ordering::AcqRel)
     }
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        retained::transfer(&self.retained, bytes)
+        self.retained
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_sub(bytes)
+            })
+            .map(|_| ())
+            .map_err(|_| crate::WorkError::Overflow)
     }
     pub(super) fn claim(&self, bytes: u64) {
-        retained::claim(&self.retained, bytes);
+        self.retained.fetch_add(bytes, Ordering::AcqRel);
     }
     pub(super) fn release(&self, bytes: u64) {
-        retained::release(&self.retained, bytes);
+        #[cfg(all(test, acyclic_fs_loom))]
+        if model_checking::broken_release() {
+            let current = self.retained.load(Ordering::Acquire);
+            self.retained
+                .store(current.saturating_sub(bytes), Ordering::Release);
+            return;
+        }
+        let _ = self
+            .retained
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_sub(bytes))
+            });
     }
 }
 

@@ -209,10 +209,10 @@ mod original {
         }
     }
     fn birth(budget: WorkBudget, cancellation: &CancellationToken) -> Arc<NativeDemandReadMeter> {
-        Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(
+        Arc::new(NativeDemandReadMeter::new(DemandWork::new(
             budget,
             cancellation,
-        ))))
+        )))
     }
     fn no_growth(birth: &NativeDemandReadMeter, before: WorkCounters, budget: WorkBudget) {
         birth.with_original_leaf(|work| {

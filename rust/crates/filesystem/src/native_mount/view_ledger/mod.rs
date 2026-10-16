@@ -4,19 +4,18 @@ use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
 use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+use crate::sync::RwLock;
 use notifications::ObserverEntries;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use storage::ChangePositions;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) use storage::same_work;
 pub(super) use storage::{copy_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
-#[cfg(all(test, feature = "model-checking"))]
-mod model_checking;
 mod notifications;
 mod storage;
 

@@ -1,82 +1,141 @@
 use super::*;
-use loom::sync::{Arc, Condvar, Mutex};
-use std::sync::LockResult;
+use crate::sync::{Mutex, mpsc};
+use std::cell::{Cell, RefCell};
+use std::mem::ManuallyDrop;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
-fn healthy<T>(result: LockResult<T>) -> T {
-    result.unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())))
+loom::thread_local! {
+    static OMIT_NOTIFY: Cell<bool> = Cell::new(false);
+    static INVALIDATOR_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
+    static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
+}
+
+pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
+    OMIT_NOTIFY.with(Cell::get)
+}
+
+pub(in crate::native_mount::fuse) fn before_invalidator_wait() {
+    INVALIDATOR_WAIT.with(|hook| {
+        if let Some(ready) = hook.borrow_mut().take() {
+            ready.send(()).unwrap();
+        }
+    });
+}
+
+pub(in crate::native_mount::fuse) fn before_waiter_wait() {
+    WAITER_WAIT.with(|hook| {
+        if let Some(ready) = hook.borrow_mut().take() {
+            ready.send(()).unwrap();
+        }
+    });
+}
+
+struct RefusesFirst {
+    sent: Arc<Mutex<Vec<(u64, bool)>>>,
+    first: Cell<bool>,
+    attempted: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl KernelCacheNotifier for RefusesFirst {
+    fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+        let refused = self.first.replace(false);
+        self.sent.lock().unwrap().push((inode, !refused));
+        if refused {
+            self.attempted.send(()).unwrap();
+            self.release.recv().unwrap();
+            Err(std::io::Error::from_raw_os_error(libc::EIO))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn inval_entry(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+        unreachable!("this pass contains inode notifications")
+    }
 }
 
 #[test]
-fn refused_tail_precedes_concurrent_callbacks_and_keeps_waiters_pending() {
+fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
     crate::initialize_test_native_io();
-    loom::model(|| {
-        let work = Work::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .unwrap_or_else(|(error, _)| std::panic::resume_unwind(Box::new(error.to_string())));
-        let clock = std::sync::atomic::AtomicU64::new(0);
-        let older = ViewStamp::record(&clock);
-        let newer = ViewStamp::record(&clock);
-        let mut deferred = fuse_vec(2, &work)
-            .unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())));
-        deferred.extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
-        let shared = Arc::new((
-            Mutex::new(InvalidationQueue {
-                notified: Some(older),
-                deferred,
-                ..Default::default()
-            }),
-            Condvar::new(),
-        ));
-        let other = Arc::clone(&shared);
-        let invalidator = loom::thread::spawn(move || {
-            let mut items = healthy(other.0.lock()).take_deferred();
-            let mut delivered = vec![items.next()];
+    let exercise = |broken| {
+        loom::model(move || {
+            let (core, work) = super::super::tests::invalidation_model_fixture();
+            // Failed controls leave sleepers behind. Keep accounting owners
+            // alive rather than locking their meters during Loom teardown.
+            let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let (attempted, attempt) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let (sleeping, asleep) = mpsc::channel();
+            let invalidator = loom::thread::spawn({
+                let (core, sent) = (Arc::clone(&core), Arc::clone(&sent));
+                move || {
+                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
+                    run_invalidator(
+                        &core,
+                        &RefusesFirst {
+                            sent,
+                            first: Cell::new(true),
+                            attempted,
+                            release: released,
+                        },
+                    );
+                }
+            });
+            asleep.recv().unwrap();
+            // Taking the state after the checkpoint ensures the production
+            // invalidator actually released it in Condvar::wait.
+            let mut state = core.state().unwrap();
+            fuse_reserve(&mut state.invalidation.deferred, 2, &work).unwrap();
+            state
+                .invalidation
+                .deferred
+                .extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
+            OMIT_NOTIFY.with(|fault| fault.set(broken));
+            drop(state);
+            OMIT_NOTIFY.with(|fault| fault.set(false));
+            // No waiter notification can rescue a missing producer wakeup.
+            attempt.recv().unwrap();
+            assert!(core.state().unwrap().invalidation.in_flight);
+            let (waiting, waits) = mpsc::channel();
+            let waiter = loom::thread::spawn({
+                let (core, work) = (Arc::clone(&core), work.clone());
+                move || {
+                    WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(waiting));
+                    core.wait_for_invalidation(core.state().unwrap(), None, &work)
+                }
+            });
+            waits.recv().unwrap();
+            release.send(()).unwrap();
+            assert!(matches!(
+                waiter.join().unwrap(),
+                Err(NativeMountError::Lifecycle(_))
+            ));
             {
-                let mut queue = healthy(other.0.lock());
-                queue.retain_pending_tail(items);
-                queue.finish(Some(older));
-                // Refusal leaves the next item owned by the original pass.
-                assert_eq!(queue.processed, None);
-                assert!(queue.is_pending(Some(older)));
+                let state = core.state().unwrap();
+                assert!(state.invalidation.denied);
+                assert!(state.invalidation.is_pending(None));
+                assert_eq!(
+                    state.invalidation.pending_tail.as_slice(),
+                    &[KernelCacheItem::Inode(10), KernelCacheItem::Inode(11),]
+                );
+                assert!(state.invalidation.deferred.is_empty());
             }
-            while delivered.len() != 3 {
-                let mut queue = healthy(other.0.lock());
-                while !queue.is_pending(queue.notified) {
-                    queue = healthy(other.1.wait(queue));
-                }
-                let through = queue.notified;
-                let mut items = queue.take_deferred();
-                drop(queue);
-                delivered.extend((&mut *items).map(Some));
-                drop(items);
-                let mut queue = healthy(other.0.lock());
-                queue.finish(through);
-                if delivered.len() != 3 {
-                    assert!(queue.is_pending(Some(newer)));
-                }
-            }
-            assert_eq!(
-                delivered,
-                vec![
-                    Some(KernelCacheItem::Inode(10)),
-                    Some(KernelCacheItem::Inode(11)),
-                    Some(KernelCacheItem::Inode(12)),
-                ]
-            );
+            core.wait_for_invalidation(core.state().unwrap(), None, &work)
+                .unwrap();
+            assert!(!core.state().unwrap().invalidation.is_pending(None));
+            core.stop();
+            invalidator.join().unwrap();
+            assert_eq!(*sent.lock().unwrap(), [(10, false), (10, true), (11, true)]);
+            drop(ManuallyDrop::into_inner(keeper));
         });
-        {
-            let mut queue = healthy(shared.0.lock());
-            fuse_reserve(&mut queue.deferred, 1, &work)
-                .unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())));
-            queue.deferred.push(KernelCacheItem::Inode(12));
-            queue.notified = Some(newer);
-            shared.1.notify_all();
-        }
-        assert!(invalidator.join().is_ok());
-        let queue = healthy(shared.0.lock());
-        assert!(!queue.is_pending(Some(newer)));
-        assert_eq!(queue.processed, Some(newer));
-    });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("a missing guard notification must strand the invalidator");
+    let message = error
+        .downcast_ref::<String>()
+        .expect("Loom deadlock message");
+    assert!(message.contains("deadlock"), "{message}");
 }

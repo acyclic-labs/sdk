@@ -50,6 +50,24 @@ fn projection_core(
     super::ProjectionCore::new(source, root, stamp, true, 0, 0, &work)
 }
 
+#[cfg(acyclic_fs_loom)]
+pub(super) fn invalidation_model_fixture() -> (Arc<ProjectionCore>, crate::NativeMaterializationWork)
+{
+    let (source, _) = shared_sources(posix_config()).unwrap();
+    let work = fuse_fixture_work();
+    let core = ProjectionCore::new(
+        Arc::new(source),
+        directory(FileId::new()),
+        None,
+        true,
+        0,
+        0,
+        &work,
+    )
+    .unwrap();
+    (core, work)
+}
+
 mod cache;
 mod mount;
 mod native;

@@ -3,6 +3,7 @@ use crate::native_mount::{
     NativeMountCallbackGuard, NativeMountMeterActivation, NativeMountStartupAdmissionError,
     run_native_mount_handler, run_native_mount_handler_on_meter, view_ledger::same_work,
 };
+use crate::sync::{Condvar, Mutex, MutexGuard, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
 pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
@@ -71,6 +72,8 @@ impl StateGuard<'_> {
             unreachable!("the guard owns its lock until drop");
         };
         self.core.invalidation.notify_all();
+        #[cfg(all(test, acyclic_fs_loom))]
+        invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
                 .wait_timeout(state, duration)
@@ -92,7 +95,13 @@ impl Drop for StateGuard<'_> {
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
             dropped.extend(superseded.iter().map(|(inode, _)| *inode));
         });
-        self.core.invalidation.notify_all();
+        #[cfg(all(test, acyclic_fs_loom))]
+        let notify = !invalidation::model_checking::omit_guard_notification();
+        #[cfg(not(all(test, acyclic_fs_loom)))]
+        let notify = true;
+        if notify {
+            self.core.invalidation.notify_all();
+        }
         if let Some(notifier) = self.core.notifier.get() {
             for (inode, credit) in superseded.iter_mut() {
                 // Drop only attributes, so this never waits for kernel pages or requests.
