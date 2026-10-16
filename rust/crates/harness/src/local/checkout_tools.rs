@@ -31,8 +31,9 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
-    // Release each parent checkout guard before descending to a child; no
-    // path holds two checkout guards. Bindings share their workspace's guard.
+    // Release the owner's flat task index before locking a selected ancestor;
+    // release that guard before publishing its child's cache entry. No path
+    // holds two checkout guards. Bindings share their workspace's guard.
     state: StateArc<AsyncMutex<State>>,
     selected: bool,
 }

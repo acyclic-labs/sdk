@@ -341,6 +341,12 @@ async fn archive_selection_and_recovery_fold_the_outcome_files() -> Result<()> {
         1
     );
     assert_eq!(client.output_page(1)?.unwrap()["ok"]["rendered"], "page 0");
+    assert_eq!(client.render_view(&Default::default())?, "page 0");
+    client.submit("/back 99", &DeniedReader).await?;
+    assert_eq!(
+        client.render_view(&Default::default())?,
+        "History page 99 is unavailable.\n"
+    );
     assert!(client.output_page(usize::MAX)?.is_none());
     drop(client);
     let reopened = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;

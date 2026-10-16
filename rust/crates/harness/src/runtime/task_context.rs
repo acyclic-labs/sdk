@@ -195,26 +195,26 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
-    /// Owner-attested lineage, closest task first, used to select a workspace.
-    pub(crate) async fn lineage(&self, mut task: TaskId) -> Result<Vec<TaskId>> {
-        let state = self
-            .harness
-            .state
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("task state is absent".into()))?;
-        let mut lineage = Vec::new();
-        loop {
-            if lineage.contains(&task) || lineage.len() >= self.scope.limits().context_messages {
-                return Err(Error::Invalid("invalid or oversized task lineage".into()));
-            }
-            lineage.push(task);
-            match state.observe_admission(task).await?.parent {
-                Some(parent) => task = parent,
-                None => return Ok(lineage),
-            }
-        }
+    pub(crate) fn ancestors(
+        &self,
+        task: TaskId,
+    ) -> Result<impl futures::Stream<Item = Result<TaskId>>> {
+        let state = Arc::clone(
+            self.harness
+                .state
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("task state is absent".into()))?,
+        );
+        Ok(ancestor_stream(task, move |task| {
+            let state = Arc::clone(&state);
+            async move { Ok(state.observe_admission(task).await?.parent) }
+        }))
     }
 
+    /// Complete owner-attested ancestry for inherited subtree controls.
+    pub(crate) async fn lineage(&self, task: TaskId) -> Result<Vec<TaskId>> {
+        futures::TryStreamExt::try_collect(self.ancestors(task)?).await
+    }
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {
@@ -423,3 +423,30 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         grants, prefix, digest,
     ))
 }
+
+fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
+where
+    F: FnMut(TaskId) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<TaskId>>>,
+{
+    futures::stream::try_unfold(
+        (task, true, std::collections::HashSet::new(), parent),
+        |(task, first, mut visited, mut parent)| async move {
+            let current = if first {
+                task
+            } else {
+                let Some(parent) = parent(task).await? else {
+                    return Ok(None);
+                };
+                parent
+            };
+            if !visited.insert(current) {
+                return Err(Error::Invalid("cyclic task lineage".into()));
+            }
+            Ok(Some((current, (current, false, visited, parent))))
+        },
+    )
+}
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "task_context/ancestor_tests.rs"]
+mod ancestor_tests;

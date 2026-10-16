@@ -53,6 +53,18 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let mut out = String::new();
         let view = layout["open_view"].as_str();
         match view {
+            Some("history") => {
+                let page = layout["history_page"].as_u64().unwrap_or(0);
+                match usize::try_from(page)
+                    .ok()
+                    .map(|page| self.output_page(page))
+                    .transpose()?
+                    .flatten()
+                {
+                    Some(value) => out.push_str(&driver::render_command_record(&value)),
+                    None => writeln!(out, "History page {page} is unavailable.").unwrap(),
+                }
+            }
             Some("shortcuts") => {
                 for spec in self.catalog().commands() {
                     writeln!(
@@ -135,7 +147,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         if matches!(
             view,
-            Some("shortcuts" | "theme" | "model" | "mcp" | "feedback")
+            Some("shortcuts" | "theme" | "model" | "mcp" | "feedback" | "history")
         ) {
             if out.len() as u64 > self.view_maximum_bytes() {
                 return Err(Error::Invalid("view exceeds display byte bound".into()));
