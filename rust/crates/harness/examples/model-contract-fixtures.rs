@@ -50,6 +50,7 @@ fn main() -> Result<()> {
                 json!({"type":"string"}),
             ),
         }],
+        history_tools: Vec::new(),
         max_output_tokens: Some(32),
     };
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;

@@ -1,0 +1,5 @@
+{"mcp":{"replies":[{"name":"echo","arguments":{"text":"hello"},"result":{"content":[{"type":"image","data":"AAAA","mimeType":
+    "image/png"}],"isError":false}}]},"expect":{"requests":[{"tools":[{"name":"mcp.fixture.echo","revision":"1","input_schema":{
+    "type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false}}]},{"messages":[{
+    "role":"tool","content":{"kind":"tool_result","call_id":"echo","name":"mcp.fixture.echo","content":{"kind":"json","value":{
+    "content":[{"type":"image","data":"AAAA","mimeType":"image/png"}],"isError":false}}}}]}]}}

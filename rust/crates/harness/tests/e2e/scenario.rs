@@ -20,6 +20,7 @@ pub struct Scenario {
     #[serde(default)]
     pub context: Vec<ModelMessage>,
     pub discovery: Option<super::discovery::Discovery>,
+    pub mcp: Option<super::mcp_script::McpScript>,
     pub capacity: Option<ModelContextCapacity>,
     pub compaction: Option<CompactionPolicy>,
     pub max_output_tokens: Option<u32>,
@@ -98,7 +99,7 @@ impl Scenario {
 
     pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
-            Some("summary") => &["prompt", "max_steps", "discovery"][..],
+            Some("summary") => &["prompt", "max_steps", "discovery", "mcp"][..],
             _ => &["instruction"][..],
         };
         for key in forbidden {
@@ -178,6 +179,7 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"kind":"summary","instruction":"x","max_steps":16,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","max_steps":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","discovery":null,"turns":[],"expect":{"text":"x"}}"#,
+        r#"{"kind":"summary","instruction":"x","mcp":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"typo":true},"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"instructions":[{"typo":true}]},"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"reload":"typo"},"turns":[],"expect":{"text":"x"}}"#,

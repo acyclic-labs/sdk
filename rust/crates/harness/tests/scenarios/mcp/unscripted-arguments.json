@@ -1,0 +1,7 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo","arguments":{"text":"other"}},{"type":
+    "event","kind":"completed","metadata":null}]],"expect":{"text":null,"result":null,"error":
+    "tool executor rejected the admitted call","request_count":1,"requests":[{"tools":[{"name":"mcp.fixture.echo","input_schema":{
+    "type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false}}]}],"events":[{"kind":
+    "model","event":{"kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo","arguments":{"text":"other"}}},{"kind":"model",
+    "event":{"kind":"completed"}},{"kind":"tool_started"},{"kind":"tool_failed","reason":"executor_rejected"}],"not_events":[{
+    "kind":"model","step":1,"event":{"kind":"completed"}},{"kind":"tool_completed"}]}}

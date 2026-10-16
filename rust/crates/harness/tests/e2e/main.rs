@@ -4,6 +4,10 @@ mod discovery;
 mod drivers;
 mod execution;
 mod matchers;
+mod mcp;
+mod mcp_script;
+#[cfg(test)]
+mod mcp_tests;
 mod notification_history;
 mod notifications;
 mod scenario;

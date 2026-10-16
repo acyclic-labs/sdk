@@ -339,6 +339,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
                 content: ModelContent::Text("source".into()),
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(32),
         },
         Limits::default(),

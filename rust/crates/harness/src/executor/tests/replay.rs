@@ -82,6 +82,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
                 content: ModelContent::Text("parent ÃƒÂ©\0Ã°Å¸Â¦â‚¬".into()),
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(4096),
         },
         Limits::default(),

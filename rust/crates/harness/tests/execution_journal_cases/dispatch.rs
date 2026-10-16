@@ -85,6 +85,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 content: ModelContent::Text("paged request".into()),
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(1),
         },
         Limits::default(),

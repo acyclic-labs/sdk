@@ -573,6 +573,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 ModelRequest {
                     model: model_request.request().model.clone(),
                     tools: model_request.request().tools.clone(),
+                    history_tools: Vec::new(),
                     max_output_tokens: Some(4096),
                     messages: vec![ModelMessage {
                         role: ModelRole::User,

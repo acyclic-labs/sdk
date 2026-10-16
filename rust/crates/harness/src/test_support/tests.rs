@@ -32,6 +32,7 @@ fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {
                 output_schema: json!({"type":"object"}),
                 projection_schema: crate::tool::json_projection_schema(json!({"type":"object"})),
             }],
+            history_tools: Vec::new(),
             max_output_tokens: Some(64),
         },
         Limits::default(),

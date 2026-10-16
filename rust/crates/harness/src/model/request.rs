@@ -13,6 +13,9 @@ pub struct ModelRequest {
     pub messages: Vec<ModelMessage>,
     /// Visible registered tools.
     pub tools: Vec<crate::tool::ToolDefinition>,
+    /// Retained revisions used by explicit historical calls, never advertised tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_tools: Vec<crate::tool::ToolDefinition>,
     /// Optional output token ceiling.
     pub max_output_tokens: Option<u32>,
 }
@@ -45,7 +48,12 @@ impl ModelRequest {
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
             let bytes = (self.tools.len() as u64)
-                .checked_mul(size_of::<(&String, &crate::tool::ToolDefinition)>() as u64)
+                .checked_add(self.history_tools.len() as u64)
+                .and_then(|count| {
+                    count.checked_mul(
+                        size_of::<((&str, Option<&str>), &crate::tool::ToolDefinition)>() as u64,
+                    )
+                })
                 .and_then(|tools| {
                     calls
                         .checked_mul(size_of::<(&String, &String)>() as u64)
@@ -60,8 +68,28 @@ impl ModelRequest {
         for tool in &self.tools {
             charge_items(io, 1)?;
             with_history_io(io, |work| tool.validate(work))?;
-            if tools.insert(&tool.name, tool).is_some() {
+            if tools.insert((tool.name.as_str(), None), tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
+            }
+        }
+        for tool in &self.history_tools {
+            charge_items(io, 1)?;
+            with_history_io(io, |work| tool.validate(work))?;
+            if tools
+                .get(&(tool.name.as_str(), None))
+                .is_some_and(|visible| visible.revision == tool.revision && *visible != tool)
+            {
+                return Err(Error::Invalid(
+                    "historical tool revision differs from visible schema".into(),
+                ));
+            }
+            if tools
+                .insert((tool.name.as_str(), Some(tool.revision.as_str())), tool)
+                .is_some()
+            {
+                return Err(Error::Invalid(
+                    "historical tool revision is repeated".into(),
+                ));
             }
         }
         let mut pending = BTreeMap::new();
@@ -121,7 +149,7 @@ impl ModelRequest {
     fn validate_part<'a>(
         role: ModelRole,
         part: &'a ModelContentPart,
-        tools: &BTreeMap<&String, &crate::tool::ToolDefinition>,
+        tools: &BTreeMap<(&str, Option<&str>), &crate::tool::ToolDefinition>,
         pending: &mut BTreeMap<&'a String, &'a String>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -138,8 +166,7 @@ impl ModelRequest {
                         "model tool call role or identity is invalid".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::history_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
                 crate::executor::with_history_io(io, |work| {
                     crate::executor::validate_json_schema_value(
@@ -163,8 +190,7 @@ impl ModelRequest {
                         "model tool result has no matching call".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::history_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
                 Self::validate_tool_result(tool, content, io)?;
             }
@@ -174,6 +200,32 @@ impl ModelRequest {
             _ => {}
         }
         Ok(())
+    }
+
+    fn history_tool<'a>(
+        name: &str,
+        tools: &BTreeMap<(&str, Option<&str>), &'a crate::tool::ToolDefinition>,
+    ) -> Option<&'a crate::tool::ToolDefinition> {
+        match name.rsplit_once('@') {
+            Some((name, revision)) => tools.get(&(name, Some(revision))).copied().or_else(|| {
+                tools
+                    .get(&(name, None))
+                    .copied()
+                    .filter(|tool| tool.revision == revision)
+            }),
+            None => tools.get(&(name, None)).copied(),
+        }
+    }
+
+    pub(crate) fn tool_definition(&self, name: &str) -> Option<&crate::tool::ToolDefinition> {
+        match name.rsplit_once('@') {
+            Some((name, revision)) => self
+                .history_tools
+                .iter()
+                .chain(&self.tools)
+                .find(|tool| tool.name == name && tool.revision == revision),
+            None => self.tools.iter().find(|tool| tool.name == name),
+        }
     }
 }
 

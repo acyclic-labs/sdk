@@ -14,7 +14,7 @@ members = ["."]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [features]
-notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+scenarios = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 acyclic-harness = { path = ".." }
@@ -65,7 +65,21 @@ bench = false
 [[bin]]
 name = "notification_scenario"
 path = "fuzz_targets/notification_scenario.rs"
-required-features = ["notifications"]
+required-features = ["scenarios"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_scenario"
+path = "fuzz_targets/mcp_scenario.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_request"
+path = "fuzz_targets/model_request.rs"
 test = false
 doc = false
 bench = false

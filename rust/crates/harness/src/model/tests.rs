@@ -2,6 +2,9 @@ use super::*;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "history_tests.rs"]
+mod history;
+
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
         model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
@@ -18,6 +21,7 @@ fn request() -> Result<ModelRequest> {
             projection_schema: json!({"type":"object","properties":{"kind":{"const":"json"},"value":{"type":"string"}},
                 "required":["kind","value"],"additionalProperties":false}),
         }],
+        history_tools: Vec::new(),
         max_output_tokens: Some(32),
     })
 }

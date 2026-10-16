@@ -336,12 +336,26 @@ where
                     .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
                 {
                     let native = io.is_some_and(|io| io.original_native_work().is_some());
+                    let definition = match request.request().tool_definition(&invocation.name) {
+                        Some(definition) => definition,
+                        None => {
+                            let (name, revision) =
+                                invocation.name.rsplit_once('@').ok_or_else(|| {
+                                    observed::boundary(
+                                        io,
+                                        crate::wire::ErrorCode::Invalid,
+                                        "completed tool prefix has no pinned schema",
+                                    )
+                                })?;
+                            self.tool_definition(name, revision, io)?
+                        }
+                    };
                     let projection = crate::executor::completed_tool_projection(
                         journal.as_ref(),
                         &records,
                         step,
                         &invocation,
-                        &request.request().tools,
+                        definition,
                         if native {
                             limits
                         } else {

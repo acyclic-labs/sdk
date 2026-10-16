@@ -59,7 +59,7 @@ impl StockExecution<'_> {
                 &records,
                 step,
                 &invocation,
-                &request.tools,
+                &stock_tool_lookup(&self.stock.tools, &invocation.name, self.io)?.definition,
                 self.stock.limits,
                 self.io,
             )
@@ -92,6 +92,10 @@ impl StockExecution<'_> {
                 break;
             }
         }
+        request.history_tools =
+            self.stock
+                .tools
+                .history_definitions(&request.messages, &request.tools, self.io)?;
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         self.verify_model_request_content(journal, &prepared)

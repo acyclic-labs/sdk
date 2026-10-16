@@ -1,0 +1,15 @@
+{"driver":"executor","prompt":"Call the configured MCP tool.","seed":{"mcp-sentinel.txt":"unchanged\n"},"turns":[[{"type":"event",
+    "kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo","arguments":{"text":"hello"}},{"type":"event","kind":"completed",
+    "metadata":null}],"done"],"mcp":{"catalog":{"server":"fixture","revision":"1","schema_exposure":{"kind":"eager"},"discovery":
+    "search","projection_schema":{"type":"object","properties":{"kind":{"const":"json"},"value":{}},"required":["kind","value"],
+    "additionalProperties":false},"tools":[{"name":"echo","description":"Return the scripted MCP reply.","inputSchema":{"type":
+    "object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false}}]},"replies":[{"name":"echo",
+    "arguments":{"text":"hello"},"result":{"content":[{"type":"text","text":"reply"}],"isError":false}}],"grants":[
+    "mcp:call:fixture","tool:call:mcp.fixture.echo"]},"expect":{"text":"done","request_count":2,"reconciliation_count":0,"result":{
+    "steps":2},"requests":[{"tools":[{"name":"mcp.fixture.echo","revision":"1","input_schema":{"type":"object","required":["text"],
+    "properties":{"text":{"type":"string"}},"additionalProperties":false}}]},{"messages":[{"role":"tool","content":{"kind":
+    "tool_result","call_id":"echo","name":"mcp.fixture.echo","content":{"kind":"json","value":{"content":[{"type":"text","text":
+    "reply"}],"isError":false}}}}]}],"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"echo","name":
+    "mcp.fixture.echo","arguments":{"text":"hello"}}},{"kind":"model","event":{"kind":"completed"}},{"kind":"tool_started"},{"kind":
+    "tool_completed"},{"kind":"model","step":1,"event":{"kind":"completed"}}],"not_events":[{"kind":"tool_failed"}],"files":{
+    "mcp-sentinel.txt":"unchanged\n","mcp-output.txt":null}}}

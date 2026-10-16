@@ -796,88 +796,96 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
         output_schema: json!({"type": "object"}),
         projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
     };
-    for (canonical, projected, accepted) in [
-        (
-            json!({"count": 2}),
-            json!({"kind":"json","value":"two"}),
-            true,
-        ),
-        (
-            json!("bad result"),
-            json!({"kind":"json","value":"two"}),
-            false,
-        ),
-        (
-            json!({"count": 2}),
-            json!({"kind":"json","value":{"bad":"projection"}}),
-            false,
-        ),
+    for name in [
+        "example.echo",
+        "example.echo@1",
+        "example.echo@other",
+        "other.echo",
     ] {
-        let journal = Journal::default();
-        let operation = OperationId::new();
-        let invocation = ToolInvocation::for_model_call(
-            operation,
-            0,
-            "call".into(),
-            definition.name.clone(),
-            json!({}),
-            None,
-        )?;
-        let invocation_ref =
-            stage_json(&journal, operation, "invocation", &invocation, None).await?;
-        let result = stage_json(
-            &journal,
-            operation,
-            "result",
-            &ToolResult { value: canonical },
-            None,
-        )
-        .await?;
-        let projection = stage_json(&journal, operation, "projection", &projected, None).await?;
-        journal
-            .append(
+        for (canonical, projected, accepted) in [
+            (
+                json!({"count": 2}),
+                json!({"kind":"json","value":"two"}),
+                true,
+            ),
+            (
+                json!("bad result"),
+                json!({"kind":"json","value":"two"}),
+                false,
+            ),
+            (
+                json!({"count": 2}),
+                json!({"kind":"json","value":{"bad":"projection"}}),
+                false,
+            ),
+        ] {
+            let journal = Journal::default();
+            let operation = OperationId::new();
+            let invocation = ToolInvocation::for_model_call(
                 operation,
-                "started",
-                &ExecutionEvent::ToolStarted {
-                    step: 0,
-                    call_id: invocation.call_id.clone(),
-                    invocation: invocation_ref,
-                },
+                0,
+                "call".into(),
+                name.into(),
+                json!({}),
                 None,
-            )?
-            .await?;
-        journal
-            .append(
+            )?;
+            let invocation_ref =
+                stage_json(&journal, operation, "invocation", &invocation, None).await?;
+            let result = stage_json(
+                &journal,
                 operation,
-                "completed",
-                &ExecutionEvent::ToolCompleted {
-                    step: 0,
-                    call_id: invocation.call_id.clone(),
-                    result,
-                    projection,
-                },
+                "result",
+                &ToolResult { value: canonical },
                 None,
-            )?
+            )
             .await?;
-        let records = journal.replay(operation, 0, 64, None)?.await?;
-        let retained = completed_tool_projection(
-            &journal,
-            &records,
-            0,
-            &invocation,
-            std::slice::from_ref(&definition),
-            Limits::default(),
-            None,
-        )
-        .await;
-        if accepted {
-            assert_eq!(
-                serde_json::to_value(retained?)
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                projected
-            );
-        } else {
-            assert!(retained.is_err());
+            let projection =
+                stage_json(&journal, operation, "projection", &projected, None).await?;
+            journal
+                .append(
+                    operation,
+                    "started",
+                    &ExecutionEvent::ToolStarted {
+                        step: 0,
+                        call_id: invocation.call_id.clone(),
+                        invocation: invocation_ref,
+                    },
+                    None,
+                )?
+                .await?;
+            journal
+                .append(
+                    operation,
+                    "completed",
+                    &ExecutionEvent::ToolCompleted {
+                        step: 0,
+                        call_id: invocation.call_id.clone(),
+                        result,
+                        projection,
+                    },
+                    None,
+                )?
+                .await?;
+            let records = journal.replay(operation, 0, 64, None)?.await?;
+            let retained = completed_tool_projection(
+                &journal,
+                &records,
+                0,
+                &invocation,
+                &definition,
+                Limits::default(),
+                None,
+            )
+            .await;
+            if accepted && matches!(name, "example.echo" | "example.echo@1") {
+                assert_eq!(
+                    serde_json::to_value(retained?)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    projected
+                );
+            } else {
+                assert!(retained.is_err());
+            }
         }
     }
     Ok(())

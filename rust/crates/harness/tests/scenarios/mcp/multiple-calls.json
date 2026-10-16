@@ -1,0 +1,14 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo","arguments":{"text":"hello"}},{"type":
+    "event","kind":"tool_call","call_id":"second","name":"mcp.fixture.echo","arguments":{"text":"second"}},{"type":"event","kind":
+    "completed","metadata":null}],"done"],"expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"echo","name":
+    "mcp.fixture.echo","arguments":{"text":"hello"}}},{"kind":"model","event":{"kind":"tool_call","call_id":"second","name":
+    "mcp.fixture.echo","arguments":{"text":"second"}}},{"kind":"model","event":{"kind":"completed"}},{"kind":"tool_started",
+    "call_id":"echo"},{"kind":"tool_completed","call_id":"echo"},{"kind":"tool_started","call_id":"second"},{"kind":
+    "tool_completed","call_id":"second"},{"kind":"model","step":1,"event":{"kind":"completed"}}],"requests":[{"tools":[{"name":
+    "mcp.fixture.echo","revision":"1","input_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},
+    "additionalProperties":false}}]},{"messages":[{"role":"tool","content":{"kind":"tool_result","call_id":"echo","name":
+    "mcp.fixture.echo","content":{"kind":"json","value":{"content":[{"type":"text","text":"reply"}],"isError":false}}}},{"role":
+    "tool","content":{"kind":"tool_result","call_id":"second","name":"mcp.fixture.echo","content":{"kind":"json","value":{"content":
+    [{"type":"text","text":"second reply"}],"isError":false}}}}]}]},"mcp":{"replies":[{"name":"echo","arguments":{"text":"hello"},
+    "result":{"content":[{"type":"text","text":"reply"}],"isError":false}},{"name":"echo","arguments":{"text":"second"},"result":{
+    "content":[{"type":"text","text":"second reply"}],"isError":false}}]}}

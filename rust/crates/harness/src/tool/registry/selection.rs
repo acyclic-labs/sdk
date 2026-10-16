@@ -1,6 +1,72 @@
 use super::*;
 
 impl ToolRegistry {
+    /// Retains only historical pinned schemas absent from the advertised selection.
+    pub(crate) fn history_definitions(
+        &self,
+        messages: &[crate::model::ModelMessage],
+        visible: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
+        let mut count = visible.len() as u64;
+        let mut pinned = false;
+        for message in messages {
+            crate::model::charge_items(io, 1)?;
+            for part in message.content.parts() {
+                crate::model::charge_items(io, 1)?;
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("historical tool slot count overflow".into()))?;
+                if let crate::model::ModelContentPart::ToolCall { name, .. } = part {
+                    crate::model::charge_items(io, name.len() as u64)?;
+                    pinned |= name.contains('@');
+                }
+            }
+        }
+        if !pinned {
+            return Ok(Vec::new());
+        }
+        #[cfg(feature = "filesystem")]
+        let _hold = if let Some(io) = io {
+            let bytes = count
+                .checked_mul(std::mem::size_of::<((&str, &str), Option<&ToolDefinition>)>() as u64)
+                .ok_or_else(|| Error::Invalid("historical tool ownership overflow".into()))?;
+            Some(io.reserve_decode(bytes)?)
+        } else {
+            None
+        };
+        let mut bindings = BTreeMap::new();
+        for tool in visible {
+            crate::model::charge_items(io, 1)?;
+            bindings.insert((tool.name.as_str(), tool.revision.as_str()), None);
+        }
+        for message in messages {
+            crate::model::charge_items(io, 1)?;
+            for part in message.content.parts() {
+                crate::model::charge_items(io, 1)?;
+                if let crate::model::ModelContentPart::ToolCall { name, .. } = part
+                    && let Some((name, revision)) = name.rsplit_once('@')
+                    && let std::collections::btree_map::Entry::Vacant(entry) =
+                        bindings.entry((name, revision))
+                {
+                    let tool = self.get(name, Some(revision), io)?.ok_or_else(|| {
+                        Error::Invalid("historical tool revision is unbound".into())
+                    })?;
+                    entry.insert(Some(&tool.definition));
+                }
+            }
+        }
+        let mut retained = Vec::new();
+        for tool in bindings.into_values().flatten() {
+            crate::executor::stock_vec_push(
+                &mut retained,
+                crate::model::clone_tool_definition(tool, io)?,
+                io,
+            )?;
+        }
+        Ok(retained)
+    }
+
     pub(crate) fn pin_model_definitions(&mut self, definitions: &[ToolDefinition]) -> Result<()> {
         let mut selected = BTreeMap::new();
         for definition in definitions {

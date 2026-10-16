@@ -29,7 +29,8 @@ schema!(SNAPSHOT => Snapshot, "", [], ["events" => EVENTS : 0, "projection" => P
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
 schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0], []);
 schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 2], []);
-schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
+schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0, "history_tools" => TOOLS : 0], []);
+schema!(MODEL_PREFIX => ModelPrefix, "", [], ["messages" => MESSAGES : 0, "history_tools" => TOOLS : 0], []);
 schema!(MODEL_CONTENT_PART => ModelContentPart, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
 schema!(TOOL_RESULT_CONTENT => ToolResultContent, "kind", ["json" => 1], ["value" => ROOT : 1], []);
 schema!(WORKFLOW_RECORD => WorkflowRecord, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);

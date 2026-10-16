@@ -292,6 +292,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
                     serde_json::json!({"type":"object"}),
                 ),
             }],
+            history_tools: Vec::new(),
             max_output_tokens: Some(1_024),
         },
         limits,

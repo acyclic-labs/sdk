@@ -1,0 +1,5 @@
+{"mcp":{"catalog":{"schema_exposure":{"kind":"selected","names":["echo"]},"tools":[{"name":"echo","description":
+    "Return the scripted MCP reply.","inputSchema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},
+    "additionalProperties":false}},{"name":"hidden","description":"Not selected for the model.","inputSchema":{"type":"object"}}]},
+    "grants":["mcp:call:fixture","tool:call:mcp.fixture.echo","tool:call:mcp.fixture.hidden"]},"expect":{"not_requests":[{"tools":[{
+    "name":"mcp.fixture.hidden"}]}]}}

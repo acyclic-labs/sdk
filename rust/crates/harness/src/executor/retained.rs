@@ -5,11 +5,22 @@ pub(crate) async fn completed_tool_projection(
     records: &[ExecutionRecord],
     step: u32,
     expected: &ToolInvocation,
-    tools: &[crate::tool::ToolDefinition],
+    definition: &crate::tool::ToolDefinition,
     limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
     validate_journal(journal, io)?;
+    let matches = match expected.name.rsplit_once('@') {
+        Some((name, revision)) => definition.name == name && definition.revision == revision,
+        None => definition.name == expected.name,
+    };
+    if !matches {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "completed tool prefix has no pinned schema",
+        ));
+    }
     let invocation = records
         .iter()
         .find_map(|record| match &record.event {
@@ -44,16 +55,6 @@ pub(crate) async fn completed_tool_projection(
             _ => None,
         })
         .ok_or(Error::Indeterminate(expected.operation_id))?;
-    let definition = tools
-        .iter()
-        .find(|tool| tool.name == expected.name)
-        .ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "completed tool prefix has no pinned schema",
-            )
-        })?;
     let result = load_json::<ToolResult>(journal, result, io).await?;
     let projection = load_json::<Value>(journal, projection, io).await?;
     crate::executor::with_history_io(io, |work| {

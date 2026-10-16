@@ -129,7 +129,14 @@ impl ModelRequest {
                 size_of::<crate::tool::ToolDefinition>(),
             )?,
         )?;
-        for tool in &self.tools {
+        bytes = add(
+            bytes,
+            slots(
+                self.history_tools.capacity(),
+                size_of::<crate::tool::ToolDefinition>(),
+            )?,
+        )?;
+        for tool in self.tools.iter().chain(&self.history_tools) {
             for capacity in [
                 tool.name.capacity(),
                 tool.revision.capacity(),

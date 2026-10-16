@@ -9,6 +9,8 @@ pub struct ModelPrefix {
     message_digest: [u8; 32],
     total_messages: usize,
     messages: Vec<ModelMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    history_tools: Vec<crate::tool::ToolDefinition>,
 }
 impl ModelPrefix {
     /// Media type of shared prefix segments.
@@ -44,6 +46,20 @@ impl ModelPrefix {
                 "model prefix must advance its parent".into(),
             ));
         }
+        let mut history_tools = std::collections::BTreeMap::new();
+        for message in messages {
+            for part in message.content.parts() {
+                if let ModelContentPart::ToolCall { name, .. } = part
+                    && name.contains('@')
+                {
+                    let tool = request
+                        .request()
+                        .tool_definition(name)
+                        .ok_or_else(|| Error::Invalid("prefix tool revision is unbound".into()))?;
+                    history_tools.insert((&tool.name, &tool.revision), tool);
+                }
+            }
+        }
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness:model-prefix:ordered:v1");
         for message in &request.request().messages {
@@ -59,6 +75,7 @@ impl ModelPrefix {
             message_digest: *hasher.finalize().as_bytes(),
             total_messages: request.request().messages.len(),
             messages: messages.to_vec(),
+            history_tools: history_tools.into_values().cloned().collect(),
         })
     }
     /// Exact canonical bytes staged once for sharing.
@@ -90,18 +107,33 @@ impl PreparedModelRequest {
         let mut messages = Vec::new();
         let mut hasher = blake3::Hasher::new();
         update_hasher(&mut hasher, b"harness:model-prefix:ordered:v1", io)?;
-        for (segment, digest) in segments.into_iter().rev() {
-            for message in &segment {
+        for segment in segments.into_iter().rev() {
+            for tool in segment.history_tools {
+                charge_items(io, 1)?;
+                if let Some(bound) = local
+                    .history_tools
+                    .iter()
+                    .chain(&local.tools)
+                    .find(|bound| bound.name == tool.name && bound.revision == tool.revision)
+                {
+                    if bound != &tool {
+                        return Err(Error::Invalid("inherited tool revision differs".into()));
+                    }
+                } else {
+                    crate::executor::stock_vec_push(&mut local.history_tools, tool, io)?;
+                }
+            }
+            for message in &segment.messages {
                 update_hasher(
                     &mut hasher,
                     &crate::executor::preparation_digest(message, io)?,
                     io,
                 )?;
             }
-            for message in segment {
+            for message in segment.messages {
                 crate::executor::stock_vec_push(&mut messages, message, io)?;
             }
-            if hasher.finalize().as_bytes() != &digest {
+            if hasher.finalize().as_bytes() != &segment.message_digest {
                 return Err(Error::Invalid(
                     "model prefix ordered messages differ".into(),
                 ));
@@ -136,7 +168,7 @@ impl PreparedModelRequest {
         limits: Limits,
         local_messages: usize,
         io: Option<&PreparationIo>,
-    ) -> Result<Vec<(Vec<ModelMessage>, [u8; 32])>> {
+    ) -> Result<Vec<ModelPrefix>> {
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut expected_count = None;
@@ -162,7 +194,7 @@ impl PreparedModelRequest {
             )
             .await?;
             let _bytes_hold = hold;
-            let segment: ModelPrefix = match io {
+            let mut segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData::<ModelPrefix>,
@@ -212,12 +244,8 @@ impl PreparedModelRequest {
             }
             // Nonempty segments strictly decrease this bounded count, rejecting cycles.
             expected_count = Some(remaining);
-            next = segment.parent;
-            crate::executor::stock_vec_push(
-                &mut segments,
-                (segment.messages, segment.message_digest),
-                io,
-            )?;
+            next = segment.parent.take();
+            crate::executor::stock_vec_push(&mut segments, segment, io)?;
         }
         Ok(segments)
     }

@@ -9,6 +9,9 @@ pub(crate) const MODEL_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::executor::json::preparation_serde_diagnostic_label_bytes() + 84;
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ModelPrefix
+    }
     fn diagnostic_label_bytes() -> u64 {
         MODEL_DIAGNOSTIC_LABEL_BYTES
     }
@@ -405,10 +408,15 @@ pub(crate) fn clone_request(
     for tool in &request.tools {
         crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?;
     }
+    let mut history_tools = vec_with_capacity(request.history_tools.len(), io)?;
+    for tool in &request.history_tools {
+        crate::executor::stock_vec_push(&mut history_tools, clone_tool_definition(tool, io)?, io)?;
+    }
     Ok(ModelRequest {
         model,
         messages,
         tools,
+        history_tools,
         max_output_tokens: request.max_output_tokens,
     })
 }

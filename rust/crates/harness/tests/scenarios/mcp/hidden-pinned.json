@@ -1,0 +1,10 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"echo","name":"mcp.fixture.echo@1","arguments":{"text":"hello"}},{"type":
+    "event","kind":"completed","metadata":null}],"done"],"mcp":{"catalog":{"schema_exposure":{"kind":"selected","names":[]}},
+    "grants":["mcp:call:fixture","tool:call:mcp.fixture.echo","tool:call:mcp.fixture.echo@1"]},"expect":{"requests":[{"tools":[]},{
+    "messages":[{"role":"tool","content":{"kind":"tool_result","call_id":"echo","name":"mcp.fixture.echo@1","content":{"kind":
+    "json","value":{"content":[{"type":"text","text":"reply"}],"isError":false}}}}],"tools":[],"history_tools":[{"name":
+    "mcp.fixture.echo","revision":"1","input_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},
+    "additionalProperties":false}}]}],"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"echo","name":
+    "mcp.fixture.echo@1","arguments":{"text":"hello"}}},{"kind":"model","event":{"kind":"completed"}},{"kind":"tool_started"},{
+    "kind":"tool_completed"},{"kind":"model","step":1,"event":{"kind":"completed"}}],"not_requests":[{"tools":[{"name":
+    "mcp.fixture.echo"}]},{"tools":[{"name":"mcp.fixture.echo@1"}]}]}}

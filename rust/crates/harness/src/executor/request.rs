@@ -208,14 +208,20 @@ impl StockExecution<'_> {
                 }
             }
         }
+        let tools = if tools_required {
+            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
+        } else {
+            Vec::new()
+        };
+        let history_tools =
+            self.stock
+                .tools
+                .history_definitions(&context.messages, &tools, self.io)?;
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages: crate::model::clone_messages(&context.messages, self.io)?,
-            tools: if tools_required {
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
-            } else {
-                Vec::new()
-            },
+            tools,
+            history_tools,
             max_output_tokens: self.output_budget()?,
         })
     }

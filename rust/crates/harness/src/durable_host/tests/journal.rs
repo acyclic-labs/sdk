@@ -329,6 +329,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
                 content: crate::model::ModelContent::Text("fixture request".into()),
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(32),
         },
         Limits::default(),

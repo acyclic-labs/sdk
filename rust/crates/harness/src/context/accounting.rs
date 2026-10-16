@@ -137,6 +137,7 @@ mod tests {
                 content: ModelContent::Text("hello".into()),
             }],
             tools: Vec::new(),
+            history_tools: Vec::new(),
             max_output_tokens: Some(1),
         };
         let prepared = PreparedModelRequest::prepare(

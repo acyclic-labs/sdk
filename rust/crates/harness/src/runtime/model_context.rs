@@ -98,7 +98,7 @@ impl TaskContext {
                 "model output token bound must be positive".into(),
             ));
         }
-        let tools = self
+        let tools: Vec<_> = self
             .harness
             .tools
             .definitions(None)?
@@ -116,10 +116,15 @@ impl TaskContext {
             .map_or(self.scope.limits().model_steps, |bound| {
                 bound.min(self.scope.limits().model_steps)
             });
+        let history_tools = self
+            .harness
+            .tools
+            .history_definitions(&messages, &tools, None)?;
         let request = ModelRequest {
             model: binding.model.clone(),
             messages,
             tools,
+            history_tools,
             max_output_tokens,
         };
         let request =

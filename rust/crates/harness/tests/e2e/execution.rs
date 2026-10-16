@@ -128,6 +128,13 @@ fn configure(
             ContextPlacement::Prepend,
         )) as Arc<dyn ContextStage>])
     };
+    let (tools, scope) = match &case.mcp {
+        Some(script) => {
+            let (tools, scope) = script.bind(limits)?;
+            (tools, Some(scope))
+        }
+        None => (ToolRegistry::default(), None),
+    };
     let mut executor = StockExecutor::new(
         Model::new(
             "scripted".into(),
@@ -137,10 +144,13 @@ fn configure(
         )?,
         provider.clone(),
         context,
-        ToolRegistry::default(),
+        tools,
     )
     .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
     .with_limits(limits);
+    if let Some(scope) = scope {
+        executor = executor.with_tool_authority(scope, None)?;
+    }
     if let Some(maximum) = case.max_output_tokens {
         executor = executor.with_max_output_tokens(maximum)?;
     }
