@@ -144,3 +144,38 @@ fn offloaded_cleanup(broken: bool) {
 fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
     checked_model(offloaded_cleanup, "cleanup escaped checkout ownership");
 }
+
+fn task_cache(broken: bool) {
+    loom::model(move || {
+        let cache = StateArc::new(AsyncMutex::new(std::collections::BTreeMap::new()));
+        let workers: Vec<_> = (1..=2)
+            .map(|value| {
+                let cache = StateArc::clone(&cache);
+                thread::spawn(move || {
+                    complete(serialized(&cache, async |mut cache| {
+                        let key = TaskId::from_bytes([if broken { 1 } else { value }; 16]);
+                        let selected = task_views::cached_task(&mut cache, key, async || {
+                            thread::yield_now();
+                            Ok(value)
+                        })
+                        .await
+                        .unwrap();
+                        assert_eq!(*selected, value, "task view alias");
+                    }))
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+}
+#[test]
+fn concurrent_task_view_selection_never_aliases_another_task() {
+    task_cache(false);
+}
+#[test]
+#[should_panic(expected = "task view alias")]
+fn negative_control_detects_cross_task_cache_selection() {
+    task_cache(true);
+}

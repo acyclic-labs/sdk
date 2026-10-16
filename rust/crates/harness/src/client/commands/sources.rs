@@ -254,6 +254,13 @@ impl CommandSources {
                 {
                     return Err(Error::Invalid("invalid skill name".into()));
                 }
+                if skill
+                    && description
+                        .chars()
+                        .any(|ch| ch.is_control() && !ch.is_whitespace())
+                {
+                    return Err(Error::Invalid("invalid skill description".into()));
+                }
                 validate_name(&name)?;
                 if catalog.commands.contains_key(&name) {
                     return Err(Error::Conflict(format!("reserved command: {name}")));
