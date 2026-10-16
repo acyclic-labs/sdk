@@ -98,7 +98,7 @@ pub(crate) async fn count(
             )
         })
         .transpose()?;
-    let prepared = (|| {
+    let prepared: Result<_> = (|| {
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation = projection::body_named(provider, request.request(), &names, &origin)?;

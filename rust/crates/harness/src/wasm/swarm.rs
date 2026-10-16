@@ -113,12 +113,14 @@ impl From<ClientViewHandle> for WasmClientViews {
 }
 #[wasm_bindgen]
 impl WasmClientViews {
+    /// Discovered agents, including those outside the selected content tier.
     #[wasm_bindgen(unchecked_return_type = "string[]")]
     pub fn agents(&self) -> Result<JsValue, JsValue> {
         self.views
             .read(|views| to_js(&views.agents().map(StreamPath::as_str).collect::<Vec<_>>()))
             .map_err(error)?
     }
+    /// Current rendering demand derived from the followed layout files.
     #[wasm_bindgen(unchecked_return_type = "InterestDocument")]
     pub fn layout(&self) -> Result<JsValue, JsValue> {
         self.views
@@ -135,6 +137,7 @@ impl WasmClientViews {
             })
             .map_err(error)?
     }
+    /// Latest producer status and accepted/durable watermarks for one agent.
     #[wasm_bindgen(unchecked_return_type = "SwarmStatusInfo | null")]
     pub fn status(&self, agent: &str) -> Result<JsValue, JsValue> {
         let agent = StreamPath::new(agent).map_err(error)?;
@@ -159,6 +162,7 @@ impl WasmClientViews {
             })
             .map_err(error)?
     }
+    /// Complete snapshot/follow cut of the selected agent files.
     #[wasm_bindgen(unchecked_return_type = "Cursor | null")]
     pub fn cursor(&self, agent: &str) -> Result<JsValue, JsValue> {
         let agent = StreamPath::new(agent).map_err(error)?;
@@ -166,6 +170,7 @@ impl WasmClientViews {
             .read(|views| to_js(&views.cursor(&agent)))
             .map_err(error)?
     }
+    /// Logical file metadata for the requested selected agent.
     #[wasm_bindgen(unchecked_return_type = "QueryFileInfo[]")]
     pub fn files(&self, agent: &str) -> Result<JsValue, JsValue> {
         let agent = StreamPath::new(agent).map_err(error)?;
@@ -180,6 +185,7 @@ impl WasmClientViews {
             })
             .map_err(error)?
     }
+    /// Ordered immutable segments, without joining accumulated text.
     #[wasm_bindgen(unchecked_return_type = "Uint8Array[] | null")]
     pub fn segments(
         &self,
@@ -218,6 +224,7 @@ impl WasmSwarmClient {
             views,
         })
     }
+    /// Reads the same live fold used by the native client.
     #[wasm_bindgen]
     pub fn views(&self) -> WasmClientViews {
         WasmClientViews::from(self.views.clone())
