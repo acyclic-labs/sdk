@@ -287,16 +287,10 @@ impl CommandSources {
                     },
                 );
             }
-            let specs: Vec<_> = catalog.commands().collect();
-            let bytes =
-                serde_json::to_vec(&specs).map_err(|error| Error::Invalid(error.to_string()))?;
-            let current = client.state(CommandFileRoot::Config, "commands.json")?;
-            if current.as_ref()
-                != Some(
-                    &serde_json::to_value(&specs)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                )
-            {
+            if !client.catalog().commands().eq(catalog.commands()) {
+                let specs: Vec<_> = catalog.commands().collect();
+                let bytes = serde_json::to_vec(&specs)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
                 let digest = *blake3::hash(&bytes).as_bytes();
                 client.install_catalog(bytes).await?;
                 self.published = Some(digest);
