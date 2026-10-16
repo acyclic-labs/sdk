@@ -229,3 +229,13 @@ name = "projfs_paths"
 path = "benches/projfs_paths.rs"
 harness = false
 required-features = ["native-mount"]
+
+[[bench]]
+name = "object_batches"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "object_batches_alloc"
+harness = false
+required-features = ["memory"]
