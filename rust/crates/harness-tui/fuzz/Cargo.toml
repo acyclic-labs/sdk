@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 acyclic-harness-tui = { path = "..", features = ["tui"] }
 unicode-segmentation = "1.12"
 
@@ -25,6 +26,13 @@ members = ["."]
 [[bin]]
 name = "input_events"
 path = "fuzz_targets/input_events.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "completion_events"
+path = "fuzz_targets/completion_events.rs"
 test = false
 doc = false
 bench = false

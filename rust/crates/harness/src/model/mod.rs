@@ -7,6 +7,8 @@ mod prefix;
 mod preparation;
 mod provider;
 mod request;
+mod usage;
+pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod tests;
 

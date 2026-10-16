@@ -528,3 +528,57 @@ async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
     assert_eq!(reopened.revision, 3);
     Ok(())
 }
+
+#[tokio::test]
+async fn operation_watch_is_gapless_and_wakes_without_owner_history() -> Result<()> {
+    use futures::{FutureExt, StreamExt};
+    for running in [false, true] {
+        let client = Arc::new(MemoryStream::default());
+        let operation = OperationId::from_bytes([92; 16]);
+        let mut coordinator = open(&client).await?;
+        declare(&mut coordinator, spec(operation, 0)?, "watch-declare").await?;
+        if running {
+            start(&mut coordinator, &worker("watch-worker"), "watch-start").await?;
+        }
+        let mut updates = open(&client).await?.operation_changes(operation).await?;
+        // Commit between subscribing and consuming the snapshot.
+        publish(
+            &mut coordinator,
+            "watch-cancel",
+            SchedulerEvent::CancellationRequested {
+                operation_id: operation,
+                recursive: false,
+            },
+        )
+        .await?;
+        let initial = updates.next().await.expect("initial snapshot")?;
+        assert!(!initial.cancellation_requested);
+        let changed = updates
+            .next()
+            .now_or_never()
+            .expect("no delivery required")
+            .expect("scheduler change")?;
+        assert_eq!(changed.cancellation_requested, running);
+        assert_eq!(
+            changed.state,
+            if running {
+                wire::CompletionState::Running
+            } else {
+                wire::CompletionState::Cancelled
+            } as i32
+        );
+        assert!(changed.revision > initial.revision);
+        assert!(updates.next().now_or_never().is_none());
+        declare(
+            &mut coordinator,
+            spec(OperationId::from_bytes([93; 16]), 0)?,
+            "watch-unrelated",
+        )
+        .await?;
+        assert!(
+            updates.next().now_or_never().is_none(),
+            "unrelated operation is not emitted"
+        );
+    }
+    Ok(())
+}

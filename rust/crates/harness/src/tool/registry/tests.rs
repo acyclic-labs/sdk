@@ -1,6 +1,8 @@
 use super::*;
 use proptest::prelude::*;
 
+mod lookup;
+
 #[cfg(feature = "filesystem")]
 mod scaling;
 

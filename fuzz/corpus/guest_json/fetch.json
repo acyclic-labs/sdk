@@ -1,0 +1,1 @@
+{"type":"fetch","request":{"url":"https://example.test/","method":"POST","headers":[["x-test","a"],["x-test","b"]],"body":[0,255]}}

@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8,6 +8,8 @@ pub(crate) struct Buffer {
     pub anchor: usize,
     pub folds: Vec<Range<usize>>,
     points: Vec<usize>,
+    pub revision: Rc<()>,
+    pub change: Option<(Rc<()>, Range<usize>, usize)>,
 }
 
 impl Default for Buffer {
@@ -25,6 +27,8 @@ impl Buffer {
             anchor: end,
             folds: vec![],
             points: vec![],
+            revision: Rc::new(()),
+            change: None,
         };
         buffer.rebuild_boundaries();
         buffer
@@ -82,7 +86,13 @@ impl Buffer {
             .unwrap_or(self.text.len())
     }
 
+    pub fn changed(&mut self, range: Range<usize>, inserted: usize) {
+        self.change = Some((Rc::clone(&self.revision), range, inserted));
+        self.revision = Rc::new(());
+    }
+
     pub fn replace(&mut self, range: Range<usize>, text: &str, fold: bool) {
+        self.changed(range.clone(), text.len());
         self.folds.retain_mut(|r| {
             if r.end <= range.start {
                 return true;

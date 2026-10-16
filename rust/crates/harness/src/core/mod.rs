@@ -23,6 +23,7 @@ mod authority;
 mod copying;
 mod effects;
 mod extension_types;
+mod filesystem_access;
 mod ownership;
 mod records;
 mod reducer;

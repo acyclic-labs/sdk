@@ -1,6 +1,7 @@
 //! Provenance-preserving projection of canonical history into model context.
 
 mod artifacts;
+pub(crate) use artifacts::{read_invocation, read_value};
 mod attachments;
 mod selection;
 #[cfg(test)]
@@ -212,6 +213,23 @@ async fn project_tool_result(
             "selected tool result lacks its call",
         ));
     };
+    let content = read_tool_output(message, resolver, limits, io).await?;
+    Ok((
+        ModelRole::Tool,
+        ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: crate::executor::stock_string_copy(call_id, io)?,
+            name: crate::executor::stock_string_copy(name, io)?,
+            content,
+        }),
+    ))
+}
+
+pub(crate) async fn read_tool_output(
+    message: &crate::conversation::ConversationMessage,
+    resolver: &dyn ContentResidencyVerifier,
+    limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<crate::model::ToolResultContent> {
     let (items, hold) = attachments::resolve(message, resolver, limits.attachments, io).await?;
     let _hold = hold;
     let mut projection = None;
@@ -224,16 +242,7 @@ async fn project_tool_result(
     }
     let projection = projection
         .ok_or_else(|| stock_boundary(io, Invalid, "tool result lacks its model projection"))?;
-    let content =
-        artifacts::read_result(resolver, &projection.file, limits.render_bytes, io).await?;
-    Ok((
-        ModelRole::Tool,
-        ModelContent::Part(ModelContentPart::ToolResult {
-            call_id: crate::executor::stock_string_copy(call_id, io)?,
-            name: crate::executor::stock_string_copy(name, io)?,
-            content,
-        }),
-    ))
+    artifacts::read_result(resolver, &projection.file, limits.render_bytes, io).await
 }
 
 async fn project_message(
