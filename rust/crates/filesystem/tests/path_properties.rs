@@ -8,7 +8,7 @@ fn path_seed_corpus() {
         include_bytes!("../fuzz/corpus/paths/unicode").as_slice(),
         include_bytes!("../fuzz/corpus/paths/parent"),
         include_bytes!("../fuzz/corpus/paths/repeated-separator"),
-        include_bytes!("../fuzz/corpus/paths/nul"),
+        include_bytes!("../fuzz/corpus/paths/embedded-nul"),
         include_bytes!("../fuzz/corpus/paths/posix-bytes"),
         include_bytes!("../fuzz/corpus/paths/utf16-surrogate"),
         include_bytes!("../fuzz/corpus/paths/fold-expansions"),
