@@ -38,9 +38,10 @@ fn request(parent: OperationId, id: &str) -> McpCallbackRequest {
 
 #[tokio::test]
 async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -> Result<()> {
-    let mut observations = Vec::new();
+    let mut observations = [Vec::new(), Vec::new()];
     for count in [10, 10_000] {
         let model = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("answer".into()),
             ScriptedTurn::Text("answer".into()),
             ScriptedTurn::Text("answer".into()),
         ]));
@@ -48,12 +49,13 @@ async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -
         let context = Arc::new(capture_admitted_context(scope.clone()).await?);
         let parent = OperationId::from_bytes([1; 16]);
         let tool = crate::runtime::ToolContext::new(context, parent, "remote", None)?;
+        let catalog = catalog(count)?;
         let callbacks = McpRuntimeCallbacks::new(
             uncompacted_executor(
                 Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(),
-                catalog(count)?,
+                catalog.clone(),
             )
             .with_tool_authority(scope, None)?,
             Arc::new(Journal::default()),
@@ -65,18 +67,28 @@ async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -
         callbacks
             .admit(tool.clone(), &request(parent, "warmup"))
             .await?;
-        let request = request(parent, "sample");
         // Warm the synchronous executor's thread-local parking state outside measurement.
         futures::executor::block_on(async {});
-        let mut result = None;
-        let allocations = allocation_counter::measure(|| {
-            result = Some(futures::executor::block_on(callbacks.admit(tool, &request)));
-        });
-        let (_, reply) = result.expect("sample ran")?;
-        assert_eq!(
-            reply.pointer("/result/content/text"),
-            Some(&json!("answer"))
-        );
+        for (index, id) in ["sample", "broken"].into_iter().enumerate() {
+            let request = request(parent, id);
+            let mut result = None;
+            let allocations = allocation_counter::measure(|| {
+                result = Some(futures::executor::block_on(async {
+                    if index == 1 {
+                        // Deliberately restore the former request-assembly bug:
+                        // deep-copy the catalog before discarding all tools.
+                        std::hint::black_box(catalog.definitions(None)?);
+                    }
+                    callbacks.admit(tool.clone(), &request).await
+                }));
+            });
+            let (_, reply) = result.expect("sample ran")?;
+            assert_eq!(
+                reply.pointer("/result/content/text"),
+                Some(&json!("answer"))
+            );
+            observations[index].push((allocations.count_total, allocations.bytes_total));
+        }
         assert!(
             model
                 .requests()
@@ -84,11 +96,15 @@ async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -
                 .all(|request| request.tools.is_empty())
         );
         assert_eq!(model.remaining(), 0);
-        observations.push((allocations.count_total, allocations.bytes_total));
     }
-    assert_eq!(
-        observations[0], observations[1],
-        "sampling must not copy catalog-sized data"
+    let independent = |measurements: &[(u64, u64)]| measurements[0] == measurements[1];
+    assert!(
+        independent(&observations[0]),
+        "sampling copied catalog-sized data: {observations:?}"
+    );
+    assert!(
+        !independent(&observations[1]),
+        "detector missed deliberately copied schemas: {observations:?}"
     );
     eprintln!("tool-free sampling (allocations, bytes), 10 versus 10000 tools: {observations:?}");
     Ok(())

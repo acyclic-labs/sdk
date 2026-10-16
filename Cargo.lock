@@ -446,6 +446,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-manifest"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "ts-rs",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
@@ -645,6 +666,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-manifest",
  "acyclic-objects",
  "axum",
  "bytes",

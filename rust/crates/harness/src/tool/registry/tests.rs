@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
 
+#[cfg(feature = "filesystem")]
+mod scaling;
+
 // Property: cloning a registry allocates nothing; later selection/registration
 // changes preserve the old snapshot and reuse every retained tool payload.
 proptest! {

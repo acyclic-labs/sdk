@@ -1,6 +1,4 @@
 // Generated from the Rust semantic metadata entrypoint. Do not edit.
-// Raw ts-rs declarations remain an internal generator boundary; package users
-// receive this recursive readonly projection from the package root.
 import type * as Semantic from "./index.js";
 import type { ReadonlySemantic } from "../../readonly.js";
 
