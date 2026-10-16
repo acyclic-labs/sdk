@@ -5,8 +5,6 @@ use crate::{
     resources::ProviderRef,
 };
 mod lifecycle;
-#[cfg(all(feature = "model-checking", not(target_arch = "wasm32")))]
-mod model_checking;
 mod model_ordering;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
@@ -14,6 +12,7 @@ mod orchestration;
 #[cfg(not(target_arch = "wasm32"))]
 mod property;
 mod session;
+mod settlement_orders;
 fn id(value: u8) -> OperationId {
     OperationId::from_bytes([value; 16])
 }

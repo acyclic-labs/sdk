@@ -58,6 +58,15 @@ impl OperationSpan {
     }
     /// Runs work under its originating dispatcher and context.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        // Preserve isolation when an unobserved producer is later polled under
+        // a foreign subscriber, but install no dispatcher when both ends are idle.
+        if self.dispatch.is::<tracing::subscriber::NoSubscriber>()
+            && tracing::dispatcher::get_default(|current| {
+                current.is::<tracing::subscriber::NoSubscriber>()
+            })
+        {
+            return work();
+        }
         tracing::dispatcher::with_default(&self.dispatch, || self.context.in_scope(work))
     }
     /// Retains a producer's context through polling and destruction.

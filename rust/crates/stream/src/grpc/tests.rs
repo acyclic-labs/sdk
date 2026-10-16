@@ -5,7 +5,7 @@ use wire::stream_service_server::{StreamService, StreamServiceServer};
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-mod retry_capture;
+pub(crate) mod retry_capture;
 
 /// An in-process HTTP/2 channel to one service.
 fn channel<S: StreamService + Clone>(service: S) -> Channel {

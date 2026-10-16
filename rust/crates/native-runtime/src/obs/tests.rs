@@ -13,6 +13,74 @@ use std::{
 };
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
+#[test]
+fn unobserved_future_and_stream_bypass_dispatcher_installation() {
+    unobserved_bypass(false);
+}
+
+#[test]
+#[should_panic(expected = "unobserved polling must bypass dispatcher installation")]
+fn negative_control_forces_dispatcher_installation_for_an_unobserved_producer() {
+    unobserved_bypass(true);
+}
+
+fn unobserved_bypass(broken: bool) {
+    use std::cell::Cell;
+    struct Producer<'a>(&'a Cell<usize>);
+    impl Future for Producer<'_> {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+            self.0.set(self.0.get() + 1);
+            Poll::Ready(())
+        }
+    }
+    impl futures_core::Stream for Producer<'_> {
+        type Item = ();
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<()>> {
+            self.0.set(self.0.get() + 1);
+            Poll::Ready(Some(()))
+        }
+    }
+    impl Drop for Producer<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
+        let mut operation = super::OperationSpan::new(tracing::Span::none());
+        if broken {
+            // A nonempty origin forces the former dispatcher-installation path.
+            operation.dispatch = tracing::Dispatch::new(tracing_subscriber::registry());
+        }
+        for stream in [false, true] {
+            let calls = Cell::new(0);
+            let mut producer = Some(Box::pin(operation.scope(Producer(&calls))));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // The dependency holds its dispatcher borrow through this call.
+                // Installing a dispatcher would panic, so this observes actual
+                // scoping work without a timing threshold or a test-only hook.
+                tracing::dispatcher::get_default(|_| {
+                    let producer = producer.as_mut().unwrap().as_mut();
+                    let mut context = Context::from_waker(Waker::noop());
+                    if stream {
+                        assert!(futures_core::Stream::poll_next(producer, &mut context).is_ready());
+                    } else {
+                        assert!(producer.poll(&mut context).is_ready());
+                    }
+                });
+                tracing::dispatcher::get_default(|_| drop(producer.take()));
+            }));
+            // If the control panicked during poll, retire it outside the borrow.
+            drop(producer);
+            assert!(
+                result.is_ok(),
+                "unobserved polling must bypass dispatcher installation"
+            );
+            assert_eq!(calls.get(), 2, "poll and destruction must both execute");
+        }
+    });
+}
+
 fn assert_context(
     origin_kind: u8,
     parent_enabled: bool,

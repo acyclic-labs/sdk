@@ -89,6 +89,10 @@ impl Pool {
         }
         route.received = next;
         route.received_opaque = opaque.clone().into();
+        route.observation.in_scope(|| {
+            route.observation.record("generation", route.generation);
+            tracing::debug!(event = "subscribe", generation = route.generation);
+        });
         route.opened = false;
         route.credit = wire::SessionWindow::default();
         let link = self
@@ -199,9 +203,15 @@ impl Pool {
         )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
-        let link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
+        let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
+        if let Some(observation) = &mut link.observation {
+            observation.finish(Some(&StreamError::Unavailable));
+        }
         for route in self.routes.values_mut().filter(|route| route.node == node) {
             route.generation = route.progress.fence()?;
+            route.observation.in_scope(|| {
+                tracing::debug!(event = "reconnect", generation = route.generation);
+            });
             route.opened = false;
         }
         self.dial(
@@ -224,18 +234,32 @@ async fn open_link(
     credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            handshake(
-                channel.clone(),
-                destination,
-                identity.clone(),
-                authorization.clone(),
-                credential.clone(),
-            ),
-        )
-        .await
-        .unwrap_or(Err(StreamError::Unavailable));
+        let mut observation = Observation::session(attempt);
+        let result = observation
+            .operation
+            .clone()
+            .scope(tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                handshake(
+                    channel.clone(),
+                    destination,
+                    identity.clone(),
+                    authorization.clone(),
+                    credential.clone(),
+                ),
+            ))
+            .await
+            .unwrap_or(Err(StreamError::Unavailable));
+        let result = match result {
+            Ok((node, mut link, response)) => {
+                link.observation = Some(observation);
+                Ok((node, link, response))
+            }
+            Err(error) => {
+                observation.finish(Some(&error));
+                Err(error)
+            }
+        };
         match result {
             Err(StreamError::Unavailable) if attempt < 2 => {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -278,6 +302,7 @@ async fn handshake(
     // Install ownership before either handshake await. Cancelling a handshake
     // closes its request stream just as dropping an installed node link does.
     let link = Link {
+        observation: None,
         channel,
         sender,
         revision: 0,

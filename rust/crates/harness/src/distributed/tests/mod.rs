@@ -25,13 +25,28 @@ mod frame_cancellation;
 #[cfg(feature = "filesystem")]
 mod limits;
 #[cfg(all(
-    feature = "model-checking",
+    acyclic_harness_loom,
+    acyclic_loom,
     feature = "filesystem",
     not(target_arch = "wasm32")
 ))]
 mod model_checking;
+#[cfg(all(
+    acyclic_harness_loom,
+    acyclic_loom,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod model_provider;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod observation;
 mod results;
+#[cfg(all(
+    acyclic_harness_loom,
+    acyclic_loom,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod scheduler_model;
 mod session;

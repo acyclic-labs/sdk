@@ -1,9 +1,13 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod durability;
 mod files;
 mod follow;
 mod heads;
+#[cfg(acyclic_harness_loom)]
+pub mod model_checking;
 mod plan_name;
+mod refresh;
 mod schema;
 mod segment;
 mod source;
@@ -32,9 +36,9 @@ use uuid::Uuid;
 type NativeWork<'a> = Option<&'a ()>;
 
 #[cfg(feature = "test-support")]
-use crate::test_support::TaskVolumeFiles as FileIndex;
+type FileIndex = crate::test_support::TaskVolumeFiles<StoredFile>;
 #[cfg(not(feature = "test-support"))]
-type FileIndex = std::collections::BTreeMap<FileKey, FileValue>;
+type FileIndex = std::collections::BTreeMap<FileKey, StoredFile>;
 
 #[inline]
 fn item_examined() {
@@ -129,7 +133,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if !matches!(header.schema, 2 | SCHEMA) {
+            if !matches!(header.schema, 2 | 3 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -178,6 +182,11 @@ struct Header {
     schema: u32,
 }
 
+struct StoredFile {
+    file: FileValue,
+    position: u64,
+}
+
 #[derive(Default)]
 struct Index {
     volume: [u8; 32],
@@ -192,7 +201,7 @@ struct Index {
 pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
-    // Lock order: index -> provider visibility -> provider state; never held across commit acknowledgement.
+    // Lock order: index only; no provider I/O or stream poll holds this lock.
     index: Mutex<Index>,
 }
 
@@ -205,6 +214,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
+        // A separate file stream cannot contend with unrelated parent-volume writes.
+        // Release the parent index before opening/locking the child volume.
+        let identity = {
+            let index = self.index.lock().await;
+            let mut hash = blake3::Hasher::new();
+            hash.update(&index.volume);
+            hash.update(index.epoch.as_bytes());
+            hash.update(key.path().as_bytes());
+            hash.finalize()
+        };
+        let path = StreamPath::new(format!(
+            "{}/files/{}",
+            self.path.as_str(),
+            identity.to_hex()
+        ))?;
+        Self::open(self.provider.clone(), path).await
     }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
@@ -251,7 +280,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if !matches!(header.schema, 2 | SCHEMA) {
+        if !matches!(header.schema, 2 | 3 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
@@ -269,8 +298,23 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 ..Index::default()
             }),
         };
-        volume.refresh(&mut *volume.index.lock().await).await?;
+        volume.refresh().await?;
         Ok(volume)
+    }
+
+    /// Current publication fence without copying the file index.
+    pub async fn head(&self) -> Result<Generation> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        Ok(self.generation(&index))
+    }
+
+    /// Current query cut without copying the materialized files.
+    pub async fn cut(&self, query: &Query) -> Result<Cursor> {
+        let mut watermarks = self.refresh().await?;
+        let index = self.index.lock().await;
+        watermarks.accepted = watermarks.accepted.max(index.next);
+        self.cursor(query, self.generation(&index), watermarks)
     }
 
     fn generation(&self, index: &Index) -> Generation {
@@ -279,55 +323,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             epoch: index.epoch,
             position: index.next,
             commit: *index.commit.as_bytes(),
-        }
-    }
-
-    async fn refresh(&self, index: &mut Index) -> Result<()> {
-        let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
-        if tail < index.next {
-            return Err(Error::ResetRequired);
-        }
-        loop {
-            // Anchor and suffix belong to one immutable provider read. Separate
-            // reads could splice a replaced accepted history into the cached files.
-            let mut records = self
-                .provider
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: index.next - 1,
-                    limit: u32::try_from(
-                        (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64),
-                    )
-                    .map_err(|_| Error::LimitExceeded)?,
-                })
-                .await?;
-            let anchor = records.next().await.ok_or(Error::ResetRequired)??;
-            item_examined();
-            if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
-                return Err(Error::ResetRequired);
-            }
-            let before = index.next;
-            while let Some(record) = records.next().await {
-                item_examined();
-                let record = record?;
-                if record.sequence >= tail {
-                    break;
-                }
-                if record.sequence != index.next {
-                    return Err(Error::ResetRequired);
-                }
-                let files = segment::decode(&record.value)?;
-                validate_file(index, &files)?;
-                apply(index, files);
-                index.commit = record.commit_id;
-                index.next += 1;
-            }
-            if index.next == tail {
-                return Ok(());
-            }
-            if index.next == before {
-                return Err(Error::ResetRequired);
-            }
         }
     }
 
@@ -347,21 +342,43 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         deadline_unix_millis: Option<u64>,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
-        let mut index = self.index.lock().await;
-        self.refresh(&mut index).await?;
+        self.refresh().await?;
+        let index = self.index.lock().await;
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
         validate_file(&index, write)?;
-        if index.files.get(&write.key) == Some(write) {
+        if index
+            .files
+            .get(&write.key)
+            .is_some_and(|stored| &stored.file == write)
+        {
             return Ok(self.generation(&index));
         }
+        let next = expected
+            .position
+            .checked_add(1)
+            .ok_or(Error::LimitExceeded)?;
         let (segment, files) = segment::encode(write, work)?;
-        conditions.push(CommitCondition::Head {
+        #[cfg(acyclic_harness_loom)]
+        if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
+            conditions.clear();
+        }
+        let fence = CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
             commit_id: CommitId::from_bytes(expected.commit),
-        });
+        };
+        #[cfg(acyclic_harness_loom)]
+        let fence = if model_checking::enabled(model_checking::Fault::ResamplePublicationFence) {
+            CommitCondition::Tail {
+                path: self.path.clone(),
+                expected: self.provider.watermarks(self.path.clone()).await?.accepted,
+            }
+        } else {
+            fence
+        };
+        conditions.push(fence);
         let request = CommitRequest {
             conditions,
             mutations: vec![CommitMutation::Append {
@@ -373,28 +390,40 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
+        #[cfg(acyclic_harness_loom)]
+        let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
+        {
+            None
+        } else {
+            deadline_unix_millis
+        };
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {
             self.provider.commit(request).await?
         };
-        let mut index = self.index.lock().await;
         match outcome {
             CommitOutcome::Committed(envelope) => {
-                if self.generation(&index) == expected {
-                    apply(&mut index, files);
-                    index.next = expected.position + 1;
+                let mut index = self.index.lock().await;
+                let unchanged = self.generation(&index) == expected;
+                #[cfg(acyclic_harness_loom)]
+                let unchanged = unchanged
+                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
+                if unchanged {
+                    apply(&mut index, files, next);
+                    index.next = next;
                     index.commit = envelope.commit_id;
                 }
                 Ok(Generation {
                     volume: expected.volume,
                     epoch: expected.epoch,
-                    position: expected.position + 1,
+                    position: next,
                     commit: *envelope.commit_id.as_bytes(),
                 })
             }
             CommitOutcome::Conflict(_) => {
-                self.refresh(&mut index).await?;
+                self.refresh().await?;
+                let index = self.index.lock().await;
                 if expected == self.generation(&index) {
                     Err(Error::FenceConflict)
                 } else {
@@ -407,7 +436,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     file.validate()?;
-    if !file.key.mutable() && index.files.get(&file.key).is_some_and(|old| old != file) {
+    if !file.key.mutable()
+        && index
+            .files
+            .get(&file.key)
+            .is_some_and(|old| &old.file != file)
+    {
         return Err(Error::ImmutableConflict(file.key.clone()));
     }
     if !index.files.contains_key(&file.key)
@@ -424,6 +458,8 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     Ok(())
 }
 
-fn apply(index: &mut Index, file: FileValue) {
-    index.files.insert(file.key.clone(), file);
+fn apply(index: &mut Index, file: FileValue, position: u64) {
+    index
+        .files
+        .insert(file.key.clone(), StoredFile { file, position });
 }
