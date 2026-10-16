@@ -218,7 +218,7 @@ impl LocalHarness {
         };
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
-        self.advance(task, &self.commands()?).await?;
+        Box::pin(self.advance(task, &self.commands()?)).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(value) => Ok(value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
