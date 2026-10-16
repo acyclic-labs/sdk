@@ -5,6 +5,43 @@ use std::fs::{File, FileTimes};
 
 proptest! {
     #[test]
+    fn metadata_retains_only_adjacent_commands_and_rechecks_observations(
+        commands in prop::collection::vec(prop::collection::vec((0u8..12, any::<u8>()), 0..12), 1..24),
+    ) {
+        let values = Values::default();
+        let recent = RefCell::new(BTreeSet::new());
+        let mut previous = BTreeSet::new();
+        let reads = Cell::new(0);
+        let mut reference = BTreeMap::new();
+        for command in commands {
+            retain_metadata(&values, &recent);
+            reference.retain(|key, _| previous.contains(key));
+            prop_assert_eq!(values.borrow().len(), reference.len());
+            let mut current = BTreeSet::new();
+            for (context, stamp) in command {
+                let key = (PathBuf::from("cargo"), context.to_string());
+                let expected_reads = reads.get()
+                    + usize::from(reference.get(&key).is_none_or(|(old, _)| *old != stamp));
+                let value = observed_metadata(&values, &recent, key.clone(), || Ok(stamp), || {
+                    reads.set(reads.get() + 1);
+                    Ok(format!("{context}:{stamp}"))
+                }).unwrap();
+                prop_assert_eq!(&value, &format!("{context}:{stamp}"));
+                prop_assert_eq!(reads.get(), expected_reads);
+                reference.insert(key.clone(), (stamp, value));
+                current.insert(key);
+                prop_assert_eq!(&*values.borrow(), &reference);
+                prop_assert!(values.borrow().keys().all(|key| previous.contains(key) || current.contains(key)));
+            }
+            prop_assert_eq!(&*recent.borrow(), &current);
+            previous = current;
+        }
+        retain_metadata(&values, &recent);
+        retain_metadata(&values, &recent);
+        prop_assert!(values.borrow().is_empty(), "an unobserved command must retire old contexts");
+    }
+
+    #[test]
     fn source_map_identity_matches_the_independent_sha2_oracle(
         entries in proptest::collection::btree_map(".{0,24}", ".{0,80}", 0..16),
     ) {
@@ -136,6 +173,11 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
         fs::write(&cargo, "changed Cargo").unwrap();
         assert_eq!(query("source/config/environment-a"), "3");
         assert_eq!(query("source/config/environment-b"), "4");
+        assert_eq!(query("source/config/environment-b"), "4");
+        METADATA.with_borrow(|values| assert_eq!(values.len(), 1));
+        crate::run(["help".into()], &mut Vec::new()).unwrap();
+        crate::run(["help".into()], &mut Vec::new()).unwrap();
+        METADATA.with_borrow(|values| assert!(values.is_empty()));
         for compiler in [
             directory.path().join("missing-wrapper"),
             directory.path().to_owned(),

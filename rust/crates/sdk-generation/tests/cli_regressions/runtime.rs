@@ -116,7 +116,11 @@ pub(super) fn configure(command: &mut Command) {
             // Cargo supplies the compiler's DLL search path when running these
             // private examples. Avoid linking a separate static standard library
             // into every Windows fixture executable; assertions stay enabled.
-            if cfg!(windows) { "-C\u{1f}prefer-dynamic" } else { "" },
+            if cfg!(windows) {
+                "-C\u{1f}prefer-dynamic"
+            } else {
+                ""
+            },
         )
         .env(
             "RUSTUP_TOOLCHAIN",

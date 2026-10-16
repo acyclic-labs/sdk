@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-type Values<S> = RefCell<BTreeMap<(PathBuf, String), (S, String)>>;
+type Key = (PathBuf, String);
+type Values<S> = RefCell<BTreeMap<Key, (S, String)>>;
 thread_local! {
     // Calling-thread ownership; selection and ordinary values reset per command.
     static VALUES: Values<Stamp> = const { RefCell::new(BTreeMap::new()) };
@@ -13,6 +14,7 @@ thread_local! {
     // Only complete, closed owner inventories reach this cache. Both concrete
     // executables and every source/config/environment input remain in its key.
     static METADATA: Values<(Stamp, Stamp)> = const { RefCell::new(BTreeMap::new()) };
+    static METADATA_OBSERVED: RefCell<BTreeSet<Key>> = const { RefCell::new(BTreeSet::new()) };
 }
 
 fn clear<S>(values: &Values<S>) {
@@ -22,6 +24,26 @@ fn clear<S>(values: &Values<S>) {
 pub(super) fn begin_run() {
     VALUES.with(clear);
     CONCRETE.with_borrow_mut(BTreeSet::clear);
+    METADATA.with(|values| METADATA_OBSERVED.with(|recent| retain_metadata(values, recent)));
+}
+
+// Reuse only the preceding command's observed contexts. During a command the
+// map contains at most its contexts plus the preceding command's contexts.
+fn retain_metadata<S>(values: &Values<S>, recent: &RefCell<BTreeSet<Key>>) {
+    let previous = recent.take();
+    values.borrow_mut().retain(|key, _| previous.contains(key));
+}
+
+fn observed_metadata<S: Clone + Eq>(
+    values: &Values<S>,
+    recent: &RefCell<BTreeSet<Key>>,
+    key: Key,
+    observe: impl FnMut() -> Result<S, CliError>,
+    initialize: impl FnOnce() -> Result<String, CliError>,
+) -> Result<String, CliError> {
+    let result = observed(values, key.clone(), observe, initialize)?;
+    recent.borrow_mut().insert(key);
+    Ok(result)
 }
 
 pub(super) fn resolved_cargo(path: &Path) {
@@ -91,17 +113,20 @@ pub(super) fn owner_metadata(
         return query();
     }
     METADATA.with(|values| {
-        observed(
-            values,
-            (cargo.to_owned(), context.to_owned()),
-            || {
-                Ok((
-                    stamp(cargo).map_err(io_error)?,
-                    stamp(&compiler).map_err(io_error)?,
-                ))
-            },
-            query,
-        )
+        METADATA_OBSERVED.with(|recent| {
+            observed_metadata(
+                values,
+                recent,
+                (cargo.to_owned(), context.to_owned()),
+                || {
+                    Ok((
+                        stamp(cargo).map_err(io_error)?,
+                        stamp(&compiler).map_err(io_error)?,
+                    ))
+                },
+                query,
+            )
+        })
     })
 }
 
