@@ -1,3 +1,7 @@
+// Run from the repository root:
+// RUSTFLAGS='--cfg acyclic_sdk_docs_loom' cargo test --manifest-path rust/verification/sdk-fixtures/Cargo.toml --locked --test fixture-model
+#![cfg(acyclic_sdk_docs_loom)]
+
 use loom::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
