@@ -179,11 +179,43 @@ impl TaskFile {
     }
 }
 
+/// Canonical logical input source path, fenced to commands/ or workspace/.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InputPath(String);
+
+impl TryFrom<String> for InputPath {
+    type Error = Error;
+    fn try_from(path: String) -> Result<Self> {
+        let mut parts = path.split('/');
+        if path.len() > 4096
+            || !matches!(parts.next(), Some("commands" | "workspace"))
+            || !path.contains('/')
+            || parts.any(|p| {
+                p.is_empty()
+                    || p == "."
+                    || p == ".."
+                    || p.chars().any(|c| c.is_control() || matches!(c, '\\' | ':'))
+            })
+        {
+            return Err(Error::InvalidPath);
+        }
+        Ok(Self(path))
+    }
+}
+impl From<InputPath> for String {
+    fn from(path: InputPath) -> Self {
+        path.0
+    }
+}
+
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
+    /// Editable command definitions and workspace files followed by UI queries.
+    Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
     Plan(Component),
     /// Child fork mount declaration with lineage and capability references.
@@ -268,6 +300,9 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            ["commands" | "workspace", ..] => {
+                return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
+            }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
                 return Ok(Self::Plan(id(name
@@ -332,6 +367,7 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
@@ -342,7 +378,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
-            Self::Goal | Self::Plan(_) => Owner::Agent,
+            Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -359,6 +395,7 @@ impl FileKey {
         matches!(
             self,
             Self::Goal
+                | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {
                     file: TaskFile::Status,
@@ -373,6 +410,8 @@ impl FileKey {
 pub enum Query {
     /// Entire private task volume.
     Root,
+    /// Command definitions and workspace files used by the input UI.
+    Inputs,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -463,6 +502,10 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Inputs => (
+                Included(FileKey::Input(InputPath(String::new()))),
+                Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
+            ),
             Self::Plans => (
                 Included(FileKey::Plan(minimum)),
                 Included(FileKey::Plan(maximum)),
@@ -532,6 +575,7 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
+            (Self::Inputs, FileKey::Input(_)) => true,
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)

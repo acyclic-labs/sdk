@@ -1,6 +1,10 @@
 //! Grapheme-safe prompt editing without a terminal or application dependency.
 
 mod buffer;
+#[cfg(feature = "tui")]
+mod completion;
+#[cfg(feature = "tui")]
+mod completion_popup;
 mod editor;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
@@ -26,6 +30,15 @@ mod prompt_input;
 #[cfg(feature = "tui")]
 mod widget;
 
+#[cfg(feature = "tui")]
+pub use completion::{
+    Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
+    completion_request, fuzzy_score,
+};
+#[cfg(feature = "tui")]
+pub use completion_popup::CompletionPopup;
+#[cfg(feature = "tui")]
+pub use crossterm;
 pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};

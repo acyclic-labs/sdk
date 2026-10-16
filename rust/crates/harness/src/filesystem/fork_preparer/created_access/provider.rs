@@ -69,10 +69,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .strip_prefix("harness-")
             .ok_or_else(|| io.invalid("content namespace has no harness prefix"))?;
         let read = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("volume:read:{suffix}"), work)
+            crate::executor::preparation_format(
+                format_args!(
+                    "{}{suffix}",
+                    acyclic_fs::access::VolumeOperation::Read.capability_prefix()
+                ),
+                work,
+            )
         })?;
         let write = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("volume:write:{suffix}"), work)
+            crate::executor::preparation_format(
+                format_args!(
+                    "{}{suffix}",
+                    acyclic_fs::access::VolumeOperation::Write.capability_prefix()
+                ),
+                work,
+            )
         })?;
         let id = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(

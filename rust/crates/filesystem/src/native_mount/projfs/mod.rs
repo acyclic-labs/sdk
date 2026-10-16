@@ -20,7 +20,7 @@ use crate::native_host::{HostRoot, NativeHostWork};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
 use windows::Win32::Storage::FileSystem::{
@@ -82,6 +82,7 @@ const WRITE_CHUNK_BYTES: u32 = 1 << 20;
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
 mod directory;
 use directory::*;
+mod callback_path;
 mod context;
 pub use context::NativeMountWorkScope;
 use context::*;
