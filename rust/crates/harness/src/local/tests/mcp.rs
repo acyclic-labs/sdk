@@ -111,6 +111,8 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
 {
     use crate::native_settings::SettingsConfig;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    const CATALOG_BYTES: u32 = 1024;
+    const QUERY_BYTES: usize = 2048;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(Error::process_io)?;
@@ -186,14 +188,18 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 }
                 _ => {
                     assert_eq!(request["method"], "tools/call");
+                    assert!(body_bytes > CATALOG_BYTES as usize);
                     assert_eq!(
                         request["params"],
-                        json!({"name":"read","arguments":{"query":"needle".repeat(512)}})
+                        json!({"name":"read","arguments":{"query":"q".repeat(QUERY_BYTES)}})
                     );
                     json!({"content":[{"type":"text","text":"found".repeat(512)}]})
                 }
             };
             let result = json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string();
+            if step == 4 {
+                assert!(result.len() > CATALOG_BYTES as usize);
+            }
             let (media, body) = if step == 3 {
                 ("text/event-stream", format!("data: {result}\n\n"))
             } else {
@@ -228,7 +234,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             ScriptedEvent::Event(ModelEvent::ToolCall {
                 call_id: "configured-call".into(),
                 name: "mcp.configured.read".into(),
-                arguments: json!({"query":"needle".repeat(512)}),
+                arguments: json!({"query":"q".repeat(QUERY_BYTES)}),
             }),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
@@ -242,7 +248,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 SettingsConfig::new(root.path(), root.path()).codex_home(root.path().join("codex")),
             )
             .mcp_limits(crate::mcp::McpClientLimits {
-                catalog_bytes: 1024,
+                catalog_bytes: CATALOG_BYTES,
                 tool_bytes: 8192,
                 ..Default::default()
             })
