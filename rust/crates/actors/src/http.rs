@@ -156,6 +156,9 @@ pub struct Client {
     descriptors: DescriptorPool,
 }
 
+#[cfg(test)]
+mod credential_tests;
+
 macro_rules! operations {
     ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
         $(/// Executes the canonical HTTP operation.
