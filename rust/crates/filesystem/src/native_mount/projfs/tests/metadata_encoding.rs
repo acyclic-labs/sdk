@@ -16,22 +16,35 @@ proptest! {
             path = path.child(bytes);
         }
         let host = host_relative_path(&path).expect("host path");
+        let overhead = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .map_err(|(e, _)| e).expect("meter overhead").receipt();
         let budgets = [
             crate::WorkBudget::UNBOUNDED,
             crate::WorkBudget { items_examined: limit, ..crate::WorkBudget::UNBOUNDED },
             crate::WorkBudget { bytes_encoded: limit, ..crate::WorkBudget::UNBOUNDED },
-            crate::WorkBudget { peak_allocation_bytes: limit, ..crate::WorkBudget::UNBOUNDED },
-            crate::WorkBudget { allocation_operations: 0, ..crate::WorkBudget::UNBOUNDED },
+            crate::WorkBudget { peak_allocation_bytes: overhead.peak_allocation_bytes + limit, ..crate::WorkBudget::UNBOUNDED },
+            crate::WorkBudget { allocation_operations: overhead.allocation_operations, ..crate::WorkBudget::UNBOUNDED },
         ];
         for budget in budgets {
             let cancellation = crate::CancellationToken::new();
             let old = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e).expect("old work");
             let direct = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e).expect("direct work");
+            let before = direct.receipt();
             let old_result = crate::native_host::with_wide_path(&host, &mut &old, |wide, _| Ok(wide.to_vec()));
             let units = super::super::callback_path::wide_components(path.components()).expect("canonical parts");
             let direct_result = crate::native_host::with_wide_units(units, &mut &direct, |wide, _| Ok(wide.to_vec()));
             prop_assert_eq!(old_result.map_err(|e| e.to_string()), direct_result.map_err(|e| e.to_string()));
             prop_assert_eq!(old.receipt(), direct.receipt());
+            if budget == crate::WorkBudget::UNBOUNDED {
+                let length = path.components().iter().map(|p| p.len() as u64 / 2).sum::<u64>()
+                    + path.components().len().saturating_sub(1) as u64;
+                let mut expected = before;
+                expected.items_examined += length;
+                expected.bytes_encoded += length * 2;
+                expected.allocation_operations += u64::from(length != 0);
+                expected.peak_allocation_bytes += length * 2;
+                prop_assert_eq!(direct.receipt(), expected);
+            }
             cancellation.cancel();
             let before = direct.receipt();
             let units = super::super::callback_path::wide_components(path.components()).expect("canonical parts");
