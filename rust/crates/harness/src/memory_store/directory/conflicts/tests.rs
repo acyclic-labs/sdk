@@ -2,7 +2,7 @@ use super::*;
 use proptest::prelude::*;
 use std::{
     cell::Cell,
-    ops::Bound::{Excluded, Included, Unbounded},
+    ops::Bound::{Excluded, Unbounded},
     rc::Rc,
 };
 

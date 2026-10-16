@@ -16,7 +16,7 @@ pub(crate) fn paths_conflict(existing: &str, path: &str) -> bool {
 #[inline]
 pub(crate) fn conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     for existing in paths.keys() {
-        let existing = existing.borrow();
+        let existing: &str = existing.borrow();
         match existing.cmp(path) {
             Ordering::Less => {
                 if path.as_bytes().get(existing.len()) == Some(&b'/') && path.starts_with(existing)
