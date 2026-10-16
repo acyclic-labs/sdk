@@ -11,7 +11,11 @@ impl CheckoutTools {
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>)> {
-        let workspace = Arc::clone(&self.workspace);
+        let workspace = state
+            .workspace
+            .as_ref()
+            .map(|(_, workspace)| workspace.clone())
+            .unwrap_or_else(|| self.workspace.clone());
         acyclic_native_runtime::run_blocking_io(
             move || guarded(state, |_| run(&workspace, &command, maximum_output)),
             None,

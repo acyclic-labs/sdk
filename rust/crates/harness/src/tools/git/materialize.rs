@@ -9,7 +9,7 @@ pub(crate) struct RootMaterializingGitExecutor<'a, F> {
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
-    pub source_root_identity: acyclic_fs::NativeRootIdentity,
+    pub source_root_identity: Option<acyclic_fs::NativeRootIdentity>,
     /// Revalidates the admitted task and its publication permit before each effect.
     pub before_effect: F,
 }
@@ -25,6 +25,9 @@ where
         operation_id: OperationId,
         from: LocalGeneration,
     ) -> Result<(), Error> {
+        let Some(identity) = self.source_root_identity else {
+            return Ok(());
+        };
         let target = self
             .inner
             .switched
@@ -43,7 +46,7 @@ where
             .map_err(Error::from)?;
         publish_checkout_transition(
             self.root,
-            self.source_root_identity,
+            identity,
             self.inner.store,
             operation_id,
             from,

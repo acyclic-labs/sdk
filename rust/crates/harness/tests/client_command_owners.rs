@@ -429,3 +429,173 @@ async fn generated_alias_survives_source_edit_and_reopening() -> Result<()> {
     );
     Ok(())
 }
+
+async fn declared_root_aliases(suffix: &str) -> Result<()> {
+    let aliases = [
+        format!("user-run-{suffix}"),
+        format!("project-run-{suffix}"),
+        format!("audit-run-{suffix}"),
+    ];
+    let fixture = Fixture::new(&[
+        (
+            "home/.claude/commands/user-cmd.md",
+            "User original $ARGUMENTS",
+        ),
+        (
+            "project/.codex/prompts/project-cmd.md",
+            "Project original $ARGUMENTS",
+        ),
+        (
+            "skills/audit/SKILL.md",
+            "---\nname: audit\ndescription: Audit\n---\nAudit original",
+        ),
+    ])
+    .await?;
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("root-aliases")?,
+        )
+        .await
+        .map_err(volume_error)?,
+    );
+    let session = uuid::Uuid::new_v4();
+    let roots = vec![
+        CommandRoot {
+            scope: CommandScope::User,
+            root: ContextRoot {
+                directory: "home".into(),
+                ..fixture.root.clone()
+            },
+        },
+        CommandRoot {
+            scope: CommandScope::Project,
+            root: ContextRoot {
+                directory: "project".into(),
+                ..fixture.root.clone()
+            },
+        },
+    ];
+    let skills = vec![ContextRoot {
+        directory: "skills".into(),
+        ..fixture.root.clone()
+    }];
+    let mut client = CommandSession::open(volume.clone(), session, 32_768, 128).await?;
+    let sources = CommandSources::observe(
+        &mut client,
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+        roots.clone(),
+        skills.clone(),
+        fixture.reader.clone(),
+        Default::default(),
+        32_768,
+        128,
+    )
+    .await?;
+    let mut specs = serde_json::to_value(client.catalog().commands().collect::<Vec<_>>()).unwrap();
+    for (name, alias) in [
+        ("user-cmd", aliases[0].as_str()),
+        ("project-cmd", aliases[1].as_str()),
+        ("audit", aliases[2].as_str()),
+    ] {
+        specs
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|spec| spec["name"] == name)
+            .unwrap()["aliases"] = json!([alias]);
+    }
+    client
+        .install_catalog(serde_json::to_vec(&specs).unwrap())
+        .await?;
+    drop(sources);
+    drop(client);
+    for (path, body) in [
+        (
+            "home/.claude/commands/user-cmd.md",
+            "User reopened $ARGUMENTS",
+        ),
+        (
+            "project/.codex/prompts/project-cmd.md",
+            "Project reopened $ARGUMENTS",
+        ),
+        (
+            "skills/audit/SKILL.md",
+            "---\nname: audit\ndescription: Audit\n---\nAudit reopened",
+        ),
+    ] {
+        fixture
+            .put(path, body, &format!("root-edit-{path}"))
+            .await?;
+    }
+    let mut client = CommandSession::open(volume, session, 32_768, 128).await?;
+    let mut sources = CommandSources::observe(
+        &mut client,
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+        roots,
+        skills,
+        fixture.reader.clone(),
+        Default::default(),
+        32_768,
+        128,
+    )
+    .await?;
+    for alias in &aliases {
+        let CommandResolution::Prompt { text, .. } = client
+            .catalog()
+            .resolve(&format!("/{alias} now"), fixture.reader.as_ref(), 32_768)
+            .await?
+        else {
+            panic!("source alias was not a prompt")
+        };
+        assert!(text.contains("reopened"), "{alias}: {text}");
+    }
+    fixture
+        .put(
+            "project/.codex/prompts/project-cmd.md",
+            "Project live $ARGUMENTS",
+            "live-edit",
+        )
+        .await?;
+    // A catalog edit is a followed source-refresh event without mirroring a
+    // source file into the input volume. The imported action stays a Prompt.
+    let mut specs = serde_json::to_value(client.catalog().commands().collect::<Vec<_>>()).unwrap();
+    specs[0]["description"] = json!("Refresh external source declarations");
+    client
+        .install_catalog(serde_json::to_vec(&specs).unwrap())
+        .await?;
+    for _ in 0..16 {
+        sources.changed().await?;
+        match sources.refresh(&mut client).await {
+            Ok(()) | Err(Error::Conflict(_)) => {}
+            Err(error) => return Err(error),
+        }
+        if matches!(client.catalog().resolve(&format!("/{} now", aliases[1]), fixture.reader.as_ref(), 32_768).await, Ok(CommandResolution::Prompt { text,.. }) if text=="Project live now")
+        {
+            break;
+        }
+    }
+    assert!(
+        matches!(client.catalog().resolve(&format!("/{} now", aliases[1]), fixture.reader.as_ref(), 32_768).await?, CommandResolution::Prompt { text,.. } if text=="Project live now")
+    );
+    assert!(
+        client
+            .catalog()
+            .commands()
+            .filter(|spec| ["user-cmd", "project-cmd", "audit"].contains(&spec.name.as_str()))
+            .all(|spec| !matches!(
+                spec.action,
+                acyclic_harness::client::CommandAction::Template { .. }
+            )),
+        "the configured-root regression must not fall back to mirrored templates"
+    );
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn declared_root_prompt_and_skill_aliases_survive_edits_and_reopening(suffix in "[a-z]{1,8}") {
+        futures::executor::block_on(declared_root_aliases(&suffix)).unwrap();
+    }
+}

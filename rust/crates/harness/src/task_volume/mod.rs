@@ -504,6 +504,14 @@ fn apply(index: &mut Index, file: FileValue, position: u64) {
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
         let owner = match &file.key {
             FileKey::Session { session, .. } => Some(session.clone()),
+            FileKey::Task {
+                file: TaskFile::ExecutionResult(id),
+                ..
+            } => command_query::identity(id)
+                .and_then(|(session, _)| session)
+                .map(|session| {
+                    Component::new(session.to_string()).expect("UUID is a namespace component")
+                }),
             _ => None,
         };
         index.executions.insert((owner, position), file.key.clone());

@@ -163,16 +163,20 @@ where
         .await
         .map_err(storage)?
         .value;
-    Box::pin(crate::tools::git::publish_checkout_transition(
-        &workspace.path,
-        workspace.identity,
-        &workspace.store,
-        operation,
-        from,
-        to,
-        before_effect,
-    ))
-    .await?;
+    if let Some(mount) = &workspace.mounted {
+        mount.advance_to_head().await.map_err(storage)?;
+    } else {
+        Box::pin(crate::tools::git::publish_checkout_transition(
+            &workspace.path,
+            workspace.identity,
+            &workspace.store,
+            operation,
+            from,
+            to,
+            before_effect,
+        ))
+        .await?;
+    }
     // A crash even after Applied leaves this intent. The native journal then
     // acknowledges without replaying over subsequent user edits.
     before_effect().await?;

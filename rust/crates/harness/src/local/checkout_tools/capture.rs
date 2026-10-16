@@ -72,14 +72,15 @@ impl Cursor {
 impl CheckoutTools {
     pub(super) async fn capture(
         &self,
-        view: &workspace::View,
+        selected: (&LocalWorkspace, &workspace::View),
         slot: &mut Option<Cursor>,
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
         owner: Option<Arc<dyn crate::runtime::OwnedTaskMailbox>>,
     ) -> Result<()> {
-        if let Some(mount) = &self.workspace.mounted {
+        let (physical, view) = selected;
+        if let Some(mount) = &physical.mounted {
             mount
                 .sync_with_permit(permit, &mount.native_work()?, move |_| {
                     let owner = owner.clone();
@@ -103,10 +104,10 @@ impl CheckoutTools {
         let baseline = slot.is_none();
         let mut cursor = match slot.take() {
             Some(cursor) => cursor,
-            None => Cursor::open(&self.workspace, &self.capture_policy)?,
+            None => Cursor::open(physical, &self.capture_policy)?,
         };
         let watcher = &mut cursor.watcher;
-        if watcher.root_identity() != self.workspace.identity {
+        if watcher.root_identity() != physical.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
         let mut checkout = workspace
@@ -166,9 +167,9 @@ impl CheckoutTools {
                 watcher.finish_rescan().map_err(storage)?
             }
         };
-        arrivals::register(watcher, &batch, &self.workspace, policy)?;
+        arrivals::register(watcher, &batch, physical, policy)?;
         if let Some(initial @ WatchBatch::Changes { .. }) = initial {
-            arrivals::register(watcher, &initial, &self.workspace, policy)?;
+            arrivals::register(watcher, &initial, physical, policy)?;
             capture_watch_batch(
                 &mut checkout,
                 initial,

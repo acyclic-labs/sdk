@@ -531,3 +531,108 @@ async fn settled_owner_tasks_publish_attention_for_live_clients() -> Result<()> 
     );
     Ok(())
 }
+
+#[cfg(all(feature = "native-execution", unix))]
+#[tokio::test]
+async fn descendants_inherit_selected_branches_and_reopen_their_original_forks() -> Result<()> {
+    use acyclic_harness::model::{ModelEvent, ToolCall};
+    use acyclic_harness::test_support::ScriptedEvent;
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join(".git")).unwrap();
+    std::fs::write(directory.path().join("marker"), "original").unwrap();
+    let call = |id: &str, name: &str, command: &str| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                id.into(),
+                name.into(),
+                json!({"command":command}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ])
+    };
+    let provider = provider([
+        call("parent-switch", "fs", "git switch -c parent-branch"),
+        call("parent-write", "bash", "printf parent-branch > marker"),
+        ScriptedTurn::Text("parent ready".into()),
+        call("child-switch", "fs", "git switch -c child-branch"),
+        call("child-write", "bash", "printf child-branch > marker"),
+        ScriptedTurn::Text("child ready".into()),
+        call("later-switch", "fs", "git switch -c later-branch"),
+        call("later-write", "bash", "printf later-branch > marker"),
+        ScriptedTurn::Text("later ready".into()),
+    ]);
+    let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
+    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+        directory.path(),
+        (model.clone(), provider.clone()),
+    )?)
+    .await
+    .unwrap();
+    let Admission::Accepted(RuntimeTask::Durable {
+        task_id: parent, ..
+    }) = local.submit(OperationId::new(), "parent").await.unwrap()
+    else {
+        panic!("parent admission")
+    };
+    let mut client = selected(&local, parent).await.unwrap();
+    let child = send(&local, &mut client, "/delegate child").await.unwrap();
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    assert_eq!(local.resume(parent).await.unwrap().text, "parent ready");
+    client.refresh_files().await.unwrap();
+    let inherited = send(&local, &mut client, "/shell cat marker")
+        .await
+        .unwrap();
+    assert_eq!(
+        inherited["stdout"], "parent-branch",
+        "child forked the original root view"
+    );
+    let grandchild = send(&local, &mut client, "grandchild").await.unwrap();
+    let grandchild = TaskId::parse(grandchild["task"].as_str().unwrap())?;
+    assert_eq!(local.resume(child).await.unwrap().text, "child ready");
+    client.refresh_files().await.unwrap();
+    let inherited = send(&local, &mut client, "/shell cat marker; printf '\\n'; pwd")
+        .await
+        .unwrap();
+    let previous_mount = inherited["stdout"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("child-branch\n")
+        .expect("grandchild forked the original child view")
+        .to_owned();
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("marker")).unwrap(),
+        "parent-branch"
+    );
+    assert_eq!(
+        local.run("switch the root again").await.unwrap().text,
+        "later ready"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("marker")).unwrap(),
+        "later-branch"
+    );
+    drop(client);
+    drop(local);
+    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+        directory.path(),
+        (model, provider),
+    )?)
+    .await
+    .unwrap();
+    let mut client = selected(&local, grandchild).await.unwrap();
+    let inherited = send(&local, &mut client, "/shell cat marker; printf '\\n'; pwd")
+        .await
+        .unwrap();
+    let reopened_mount = inherited["stdout"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("child-branch\n")
+        .expect("reopening rebound an existing task to its parent's later branch");
+    assert_ne!(
+        reopened_mount, previous_mount,
+        "a retiring mount must never share the replacement mount's namespace"
+    );
+    Ok(())
+}

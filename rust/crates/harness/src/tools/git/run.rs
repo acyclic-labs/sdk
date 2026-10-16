@@ -64,23 +64,20 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
-    let command = if let Some(identity) = workspace.checkout {
-        execute(
-            &workspace,
-            args,
-            tree,
-            patch.as_deref(),
-            &RootMaterializingGitExecutor {
-                inner: &executor,
-                root: workspace.root,
-                source_root_identity: identity,
-                before_effect,
-            },
-        )
-        .await?
-    } else {
-        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
-    };
+    let command = execute(
+        &workspace,
+        args,
+        tree,
+        patch.as_deref(),
+        &RootMaterializingGitExecutor {
+            inner: &executor,
+            root: workspace.root,
+            source_root_identity: workspace.checkout,
+            before_effect,
+        },
+    )
+    .await?;
+
     Ok(Output {
         command,
         switched: executor.switched_workspace()?,

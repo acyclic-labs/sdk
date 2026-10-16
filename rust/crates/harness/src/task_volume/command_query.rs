@@ -46,7 +46,7 @@ pub(crate) fn is_result(key: &FileKey) -> bool {
             file: TaskFile::ExecutionResult(_),
             ..
         }
-    )
+    ) && related(key, TaskFile::Request).is_some()
 }
 
 pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
@@ -111,12 +111,13 @@ pub(super) fn snapshot(
         .executions
         .range((None, 0)..=(None, u64::MAX))
         .rev()
-        .filter(|(_, key)| matches(session, key))
+        .inspect(|_| super::item_examined())
         .peekable();
     let mut own = index
         .executions
         .range((Some(session.clone()), 0)..=(Some(session.clone()), u64::MAX))
         .rev()
+        .inspect(|_| super::item_examined())
         .peekable();
     for _ in 0..recent {
         let next = match (tasks.peek(), own.peek()) {

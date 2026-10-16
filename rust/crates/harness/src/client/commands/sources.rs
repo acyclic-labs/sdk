@@ -294,17 +294,7 @@ impl CommandSources {
                     name.clone(),
                     CommandSpec {
                         name,
-                        aliases: client
-                            .catalog()
-                            .commands()
-                            .find(|spec| match &spec.action {
-                                CommandAction::Template { file, .. } => file == key,
-                                CommandAction::Prompt { source, .. } => source.path == path,
-                                CommandAction::Skill { skill } => skill.source.path == path,
-                                _ => false,
-                            })
-                            .map(|spec| spec.aliases.clone())
-                            .unwrap_or_default(),
+                        aliases: vec![],
                         description,
                         arguments: CommandArguments::Text,
                         action: CommandAction::Template {
@@ -314,6 +304,15 @@ impl CommandSources {
                         },
                     },
                 );
+            }
+            // Apply catalog overrides after both declared-root imports and
+            // mirrored files have rebuilt their current source actions.
+            for (name, spec) in &mut catalog.commands {
+                if let Some(previous) = client.catalog().commands.get(name)
+                    && same_source(&previous.action, &spec.action)
+                {
+                    spec.aliases = previous.aliases.clone();
+                }
             }
             if !client.catalog().commands().eq(catalog.commands()) {
                 let specs: Vec<_> = catalog.commands().collect();
@@ -327,6 +326,25 @@ impl CommandSources {
             self.pending = false;
         }
         Ok(())
+    }
+}
+
+fn same_source(left: &CommandAction, right: &CommandAction) -> bool {
+    use CommandAction::{Prompt, Skill, Template};
+    match (left, right) {
+        (Template { file: left, .. }, Template { file: right, .. }) => left == right,
+        (Prompt { source: left, .. }, Prompt { source: right, .. }) => {
+            left.root == right.root && left.path == right.path
+        }
+        (Skill { skill: left }, Skill { skill: right }) => {
+            left.source.root == right.source.root && left.source.path == right.source.path
+        }
+        (Template { file, .. }, Prompt { source, .. })
+        | (Prompt { source, .. }, Template { file, .. }) => file.path() == source.path,
+        (Template { file, .. }, Skill { skill }) | (Skill { skill }, Template { file, .. }) => {
+            file.path() == skill.source.path
+        }
+        _ => false,
     }
 }
 

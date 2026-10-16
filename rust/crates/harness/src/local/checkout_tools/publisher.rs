@@ -93,7 +93,7 @@ impl CheckoutPublisher {
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum).await?,
             };
             if original.is_none() {
-                self.tools.capture(view, watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
+                self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
             }
             let file = match publication {
                 Publication::Once {

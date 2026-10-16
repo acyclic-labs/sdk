@@ -27,7 +27,8 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
-    // Release the root cache guard before taking a child checkout guard.
+    // Each cache belongs to its parent checkout. Release that guard before
+    // selecting or executing in a child checkout.
     // No path holds two checkout-state guards together.
     state: StateArc<AsyncMutex<State>>,
     selected: bool,
@@ -35,6 +36,8 @@ pub(super) struct CheckoutTools {
 
 struct State {
     active: Option<workspace::View>,
+    initial_view: acyclic_fs::WorkspaceId,
+    workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
     watcher: Option<capture::Cursor>,
     children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
 }
@@ -73,6 +76,7 @@ impl CheckoutTools {
         } else {
             None
         };
+        let initial_view = view.workspace().id();
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
@@ -82,6 +86,8 @@ impl CheckoutTools {
             clock,
             state: StateArc::new(AsyncMutex::new(State {
                 active,
+                initial_view,
+                workspace: None,
                 watcher,
                 children: Default::default(),
             })),
@@ -165,11 +171,12 @@ impl ToolExecutor for CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
+                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
                 let view = state
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
-                if reconciliation::recover(&self.workspace, view, &|| async {
+                if reconciliation::recover(&workspace, view, &|| async {
                     owner.verify_owner(None)?.await
                 })
                 .await?
@@ -177,14 +184,14 @@ impl ToolExecutor for CheckoutTools {
                     state.watcher = None;
                 }
                 if invocation.name == "fs" {
-                    self.fs(&command, context, &mut state).await
+                    self.fs(&command, context, &mut state, &workspace).await
                 } else {
                     let State {
                         active, watcher, ..
                     } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
-                        view,
+                        (&workspace, view),
                         watcher,
                         invocation.operation_id,
                         0,
@@ -198,7 +205,7 @@ impl ToolExecutor for CheckoutTools {
                     } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
-                        view,
+                        (&workspace, view),
                         watcher,
                         invocation.operation_id,
                         1,
