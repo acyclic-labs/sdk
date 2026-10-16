@@ -1,6 +1,8 @@
+#[path = "../../harness/tests/support/client_views.rs"]
+mod client_views_fixture;
 use acyclic_harness::{
     AgentId, Result,
-    client::{ClientViews, GoalFileView},
+    client::GoalFileView,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     goal::{GOAL_METADATA_HEADROOM, GoalState, GoalStatus, GoalView},
     resources::ProviderRef,

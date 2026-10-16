@@ -117,7 +117,7 @@ fuzz_target!(|input: &[u8]| {
         let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
         session
             .track(wire::ReplayCursor {
-                authority: Some(authority),
+                authority: Some(authority.clone()),
                 generation: "g".into(),
                 revision: 0,
             })
@@ -130,7 +130,7 @@ fuzz_target!(|input: &[u8]| {
             .with_files(files.clone());
         client.replay().await.unwrap();
         if client.next_delivery().await.is_ok() {
-            let expected = client.session().views().clone();
+            let expected = client.session().replay_revision(&authority);
             let reopened = ClientSession::open(client.into_session().into_store()).unwrap();
             let mut reopened = HarnessClient::connect(host, reopened)
                 .await
@@ -138,10 +138,10 @@ fuzz_target!(|input: &[u8]| {
                 .with_files(files);
             reopened.replay().await.unwrap();
             reopened.next_delivery().await.unwrap();
-            assert_eq!(reopened.session().views(), &expected);
+            assert_eq!(reopened.session().replay_revision(&authority), expected);
         } else {
             assert_eq!(client.session().resume().cursors[0].revision, 0);
-            assert_eq!(client.session().views(), &Default::default());
+            assert_eq!(client.session().replay_revision(&authority), 0);
         }
     });
 });
@@ -199,12 +199,9 @@ impl HarnessWireApi for Host {
 }
 
 fn model_file_view(input: &[u8]) {
-    use acyclic_harness::{
-        client::ClientViews,
-        task_volume::{
-            Change, Component, Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot,
-            TaskFile,
-        },
+    use acyclic_harness::task_volume::{
+        Change, Component, Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot,
+        TaskFile,
     };
     let key = FileKey::Task {
         task: Component::new("task").unwrap(),
