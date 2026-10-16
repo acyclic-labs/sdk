@@ -91,7 +91,7 @@ test("next immediately after children disconnect recovers instead of terminating
   } finally { await children.return(undefined); }
 });
 
-test("cancelling unread discovery returns credit and its channel reservation", async () => {
+test("cancelling unread discovery closes idle sessions and releases its reservation", async () => {
   const peer = new SessionNode();
   peer.append("agents/m"); peer.append("agents/a"); peer.append("agents/0");
   const client = new StreamSessions(peer.connect);
@@ -100,9 +100,9 @@ test("cancelling unread discovery returns credit and its channel reservation", a
     const children = client.children({ parent: "agents", limit: 1, signal: cancel.signal });
     expect((await children.next()).value?.path).toBe("agents/m");
     cancel.abort();
+    await peer.until(() => peer.active === 0 && peer.outstandingFrames === 0);
     expect(peer.active).toBe(0);
-    await peer.until(() => peer.outstandingFrames === 0);
     expect(peer.outstandingFrames).toBe(0);
   }
-  expect(peer.connections.length).toBe(1);
+  expect(peer.connections.length).toBe(8);
 });

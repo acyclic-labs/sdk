@@ -1,7 +1,7 @@
 use crate::{Adapter, invalid};
 use acyclic_harness::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Declarative counting endpoint on the provider's own origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,10 +59,21 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
     Ok(resolved.into())
 }
 
-pub(crate) fn body(mut generation: Value, model: &str, adapter: Adapter) -> Result<Value> {
-    let object = generation
-        .as_object_mut()
-        .ok_or_else(|| invalid("count input must be an object"))?;
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(crate) enum CountBody<'a> {
+    Direct(crate::projection::wire::Body<'a>),
+    Gemini {
+        #[serde(rename = "generateContentRequest")]
+        request: crate::projection::wire::Body<'a>,
+    },
+}
+
+pub(crate) fn body<'a>(
+    mut generation: crate::projection::wire::Body<'a>,
+    model: &str,
+    adapter: Adapter,
+) -> CountBody<'a> {
     let fields: &[&str] = match adapter {
         // OpenAI's count endpoint accepts the same input items, tools and text schema.
         Adapter::Responses => &[
@@ -98,12 +109,18 @@ pub(crate) fn body(mut generation: Value, model: &str, adapter: Adapter) -> Resu
         ],
         Adapter::Gemini => {
             // Full GenerateContentRequest includes system instructions, tools and schemas.
-            object.insert("model".into(), json!(format!("models/{model}")));
-            return Ok(json!({"generateContentRequest":generation}));
+            generation
+                .fields
+                .insert("model".into(), json!(format!("models/{model}")));
+            return CountBody::Gemini {
+                request: generation,
+            };
         }
     };
-    object.retain(|field, _| fields.contains(&field.as_str()));
-    Ok(generation)
+    generation
+        .fields
+        .retain(|field, _| fields.contains(&field.as_str()));
+    CountBody::Direct(generation)
 }
 
 pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {

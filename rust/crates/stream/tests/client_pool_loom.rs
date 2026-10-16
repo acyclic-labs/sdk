@@ -176,3 +176,13 @@ fn negative_control_clears_the_source_hint_after_rechecking() {
 fn negative_control_resets_the_source_hint_without_acquiring_coalesced_wakes() {
     acyclic_stream::session::verify_source_recheck(2);
 }
+
+#[test]
+fn initial_eof_retry_yields_to_deadline_and_cancellation() {
+    acyclic_stream::session::verify_initial_retry_yield(false);
+}
+#[test]
+#[should_panic(expected = "initial retry must yield before another physical RPC")]
+fn negative_control_initial_eof_retry_monopolizes_the_executor() {
+    acyclic_stream::session::verify_initial_retry_yield(true);
+}

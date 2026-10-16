@@ -44,3 +44,9 @@ impl<'de> Visitor<'de> for Strict {
 pub(crate) fn valid(raw: &str) -> bool {
     serde_json::from_str::<Strict>(raw).is_ok()
 }
+
+/// Object arguments use the same literal-safe walker as native continuity.
+/// Private serde marker keys are ordinary keys; no Value tree is constructed.
+pub(crate) fn object(raw: &str) -> bool {
+    raw.trim_start().starts_with('{') && valid(raw)
+}

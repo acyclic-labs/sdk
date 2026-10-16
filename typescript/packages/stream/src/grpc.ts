@@ -1,3 +1,4 @@
+import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
@@ -8,7 +9,7 @@ import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/c
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -120,7 +121,7 @@ function streamGrpc(options: StreamGrpcOptions) {
       const client = createClient(StreamSessionService, transport);
       const incoming = async function* () {
         try { yield* client.session(input, { signal }); }
-        catch (error) { throw providerError(error, "session"); }
+        catch (error) { throw sessionTransportError(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false);
@@ -182,6 +183,12 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
     } finally { controller.abort(); }
+  }
+  async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
+    const authored = structuredClone(follow);
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path: authored.path, from });
+    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     await validateWireRequest({ kind: "follow", path, from: options.from });
@@ -261,4 +268,10 @@ function providerError(error: unknown, operation: string): Error {
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, reason);
+}
+
+/** Platform callbacks use Rust codes; public aliases never enter the session engine. */
+function sessionTransportError(error: unknown): unknown {
+  if (!(error instanceof ConnectError)) return error;
+  return Object.assign(new Error(error.rawMessage), { code: grpcErrorCode(error.code, error.rawMessage) });
 }

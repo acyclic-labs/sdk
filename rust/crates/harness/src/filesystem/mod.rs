@@ -148,6 +148,7 @@ mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
 mod host;
+pub(crate) use host::file_publication;
 pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
@@ -174,8 +175,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         grant.require(volume, VolumeOperation::Write, io)?;
-        self.content_for_operation_record_io(volume, key, expected_path, maximum_bytes, None, io)
-            .await
+        let observed = self
+            .content_for_operation_record_io(volume, key, expected_path, maximum_bytes, None, io)
+            .await?;
+        let Some((file, bytes)) = observed else {
+            return Ok(None);
+        };
+        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        drop(bytes);
+        drop(hold);
+        Ok(Some(file))
     }
 
     #[allow(

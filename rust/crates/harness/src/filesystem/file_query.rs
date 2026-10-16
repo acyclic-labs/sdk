@@ -177,8 +177,15 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FileQuerySource
             let (cursor, anchor, valid_resume) =
                 cut(provider.as_ref(), &path, cursor, head).await?;
             let current = generation(&workspace, &anchor, &io).await?;
-            let selection =
-                Selection::read(&current, &query, maximum_files, maximum_bytes, &io).await?;
+            let selection = Selection::read(
+                &current,
+                &self.volume,
+                &query,
+                maximum_files,
+                maximum_bytes,
+                &io,
+            )
+            .await?;
             let snapshot = (!valid_resume).then(|| Snapshot {
                 files: selection.files.values().cloned().collect(),
                 generation: task_volume::Generation {
@@ -253,7 +260,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                         return Err(task_volume::Error::LimitExceeded);
                     }
                     let (files, removed) = selection
-                        .apply(&next, diff.changes(), &query, bounds, &io)
+                        .apply(&next, &source.volume, diff.changes(), &query, bounds, &io)
                         .await?;
                     cursor.position = cursor
                         .position
