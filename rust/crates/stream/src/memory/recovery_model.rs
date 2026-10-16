@@ -1,7 +1,41 @@
 use super::*;
 use futures::StreamExt as _;
 use loom::thread;
+use std::cell::Cell;
+use std::mem::ManuallyDrop;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Fault {
+    None,
+    OmitAppendWake,
+    RetainReplacedState,
+    IgnoreHead,
+    OmitPoisonPublication,
+}
+
+loom::thread_local! {
+    static FAULT: Cell<Fault> = Cell::new(Fault::None);
+}
+
+pub(crate) fn set_fault(fault: Fault) {
+    FAULT.with(|current| current.set(fault));
+}
+
+pub(crate) fn fault_is(fault: Fault) -> bool {
+    FAULT.with(|current| current.get() == fault)
+}
+
+fn expect_model_failure(run: impl FnOnce(), expected: &str) {
+    let error = catch_unwind(AssertUnwindSafe(run)).expect_err("broken model must fail");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("model failure message");
+    assert!(message.contains(expected), "{message}");
+}
 
 impl UnixMillisClock for loom::sync::atomic::AtomicU64 {
     fn now_unix_millis(&self) -> u64 {
@@ -57,14 +91,18 @@ pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
 ///
 /// # Panics
 /// Panics on a violated model invariant.
-pub fn subscription_and_append_have_no_lost_wakeup() {
-    check(|| {
+fn subscription_and_append(omit_wake: bool) {
+    check(move || {
         let provider = MemoryStream::default();
         let (path, anchor) = seed(&provider)?;
+        let keeper = ManuallyDrop::new(provider.clone());
         let writer = thread::spawn({
             let provider = provider.clone();
             let path = path.clone();
             move || {
+                if omit_wake {
+                    set_fault(Fault::OmitAppendWake);
+                }
                 block_on(provider.append(AppendRequest {
                     path,
                     records: vec![Bytes::from_static(b"next")],
@@ -81,6 +119,7 @@ pub fn subscription_and_append_have_no_lost_wakeup() {
             Ok(()) as Result
         })?;
         writer.join().map_err(|_| "writer panicked")??;
+        drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
@@ -89,14 +128,20 @@ pub fn subscription_and_append_have_no_lost_wakeup() {
 ///
 /// # Panics
 /// Panics on a violated model invariant.
-pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
-    check(|| {
+fn subscription_and_recovery(retain_old: bool) {
+    check(move || {
         let provider = MemoryStream::default();
         let (path, anchor) = seed(&provider)?;
+        let keeper = ManuallyDrop::new(provider.clone());
         let empty = block_on(MemoryStream::default().encode_state());
         let recovery = thread::spawn({
             let provider = provider.clone();
-            move || block_on(provider.install_state(&empty))
+            move || {
+                if retain_old {
+                    set_fault(Fault::RetainReplacedState);
+                }
+                block_on(provider.install_state(&empty))
+            }
         });
         block_on(async {
             match provider.follow_checked(path, 1, anchor).await {
@@ -115,6 +160,7 @@ pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
             }
         });
         recovery.join().map_err(|_| "recovery panicked")??;
+        drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
@@ -123,8 +169,8 @@ pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
 ///
 /// # Panics
 /// Panics on a violated model invariant.
-pub fn head_fence_and_recovery_cannot_publish_an_obsolete_generation() {
-    check(|| {
+fn head_fence_and_recovery(ignore_head: bool) {
+    check(move || {
         let provider = MemoryStream::default();
         let (path, anchor) = seed(&provider)?;
         let replacement = MemoryStream::default();
@@ -151,21 +197,59 @@ pub fn head_fence_and_recovery_cannot_publish_an_obsolete_generation() {
             }],
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"write"))?,
         };
+        if ignore_head {
+            set_fault(Fault::IgnoreHead);
+        }
         block_on(provider.commit(request))?;
         recovery.join().map_err(|_| "recovery panicked")??;
-        assert_eq!(block_on(provider.tail(path)), Ok(1));
+        assert_eq!(
+            block_on(provider.tail(path)),
+            Ok(1),
+            "obsolete generation published"
+        );
         Ok(())
     });
 }
 
+/// Checks append delivery and detects removal of the production publication wake.
+pub fn subscription_and_append_have_no_lost_wakeup() {
+    subscription_and_append(false);
+    expect_model_failure(|| subscription_and_append(true), "deadlock");
+}
+
+/// Checks recovery delivery and detects retaining an obsolete watch publisher.
+pub fn subscription_and_recovery_never_wait_for_a_missing_anchor() {
+    subscription_and_recovery(false);
+    expect_model_failure(|| subscription_and_recovery(true), "deadlock");
+}
+
+/// Checks recovery fencing and detects ignoring the immutable head identity.
+pub fn head_fence_and_recovery_cannot_publish_an_obsolete_generation() {
+    head_fence_and_recovery(false);
+    expect_model_failure(
+        || head_fence_and_recovery(true),
+        "obsolete generation published",
+    );
+}
+
 /// Checks local visibility, journal sampling and push follow without a device acknowledgement.
 pub fn local_accepted_queries_do_not_wait_for_durability() {
-    crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait();
+    crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(false);
+    expect_model_failure(
+        || {
+            crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(true)
+        },
+        "deadlock",
+    );
 }
 
 /// Checks that a terminal local failure wakes a subscriber already waiting for data.
 pub fn local_poison_wakes_followers() {
-    crate::local::query_model::poison_wakes_checked_followers();
+    crate::local::query_model::poison_wakes_checked_followers(false);
+    expect_model_failure(
+        || crate::local::query_model::poison_wakes_checked_followers(true),
+        "deadlock",
+    );
 }
 
 /// Checks the production append/persist wake site, optionally removing only its wake.

@@ -387,6 +387,10 @@ impl MemoryStream {
                 Some(CommitConflict::Exists { path: path.clone() })
             }
             CommitCondition::Head { commit_id, .. } => {
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
+                    return Ok(None);
+                }
                 let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
                 let actual = self.preceding_commit(stream)?;
                 (actual != *commit_id).then(|| CommitConflict::Head {
@@ -535,7 +539,13 @@ fn publish_fact(
     stream.prefix = prefix;
     stream.history = Some(history);
     stream.tail = tail;
-    stream.changed.send_replace(tail);
+    #[cfg(all(acyclic_loom, feature = "local"))]
+    let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
+    #[cfg(not(all(acyclic_loom, feature = "local")))]
+    let notify = true;
+    if notify {
+        stream.changed.send_replace(tail);
+    }
     state.record_count += fact_records(fact).len();
     state.payload_bytes += fact_records(fact)
         .iter()
