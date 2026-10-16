@@ -43,13 +43,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "search_http_codec_tinyfish"
-path = "fuzz_targets/search_http_codec_tinyfish.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "protocol_identity"
 path = "fuzz_targets/protocol_identity.rs"
 test = false
