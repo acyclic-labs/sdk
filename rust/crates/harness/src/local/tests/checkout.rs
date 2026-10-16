@@ -1,5 +1,6 @@
 //! Stock default commands execute against and publish the same checkout.
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 
 use super::checked_commands::call;
 

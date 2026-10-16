@@ -254,6 +254,13 @@ async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestRes
                 View::Volume(&main).read("/note", 64).await?.as_ref(),
                 b"resolved\n"
             );
+        } else {
+            assert!(
+                !GitCompatRepository::new(repository, store.clone())
+                    .tracked_paths()
+                    .await?
+                    .contains("note")
+            );
         }
     }
     Ok(())

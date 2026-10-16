@@ -226,7 +226,7 @@ where
         operation: OperationId,
         action: &GitFilesystemAction,
         tree: GitTreeRef,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<GitFilesystemResult, Self::Error> {
         self.inner
             .validate_merge_resolution(operation, action, tree)
             .await

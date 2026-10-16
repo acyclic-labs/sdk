@@ -38,9 +38,9 @@ where
         operation: OperationId,
         action: &GitFilesystemAction,
         tree: GitTreeRef,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<GitFilesystemResult, Self::Error> {
         self.validate().await?;
-        let GitFilesystemAction::Join { .. } = action else {
+        let GitFilesystemAction::Join { tracked_paths, .. } = action else {
             return Err(Error::Invalid("merge continuation requires a join".into()));
         };
         let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
@@ -64,7 +64,12 @@ where
                 "Git merge still contains unresolved conflict markers",
             ));
         }
-        self.validate().await
+        let tracked_paths = existing_tracked_paths(&current, tracked_paths).await?;
+        self.validate().await?;
+        Ok(GitFilesystemResult::Applied {
+            tree: Some(tree),
+            tracked_paths: Some(tracked_paths),
+        })
     }
 
     async fn execute(
