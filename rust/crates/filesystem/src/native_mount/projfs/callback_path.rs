@@ -31,3 +31,27 @@ pub(super) fn components(wide: &[u16]) -> Option<Vec<Vec<u8>>> {
     }
     Some(components)
 }
+
+pub(super) fn wide_components(parts: &[Vec<u8>]) -> Option<impl Iterator<Item = u16> + Clone + '_> {
+    for part in parts {
+        if part.is_empty()
+            || part.len() % 2 != 0
+            || matches!(part.as_slice(), [46, 0] | [46, 0, 46, 0])
+            || part
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .any(|&bytes| matches!(u16::from_le_bytes(bytes), 0 | 47 | 58 | 92))
+        {
+            return None;
+        }
+    }
+    Some(parts.iter().enumerate().flat_map(|(index, part)| {
+        std::iter::once(92).take(usize::from(index != 0)).chain(
+            part.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&bytes| u16::from_le_bytes(bytes)),
+        )
+    }))
+}

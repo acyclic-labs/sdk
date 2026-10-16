@@ -474,6 +474,3 @@ mod install;
 
 #[path = "execution_journal_cases/input.rs"]
 mod input;
-
-#[path = "execution_journal_cases/plan.rs"]
-mod plan;

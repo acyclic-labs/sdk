@@ -3,6 +3,8 @@
 mod config;
 mod fork;
 mod tasks;
+#[cfg(test)]
+mod tests;
 mod wire;
 pub use config::{AuthorityBinding, Config, ForkSourceConfig};
 pub(super) use tasks::stock_turn_commands;
@@ -13,7 +15,7 @@ use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,
     context::{ContextManifest, ContextPipeline},
-    conversation::{Limits, VolumeRef},
+    conversation::{ContentPublisher as _, Limits, VolumeRef},
     core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
@@ -178,7 +180,7 @@ pub(super) async fn runtime(
         Some(source.clone()),
         MAX_FRAME_BYTES as u64,
     )?;
-    let (toolset, context) = if let Some(reference) = &config.context_manifest {
+    let (toolset, context) = {
         let reader = FilesystemContentVerifier::new(
             files.clone(),
             &verifier,
@@ -186,12 +188,10 @@ pub(super) async fn runtime(
             MAX_FRAME_BYTES as u64,
             None,
         )?;
+        let reference = context_reference(config, &files, &verifier, &toolset).await?;
         let (tools, stage) =
-            ContextManifest::bind(reference.clone(), reader.as_ref(), toolset, config.limits)
-                .await?;
+            ContextManifest::bind(reference, reader.as_ref(), toolset, config.limits).await?;
         (tools, ContextPipeline::new([stage]))
-    } else {
-        (toolset, ContextPipeline::default())
     };
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
@@ -243,4 +243,43 @@ pub(super) async fn runtime(
     );
     source.bind_runtime(&runtime)?;
     Ok((runtime, context))
+}
+
+async fn context_reference(
+    config: &Config,
+    files: &Arc<Files>,
+    verifier: &AuthorityVerifier,
+    tools: &acyclic_harness::tool::ToolRegistry,
+) -> Result<acyclic_harness::conversation::FileRef> {
+    if let Some(reference) = &config.context_manifest {
+        return Ok(reference.clone());
+    }
+    let publisher = FilesystemContentPublisher::new(
+        files.clone(),
+        &config.private_volume,
+        verifier,
+        &config.owner.scope,
+        config.limits.file_bytes,
+        None,
+    )?;
+    let operation = OperationId::from_bytes(*b"native-context-1");
+    let (retained, _) = publisher
+        .observe_staged_once(operation, config.limits.file_bytes, None)?
+        .await?;
+    if let Some(reference) = retained {
+        return Ok(reference);
+    }
+    let manifest = ContextManifest::new(Default::default(), Vec::new(), tools)?;
+    let bytes = manifest.encode(config.limits)?;
+    Ok(publisher
+        .stage_once(
+            operation,
+            "context/default/manifest.json",
+            &bytes,
+            "application/json",
+            "context-manifest.json",
+            None,
+        )?
+        .await?
+        .0)
 }
