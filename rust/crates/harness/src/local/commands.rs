@@ -573,7 +573,7 @@ impl TaskCommandHost for CommandOwner<'_> {
             CommandControl::wait(&self.0.task_files.inner, &lineage, self.0.limits.file_bytes)
                 .await?;
             self.0
-                .stock_commands(Some(task))
+                .stock_commands(lineage)
                 .await?
                 .execute(context, fence, command, payload)
                 .await
@@ -587,9 +587,12 @@ impl TaskCommandHost for CommandOwner<'_> {
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
-            let task = context.durable_task_id();
+            let lineage = match context.durable_task_id() {
+                Some(task) => context.lineage(task).await?,
+                None => Vec::new(),
+            };
             self.0
-                .stock_commands(task)
+                .stock_commands(lineage)
                 .await?
                 .reconcile(context, fence, command, payload)
                 .await

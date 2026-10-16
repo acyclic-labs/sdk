@@ -4,10 +4,10 @@ use crate::{executor::TurnOutput, runtime::TaskStateProvider};
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
-    /// Stock command bindings for a service-owned fenced worker.
+    /// Stock command bindings using the command context's authenticated lineage.
     pub(super) async fn stock_commands(
         &self,
-        task: Option<TaskId>,
+        mut lineage: Vec<TaskId>,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
             '_,
@@ -17,7 +17,6 @@ impl LocalHarness {
         >,
     > {
         let mut model = self.model.clone();
-        let mut lineage = self.command_lineage(task).await?;
         lineage.reverse();
         for directory in std::iter::once("config".to_owned())
             .chain(lineage.into_iter().map(|task| format!("task-{task}")))
@@ -50,12 +49,9 @@ impl LocalHarness {
             }
         }
         model.validate()?;
-        self.runtime.commands().with_model(
-            &model,
-            self.provider.clone(),
-            &self.compaction,
-            None,
-        )
+        self.runtime
+            .commands()
+            .with_model(&model, self.provider.clone(), &self.compaction, None)
     }
     /// Owner-gated stock commands for this same runtime.
     pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
@@ -337,8 +333,10 @@ impl LocalHarness {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
+        } else {
+            // Advance already refreshes projections; terminal recovery must repair them.
+            self.refresh_command_task(task).await?;
         }
-        self.refresh_command_task(task).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
