@@ -12,7 +12,7 @@ mod state;
 /// Runtime-independent completion of an owned file or host operation.
 pub struct NativeCompletion<T> {
     #[cfg(feature = "test-support")]
-    test_completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    test_completion: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     pub(crate) pool: &'static LazyLock<io::Result<NativeWorkers>>,
     pub(crate) prepared_wake: Option<Arc<BlockingWaitWake>>,
     pub(crate) state: Option<Arc<Mutex<CompletionState<T>>>>,
@@ -161,14 +161,17 @@ impl<T> Future for NativeCompletion<T> {
                 && crate::testing::Context::current().is_some()
                 && let Some(job) = this.pending.take()
             {
-                this.test_completion = Some(crate::testing::submit(job));
+                this.test_completion = Some(crate::testing::submit(job, this.pool));
             }
             if let Some(waiting) = &mut this.test_completion {
                 match Pin::new(waiting).poll(context) {
                     Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(())) => this.test_completion = None,
+                    Poll::Ready(Ok(Ok(()))) => this.test_completion = None,
+                    Poll::Ready(Ok(Err(error))) => return Poll::Ready(Err(error)),
                     Poll::Ready(Err(_)) => {
-                        return Poll::Ready(Err(io::Error::other("controlled native owner failed")));
+                        return Poll::Ready(Err(io::Error::other(
+                            "controlled native owner failed",
+                        )));
                     }
                 }
             }
