@@ -113,7 +113,8 @@ fn accounting() -> Result<()> {
                 ..WorkBudget::default()
             },
             &cancellation,
-        )?;
+        )
+        .expect("funded ledger");
         let mut observer = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&work)?,
         );
