@@ -19,6 +19,8 @@ use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 mod context;
 mod goals;
+#[cfg(feature = "hooks")]
+mod hook_configuration;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

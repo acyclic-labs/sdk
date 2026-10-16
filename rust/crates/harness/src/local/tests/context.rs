@@ -147,6 +147,7 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
         captured.discovery.instructions[0].version(),
         captured.discovery.instructions[1].version()
     );
+    assert!(captured.sources.is_empty());
     assert_eq!(
         captured
             .discovery

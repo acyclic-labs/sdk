@@ -29,11 +29,11 @@ mod checkout_tools;
 mod compaction;
 mod config;
 mod context;
-#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-mod mcp;
 mod owner;
 mod owner_record;
 mod runtime;
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -63,6 +63,8 @@ pub struct LocalHarness {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(feature = "hooks")]
+    hook_configuration: Option<crate::conversation::FileRef>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -101,14 +103,16 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            let settings = settings::load(&config.project, config.settings).await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp::install(
-                &config.project,
-                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
-                tools,
-                config.mcp_limits,
-            )
-            .await?;
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = settings
+                .mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(
@@ -260,6 +264,27 @@ impl LocalHarness {
                 )
                 .await?,
             );
+            #[cfg(feature = "hooks")]
+            let hook_configuration = if settings.hooks.is_empty() {
+                None
+            } else {
+                Some(
+                    settings::capture_hooks(
+                        &settings.hooks,
+                        FilesystemContentPublisher::new(
+                            files.clone(),
+                            &journal,
+                            &verifier,
+                            &signed,
+                            config.limits.file_bytes,
+                            None,
+                        )?
+                        .as_ref(),
+                        config.limits,
+                    )
+                    .await?,
+                )
+            };
             Ok(Self {
                 files,
                 task_files,
@@ -274,6 +299,8 @@ impl LocalHarness {
                 context_manifest: config.context_manifest,
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
+                #[cfg(feature = "hooks")]
+                hook_configuration,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

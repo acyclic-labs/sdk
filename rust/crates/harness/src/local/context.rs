@@ -100,6 +100,14 @@ impl LocalHarness {
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
         let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        #[cfg(feature = "hooks")]
+        let manifest = {
+            let mut manifest = manifest;
+            manifest
+                .sources
+                .extend(self.hook_configuration.iter().cloned());
+            manifest
+        };
         let bytes = manifest.encode(self.limits)?;
         Ok(publisher
             .stage_once(

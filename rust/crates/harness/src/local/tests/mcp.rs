@@ -18,20 +18,16 @@ async fn default_settings_match_original_and_canonical_workspace_keys() -> Resul
         }}}});
         std::fs::write(home.join(".claude.json"), document.to_string())
             .map_err(super::super::storage)?;
-        let installed = super::super::mcp::install(
-            &super::super::LocalProject::Workspace(configured.clone()),
-            |path| {
-                assert_eq!(path, configured);
-                Ok(SettingsConfig::new(path, &home).codex_home(home.join(".codex")))
-            },
-            crate::tool::ToolRegistry::default(),
-            crate::mcp::McpClientLimits::default(),
+        let harness = LocalHarness::open(
+            crate::test_support::local_harness_config(&configured, (model()?, text()))?
+                .settings(SettingsConfig::new(&configured, &home).codex_home(home.join(".codex"))),
         )
         .await?;
-        assert_eq!(installed.diagnostics.len(), 1);
-        assert_eq!(installed.diagnostics[0].server, "selected");
+        let diagnostics = harness.mcp_diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].server, "selected");
         assert_eq!(
-            installed.diagnostics[0].message,
+            diagnostics[0].message,
             "process not_found: MCP executable was not found in its configured search path"
         );
     }

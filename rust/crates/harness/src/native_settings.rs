@@ -20,6 +20,7 @@ pub struct SettingsConfig {
     trust_project_hooks: bool,
     trust_project_mcp: bool,
     maximum_file_bytes: u64,
+    pub(crate) load_mcp: bool,
     #[cfg(feature = "test-support")]
     _test_home: Option<tempfile::TempDir>,
 }
@@ -36,6 +37,7 @@ impl SettingsConfig {
             trust_project_hooks: false,
             trust_project_mcp: false,
             maximum_file_bytes: 1_048_576,
+            load_mcp: true,
             #[cfg(feature = "test-support")]
             _test_home: None,
         }
@@ -44,7 +46,7 @@ impl SettingsConfig {
     #[cfg(all(
         feature = "test-support",
         feature = "filesystem-local",
-        any(feature = "mcp-stdio", feature = "mcp-http")
+        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
         let home = tempfile::tempdir().map_err(Error::process_io)?;
@@ -183,6 +185,12 @@ impl NativeSettings {
                 mcp: config.trust_project_mcp.then_some(Dialect::Codex),
                 local: false,
             });
+        }
+        if !config.load_mcp {
+            for source in &mut sources {
+                source.mcp = None;
+                source.local = false;
+            }
         }
         let mut snapshot = Self::default();
         let mut selected = BTreeMap::new();
