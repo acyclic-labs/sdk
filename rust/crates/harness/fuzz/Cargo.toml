@@ -15,22 +15,25 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [features]
 default = ["runtime"]
-runtime = ["dep:acyclic-harness"]
+runtime = [
+    "dep:acyclic-harness", "dep:diffy", "dep:prost", "dep:bytes", "dep:rmcp",
+    "dep:serde-saphyr", "dep:futures", "dep:tokio-util", "dep:which",
+]
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 acyclic-harness = { path = "..", optional = true }
-diffy = "=0.5.2"
+diffy = { version = "=0.5.2", optional = true }
 libfuzzer-sys = "0.4"
-prost = "0.14.4"
-bytes = "1"
-rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
+prost = { version = "0.14.4", optional = true }
+bytes = { version = "1", optional = true }
+rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde-saphyr = { version = "=1.3.0", features = ["serialize"] }
-futures = "0.3"
-tokio-util = { version = "0.7", features = ["codec"] }
-which = "=8.0.6"
+serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
+futures = { version = "0.3", optional = true }
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
+which = { version = "=8.0.6", optional = true }
 
 [[bin]]
 name = "protocol_identity"
