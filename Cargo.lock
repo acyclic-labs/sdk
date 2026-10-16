@@ -714,6 +714,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "arrayvec",
  "libfuzzer-sys",
  "prettyplease 0.2.37",
  "prost",

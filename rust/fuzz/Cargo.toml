@@ -8,11 +8,13 @@ publish = false
 cargo-fuzz = true
 
 [features]
+memory-paths = ["dep:serde_json", "dep:arrayvec"]
 default = ["native", "rust-projection"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
 rust-projection = ["dep:sdk-proto-codegen", "dep:syn", "dep:prettyplease"]
 
 [dependencies]
+arrayvec = { version = "0.7.8", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"
@@ -53,6 +55,14 @@ bench = false
 name = "sdk_rust_projection"
 required-features = ["rust-projection"]
 path = "fuzz_targets/sdk_rust_projection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "harness_memory_paths"
+required-features = ["memory-paths"]
+path = "fuzz_targets/harness_memory_paths.rs"
 test = false
 doc = false
 bench = false
