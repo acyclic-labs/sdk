@@ -81,6 +81,11 @@ pub(crate) use records::object_id_from_key;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use records::object_key;
 use records::*;
+pub(crate) fn authority_records_path(
+    volume: crate::VolumeId,
+) -> Result<StreamPath, AuthorityStoreError> {
+    stream_path(volume_authority_id(volume), "/records")
+}
 mod accounting;
 #[cfg(test)]
 mod tests;

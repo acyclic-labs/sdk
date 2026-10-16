@@ -46,10 +46,10 @@ pub struct HarnessClient<S> {
 impl<S: ClientStateStore> HarnessClient<S> {
     /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
     /// The host folds returned records with `query_change` and redraws shared views.
-    pub async fn select_file_view<P: acyclic_stream::StreamProvider + ?Sized>(
+    pub async fn select_file_view(
         &mut self,
         selection: super::CommandQuery,
-        volume: &crate::task_volume::TaskVolume<P>,
+        volume: &(impl crate::task_volume::FileQuerySource + ?Sized),
         maximum_files: usize,
         maximum_bytes: usize,
     ) -> Result<crate::task_volume::ChangeStream> {
@@ -65,9 +65,13 @@ impl<S: ClientStateStore> HarnessClient<S> {
             }
         };
         let observation = volume
-            .observe(query.clone(), None, maximum_files)
+            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
             .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
+            .map_err(|error| match error {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error,
+                error => Error::Storage(error.to_string()),
+            })?;
         let snapshot = observation
             .snapshot
             .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;

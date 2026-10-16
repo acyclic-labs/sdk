@@ -4,10 +4,12 @@ mod follow;
 mod heads;
 mod schema;
 mod segment;
+mod source;
 mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
+pub use source::FileQuerySource;
 
 use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
@@ -22,6 +24,10 @@ use uuid::Uuid;
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Authorization, work or storage failure reading ordinary volume files.
+    #[cfg(feature = "filesystem")]
+    #[error(transparent)]
+    FileRead(#[from] crate::Error),
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),

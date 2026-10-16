@@ -89,6 +89,8 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
             !client
                 .query_change(Change {
                     file: Some(file.clone()),
+                    files: Vec::new(),
+                    removed: Vec::new(),
                     cursor: cursor.clone()
                 })
                 .unwrap()
@@ -107,6 +109,8 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         ] {
             let mut invalid = Change {
                 file: Some(file.clone()),
+                files: Vec::new(),
+                removed: Vec::new(),
                 cursor: cursor.clone(),
             };
             if mutation != "duplicate" {
@@ -162,6 +166,63 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
             .is_err()
     );
 }
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn plan_command_selects_the_ordinary_filesystem_follow() {
+    use acyclic_harness::{
+        AgentId, OperationId,
+        client::{CommandCatalog, CommandResolution},
+        filesystem::MemoryHarnessStorage,
+    };
+    use futures::StreamExt as _;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
+        .await
+        .unwrap();
+    let source = storage
+        .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
+        .unwrap();
+    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
+        .await
+        .unwrap();
+    let CommandResolution::Select { query } = CommandCatalog::builtins()
+        .unwrap()
+        .resolve("/plan", storage.content_reader(), 128)
+        .await
+        .unwrap()
+    else {
+        panic!("plan did not select a query")
+    };
+    let mut follow = client
+        .select_file_view(query, &source, 2, 128)
+        .await
+        .unwrap();
+    let identity = *client.session().views().queries.keys().next().unwrap();
+    for text in ["- [ ] Build", "* [~] Build", "1. [x] Build"] {
+        storage
+            .stage(
+                OperationId::new(),
+                "plans/release.md",
+                text.as_bytes(),
+                "text/markdown",
+                "release.md",
+            )
+            .await
+            .unwrap();
+        let change = tokio::time::timeout(std::time::Duration::from_secs(5), follow.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let mut updates =
+            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
+        assert!(client.next_update(&mut updates).await.unwrap());
+        assert_eq!(
+            client.session().views().queries[&identity].plan_lines(),
+            ["plans/release.md", &text[text.find('[').unwrap()..]]
+        );
+    }
+}
+
 fn delivery(from: u64, to: LifecycleState) -> wire::Delivery {
     let payload = EventPayload::LifecycleTransitioned {
         from: LifecycleState::Active,

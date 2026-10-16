@@ -112,11 +112,28 @@ impl FileQueryView {
     pub fn apply(&mut self, change: Change) -> Result<bool> {
         let invalid = || Error::Conflict("file query follow requires reset".into());
         let cursor = &change.cursor;
+        let files = change.file.iter().chain(&change.files);
+        let changed_files = usize::from(change.file.is_some())
+            .checked_add(change.files.len())
+            .and_then(|count| count.checked_add(change.removed.len()))
+            .ok_or_else(invalid)?;
+        if changed_files > self.maximum_files.saturating_add(self.files.len()) {
+            return Err(invalid());
+        }
+        let mut keys = std::collections::BTreeSet::new();
+        for key in files.clone().map(|file| &file.key).chain(&change.removed) {
+            if !self.query.matches(key) || !keys.insert(key) {
+                return Err(invalid());
+            }
+        }
         if *cursor == self.cursor {
-            return if change
-                .file
-                .as_ref()
-                .is_none_or(|file| self.files.get(&file.key) == Some(file))
+            return if files
+                .clone()
+                .all(|file| self.files.get(&file.key) == Some(file))
+                && change
+                    .removed
+                    .iter()
+                    .all(|key| !self.files.contains_key(key))
             {
                 Ok(false)
             } else {
@@ -135,24 +152,37 @@ impl FileQueryView {
         {
             return Err(invalid());
         }
-        let mut changed = false;
-        if let Some(file) = change.file {
-            let old = self.files.get(&file.key);
-            if !self.query.matches(&file.key)
-                || old.is_none() && self.files.len() == self.maximum_files
-            {
-                return Err(invalid());
-            }
-            let bytes = self
-                .bytes
-                .checked_sub(old.map_or(0, |file| file.bytes.len()))
-                .and_then(|bytes| bytes.checked_add(file.bytes.len()))
-                .filter(|bytes| *bytes <= self.maximum_bytes)
-                .ok_or_else(invalid)?;
-            changed = old != Some(&file);
-            self.files.insert(file.key.clone(), file);
-            self.bytes = bytes;
+        let mut bytes = self.bytes;
+        let mut count = self.files.len();
+        for key in &change.removed {
+            let old = self.files.get(key).ok_or_else(invalid)?;
+            bytes = bytes.checked_sub(old.bytes.len()).ok_or_else(invalid)?;
+            count -= 1;
         }
+        let mut changed = !change.removed.is_empty();
+        for file in files.clone() {
+            let old = self.files.get(&file.key);
+            bytes = bytes
+                .checked_sub(old.map_or(0, |file| file.bytes.len()))
+                .ok_or_else(invalid)?;
+            count = count
+                .checked_add(usize::from(old.is_none()))
+                .ok_or_else(invalid)?;
+            changed |= old != Some(file);
+        }
+        for file in files {
+            bytes = bytes.checked_add(file.bytes.len()).ok_or_else(invalid)?;
+        }
+        if bytes > self.maximum_bytes || count > self.maximum_files {
+            return Err(invalid());
+        }
+        for key in change.removed {
+            self.files.remove(&key);
+        }
+        for file in change.file.into_iter().chain(change.files) {
+            self.files.insert(file.key.clone(), file);
+        }
+        self.bytes = bytes;
         self.cursor = change.cursor;
         Ok(changed)
     }
