@@ -3,7 +3,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(acyclic_stream_loom)");
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
-    let mut prost = acyclic_proto_build::config("acyclic-stream-v1.bin")?;
+    let mut prost = acyclic_proto_build::config()?;
     prost.bytes([".acyclic.stream.v1"]);
     let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     acyclic_proto_build::compile(
@@ -13,5 +13,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/stream/v1/stream.proto",
             "proto/stream/v1/session.proto",
         ],
+        "acyclic-stream-v1.bin",
     )
 }

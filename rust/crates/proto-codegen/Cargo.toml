@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+acyclic-proto-build = { path = "../../../compatibility" }
 cargo_metadata = "=0.23.1"
 serde = { workspace = true, features = ["derive"] }
 prost.workspace = true

@@ -136,7 +136,7 @@ proptest.workspace = true
 loom = "=0.7.2"
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 icu_casemap.workspace = true
 cc = "1.2.56"
 

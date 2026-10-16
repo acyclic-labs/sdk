@@ -33,7 +33,7 @@ uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 
 [dev-dependencies]
 proptest.workspace = true

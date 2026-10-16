@@ -53,4 +53,4 @@ tracing-subscriber.workspace = true
 workspace = true
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

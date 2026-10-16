@@ -76,4 +76,4 @@ proptest.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

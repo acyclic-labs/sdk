@@ -679,7 +679,12 @@ dependencies = [
 name = "acyclic-proto-build"
 version = "0.2.0"
 dependencies = [
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "prost-types",
  "protoc-bin-vendored",
+ "tempfile",
  "tonic-prost-build",
 ]
 
@@ -689,6 +694,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-proto-build",
  "libfuzzer-sys",
  "prost",
  "serde_json",
@@ -5532,6 +5538,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
+ "acyclic-proto-build",
  "cargo_metadata",
  "proptest",
  "prost",

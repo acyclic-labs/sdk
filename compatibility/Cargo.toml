@@ -7,11 +7,18 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Shared build-time protobuf configuration for Acyclic SDK crates"
-include = ["Cargo.toml", "src/**"]
+include = ["Cargo.toml", "src/**", "descriptors/*.bin"]
 
 [dependencies]
+prost.workspace = true
+prost-reflect.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+prost-types.workspace = true
+proptest.workspace = true
+tempfile = "3.27.0"

@@ -58,7 +58,7 @@ test('PRs and main retain the static lock check, and tags/releases cannot start 
  const automatic=workflows.filter(name=>/^  (?:push|pull_request):/m.test(triggers(read(name))));
  assert.deepEqual(automatic,[STATIC]);
  const workflow=read(STATIC);
- assert.deepEqual(Object.keys(YAML.parse(workflow).jobs),['static']);
+ assert.deepEqual(Object.keys(YAML.parse(workflow).jobs),['static','aarch64']);
  const job=YAML.parse(workflow).jobs.static;
  assert.equal(job['timeout-minutes'],1);
  assert.equal(job['runs-on'],'ubuntu-24.04');

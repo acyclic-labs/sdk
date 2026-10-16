@@ -65,6 +65,7 @@ export const compatibilityArtifacts = {
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
+  ...["actors-v1.bin", "actors-buf-v1.bin"].map(name => [compatibilityArtifacts.actors.descriptorDigest, `rust/crates/actors/tests/fixtures/actors/v1/${name}`]),
   ...["actors", "filesystem", "inference", "machines", "objects", "stream"].map(crate => [
     "rust/crates/contract-derive/proto/validation/v1/options.proto", `rust/crates/${crate}/proto/validation/v1/options.proto`,
   ]),

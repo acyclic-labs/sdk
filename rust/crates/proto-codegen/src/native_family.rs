@@ -248,7 +248,6 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         format!("scripts/build-{key}-native.mjs"),
         format!("scripts/{key}-napi-types.mjs"),
         format!("scripts/assemble-{key}-native-package.mjs"),
-        format!("compatibility/native-families/{key}.json"),
         format!("{package_path}/package.json"),
         format!("{package_path}/tsconfig.json"),
         format!("{package_path}/src"),

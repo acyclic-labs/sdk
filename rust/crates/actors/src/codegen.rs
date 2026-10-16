@@ -83,8 +83,8 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let protoc_proto = protoc_path(&proto);
     let protoc = protoc_path(&protoc_bin_vendored::protoc_bin_path().map_err(io::Error::other)?);
     let include_path = protoc_path(&protoc_bin_vendored::include_path().map_err(io::Error::other)?);
-    let mut prost = acyclic_proto_build::config("acyclic-actors-v1.bin")
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let mut prost =
+        acyclic_proto_build::config().map_err(|error| io::Error::other(error.to_string()))?;
     prost
         .protoc_executable(protoc)
         .out_dir(&protoc_rust_root)
@@ -94,6 +94,11 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
         .out_dir(&protoc_rust_root)
         .compile_with_config(prost, &[protoc_proto], &[protoc_proto_root, include_path])
         .map_err(|error| io::Error::other(format!("Actors tonic generation failed: {error}")))?;
+    fs::write(
+        &descriptor,
+        acyclic_proto_build::canonicalize(&fs::read(&descriptor)?, &["actors/v1/actors.proto"])
+            .map_err(|error| io::Error::other(error.to_string()))?,
+    )?;
     if std::env::var("CARGO_CFG_TARGET_ARCH").map_err(io::Error::other)? != "wasm32" {
         let transport = rust_root.join("acyclic.actors.v1.rs");
         let observed = acyclic_grpc_observability::codegen::observe_clients(

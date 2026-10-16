@@ -58,7 +58,7 @@ tracing-subscriber.workspace = true
 loom = { version = "0.7.2", features = ["futures"] }
 
 [build-dependencies]
-acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
 protoc-bin-vendored = "=3.3.0"
 
