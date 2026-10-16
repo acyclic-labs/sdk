@@ -1,5 +1,5 @@
 use super::*;
-use crate::storage::{HashedObject, ObjectKind, OBJECT_DIGEST_ENVELOPE_BYTES};
+use crate::storage::{HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectKind};
 use crate::{CancellationToken, WorkBudget};
 use acyclic_objects::v1::MemoryObjects;
 use proptest::test_runner::TestCaseError;
@@ -21,41 +21,88 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
     let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     let store = store(4)?;
     let objects = [object.clone(), object.clone()];
-    let budget = WorkBudget { bytes_hashed: 0, ..BUDGET };
+    let budget = WorkBudget {
+        bytes_hashed: 0,
+        ..BUDGET
+    };
     let mut work = AuthorityWork::new(budget, &cancel);
     store.put_many_hashed(&objects, &mut work).await?;
     assert_eq!(work.spent().bytes_hashed, 0);
     assert_eq!(work.spent().object_bytes_written, 4);
     assert_eq!(work.spent().backend_write_operations, 1);
     work.spent().verify(budget)?;
-    let writes = [ObjectWrite { object_id: object.object_id(), bytes: object.bytes().clone() }];
-    assert!(store.put_many(&writes, &mut AuthorityWork::new(budget, &cancel)).await.is_err());
-    let read = store.read(object.object_id(), 4, &mut AuthorityWork::new(BUDGET, &cancel)).await?;
+    let writes = [ObjectWrite {
+        object_id: object.object_id(),
+        bytes: object.bytes().clone(),
+    }];
+    assert!(
+        store
+            .put_many(&writes, &mut AuthorityWork::new(budget, &cancel))
+            .await
+            .is_err()
+    );
+    let read = store
+        .read(
+            object.object_id(),
+            4,
+            &mut AuthorityWork::new(BUDGET, &cancel),
+        )
+        .await?;
     assert_eq!(read.bytes, *object.bytes());
     let mut wrong = writes;
     wrong[0].bytes = OwnedBytes::from_static(b"bad");
-    assert!(matches!(store.put_many(&wrong, &mut AuthorityWork::new(BUDGET, &cancel)).await,
-        Err(ObjectStoreError::DigestMismatch)));
+    assert!(matches!(
+        store
+            .put_many(&wrong, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await,
+        Err(ObjectStoreError::DigestMismatch)
+    ));
     Ok(())
 }
 
 #[tokio::test]
-async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn std::error::Error>> {
+async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn std::error::Error>>
+{
     let cancel = CancellationToken::new();
     let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
     for budget in [
-        WorkBudget { allocation_operations: 0, ..BUDGET },
-        WorkBudget { peak_allocation_bytes: 0, ..BUDGET },
-        WorkBudget { backend_write_operations: 0, ..BUDGET },
-        WorkBudget { object_bytes_written: 3, ..BUDGET },
+        WorkBudget {
+            allocation_operations: 0,
+            ..BUDGET
+        },
+        WorkBudget {
+            peak_allocation_bytes: 0,
+            ..BUDGET
+        },
+        WorkBudget {
+            backend_write_operations: 0,
+            ..BUDGET
+        },
+        WorkBudget {
+            object_bytes_written: 3,
+            ..BUDGET
+        },
     ] {
         let store = store(4)?;
         let mut work = AuthorityWork::new(budget, &cancel);
-        assert!(store.put_many_hashed(std::slice::from_ref(&object), &mut work).await.is_err());
+        assert!(
+            store
+                .put_many_hashed(std::slice::from_ref(&object), &mut work)
+                .await
+                .is_err()
+        );
         assert_eq!(work.spent().bytes_hashed, 0);
         work.spent().verify(budget)?;
-        assert!(matches!(store.read(object.object_id(), 4, &mut AuthorityWork::new(BUDGET, &cancel)).await,
-            Err(ObjectStoreError::Missing)));
+        assert!(matches!(
+            store
+                .read(
+                    object.object_id(),
+                    4,
+                    &mut AuthorityWork::new(BUDGET, &cancel)
+                )
+                .await,
+            Err(ObjectStoreError::Missing)
+        ));
     }
     let store = store(4)?;
     cancel.cancel();
@@ -67,14 +114,32 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-async fn authenticated_native_batch_preserves_funding_and_footer()
+async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancel = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
     let baseline = original.live_allocation_bytes();
     let store = store(4)?;
     let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
-    store.put_many_hashed(std::slice::from_ref(&object), &mut AuthorityWork::native(&original, &cancel)).await?;
+    let before = original.receipt();
+    assert!(matches!(
+        store
+            .put_many_hashed(
+                std::slice::from_ref(&object),
+                &mut AuthorityWork::native(&original, &cancel)
+            )
+            .await,
+        Err(ObjectStoreError::NativeUnavailable)
+    ));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    let writes = [ObjectWrite {
+        object_id: object.object_id(),
+        bytes: object.bytes().clone(),
+    }];
+    store
+        .put_many(&writes, &mut AuthorityWork::native(&original, &cancel))
+        .await?;
     assert_eq!(original.receipt().object_bytes_written, 4);
     original.receipt().verify(BUDGET)?;
     drop(store);

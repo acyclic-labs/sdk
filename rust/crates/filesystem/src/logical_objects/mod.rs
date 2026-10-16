@@ -120,6 +120,11 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         objects: &[crate::storage::HashedObject],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
+        // Preserve the default method's native boundary; native blob batches
+        // use put_many and its original request custody.
+        if context.is_native() {
+            return Err(ObjectStoreError::NativeUnavailable);
+        }
         operate!(
             context,
             work,
