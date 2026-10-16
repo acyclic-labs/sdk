@@ -227,3 +227,17 @@ path = "fuzz_targets/bounded_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wire_frames"
+path = "fuzz_targets/wire_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_decode"
+path = "fuzz_targets/journal_decode.rs"
+test = false
+doc = false
+bench = false
