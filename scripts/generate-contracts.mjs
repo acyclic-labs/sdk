@@ -15,7 +15,7 @@ const modules = [
   "generate-filesystem-git-compat-contract.mjs",
   "generate-inference-defaults.mjs",
   "generate-inference-terminal-metadata.mjs",
-  "generate-inference-fixed-width-metadata.mjs",
+  "generate-inference-widths.mjs",
   "generate-stream-http-contract.mjs",
   "generate-stream-token-operations.mjs",
   "generate-harness-limits-contract.mjs",

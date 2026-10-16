@@ -8,11 +8,6 @@ pub fn run_terminal_metadata_native() -> Result<String, &'static str> {
     schema::terminal_metadata()
 }
 
-/// Return canonical protobuf fixed-byte field metadata for code generators.
-pub fn fixed_width_metadata_native() -> Result<String, &'static str> {
-    schema::fixed_width_metadata()
-}
-
 /// Return Rust-owned client width names and their descriptor-derived values.
 pub fn client_widths_native() -> Result<String, &'static str> {
     schema::client_widths()

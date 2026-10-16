@@ -66,6 +66,8 @@ async function bufActorOutput(protoFile) {
   try {
     await mkdir(join(temporary, "proto/actors/v1"), { recursive: true });
     await cp(protoFile, join(temporary, "proto/actors/v1/actors.proto"));
+    await mkdir(join(temporary, "proto/validation/v1"), { recursive: true });
+    await cp(join(root, "proto/validation/v1/options.proto"), join(temporary, "proto/validation/v1/options.proto"));
     await writeFile(join(temporary, "buf.yaml"), "version: v2\nmodules:\n  - path: proto\n");
     const plugin = process.env.ACYCLIC_PROTOC_GEN_ES
       ? [process.env.ACYCLIC_PROTOC_GEN_ES.replaceAll("\\", "/")]
