@@ -59,6 +59,36 @@ fn caveat() -> impl Strategy<Value = Caveat> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
+    fn frozen_filter_lineage_ignores_every_descendant_suffix(
+        certified in prop::collection::vec("[a-z]{1,6}",0..4),
+        root_ids in prop::collection::vec("[a-z]{1,6}",0..4),
+        parent_ids in prop::collection::vec("[a-z]{1,6}",0..4),
+        child_ids in prop::collection::vec("[a-z]{1,6}",0..4),
+    ) {
+        let lineage = |ids: Vec<String>| Caveat { kind: CaveatKind::LineageAppend(LineageAppend { ids }) };
+        let filter = || Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![] }) };
+        let trust = Snapshot::default();
+        let bytes = root(|block| {
+            block.certificates.as_mut().unwrap().keys[0].key.principal.lineage = certified.clone();
+            block.caveats.push(filter());
+            if !root_ids.is_empty() { block.caveats.push(lineage(root_ids.clone())); }
+        });
+        let root = verify(&bytes, &trust, NOW).unwrap();
+        let mut caveats = vec![filter()];
+        if !parent_ids.is_empty() { caveats.push(lineage(parent_ids.clone())); }
+        let parent = root.attenuate(caveats, &[5;32]).unwrap();
+        let caveats = if child_ids.is_empty() { vec![] } else { vec![lineage(child_ids)] };
+        let child = parent.attenuate(caveats, &[6;32]).unwrap();
+        let effective = child.effective();
+        let filters = effective.filters().collect::<Vec<_>>();
+        let root_expected = std::iter::once("issuer").chain(certified.iter().chain(&root_ids).map(String::as_str)).collect::<Vec<_>>();
+        let parent_expected = root_expected.iter().copied().chain(parent_ids.iter().map(String::as_str)).collect::<Vec<_>>();
+        prop_assert_eq!(filters[0].lineage().collect::<Vec<_>>(), root_expected.clone());
+        prop_assert_eq!(filters[1].lineage().collect::<Vec<_>>(), parent_expected.clone());
+        prop_assert_eq!(filters[0].subject_id(), *root_expected.last().unwrap());
+        prop_assert_eq!(filters[1].subject_id(), *parent_expected.last().unwrap());
+    }
+    #[test]
     fn verified_admission_preserves_typed_noncanonical_denials(name in "[a-z]{1,8}") {
         let trust = Snapshot::default();
         let capability = verify(&root(|_| {}), &trust, NOW).unwrap();
