@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod files;
 mod follow;
 mod heads;
 mod plan_name;
@@ -7,6 +8,7 @@ mod schema;
 mod segment;
 mod source;
 mod watermarks;
+pub use files::TaskFiles;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
@@ -43,6 +45,9 @@ fn item_examined() {
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Private task volume access was not granted to this owner.
+    #[error("task-volume access denied")]
+    Unauthorized,
     /// Authorization, work or storage failure accessing volume files.
     #[cfg(feature = "filesystem")]
     #[error(transparent)]
