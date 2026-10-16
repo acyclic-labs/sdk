@@ -90,9 +90,12 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                 .map(|&(_, name, context_tokens, output_tokens)| {
                     (
                         name.into(),
-                        ModelContextCapacity {
-                            context_tokens,
-                            output_tokens,
+                        crate::ModelSpec {
+                            capacity: ModelContextCapacity {
+                                context_tokens,
+                                output_tokens,
+                            },
+                            features: crate::ModelFeatures::default(),
                         },
                     )
                 })

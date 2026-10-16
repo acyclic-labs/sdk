@@ -18,9 +18,12 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         max_event_bytes: 4096,
         models: BTreeMap::from([(
             "m".into(),
-            ModelContextCapacity {
-                context_tokens: 8192,
-                output_tokens: 1024,
+            ModelSpec {
+                capacity: ModelContextCapacity {
+                    context_tokens: 8192,
+                    output_tokens: 1024,
+                },
+                features: ModelFeatures::default(),
             },
         )]),
     };
@@ -65,9 +68,12 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     assert!(registry.resolve("openai/gpt-5").is_err());
     openai.models.insert(
         "gpt-5".into(),
-        ModelContextCapacity {
-            context_tokens: 32768,
-            output_tokens: 2048,
+        ModelSpec {
+            capacity: ModelContextCapacity {
+                context_tokens: 32768,
+                output_tokens: 2048,
+            },
+            features: ModelFeatures::default(),
         },
     );
     registry.register("openai".into(), openai)?;
@@ -140,9 +146,9 @@ fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<
     let (_, transport) = provider(Adapter::Responses, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
     let before = registry.catalog().keys().cloned().collect::<Vec<_>>();
-    let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"context_tokens":4096,"output_tokens":512}},"max_event_bytes":4096});
+    let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"capacity":{"context_tokens":4096,"output_tokens":512}}},"max_event_bytes":4096});
     let mut bad = valid.clone();
-    bad["models"]["fixture"]["context_tokens"] = json!(0);
+    bad["models"]["fixture"]["capacity"]["context_tokens"] = json!(0);
     let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog I/O"))?;
     std::fs::write(
         file.path(),
