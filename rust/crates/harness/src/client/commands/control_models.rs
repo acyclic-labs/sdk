@@ -44,23 +44,35 @@ fn resume_wakeup(broken: bool) {
                 "resume wakeup lost"
             );
         } else {
-            let publisher = loom::thread::spawn({
-                let volume = volume.clone();
-                move || {
-                    block_on(CommandControl::change(
-                        &volume,
-                        Some(task),
-                        &[task],
-                        Some(false),
-                        1024,
-                    ))
+            // One resume can precede the initial poll or follow the parked
+            // subscription. Both orders use the production snapshot/follow.
+            for early in [false, true] {
+                block_on(CommandControl::change(
+                    &volume,
+                    Some(task),
+                    &[task],
+                    Some(true),
+                    1024,
+                ))?;
+                let lineage = [task];
+                let mut waiting = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+                if !early {
+                    assert!(
+                        waiting
+                            .as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                            .is_pending()
+                    );
                 }
-            });
-            let lineage = [task];
-            block_on(CommandControl::wait(&volume, &lineage, 1024))?;
-            publisher
-                .join()
-                .map_err(|_| "resume publisher panicked")??;
+                block_on(CommandControl::change(
+                    &volume,
+                    Some(task),
+                    &[task],
+                    Some(false),
+                    1024,
+                ))?;
+                block_on(waiting)?;
+            }
         }
         Ok(())
     });
@@ -103,10 +115,17 @@ fn worker_keeps_resume_input_live(broken: bool) {
                 "resume input blocked by paused owner"
             );
         }
-        let worker = loom::thread::spawn({
+        let mut waiting = Box::pin({
             let volume = volume.clone();
-            move || block_on(CommandControl::wait(&volume, &lineage, 1024))
+            async move { CommandControl::wait(&volume, &lineage, 1024).await }
         });
+        assert!(
+            waiting
+                .as_mut()
+                .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
+        let worker = loom::thread::spawn(move || block_on(waiting));
         block_on(CommandControl::change(
             &volume,
             Some(task),
@@ -142,44 +161,53 @@ fn control_claim_race(broken: bool) {
             Some(true),
             1024,
         ))?;
-        let cut = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?.generation;
-        let writer = loom::thread::spawn({
-            let volume = volume.clone();
-            move || {
-                block_on(volume.append(
-                    cut,
-                    &FileValue::new(
-                        FileKey::parse(".ui/session-worker/execution-claim.json").unwrap(),
-                        b"{}".to_vec(),
-                    ),
-                ))
+        let claim = FileValue::new(
+            FileKey::parse(".ui/session-worker/execution-claim.json")?,
+            b"{}".to_vec(),
+        );
+        // The competing CAS linearizes before the control snapshot, between
+        // snapshot and CAS, or after CAS. Exhaust all three orders; the stream
+        // and task-volume models separately prove atomic publication itself.
+        for order in 0..3 {
+            let publish_claim = || async {
+                let cut = volume.snapshot(&Query::Root, 2).await?.generation;
+                volume.append(cut, &claim).await
+            };
+            if order == 0 {
+                block_on(publish_claim())?;
             }
-        });
-        let success = if broken {
-            // Previous control publication returned a stale cut as a failure,
-            // losing the user's resume when an owner claimed another file.
             let snapshot = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?;
-            let mut control = CommandControl::from_bytes(&snapshot.files[0].bytes, 1024)?;
-            control.set(Some(task), snapshot.generation.position, false);
-            block_on(volume.append(
-                snapshot.generation,
-                &FileValue::new(CommandControl::key()?, serde_json::to_vec(&control)?),
-            ))
-            .is_ok()
-        } else {
-            block_on(CommandControl::change(
-                &volume,
-                Some(task),
-                &[task],
-                Some(false),
-                1024,
-            ))
-            .is_ok()
-        };
-        let _competing_claim = writer.join().map_err(|_| "claim publisher panicked")?;
-        assert!(success, "resume publication lost to competing claim");
-        let snapshot = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?;
-        assert!(!CommandControl::from_bytes(&snapshot.files[0].bytes, 1024)?.paused(&[task]));
+            if order == 1 {
+                let cut = block_on(volume.snapshot(&Query::Root, 2))?.generation;
+                let competing = FileValue::new(claim.key.clone(), b"{\"claimed\":true}".to_vec());
+                block_on(volume.append(cut, &competing))?;
+            }
+            let success = if broken {
+                let mut control = CommandControl::from_bytes(&snapshot.files[0].bytes, 1024)?;
+                control.set(Some(task), snapshot.generation.position, false);
+                block_on(volume.append(
+                    snapshot.generation,
+                    &FileValue::new(CommandControl::key()?, serde_json::to_vec(&control)?),
+                ))
+                .is_ok()
+            } else {
+                block_on(CommandControl::publish_change(
+                    &volume,
+                    Some(task),
+                    &[task],
+                    Some(false),
+                    1024,
+                    snapshot,
+                ))
+                .is_ok()
+            };
+            assert!(success, "resume publication lost to competing claim");
+            if order == 2 {
+                block_on(publish_claim())?;
+            }
+            let saved = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?;
+            assert!(!CommandControl::from_bytes(&saved.files[0].bytes, 1024)?.paused(&[task]));
+        }
         Ok(())
     });
 }

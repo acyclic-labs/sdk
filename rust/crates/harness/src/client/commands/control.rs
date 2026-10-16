@@ -50,12 +50,22 @@ impl CommandControl {
         paused: Option<bool>,
         maximum: u64,
     ) -> Result<bool> {
+        let snapshot = volume
+            .snapshot(&Query::File(Self::key()?), 1)
+            .await
+            .map_err(storage)?;
+        Self::publish_change(volume, task, lineage, paused, maximum, snapshot).await
+    }
+    async fn publish_change<P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
+        task: Option<TaskId>,
+        lineage: &[TaskId],
+        paused: Option<bool>,
+        maximum: u64,
+        mut snapshot: crate::task_volume::Snapshot,
+    ) -> Result<bool> {
         let key = Self::key()?;
         loop {
-            let snapshot = volume
-                .snapshot(&Query::File(key.clone()), 1)
-                .await
-                .map_err(storage)?;
             let mut control = snapshot
                 .files
                 .first()
@@ -74,7 +84,12 @@ impl CommandControl {
                 .await
             {
                 Ok(_) => return Ok(desired),
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
+                Err(crate::task_volume::Error::Conflict(_)) => {
+                    snapshot = volume
+                        .snapshot(&Query::File(key.clone()), 1)
+                        .await
+                        .map_err(storage)?;
+                }
                 Err(error) => return Err(storage(error)),
             }
         }
