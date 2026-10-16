@@ -95,6 +95,94 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+#[tokio::test]
+async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
+    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    if std::env::var_os(CHILD).is_none() {
+        let bin = temp.path().join("bin");
+        let home = temp.path().join("home");
+        std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::create_dir(&home).map_err(|error| Error::Storage(error.to_string()))?;
+        let tool = bin.join("acyclic-host-path-only");
+        std::fs::write(&tool, b"#!/bin/sh\nprintf 'host tool: %s\\n' \"$HOME\"\n")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        // Isolate host settings in a child test process; never mutate this
+        // process's environment while other tests or native workers run.
+        let result = std::process::Command::new(
+            std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
+        )
+        .args([
+            "filesystem::native_process::bash::tests::host_home_and_path_survive_mount_environment_overrides",
+            "--exact",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("PATH", &bin)
+        .env("HOME", &home)
+        .env("ACYCLIC_VOLUME_DATA", "stale mount")
+        .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+        .env_remove("BASH_ENV")
+        .output()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return Ok(());
+    }
+    std::fs::create_dir_all(temp.path().join(".volumes/data"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mounts = table(
+        temp.path()
+            .canonicalize()
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )?;
+    let input = BashInput {
+        command:
+            r#"test -n "$HOME" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-host-path-only"#
+                .into(),
+        cwd: None,
+        timeout: Some(5),
+    };
+    let prepared = prepare(input.clone(), &mounts, invocation(&mounts.root), 1)?;
+    assert_eq!(
+        prepared.environment.get("ACYCLIC_VOLUME_DATA"),
+        mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
+    );
+    // Negative control: mount-only settings cannot find the host-PATH tool,
+    // even after restoring HOME independently.
+    let mut broken = prepared;
+    broken.environment = mounts.environment()?;
+    broken
+        .environment
+        .insert("HOME".into(), std::env::var("HOME").unwrap());
+    assert!(
+        !capture::capture_checked(broken, None, || Ok(()))
+            .await?
+            .unwrap()
+            .success
+    );
+    let output = run(input, &mounts, invocation(&mounts.root), 1, None, || Ok(()))
+        .await?
+        .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
+    assert!(
+        output.success,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.stdout,
+        format!("host tool: {}\n", std::env::var("HOME").unwrap()).as_bytes()
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_code() -> Result<()> {

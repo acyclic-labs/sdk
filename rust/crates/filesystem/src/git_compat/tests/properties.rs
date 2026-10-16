@@ -21,7 +21,25 @@ proptest! {
             let GitPendingMutation::Join { conflicts, .. } = &pending.mutation else { panic!("pending join"); };
             prop_assert_eq!(conflicts, &(!stale).then_some(paths));
             let restored: GitPendingTransition = serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
-            prop_assert_eq!(pending, restored);
+            prop_assert_eq!(&pending, &restored);
+            if !stale {
+                let executor = TestExecutor::returning(GitFilesystemResult::Applied {
+                    tree: Some(GitTreeRef::exact(main, generation(2))),
+                    tracked_paths: Some(BTreeSet::from([format!("/{path}")])),
+                });
+                prop_assert!(repository.resume(&executor).await.unwrap().is_none());
+                for command in [GitCommand::Status, GitCommand::Log { maximum: 10 }] {
+                    repository.run(command, GitTreeRef::exact(main, generation(2)), &executor).await.unwrap();
+                }
+                let rejected = repository.run(GitCommand::Commit {
+                    message: "not a resolution".into(), author: "test".into(), authored_at_seconds: 0,
+                }, GitTreeRef::exact(main, generation(2)), &executor).await;
+                prop_assert!(matches!(rejected,
+                    Err(GitCompatRunError::Compat(GitCompatError::TransitionPending(id))) if id == transition));
+                prop_assert!(executor.operations.lock().unwrap().is_empty());
+                let retained = repository.pending_transition().await.unwrap();
+                prop_assert_eq!(retained.as_ref(), Some(&pending));
+            }
             Ok(())
         })?;
     }

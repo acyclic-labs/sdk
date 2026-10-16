@@ -174,6 +174,14 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         },
         BTreeSet::from(["/note".into()])
     );
+    for command in ["status", "log"] {
+        let inspected = execute(&filesystem, &store, (&main).into(), repository, &[command]).await;
+        assert!(inspected?.command.is_some());
+        assert_eq!(
+            compatibility.pending_transition().await?,
+            Some(before.clone())
+        );
+    }
     main.write_text("/note", ">>>>>>> unresolved\n").await?;
     let continuation = execute(
         &filesystem,

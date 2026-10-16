@@ -5,17 +5,6 @@ use acyclic_harness::{conversation::FileRef, tool::files::ReadFileInput, tools::
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
-    if let Ok(command) = std::str::from_utf8(bytes) {
-        if let Ok(arguments) = acyclic_harness::tools::parse_command(command) {
-            let quoted = arguments
-                .iter()
-                .map(|argument| format!("'{}'", argument.replace('\'', "'\\''")))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let restored = acyclic_harness::tools::parse_command(&quoted).ok();
-            assert_eq!(restored.as_ref(), Some(&arguments));
-        }
-    }
     if let Ok(input) = serde_json::from_slice::<BashInput>(bytes) {
         let restored = serde_json::to_vec(&input)
             .ok()

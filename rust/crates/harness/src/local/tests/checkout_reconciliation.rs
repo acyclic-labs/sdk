@@ -253,14 +253,16 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         super::checked_commands::call(6, "bash", "printf 'parent\n' > note.txt"),
         super::checked_commands::call(7, "fs", "commit -m parent"),
         super::checked_commands::call(8, "fs", "merge topic"),
-        super::checked_commands::call(9, "bash", "false && printf 'wrong\n' > note.txt"),
-        super::checked_commands::call(10, "fs", "merge --continue"),
+        super::checked_commands::call(9, "fs", "status"),
+        super::checked_commands::call(10, "fs", "log"),
+        super::checked_commands::call(11, "bash", "false && printf 'wrong\n' > note.txt"),
+        super::checked_commands::call(12, "fs", "merge --continue"),
         super::checked_commands::call(
-            11,
+            13,
             "bash",
             "grep -q '^<<<<<<<' note.txt && printf 'resolved\n' > note.txt",
         ),
-        super::checked_commands::call(12, "fs", "merge --continue"),
+        super::checked_commands::call(14, "fs", "merge --continue"),
         ScriptedTurn::Text("resolved".into()),
     ]);
     let harness = LocalHarness::open(
@@ -309,17 +311,20 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
             .unwrap()
             .contains("conflict")
     );
-    assert_eq!(results["checkout-9"]["success"], false);
+    for call in ["checkout-9", "checkout-10"] {
+        assert!(results[call].get("result").is_some(), "{}", results[call]);
+    }
+    assert_eq!(results["checkout-11"]["success"], false);
     assert!(
-        results["checkout-10"]["error"]
+        results["checkout-12"]["error"]
             .as_str()
             .unwrap()
             .contains("unresolved")
     );
     assert!(
-        results["checkout-12"].get("result").is_some(),
+        results["checkout-14"].get("result").is_some(),
         "merge continuation failed: {}",
-        results["checkout-12"]
+        results["checkout-14"]
     );
     Ok(())
 }

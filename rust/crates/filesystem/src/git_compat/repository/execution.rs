@@ -55,11 +55,23 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Replays the durable pending transition with its original operation identity.
+    /// Inspected joins require explicit merge continuation or abort.
     pub async fn resume<E: GitFilesystemExecutor>(
         &self,
         executor: &E,
     ) -> Result<Option<GitCommandOutput>, GitCompatRunError<S::Error, E::Error>> {
         match self.pending_transition().await? {
+            Some(pending)
+                if matches!(
+                    pending.mutation,
+                    GitPendingMutation::Join {
+                        conflicts: Some(_),
+                        ..
+                    }
+                ) =>
+            {
+                Ok(None)
+            }
             Some(pending) => self
                 .finish(pending.id, &pending.action, executor)
                 .await
@@ -189,11 +201,19 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            if let Some(pending) = &state.pending {
-                return Err(GitCompatError::TransitionPending(pending.id));
-            }
             let before = state.clone();
             let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
+            if let Some(pending) = &before.pending {
+                if state != before
+                    || matches!(
+                        &output,
+                        GitCommandOutput::Action(_) | GitCommandOutput::Prepared { .. }
+                    )
+                {
+                    return Err(GitCompatError::TransitionPending(pending.id));
+                }
+                return Ok(output);
+            }
             let output = match output {
                 GitCommandOutput::Action(action) => {
                     prepare_transition(&mut state, action, GitPendingMutation::NoOp)
