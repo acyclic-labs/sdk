@@ -46,6 +46,55 @@ fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<Fi
     )
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Result<()> {
+    const RECORD: &[u8] = br#"{"invocation":{"operation_id":"00000000-0000-0000-0000-000000000001","call_id":"call","name":"echo","arguments":{"value":1}},"metadata":{"signature":"opaque","blocks":[{"thinking":"plan"}]}}"#;
+    struct NativeRecord;
+    impl ContentResidencyVerifier for NativeRecord {
+        fn read<'a>(
+            &'a self,
+            _: &'a FileRef,
+            _: u64,
+            io: Option<&'a PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        {
+            assert!(io.and_then(PreparationIo::original_native_work).is_some());
+            crate::conversation::BoundedContentFuture::new(io, || async {
+                Ok(acyclic_stream::OwnedBytes::from_static(RECORD))
+            })
+        }
+    }
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let before = work.live_allocation_bytes();
+    let reference = file(
+        AgentId::new(),
+        "invocation.json",
+        "application/json",
+        RECORD,
+    )?;
+    {
+        let io = PreparationIo::from_native_work(&work)?;
+        let call = artifacts::read_tool_call(&NativeRecord, &reference, 4096, Some(&io)).await?;
+        assert_eq!(call.call_id, "call");
+        assert_eq!(call.arguments, serde_json::json!({"value":1}));
+        assert_eq!(
+            call.metadata,
+            serde_json::json!({"signature":"opaque","blocks":[{"thinking":"plan"}]})
+        );
+        let custody = io.take_native_custody(call.payload_bytes()?)?;
+        assert!(custody.work().shares_allocation_context(&work));
+        drop(call);
+        drop(custody);
+    }
+    assert_eq!(work.live_allocation_bytes(), before);
+    Ok(())
+}
+
 fn message(
     sequence: u64,
     kind: MessageKind,

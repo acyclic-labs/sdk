@@ -173,11 +173,11 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
     let project = volume(root.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "configured-call".into(),
-                name: "mcp.configured.read".into(),
-                arguments: json!({"query":"needle".repeat(512)}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "configured-call".into(),
+                "mcp.configured.read".into(),
+                json!({"query":"needle".repeat(512)}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

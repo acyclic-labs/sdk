@@ -12,6 +12,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     assert_eq!(case, decoded);
     // Parse every input independently of fixture expectations and prior input failures.
     for input in &case.writes {
-        let _ = input.write();
+        if let Ok(file) = input.write() {
+            use acyclic_harness::task_volume::FileKey;
+            if let FileKey::Plan(name) = &file.key {
+                assert!(!name.as_str().is_empty());
+            }
+            assert_eq!(FileKey::parse(&file.key.path()).unwrap(), file.key);
+        }
     }
 });

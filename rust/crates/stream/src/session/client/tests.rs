@@ -360,8 +360,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         Some("Bearer fixture".parse()?),
         None,
         connect,
-    )
-    .await?;
+    );
     let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
     let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
     append(&provider, "move", 4).await?;
@@ -528,8 +527,7 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
         None,
         None,
         None,
-    )
-    .await?;
+    );
     let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
@@ -707,8 +705,7 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         Some("Bearer fixture".parse()?),
         None,
         connect,
-    )
-    .await?;
+    );
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),

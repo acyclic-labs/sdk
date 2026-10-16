@@ -19,8 +19,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             Some("Bearer fixture".parse()?),
             None,
             connect,
-        )
-        .await?;
+        );
         let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
         let mut children = client
             .children(crate::ChildrenRequest {

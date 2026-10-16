@@ -283,9 +283,6 @@ impl<'tools> DurableToolRunner<'tools> {
         if tool.definition != *definition || invocation.name != definition.name {
             return Err(boundary(io, Conflict, "admitted tool definition changed"));
         }
-        with_history_io(io, |work| {
-            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work)
-        })?;
         if context.operation_id() != operation_id
             || context.call_id() != invocation.call_id
             || context.task().durable_task_id() != Some(task_id)
@@ -304,8 +301,11 @@ impl<'tools> DurableToolRunner<'tools> {
             attachments: self.limits.attachments.min(scope.limits().attachments),
             ..self.limits
         };
-        tool_json_bound(invocation, limits.file_bytes, io)?;
-        let digest = preparation_digest(&(&task_id, definition, invocation, limits), io)?;
+        invocation.validate_recorded(&Value::Null, limits, io)?;
+        let digest = preparation_digest(
+            &("acyclic.tool.v2", &task_id, definition, invocation, limits),
+            io,
+        )?;
         Ok((limits, digest))
     }
 
@@ -335,8 +335,10 @@ impl<'tools> DurableToolRunner<'tools> {
                             "invocation descriptor exceeds limit",
                         ));
                     }
-                    let pinned = self.load::<ToolInvocation>(reference, io).await?;
-                    if pinned.0 != *invocation {
+                    let pinned = self
+                        .load::<crate::tool::RecordedInvocation>(reference, io)
+                        .await?;
+                    if pinned.0.invocation != *invocation || !pinned.0.metadata.is_null() {
                         return Err(boundary(io, Conflict, "journal invocation changed"));
                     }
                 }
@@ -402,8 +404,12 @@ impl<'tools> DurableToolRunner<'tools> {
         let operation_id = invocation.operation_id;
         let claimed;
         {
+            let record = crate::tool::RecordedInvocation {
+                invocation,
+                metadata: &Value::Null,
+            };
             let reference = self
-                .stage(operation_id, "tool:invocation", invocation, io)
+                .stage(operation_id, "tool:invocation", &record, io)
                 .await?;
             let (_, current, hold) =
                 replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, io).await?;

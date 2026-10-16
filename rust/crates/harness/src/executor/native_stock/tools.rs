@@ -182,29 +182,3 @@ impl StockExecution<'_> {
         Ok(None)
     }
 }
-
-pub(in crate::executor) fn stock_validate_invocation(
-    invocation: &ToolInvocation,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    crate::executor::with_history_io(io, |work| {
-        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work)
-    })?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && io.original_native_work().is_some()
-    {
-        crate::executor::json::json_owned_value_shape_bounded(
-            &invocation.arguments,
-            crate::executor::json::JsonBounds {
-                maximum_bytes: u64::MAX,
-                maximum_items: io.remaining()?.items_examined,
-                maximum_depth: 256,
-            },
-            crate::executor::json::JsonValueSchema::None,
-            &mut |next| io.codec_charge(next, false),
-        )?;
-        return Ok(());
-    }
-    Ok(())
-}

@@ -22,6 +22,8 @@ mod acceptance;
 mod heads;
 #[path = "task_volume/history_loss.rs"]
 mod history_loss;
+#[path = "task_volume/plan_name.rs"]
+mod plan_name;
 #[path = "task_volume/properties.rs"]
 mod properties;
 #[path = "task_volume/recovery.rs"]
@@ -51,8 +53,6 @@ async fn memory() -> Result<(Arc<MemoryStream>, TaskVolume<MemoryStream>)> {
 fn write(path: &str, text: &str) -> Result<Write> {
     Ok(Write::new(FileKey::parse(path)?, text.as_bytes().to_vec()))
 }
-
-use futures::FutureExt as _;
 
 #[tokio::test]
 async fn snapshot_cut_survives_publication_before_follow_registration() -> Result {
@@ -109,7 +109,11 @@ async fn every_accepted_cursor_reconnects_without_duplicates_or_gaps() -> Result
                 Some(expected)
             );
         }
-        assert!(stream.next().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.next())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -233,7 +237,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence.clone(),
                     expected: 1
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::FenceConflict)
@@ -248,6 +253,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                 expected: 2,
             }],
             Some(101),
+            None,
         )
         .await?;
     clock.0.store(102, Ordering::SeqCst);
@@ -260,7 +266,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence,
                     expected: 2
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::Storage(StreamError::DeadlineElapsed))

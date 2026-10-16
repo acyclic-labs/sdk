@@ -9,6 +9,9 @@ use sync::{Arc, AtomicU64, Mutex, Ordering};
 
 mod cancellation;
 mod checked;
+#[path = "../../stream-napi/src/eager.rs"]
+mod eager;
+mod native_registration;
 #[path = "../src/session/policy.rs"]
 mod policy;
 #[path = "../src/session/client/progress.rs"]

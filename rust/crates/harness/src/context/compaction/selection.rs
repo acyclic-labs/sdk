@@ -348,7 +348,7 @@ fn track_part<'a>(
     pending: &mut PendingCalls<'a>,
 ) -> Option<usize> {
     match part {
-        ModelContentPart::ToolCall { call_id, .. } => {
+        ModelContentPart::ToolCall(crate::model::ToolCall { call_id, .. }) => {
             if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
                 prior.1 = position;
             } else {
