@@ -4,11 +4,11 @@ use super::*;
 fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> Result<()> {
     let call = ModelMessage {
         role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall {
-            call_id: "call".into(),
-            name: "tool".into(),
-            arguments: Value::Null,
-        }),
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            "call".into(),
+            "tool".into(),
+            Value::Null,
+        ))),
     };
     let result = ModelMessage {
         role: ModelRole::Tool,

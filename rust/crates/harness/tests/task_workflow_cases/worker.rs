@@ -439,10 +439,10 @@ pub(super) async fn worker_restart_with_options(
                         input: if with_model_approval {
                             let file = payloads.stage(operation, "model-input", b"hello", None)?.await?;
                             let mut turns = vec![ScriptedTurn::Events(vec![
-                                ScriptedEvent::Event(ModelEvent::ToolCall {
-                                    call_id: "provider-call".into(), name: "test.restore".into(),
-                                    arguments: json!({"file":file,"approval":true}),
-                                }),
+                                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                                    "provider-call".into(), "test.restore".into(),
+                                    json!({"file":file,"approval":true}),
+                                ))),
                                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
                             ])];
                             if !declined { turns.push(ScriptedTurn::Text("partial-restored".into())); }

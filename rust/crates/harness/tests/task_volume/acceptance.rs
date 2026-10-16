@@ -122,10 +122,8 @@ async fn materialized_heads_do_not_wait_for_a_pending_append_acknowledgement() -
         b"active"
     );
     assert!(!appending.is_finished());
-    let change = follow
-        .next()
-        .now_or_never()
-        .ok_or("follow waited for append acknowledgement")?
+    let change = tokio::time::timeout(Duration::from_secs(1), follow.next())
+        .await?
         .ok_or("follow ended")??;
     assert_eq!(change.file, Some(write("GOAL.md", "active")?));
     release_tx
@@ -163,7 +161,11 @@ async fn reset_and_other_heads_stay_live_while_the_durable_tail_is_blocked() -> 
         }
     });
     tokio::time::timeout(Duration::from_secs(1), accepted_rx).await??;
-    assert!(provider.tail(path).now_or_never().is_none());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), provider.tail(path))
+            .await
+            .is_err()
+    );
     let (reset, head) = tokio::time::timeout(Duration::from_secs(1), async {
         tokio::join!(
             volume.observe(Query::Root, Some(invalid), 1),

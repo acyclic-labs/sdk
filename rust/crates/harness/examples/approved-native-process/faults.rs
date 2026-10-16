@@ -11,6 +11,74 @@ struct ReceiptFaultStream<P = MemoryStream> {
 
 #[async_trait::async_trait]
 impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
+    fn native_inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, Option<acyclic_stream::IdempotencyObservation>>
+    {
+        self.inner.native_inspect_idempotency(key, meter)
+    }
+    fn native_append(
+        &self,
+        request: acyclic_stream::AppendRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::AppendOutcome> {
+        self.inner.native_append(request, meter)
+    }
+    fn native_tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, u64> {
+        self.inner.native_tail(path, meter)
+    }
+    fn native_bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::StreamBounds> {
+        self.inner.native_bounds(path, meter)
+    }
+    fn native_read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::NativeRecordStream> {
+        self.inner.native_read(request, meter)
+    }
+    fn native_commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
+        self.inner.native_commit(request, deadline, meter)
+    }
+    fn native_commit_guarded<E, F, Fut>(
+        &self,
+        request: acyclic_stream::CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        before: F,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome, E>
+    where
+        E: From<acyclic_stream::StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<(), E>> + Send + 'static,
+    {
+        self.inner
+            .native_commit_guarded(request, deadline, meter, before)
+    }
+    fn native_prepare_commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+        maximum: usize,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::PreparedNativeCommit> {
+        self.inner.native_prepare_commit(request, maximum, meter)
+    }
+
     async fn inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,
@@ -315,6 +383,7 @@ async fn verify_pending_task(
         seed.results_volume.clone(),
         &issuer,
         &seed.scope,
+        None,
     )
     .await?;
     task.task_host()

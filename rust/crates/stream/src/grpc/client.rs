@@ -1,23 +1,16 @@
 use super::*;
 
 impl Client {
-    async fn session(&self) -> Result<&crate::session::Client, StreamError> {
-        // Include callers waiting behind another initializer in the deadline.
-        tokio::time::timeout(
-            Duration::from_secs(4),
-            self.sessions.get_or_try_init(|| async {
-                crate::session::Client::open(
-                    self.channel.clone(),
-                    self.authorization.clone(),
-                    self.credential.clone(),
-                    self.session_ca.clone(),
-                    self.session_verifier.clone(),
-                )
-                .await
-            }),
-        )
-        .await
-        .map_err(|_| StreamError::Unavailable)?
+    fn session(&self) -> Result<crate::session::Client, StreamError> {
+        self.sessions.get_or_try_init(|| {
+            crate::session::Client::open(
+                self.channel.clone(),
+                self.authorization.clone(),
+                self.credential.clone(),
+                self.session_ca.clone(),
+                self.session_verifier.clone(),
+            )
+        })
     }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
@@ -191,14 +184,13 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.session()
-            .await?
+        self.session()?
             .follow_with_ack(path, from, self.acknowledge_deliveries)
             .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.session().await?.children(request).await
+        self.session()?.children(request).await
     }
 
     async fn follow_checked(
@@ -207,8 +199,7 @@ impl StreamProvider for Client {
         from: u64,
         preceding: CommitId,
     ) -> Result<RecordStream, StreamError> {
-        self.session()
-            .await?
+        self.session()?
             .follow_records(path, from, Some(preceding), self.acknowledge_deliveries)
             .await
     }

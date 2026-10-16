@@ -301,11 +301,12 @@ where
             }
         }
         for event in retained.events {
-            if let crate::model::ModelEvent::ToolCall {
+            if let crate::model::ModelEvent::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } = event
+                metadata,
+            }) = event
             {
                 let invocation = crate::tool::ToolInvocation::for_model_call(
                     operation, step, call_id, name, arguments, work,
@@ -340,7 +341,10 @@ where
                         journal.as_ref(),
                         &records,
                         step,
-                        &invocation,
+                        crate::tool::RecordedInvocation {
+                            invocation: &invocation,
+                            metadata: &metadata,
+                        },
                         &request.request().tools,
                         if native {
                             limits

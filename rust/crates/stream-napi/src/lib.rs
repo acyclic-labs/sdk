@@ -15,7 +15,8 @@ use std::{
 
 use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
 use futures::StreamExt;
-use napi::bindgen_prelude::{Buffer, Error, Promise, Result, Status};
+use napi::Env;
+use napi::bindgen_prelude::{Buffer, Error, Promise, PromiseRaw, Result, Status};
 use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 use prost::Message;
@@ -639,32 +640,50 @@ impl NativeStreamClient {
 
     /// Opens a Rust-owned follow cursor from an encoded request.
     #[napi(js_name = "openFollowResult")]
-    pub async fn open_follow_result(
+    pub fn open_follow_result<'env>(
         &self,
+        env: &'env Env,
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamFollowResult> {
-        Ok(
-            match open_follow(&self.provider, request, cancellation).await {
-                Ok(follow) => NativeStreamFollowResult::success(follow),
-                Err(error) => NativeStreamFollowResult::failure(error),
-            },
-        )
+    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
+        let client = Arc::clone(&self.provider);
+        let cancellation = cancellation.map(|value| NativeStreamCancellation {
+            token: value.token.clone(),
+        });
+        let work = async move {
+            Ok(
+                match open_follow(&client, request, cancellation.as_ref()).await {
+                    Ok(follow) => NativeStreamFollowResult::success(follow),
+                    Err(error) => NativeStreamFollowResult::failure(error),
+                },
+            )
+        };
+        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
+        env.spawn_future(work)
     }
 
     /// Opens live child discovery using the client's shared Streams session.
     #[napi(js_name = "openChildrenResult")]
-    pub async fn open_children_result(
+    pub fn open_children_result<'env>(
         &self,
+        env: &'env Env,
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamFollowResult> {
-        Ok(
-            match open_children(&self.provider, request, cancellation).await {
-                Ok(follow) => NativeStreamFollowResult::success(follow),
-                Err(error) => NativeStreamFollowResult::failure(error),
-            },
-        )
+    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
+        let client = Arc::clone(&self.provider);
+        let cancellation = cancellation.map(|value| NativeStreamCancellation {
+            token: value.token.clone(),
+        });
+        let work = async move {
+            Ok(
+                match open_children(&client, request, cancellation.as_ref()).await {
+                    Ok(follow) => NativeStreamFollowResult::success(follow),
+                    Err(error) => NativeStreamFollowResult::failure(error),
+                },
+            )
+        };
+        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
+        env.spawn_future(work)
     }
 
     /// Executes a canonical children-page request.
@@ -714,6 +733,7 @@ impl NativeStreamClient {
 }
 
 mod credentials;
+mod eager;
 mod operations;
 use operations::*;
 

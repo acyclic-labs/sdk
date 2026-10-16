@@ -51,9 +51,21 @@ pub(crate) struct Renderer {
     code: Option<code::Code>,
     code_text: String,
     table: Option<crate::table::Table>,
+    width: u16,
 }
 
 impl Renderer {
+    pub(super) fn with_width(width: u16) -> Self {
+        Self {
+            width: width.max(1),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn render_width(&self) -> u16 {
+        if self.width == 0 { 80 } else { self.width }
+    }
+
     pub(super) fn inline(line: Line) -> Self {
         Self {
             line,
@@ -93,6 +105,7 @@ impl Renderer {
             new_link: self.new_link,
             lists: self.lists.clone(),
             prefixes: self.prefixes.clone(),
+            width: self.width,
             ..Self::default()
         }
     }
@@ -272,7 +285,20 @@ impl Renderer {
             }
             Tag::Table(alignments) => {
                 self.flush();
-                self.table = Some(crate::table::Table::new(alignments.clone(), self.style));
+                let indent: usize = self
+                    .prefixes
+                    .iter()
+                    .map(|prefix| unicode_width::UnicodeWidthStr::width(prefix.as_str()))
+                    .sum();
+                let width = self
+                    .render_width()
+                    .saturating_sub(u16::try_from(indent).unwrap_or(u16::MAX))
+                    .max(1);
+                self.table = Some(crate::table::Table::new(
+                    alignments.clone(),
+                    self.style,
+                    width,
+                ));
             }
             _ => {}
         }

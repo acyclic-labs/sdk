@@ -170,11 +170,11 @@ where
     let provider = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "fork-plan".into(),
-                    name: "example.fork".into(),
-                    arguments: children,
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "fork-plan".into(),
+                    "example.fork".into(),
+                    children,
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),

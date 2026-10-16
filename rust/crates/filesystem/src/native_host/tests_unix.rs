@@ -299,3 +299,31 @@ fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Root metadata always targets the held directory, even when its name is replaced.
+    #[test]
+    fn empty_metadata_path_keeps_the_held_root(mode in 0_u32..=0o777) {
+        use crate::kernel::{FileMetadata, MetadataField};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let temporary = tempfile::tempdir().unwrap();
+        let original = temporary.path().join("root");
+        let moved = temporary.path().join("moved");
+        std::fs::create_dir(&original).unwrap();
+        let root = test_root(&original).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut work = ordinary_work();
+        let target = root.open_linux_metadata_target(Path::new(""), &mut work).unwrap();
+        proptest::prop_assert_eq!(target.metadata().unwrap().ino(), std::fs::metadata(&moved).unwrap().ino());
+        apply_metadata(&target, FileMetadata {
+            posix_mode: MetadataField::Value(mode),
+            ..FileMetadata::default()
+        }, &mut work).unwrap();
+        proptest::prop_assert_eq!(std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777, mode);
+        proptest::prop_assert_eq!(std::fs::metadata(&original).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+}
