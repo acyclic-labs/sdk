@@ -36,3 +36,15 @@ proptest! {
 fn negative_control_detects_lowercase_only_fold() {
     input::check_with_lowercase_fold(&[1], true);
 }
+
+#[test]
+#[should_panic(expected = "valid native name was rejected")]
+fn negative_control_detects_rejecting_every_posix_name() {
+    input::check_with_rejected_native_names(&[], acyclic_fs::kernel::NameEncoding::PosixBytes);
+}
+
+#[test]
+#[should_panic(expected = "valid native name was rejected")]
+fn negative_control_detects_rejecting_every_utf16_name() {
+    input::check_with_rejected_native_names(&[], acyclic_fs::kernel::NameEncoding::WindowsUtf16Le);
+}
