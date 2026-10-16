@@ -318,17 +318,21 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
             conditions.clear();
         }
+        let fence = CommitCondition::Head {
+            path: self.path.clone(),
+            expected: expected.position,
+            commit_id: CommitId::from_bytes(expected.commit),
+        };
         #[cfg(acyclic_harness_loom)]
-        let fence = !model_checking::enabled(model_checking::Fault::OmitPublicationFence);
-        #[cfg(not(acyclic_harness_loom))]
-        let fence = true;
-        if fence {
-            conditions.push(CommitCondition::Head {
+        let fence = if model_checking::enabled(model_checking::Fault::ResamplePublicationFence) {
+            CommitCondition::Tail {
                 path: self.path.clone(),
-                expected: expected.position,
-                commit_id: CommitId::from_bytes(expected.commit),
-            });
-        }
+                expected: self.provider.watermarks(self.path.clone()).await?.accepted,
+            }
+        } else {
+            fence
+        };
+        conditions.push(fence);
         let request = CommitRequest {
             conditions,
             mutations: vec![CommitMutation::Append {

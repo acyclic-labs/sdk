@@ -9,8 +9,8 @@ pub enum Fault {
     None,
     /// Resample the follow cursor after producing the snapshot.
     ResampleFollow,
-    /// Omit the provider's atomic head condition.
-    OmitPublicationFence,
+    /// Replace the caller's original generation fence with a fresh tail sample.
+    ResamplePublicationFence,
     /// Keep an index from the replaced history.
     RetainObsoleteIndex,
     /// Apply an old acknowledgement over a rebuilt index.

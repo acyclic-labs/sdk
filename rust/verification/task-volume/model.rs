@@ -12,6 +12,7 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 use loom::thread;
+use std::future::Future as _;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -180,16 +181,17 @@ fn snapshot_follow_and_publish(fault: Fault) {
         block_on(async {
             let observation = volume.observe(Query::Root, None, 1).await?;
             let snapshot = observation.snapshot.ok_or("missing snapshot")?;
+            writer.join().map_err(|_| "writer panicked")??;
             let files = if snapshot.files.is_empty() {
                 let mut stream = observation.changes;
-                vec![
-                    stream
-                        .next()
-                        .await
-                        .ok_or("follow ended")??
-                        .file
-                        .ok_or("missing event")?,
-                ]
+                let mut next = Box::pin(stream.next());
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                match next.as_mut().poll(&mut context) {
+                    std::task::Poll::Ready(Some(Ok(change))) => {
+                        vec![change.file.ok_or("missing event")?]
+                    }
+                    other => panic!("snapshot follow skipped publication: {other:?}"),
+                }
             } else {
                 snapshot.files
             };
@@ -202,7 +204,6 @@ fn snapshot_follow_and_publish(fault: Fault) {
             );
             Ok(()) as Result
         })?;
-        writer.join().map_err(|_| "writer panicked")??;
         drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
@@ -231,15 +232,16 @@ fn competing_writers(fault: Fault) {
             &Write::new(FileKey::Goal, OwnedBytes::from_static(b"two")),
         ));
         let results = [worker.join().map_err(|_| "writer panicked")?, second];
+        assert!(
+            results
+                .iter()
+                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_)))),
+            "unexpected publication error: {results:?}"
+        );
         assert_eq!(
             results.iter().filter(|result| result.is_ok()).count(),
             1,
             "competing publication escaped its fence"
-        );
-        assert!(
-            results
-                .iter()
-                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_))))
         );
         let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
         assert_eq!(snapshot.generation.position, expected.position + 1);
@@ -494,7 +496,7 @@ fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
     snapshot_follow_and_publish(Fault::None);
     expect_failure(
         || snapshot_follow_and_publish(Fault::ResampleFollow),
-        "deadlock",
+        "snapshot follow skipped publication",
     );
 }
 
@@ -502,7 +504,7 @@ fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
 fn competing_writers_cannot_tear_the_shared_projection() {
     competing_writers(Fault::None);
     expect_failure(
-        || competing_writers(Fault::OmitPublicationFence),
+        || competing_writers(Fault::ResamplePublicationFence),
         "competing publication escaped its fence",
     );
 }
