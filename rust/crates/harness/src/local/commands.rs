@@ -21,7 +21,18 @@ impl LocalHarness {
         self.dispatch_configured_command(operation, target, resolution, &json!({}))
             .await
     }
-    pub(crate) async fn dispatch_configured_command(
+    pub(crate) fn dispatch_configured_command<'a>(
+        &'a self,
+        operation: OperationId,
+        target: Option<TaskId>,
+        resolution: CommandResolution,
+        settings: &'a Value,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
+        // Cut the concrete admission/tool/compaction future graph here, before
+        // it becomes part of each client owner's dispatch future.
+        Box::pin(self.dispatch_effect(operation, target, resolution, settings))
+    }
+    async fn dispatch_effect(
         &self,
         operation: OperationId,
         target: Option<TaskId>,
@@ -573,7 +584,7 @@ impl TaskCommandHost for CommandOwner<'_> {
             CommandControl::wait(&self.0.task_files.inner, &lineage, self.0.limits.file_bytes)
                 .await?;
             self.0
-                .stock_commands(Some(task))
+                .stock_commands(lineage)
                 .await?
                 .execute(context, fence, command, payload)
                 .await
@@ -587,9 +598,12 @@ impl TaskCommandHost for CommandOwner<'_> {
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
-            let task = context.durable_task_id();
+            let lineage = match context.durable_task_id() {
+                Some(task) => context.lineage(task).await?,
+                None => Vec::new(),
+            };
             self.0
-                .stock_commands(task)
+                .stock_commands(lineage)
                 .await?
                 .reconcile(context, fence, command, payload)
                 .await

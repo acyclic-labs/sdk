@@ -25,13 +25,7 @@ fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
 }
 
 fn unchanged(name: &str) -> bool {
-    !name.starts_with(PREFIX)
-        && !name.is_empty()
-        && name.len() <= 64
-        && (name.as_bytes()[0].is_ascii_alphabetic() || name.starts_with('_'))
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    !name.starts_with(PREFIX) && crate::protocol::name::TOOL.accepts(name)
 }
 
 impl<'a> Names<'a> {
