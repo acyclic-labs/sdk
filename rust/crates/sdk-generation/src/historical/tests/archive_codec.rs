@@ -24,6 +24,19 @@ fn encode(members: &BTreeMap<String, Vec<u8>>, compressed: bool) -> Vec<u8> {
     gzip.finish().unwrap()
 }
 
+fn encode_path(name: &str) -> Vec<u8> {
+    let members = BTreeMap::from([("src/lib.rs".into(), vec![42])]);
+    let mut bytes = encode(&members, false);
+    let mut header = tar::Header::new_gnu();
+    header.as_mut_bytes().copy_from_slice(&bytes[..512]);
+    header.as_mut_bytes()[..100].fill(0);
+    assert!(name.len() < 100);
+    header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+    header.set_cksum();
+    bytes[..512].copy_from_slice(header.as_bytes());
+    bytes
+}
+
 proptest::proptest! {
     #[test]
     fn cargo_archive_members_round_trip(
@@ -39,6 +52,49 @@ proptest::proptest! {
             members,
         );
     }
+
+    #[test]
+    fn archive_member_path_shapes_are_rejected_on_every_host(name in "[a-z]{1,8}") {
+        for path in [
+            format!("/{name}"),
+            format!("//{name}"),
+            format!("\\{name}"),
+            format!("{name}\\child"),
+            format!("C:{name}"),
+            format!("C:/{name}"),
+            format!("../{name}"),
+            format!("{name}/../child"),
+            format!("{name}/C:/child"),
+        ] {
+            let bytes = encode_path(&format!("fixture-0.1.0/{path}"));
+            proptest::prop_assert!(
+                decode_archive_members(&bytes, "fixture", "0.1.0").is_err(),
+                "accepted hostile member: {:?}", path,
+            );
+        }
+    }
+}
+
+#[test]
+fn path_shape_oracle_detects_a_missing_root_guard() {
+    use proptest::test_runner::{TestError, TestRunner};
+    // Without RootDir rejection, Windows' non-absolute rooted path is admitted.
+    let broken_accepts = |path: &str| {
+        !path.contains(['\\', ':'])
+            && !Path::new(path)
+                .components()
+                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+    };
+    let result = TestRunner::default().run(
+        &proptest::strategy::Just("/absolute".to_owned()),
+        |path| {
+            proptest::prop_assert!(!broken_accepts(&path), "accepted hostile member: {:?}", path);
+            Ok(())
+        },
+    );
+    assert!(matches!(result, Err(TestError::Fail(_, _))));
+    let bytes = encode_path("fixture-0.1.0//absolute");
+    assert!(decode_archive_members(&bytes, "fixture", "0.1.0").is_err());
 }
 
 #[test]
@@ -52,13 +108,7 @@ fn archive_codec_rejects_paths_links_duplicates_and_truncated_bodies() {
         "fixture-0.1.0/C:drive",
         "fixture-0.1.0/back\\slash",
     ] {
-        let mut bytes = encode(&members, false);
-        let mut header = tar::Header::new_gnu();
-        header.as_mut_bytes().copy_from_slice(&bytes[..512]);
-        header.as_mut_bytes()[..100].fill(0);
-        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
-        header.set_cksum();
-        bytes[..512].copy_from_slice(header.as_bytes());
+        let bytes = encode_path(name);
         assert!(
             decode_archive_members(&bytes, "fixture", "0.1.0").is_err(),
             "{name}"

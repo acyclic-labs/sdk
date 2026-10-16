@@ -278,11 +278,13 @@ pub fn decode_archive_members(
         let relative = path
             .strip_prefix(&prefix)
             .ok_or("registry archive member escapes package prefix")?;
-        if Path::new(relative).is_absolute()
-            || relative.contains(['\\', ':'])
-            || Path::new(relative)
-                .components()
-                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
+        if relative.contains(['\\', ':'])
+            || Path::new(relative).components().any(|part| {
+                matches!(
+                    part,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
         {
             return Err("registry archive member escapes imported source".into());
         }

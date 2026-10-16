@@ -7,11 +7,13 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         for path in members.keys() {
             assert!(!path.is_empty());
             assert!(!path.contains(['\\', ':']));
-            assert!(!std::path::Path::new(path).is_absolute());
+            assert!(!std::path::Path::new(path).has_root());
             assert!(
                 !std::path::Path::new(path).components().any(|part| matches!(
                     part,
-                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
                 ))
             );
         }
