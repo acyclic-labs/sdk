@@ -147,13 +147,13 @@ fn lifecycle_history(
                 .issue("empty", &Capabilities::default(), None, None, &mut None)
                 .unwrap();
         }
-        if fault == LifecycleFault::ReopenTerminal
+        let reopening = fault == LifecycleFault::ReopenTerminal
             && matches!(
                 from,
                 LifecycleState::Completed | LifecycleState::Failed | LifecycleState::Cancelled
             )
-            && to == LifecycleState::Active
-        {
+            && to == LifecycleState::Active;
+        if reopening {
             reducer.projection.lifecycle = LifecycleState::Waiting;
         }
         let before = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
@@ -168,6 +168,11 @@ fn lifecycle_history(
             accepted,
             "lifecycle admission differs from independent history"
         );
+        // Stop each mutant at its named observation, so deleting that assertion
+        // permits completion instead of failing a later redundant check.
+        if reopening || (fault == LifecycleFault::RejectAll && accepted) {
+            return Ok(());
+        }
         let applied = reducer.apply(&cmd);
         prop_assert_eq!(
             applied.is_ok(),
@@ -197,6 +202,9 @@ fn lifecycle_history(
                     revision,
                     "exact retry advanced independent history"
                 );
+                if fault == LifecycleFault::DuplicateRetry {
+                    return Ok(());
+                }
                 let mut collision = cmd.clone();
                 collision.action = Action::TransitionLifecycle {
                     to: from,
