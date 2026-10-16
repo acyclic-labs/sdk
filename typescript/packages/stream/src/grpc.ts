@@ -87,7 +87,7 @@ function streamGrpc(options: StreamGrpcOptions) {
         try { yield* client.session(input, { signal }); }
         catch (error) { throw providerError(error, "session"); }
       };
-      return { incoming: incoming(), send: frame => input.send(frame), close: () => input.end() };
+      return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
     }, options.acknowledgeDeliveries !== false);
     return { client, sessions };
 }

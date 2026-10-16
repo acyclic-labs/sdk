@@ -2,22 +2,29 @@ import { createInterface } from "node:readline";
 import { plugin } from "bun";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { SessionNode, checkpoint } from "./session-node.js";
-import { StreamSessions } from "../src/session.js";
 
 // Only the transport factory is substituted: the public raw-follow wrapper,
 // StreamSessions, and Connect's deadline/link helpers run unchanged. The clock
 // fires the real helper callback, without wall time or a second implementation.
 const peer = new SessionNode();
-const sessions = new StreamSessions(peer.connect);
-Object.assign(globalThis, { sessionDeadlineSessions: sessions });
 const fault = process.env.STREAM_SESSION_FAULT;
+const scenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
 plugin({ name: "raw-follow-deadline-model", setup(build) {
+  build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
+    let source = await Bun.file(args.path).text();
+    if (fault === "write") {
+      const cancellation = "const signals = [signal, other].filter((value): value is AbortSignal => value !== undefined);";
+      if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
+      source = source.replace(cancellation, "const signals: AbortSignal[] = [];");
+    }
+    return { contents: source, loader: "ts" };
+  });
   build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
     const factory = "const { client, sessions } = streamGrpc(options);";
     if (!source.includes(factory)) throw new Error("raw-follow factory probe no longer matches");
     source = source.replace(factory, "const { client, sessions } = { client: {}, sessions: globalThis.sessionDeadlineSessions };");
-    if (fault) {
+    if (fault === "deadline") {
       const forwarding = "const timeoutMs = callOptions?.timeoutMs;";
       if (fault !== "deadline" || !source.includes(forwarding)) throw new Error("deadline negative control no longer matches");
       source = source.replace(forwarding, "const timeoutMs = undefined;");
@@ -25,6 +32,24 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
     return { contents: source, loader: "ts" };
   });
 } });
+const { StreamSessions } = await import("../src/session.js");
+let releaseWrite: (() => void) | undefined;
+let blocked = false;
+let writesReleased = false;
+const sessions = new StreamSessions(async (node, signal) => {
+  const transport = await peer.connect(node, signal);
+  return { ...transport, async send(input, writeSignal) {
+    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events");
+    const acknowledgement = input.body.case === "ack";
+    if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
+      blocked = true;
+      await new Promise<void>(resolve => { releaseWrite = resolve; });
+    }
+    writeSignal?.throwIfAborted();
+    await transport.send(input, writeSignal);
+  } };
+});
+Object.assign(globalThis, { sessionDeadlineSessions: sessions });
 const { createStreamGrpcClient } = await import("../src/grpc.js");
 const nativeSetTimeout = globalThis.setTimeout;
 const nativeClearTimeout = globalThis.clearTimeout;
@@ -59,24 +84,34 @@ let seen = 0;
 let stoppedAt: number | undefined;
 let siblingSeen = 0;
 let siblingError: unknown;
-const follow = (async () => {
-  try {
-    for await (const _ of client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal })) seen += 1;
-  } catch (error) { code = error instanceof ConnectError ? error.code : -1; }
-  finally { settled = true; }
-})();
 const sibling = (async () => {
   try {
     for await (const _ of client.follow({ path: "healthy", from: 0n }, { timeoutMs: 0, signal: siblingCancel.signal })) siblingSeen += 1;
   } catch (error) { if (!siblingCancel.signal.aborted) siblingError = error; }
 })();
+// Establish the healthy channel before parking the other channel's write.
+await peer.until(() => peer.active === 1);
+const records = client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal })[Symbol.asyncIterator]();
+const follow = (async () => {
+  try {
+    for await (const _ of { [Symbol.asyncIterator]: () => records }) seen += 1;
+  } catch (error) { code = error instanceof ConnectError ? error.code : -1; }
+  finally { settled = true; }
+})();
+let returned = false;
 let releaseReconnect: (() => void) | undefined;
 let connecting = false;
 async function command(action: string): Promise<unknown> {
   switch (action) {
     case "ready":
-      await peer.until(() => peer.active === 2);
+      if (scenario === "deadline-ack") peer.append("events");
+      if (scenario.startsWith("deadline-")) {
+        await checkpoint();
+        if (!blocked) throw new Error("model did not park the actual channel write");
+      } else await peer.until(() => peer.active === 2);
       break;
+    case "releaseWrite": writesReleased = true; releaseWrite?.(); break;
+    case "return": void records.return?.().then(() => { returned = true; }); break;
     case "deliver": peer.append("events"); break;
     case "expire":
       expired = true;
@@ -107,7 +142,7 @@ async function command(action: string): Promise<unknown> {
   }
   await checkpoint();
   if (siblingError !== undefined) throw siblingError;
-  return { settled, code, cleanup, expired, seen, stoppedAt, siblingSeen,
+  return { settled, returned, blocked, code, cleanup, expired, seen, stoppedAt, siblingSeen,
     active: peer.active, outstanding: peer.outstandingFrames, connections: peer.connections.length, connecting,
     timerActive, timerCreated, timerCleaned, deadlineCode: Code.DeadlineExceeded };
 }

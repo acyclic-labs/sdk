@@ -26,13 +26,13 @@ if (fault || scenario === "reservation") {
       if (!fault) return { contents: source, loader: "ts" };
       const old = fault === "resume" ? "route.placement = target.placementEpoch;"
         : fault === "cancel" ? "if (route !== undefined) this.#remove(route); };"
-        : fault === "control" ? "try { await link.transport.send(input); }\n    catch (error) { this.#lost(link, error); }"
+        : fault === "control" ? "try { await untilAborted(link.transport.send(input, signal), signal, link.controller.signal); }\n    catch (error) { if (!signal?.aborted) this.#lost(link, error); }"
         : fault === "resubscribe" ? "catch (error) { if (route.link === next && route.generation === generation) this.#fail(route, error); }"
         : fault === "reservation" ? "const abort = (): void => { release();"
         : "queue.discard(delivery => delivery.release());";
       if (!source.includes(old)) throw new Error(`negative control no longer matches: ${fault}`);
       const replacement = fault === "resume" ? "route.applied = body.value.resume?.next ?? route.applied; route.placement = target.placementEpoch;"
-        : fault === "control" ? "await link.transport.send(input);"
+        : fault === "control" ? "await link.transport.send(input, signal);"
         : fault === "resubscribe" ? "catch (error) { if (route.link === link) this.#fail(route, error); }"
         : fault === "reservation" ? "const abort = (): void => {"
         : fault === "cancel" ? "};" : "queue.discard(() => {});";

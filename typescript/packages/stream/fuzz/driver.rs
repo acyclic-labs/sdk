@@ -16,8 +16,10 @@ impl Driver {
     }
     pub fn configured(root: &Path, scenario: &str, fault: &str) -> Self {
         let mut child = Command::new("bun")
-            .arg(if scenario == "deadline" {
+            .arg(if scenario.starts_with("deadline") {
                 "typescript/packages/stream/test/session-deadline-model-driver.ts"
+            } else if scenario == "queue" {
+                "typescript/packages/stream/test/session-queue-model-driver.ts"
             } else {
                 "typescript/packages/stream/test/session-model-driver.ts"
             })

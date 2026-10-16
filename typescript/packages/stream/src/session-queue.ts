@@ -15,21 +15,41 @@ export class SessionQueue<T> implements AsyncIterable<T> {
     this.#values.push(value);
     this.#wake(this.#readers);
   }
-  async send(value: T): Promise<void> {
-    while (!this.#ended && this.available === 0) await new Promise<void>(resolve => this.#writers.add(resolve));
+  async send(value: T, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.#ended) throw this.#error ?? new StreamError("unavailable", "session ended");
-    this.push(value);
+    if (this.available > 0) { this.push(value); return; }
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = (): void => { this.#writers.delete(wake); signal?.removeEventListener("abort", abort); };
+      const wake = (): void => {
+        cleanup();
+        if (this.#ended) reject(this.#error ?? new StreamError("unavailable", "session ended"));
+        else { this.push(value); resolve(); }
+      };
+      const abort = (): void => { cleanup(); reject(signal?.reason); };
+      this.#writers.add(wake);
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+  #wakeWriters(): void {
+    // Admit older writes synchronously when space opens. A fresh write cannot
+    // overtake a waiting interest revision between wakeup and resumption.
+    for (const wake of this.#writers) {
+      if (!this.#ended && this.available === 0) break;
+      wake();
+    }
   }
   end(error?: unknown): void {
     if (this.#ended) return;
     this.#ended = true;
     this.#error = error;
     this.#wake(this.#readers);
-    this.#wake(this.#writers);
+    this.#wakeWriters();
   }
   discard(dispose: (value: T) => void): void {
-    for (const value of this.#values.splice(0)) dispose(value);
-    this.#wake(this.#writers);
+    const discarded = this.#values.splice(0);
+    this.#wakeWriters();
+    for (const value of discarded) dispose(value);
   }
   #wake(waiters: Set<() => void>): void {
     for (const wake of waiters) wake();
@@ -43,7 +63,7 @@ export class SessionQueue<T> implements AsyncIterable<T> {
         return;
       }
       const value = this.#values.shift()!;
-      this.#wake(this.#writers);
+      this.#wakeWriters();
       yield value;
     }
   }

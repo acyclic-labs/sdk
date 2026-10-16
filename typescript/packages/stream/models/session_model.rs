@@ -320,6 +320,132 @@ fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
     deadline_run("deadline", &["cleanup"]);
 }
 
+fn blocked_deadline(scenario: &str, fault: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    // All six orders of expiry, return(), and completion of the parked write.
+    let mut orders = traces(&["expire"], &["return", "releaseWrite"]);
+    orders.extend(traces(&["expire"], &["releaseWrite", "return"]));
+    assert_eq!(orders.len(), 6);
+    for trace in orders {
+        let mut driver = driver::Driver::configured(&root, scenario, fault);
+        assert_eq!(driver.call(json!({"action":"ready"}))["blocked"], true);
+        let mut expired = false;
+        let mut returning = false;
+        for action in trace {
+            let state = driver.call(json!({"action":action}));
+            expired |= action == "expire";
+            returning |= action == "return";
+            if expired {
+                assert_eq!(
+                    state["settled"], true,
+                    "deadline must settle next without releasing the blocked write"
+                );
+                assert_eq!(state["code"], 4);
+                assert_eq!(state["timerCleaned"], 1);
+                assert_eq!(state["timerActive"], false);
+                if returning {
+                    assert_eq!(
+                        state["returned"], true,
+                        "deadline must also settle a queued return"
+                    );
+                }
+                assert_eq!(
+                    state["active"], 1,
+                    "no cancelled subscription may arrive late"
+                );
+            }
+        }
+        let state = driver.call(json!({"action":"finish"}));
+        assert_eq!(state["siblingSeen"], 1);
+        assert_eq!(state["connections"], 1);
+        assert_eq!(state["outstanding"], 0);
+        assert_eq!(driver.call(json!({"action":"stop"}))["active"], 0);
+    }
+}
+#[test]
+fn deadline_cancels_a_blocked_subscription_write() {
+    blocked_deadline("deadline-subscription", "");
+}
+#[test]
+#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
+fn blocked_subscription_negative_control_awaits_the_write() {
+    blocked_deadline("deadline-subscription", "write");
+}
+#[test]
+fn deadline_cancels_a_blocked_acknowledgement_write() {
+    blocked_deadline("deadline-ack", "");
+}
+#[test]
+#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
+fn blocked_acknowledgement_negative_control_awaits_the_write() {
+    blocked_deadline("deadline-ack", "write");
+}
+
+fn queue_cancellation(fault: &str) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    for trace in traces(&["abort"], &["drain"]) {
+        let mut driver = driver::Driver::configured(&root, "queue", fault);
+        driver.call(json!({"action":"ready"}));
+        let mut aborted = false;
+        for action in trace {
+            let state = driver.call(json!({"action":action}));
+            if action == "drain" && !aborted {
+                assert_eq!(
+                    state["accepted"], true,
+                    "older waiting writes must precede a fresh producer"
+                );
+            }
+            if action == "abort" {
+                aborted = true;
+                assert_eq!(
+                    state["settled"], true,
+                    "abort must settle a blocked queue producer"
+                );
+                assert_eq!(
+                    state["waiting"],
+                    if state["healthySettled"] == true || state["seen"] == json!([]) {
+                        0
+                    } else {
+                        1
+                    }
+                );
+            }
+        }
+        let state = driver.call(json!({"action":"finish"}));
+        assert_eq!(
+            state["accepted"], state["acceptedAtAbort"],
+            "an unaccepted cancelled frame must never enter the transport"
+        );
+        assert_eq!(
+            state["seen"],
+            if state["accepted"] == true {
+                json!([0, 1, 2])
+            } else {
+                json!([0, 2])
+            },
+            "queued writes must keep their wire order"
+        );
+        assert_eq!(state["healthySettled"], true);
+        assert_eq!(state["waiting"], 0);
+        assert_eq!(state["available"], 1);
+    }
+}
+#[test]
+fn queued_cancellation_races_admission_without_leaks_or_reordering() {
+    queue_cancellation("");
+}
+#[test]
+#[should_panic(expected = "abort must settle a blocked queue producer")]
+fn queue_negative_control_drops_the_write_signal() {
+    queue_cancellation("queue");
+}
+
+#[test]
+#[should_panic(expected = "older waiting writes must precede a fresh producer")]
+fn queue_negative_control_allows_fresh_writes_to_overtake_waiters() {
+    queue_cancellation("order");
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 128,

@@ -7,7 +7,8 @@ import { SessionQueue } from "./session-queue.js";
 
 export interface SessionTransport {
   readonly incoming: AsyncIterable<wire.SessionFrame>;
-  send(frame: wire.SessionFrame): Promise<void>;
+  /** Abort withdraws a write that has not yet entered the transport queue. */
+  send(frame: wire.SessionFrame, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
@@ -17,7 +18,7 @@ type Delivery = { record: EncodedRecord; generation: bigint; link: Link; release
 type Route = {
   id: bigint; generation: bigint; path: string; applied: bigint; received: bigint;
   placement: bigint; link: Link; queue: SessionQueue<Delivery>; credit: Credit;
-  opened: boolean; moving: boolean; resolve(): void; release(): void;
+  opened: boolean; moving: boolean; controller: AbortController; resolve(): void; release(): void;
 };
 type Connection = { promise: Promise<Link>; link?: Link };
 type Link = {
@@ -73,10 +74,10 @@ export class StreamSessions {
       let resolve!: () => void;
       const opened = new Promise<void>(yes => { resolve = yes; });
       route = { id, generation: 1n, path, applied: options.from, received: options.from, placement: 0n,
-        link, queue, credit: emptyCredit(), opened: false, moving: false, resolve, release };
+        link, queue, credit: emptyCredit(), opened: false, moving: false, controller: new AbortController(), resolve, release };
       this.#routes.set(id, route);
       try { await this.#subscribe(route); }
-      catch (error) { this.#lost(link, error); }
+      catch (error) { if (!route.controller.signal.aborted) this.#lost(link, error); }
       await opened;
       for await (const delivery of queue) {
         delivery.release();
@@ -87,7 +88,7 @@ export class StreamSessions {
         route.applied += 1n;
         yield delivery.record;
         if (this.#acknowledge && this.#routes.get(id) === route) {
-          await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied } }) }));
+          await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied } }) }), route.controller.signal);
         }
         await this.#grant(route);
       }
@@ -167,10 +168,10 @@ export class StreamSessions {
       for (const route of affected) this.#fail(route, error);
     } else if (affected.length) void this.#recover(link, affected);
   }
-  async #write(link: Link, input: wire.SessionFrame): Promise<void> {
-    if (link.controller.signal.aborted) return;
-    try { await link.transport.send(input); }
-    catch (error) { this.#lost(link, error); }
+  async #write(link: Link, input: wire.SessionFrame, signal?: AbortSignal): Promise<void> {
+    if (link.controller.signal.aborted || signal?.aborted) return;
+    try { await untilAborted(link.transport.send(input, signal), signal, link.controller.signal); }
+    catch (error) { if (!signal?.aborted) this.#lost(link, error); }
   }
   async #recover(link: Link, routes: Route[]): Promise<void> {
     let next: Link;
@@ -186,14 +187,16 @@ export class StreamSessions {
     }
   }
   async #subscribe(route: Route): Promise<void> {
+    if (this.#routes.get(route.id) !== route || route.controller.signal.aborted) return;
+    const link = route.link;
     route.moving = false;
     route.received = route.applied;
     route.credit = emptyCredit();
     route.opened = false;
-    await route.link.transport.send(frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
+    await untilAborted(link.transport.send(frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
       revision: ++route.link.revision, upsert: [{ channel: { channelId: route.id, generation: route.generation },
         resume: { next: route.applied }, kind: { case: "follow", value: { path: route.path, delivery: wire.SessionDelivery.ALL } } }],
-    }) }));
+    }) }), route.controller.signal), route.controller.signal, link.controller.signal);
   }
   async #receive(link: Link, input: wire.SessionFrame): Promise<void> {
     const bytes = BigInt(toBinary(wire.SessionFrameSchema, input).byteLength);
@@ -271,7 +274,7 @@ export class StreamSessions {
       bytes: BigInt(route.queue.available) * RECORD_BYTES > route.credit.bytes ? BigInt(route.queue.available) * RECORD_BYTES - route.credit.bytes : 0n };
     if (grant.frames === 0 && grant.bytes === 0n) return;
     add(route.credit, grant);
-    await this.#write(route.link, frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }));
+    await this.#write(route.link, frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }), route.controller.signal);
   }
   #release(link: Link, bytes: bigint): void {
     if (link.controller.signal.aborted) return;
@@ -282,6 +285,7 @@ export class StreamSessions {
   #fail(route: Route, error: unknown): void {
     if (this.#routes.get(route.id) !== route) return;
     this.#routes.delete(route.id);
+    route.controller.abort();
     route.release();
     route.resolve();
     route.queue.end(error);
@@ -289,6 +293,7 @@ export class StreamSessions {
   #remove(route: Route): void {
     if (this.#routes.get(route.id) !== route) return;
     this.#routes.delete(route.id);
+    route.controller.abort();
     route.release();
     route.resolve();
     void this.#write(route.link, frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
@@ -297,13 +302,17 @@ export class StreamSessions {
   }
 }
 
-async function untilAborted<T>(pending: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
-  if (signal === undefined) return pending;
-  if (signal.aborted) return undefined;
+async function untilAborted<T>(pending: Promise<T>, signal: AbortSignal | undefined, other?: AbortSignal): Promise<T | undefined> {
+  const signals = [signal, other].filter((value): value is AbortSignal => value !== undefined);
+  if (signals.length === 0) return pending;
+  if (signals.some(value => value.aborted)) { void pending.catch(() => {}); return undefined; }
   let abort!: () => void;
-  const cancelled = new Promise<undefined>(resolve => { abort = () => resolve(undefined); signal.addEventListener("abort", abort, { once: true }); });
+  const cancelled = new Promise<undefined>(resolve => {
+    abort = () => resolve(undefined);
+    for (const value of signals) value.addEventListener("abort", abort, { once: true });
+  });
   try { return await Promise.race([pending, cancelled]); }
-  finally { signal.removeEventListener("abort", abort); }
+  finally { for (const value of signals) value.removeEventListener("abort", abort); }
 }
 
 function closedError(code: string, message: string): StreamError {
