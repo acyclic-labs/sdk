@@ -334,13 +334,53 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
     Ok(())
 }
 
+struct NativeOnly(Arc<ScriptedSearchProvider>);
+impl SearchProvider for NativeOnly {
+    fn search<'a>(
+        &'a self,
+        _: &'a SearchRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<SearchResponse>> {
+        Box::pin(async { panic!("native worker used ordinary search") })
+    }
+    fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        self.0.supports_native_search(work)
+    }
+    fn search_with_native_work<'a>(
+        &'a self,
+        request: &'a SearchRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        self.0.search_with_native_work(request, work)
+    }
+}
+
 #[tokio::test]
 async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> Result<()> {
     let stream = Arc::new(MemoryStream::default());
+    let fixture = Fixture::new(
+        stream.clone(),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[],
+    )
+    .await?;
+    let running = fixture.running(1).await?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let owner = fixture
+        .host
+        .journal_owner(running.task_id(), running.task_binding().1, Some(&io))
+        .await?;
     let volume = TaskVolume::open(stream, StreamPath::new("native-search-files").unwrap())
         .await
         .map_err(storage)?;
-    let task = Component::new("native").unwrap();
+    let task = Component::new(hex::encode(owner.task_id().into_bytes())).unwrap();
+    let id = Component::new("search-native").unwrap();
     let initial = volume
         .snapshot(&Query::Requests(task.clone()), 3)
         .await
@@ -349,13 +389,16 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         .append(
             initial.generation,
             &FileValue::new(
-                FileKey::parse(".tasks/native/requests/search-native.json").unwrap(),
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::Request(id.clone()),
+                },
                 br#"{"query":"test"}"#.as_slice(),
             ),
         )
         .await
         .map_err(storage)?;
-    let backend = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
+    let script = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
         request: SearchRequest {
             query: "test".into(),
             max_results: 5,
@@ -363,43 +406,46 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         response: Some(SearchResponse { results: vec![] }),
         error: None,
     }])?);
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        &acyclic_fs::CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let fence = LeaseFence {
-        reservation_id: "native".into(),
-        placement: "host".into(),
-    };
-    drive_for_test(
+    let backend = Arc::new(NativeOnly(script.clone()));
+    let first = follow(
         &volume,
-        &task,
-        &fence,
-        || Ok(Some(backend.clone())),
-        vec![],
+        &owner,
+        || Ok(Some(backend.clone() as Arc<dyn SearchProvider>)),
         Some(&work),
         3,
     )
-    .await?;
-    assert_eq!(backend.remaining(), 0);
+    .now_or_never();
+    assert!(first.is_none(), "native worker stopped: {first:?}");
+    assert_eq!(script.remaining(), 0);
     let snapshot = volume
         .snapshot(&Query::Requests(task.clone()), 3)
         .await
         .map_err(storage)?;
     assert_eq!(snapshot.files.len(), 3);
+    let result = snapshot
+        .files
+        .iter()
+        .find(|value| value.key == file(&task, &id, true))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<SearchOutcome>(&result.bytes).unwrap(),
+        SearchOutcome::Succeeded {
+            response: SearchResponse { results: vec![] }
+        }
+    );
     assert!(work.receipt().source_bytes_read > 0);
     assert!(work.receipt().bytes_encoded > 0);
-    drive_for_test(
-        &volume,
-        &task,
-        &fence,
-        || panic!("native replay contacted provider"),
-        vec![],
-        Some(&work),
-        3,
-    )
-    .await?;
+    assert!(
+        follow(
+            &volume,
+            &owner,
+            || panic!("native replay contacted provider"),
+            Some(&work),
+            3
+        )
+        .now_or_never()
+        .is_none()
+    );
     assert_eq!(
         volume
             .snapshot(&Query::Requests(task), 3)
