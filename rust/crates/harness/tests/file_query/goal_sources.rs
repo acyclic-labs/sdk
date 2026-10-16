@@ -1,4 +1,4 @@
-use super::goals::{change, cut, snapshot};
+use super::goals::{change, cut, new_views, snapshot};
 use acyclic_harness::{
     client::ClientViews,
     task_volume::{Change, FileKey, FileQuerySource, FileValue, Query},
@@ -70,7 +70,7 @@ fn head(count: u32) -> Vec<u8> {
 }
 
 fn initial() -> ClientViews {
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     let goal = Query::File(FileKey::Goal);
     let request = Query::File(FileKey::RequestHead);
     let goal_cut = cut(&goal, [1; 32], 1);

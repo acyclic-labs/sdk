@@ -1,7 +1,7 @@
 //! Independent state oracle over real task publications and canonical session data.
 use acyclic_harness::{
     client::{
-        ClientInterests, InterestTier, QueryViewLimits, SwarmUpdate, SwarmViewLimits, SwarmViews,
+        ClientInterests, ClientViewLimits, ClientViews, InterestTier, QueryViewLimits, SwarmUpdate,
     },
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
@@ -78,7 +78,7 @@ fn status(next: u64, key: &'static [u8], value: &[u8]) -> wire::SessionData {
         )),
     }
 }
-fn check_watermark(views: &SwarmViews, position: u64, accepted: u64, durable: u64) {
+fn check_watermark(views: &ClientViews, position: u64, accepted: u64, durable: u64) {
     let cursor = views.cursor(&path("swarm/a")).unwrap();
     assert_eq!(
         cursor.position, position,
@@ -98,9 +98,9 @@ pub fn exercise(input: &[u8], skip_watermark: bool) {
 
 /// Discovery is idempotent and visible before any agent publishes status.
 pub fn check_discovery(input: &[u8], drop_updates: bool) {
-    let mut views = SwarmViews::new(
+    let mut views = ClientViews::new(
         path("swarm"),
-        SwarmViewLimits {
+        ClientViewLimits {
             agents: 8,
             selected: 0,
             overview_values: 0,
@@ -146,7 +146,7 @@ fn exercise_fault(input: &[u8], skip_watermark: bool, drop_attention: bool) {
         let volume = TaskVolume::open(provider.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        let limits = SwarmViewLimits {
+        let limits = ClientViewLimits {
             agents: 4,
             selected: 1,
             overview_values: 4,
@@ -157,7 +157,7 @@ fn exercise_fault(input: &[u8], skip_watermark: bool, drop_attention: bool) {
                 bytes: 4096,
             },
         };
-        let mut views = SwarmViews::new(path("swarm"), limits).unwrap();
+        let mut views = ClientViews::new(path("swarm"), limits).unwrap();
         views
             .apply(SwarmUpdate::Layout(layout(false, true)))
             .unwrap();
@@ -308,7 +308,7 @@ fn exercise_fault(input: &[u8], skip_watermark: bool, drop_attention: bool) {
                 wire::SessionData::decode(data.encode_to_vec().as_slice()).unwrap(),
                 data
             );
-            let mut status_views = SwarmViews::new(path("swarm"), limits).unwrap();
+            let mut status_views = ClientViews::new(path("swarm"), limits).unwrap();
             let expected = match &data.item {
                 Some(wire::session_data::Item::LatestValue(value)) => Some(value.clone()),
                 _ => None,

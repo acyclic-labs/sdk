@@ -1,7 +1,7 @@
 //! File publications drive the real shared session and the renderer's one fold.
 use acyclic_harness::{
     Error, Result,
-    client::{QueryViewLimits, SwarmChange, SwarmClient, SwarmClientLimits, SwarmViewLimits},
+    client::{ClientViewLimits, QueryViewLimits, SwarmChange, SwarmClient, SwarmClientLimits},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamPath, wire};
@@ -79,7 +79,7 @@ async fn exercise() -> Result<()> {
             config_files: 4,
             snapshot_files: 16,
         },
-        SwarmViewLimits {
+        ClientViewLimits {
             agents: 4,
             selected: 1,
             overview_values: 4,
@@ -108,7 +108,7 @@ async fn exercise() -> Result<()> {
                 SwarmChange::Snapshot { .. } => "snapshot",
                 SwarmChange::Data { overview: false, .. } => "file",
                 SwarmChange::Data { agent, overview: true, data, .. } => {
-                    if agent == path("swarm/b") && matches!(data.item, Some(wire::session_data::Item::LatestValue(value)) if value.attention) {
+                    if agent == path("swarm/b") && matches!(data.item, Some(wire::session_data::Item::LatestValue(ref value)) if value.attention) {
                         if let Some(seen) = b_seen.take() { let _ = seen.send(()); }
                     }
                     "status"
@@ -246,7 +246,7 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
                 config_files: 2,
                 snapshot_files: 8,
             },
-            SwarmViewLimits {
+            ClientViewLimits {
                 agents: 2,
                 selected: 2,
                 overview_values: 2,
@@ -281,7 +281,7 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
         }, async |change| {
             let kind = match change {
                 SwarmChange::Snapshot { .. } => "snapshot",
-                SwarmChange::Data { overview: true, data, .. } if matches!(data.item, Some(wire::session_data::Item::LatestValue(value)) if value.attention) => "attention",
+                SwarmChange::Data { overview: true, data, .. } if matches!(data.item, Some(wire::session_data::Item::LatestValue(ref value)) if value.attention) => "attention",
                 _ => "other",
             };
             notices.unbounded_send(kind).unwrap();

@@ -1,5 +1,5 @@
 //! Logical status slices cannot retain an uncharged transport backing allocation.
-use acyclic_harness::client::{QueryViewLimits, SwarmUpdate, SwarmViewLimits, SwarmViews};
+use acyclic_harness::client::{ClientViewLimits, ClientViews, QueryViewLimits, SwarmUpdate};
 use acyclic_stream::{StreamPath, wire};
 use bytes::Bytes;
 use std::sync::{
@@ -48,9 +48,9 @@ fn probe(keep_transport_slice: bool) {
     drop(backing);
     let root = StreamPath::new("swarm").unwrap();
     let agent = StreamPath::new("swarm/a").unwrap();
-    let mut views = SwarmViews::new(
+    let mut views = ClientViews::new(
         root,
-        SwarmViewLimits {
+        ClientViewLimits {
             agents: 1,
             selected: 0,
             overview_values: 1,

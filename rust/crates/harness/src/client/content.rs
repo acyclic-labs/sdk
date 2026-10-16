@@ -3,15 +3,9 @@
 use crate::{
     Error, Result,
     conversation::{ContentResidencyVerifier, ConversationMessage, Limits, MessageKind},
-    model::ToolResultContent,
 };
-use serde_json::Value;
 
-pub(super) enum MessageContent {
-    Call { name: String, arguments: Value },
-    Output(ToolResultContent),
-    Usage(Value),
-}
+pub(super) struct MessageContent;
 
 impl MessageContent {
     pub(super) async fn read(
@@ -49,22 +43,17 @@ impl MessageContent {
                         "tool artifact identity differs from its record".into(),
                     ));
                 }
-                Self::Call {
-                    name: call.name,
-                    arguments: call.arguments,
-                }
+                Self
             }
-            MessageKind::ToolResult => Self::Output(
-                crate::projection::read_tool_output(message, files, limits, None).await?,
-            ),
+            MessageKind::ToolResult => {
+                crate::projection::read_tool_output(message, files, limits, None).await?;
+                Self
+            }
             MessageKind::Assistant => {
                 let metadata =
                     metadata.ok_or_else(|| Error::Invalid("assistant metadata missing".into()))?;
-                Self::Usage(
-                    crate::projection::read_value(files, metadata, limits.render_bytes, None)
-                        .await?
-                        .0,
-                )
+                crate::projection::read_value(files, metadata, limits.render_bytes, None).await?;
+                Self
             }
             _ => {
                 return Err(Error::Invalid(

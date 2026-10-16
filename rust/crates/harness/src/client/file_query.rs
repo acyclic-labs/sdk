@@ -447,3 +447,40 @@ impl super::ClientViews {
             .apply(change)
     }
 }
+
+impl super::ClientViews {
+    /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
+    /// The host folds returned records with `query_change` and redraws shared views.
+    pub async fn select_file_view(
+        &mut self,
+        selection: super::CommandQuery,
+        volume: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        let query = match selection {
+            super::CommandQuery::Plan => crate::task_volume::Query::Plans,
+            super::CommandQuery::Goal => {
+                crate::task_volume::Query::File(crate::task_volume::FileKey::Goal)
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "view does not select a private file query".into(),
+                ));
+            }
+        };
+        let observation = volume
+            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
+            .await
+            .map_err(|error| match error {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error,
+                error => Error::Storage(error.to_string()),
+            })?;
+        let snapshot = observation
+            .snapshot
+            .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;
+        self.query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
+        Ok(observation.changes)
+    }
+}

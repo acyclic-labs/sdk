@@ -1,16 +1,16 @@
 //! The reducer is exercised through actual volume writes and platform frames.
-#[path = "../../harness-fuzz/support/swarm_views.rs"]
-mod oracle;
 #[path = "../../harness-fuzz/support/swarm_limits.rs"]
 mod limits;
+#[path = "../../harness-fuzz/support/swarm_views.rs"]
+mod oracle;
 
 #[path = "client_swarm_views_follow.rs"]
 mod follow;
 
-#[path = "client_swarm_views_retention.rs"]
-mod retention;
 #[path = "support/quiescent.rs"]
 mod quiescent;
+#[path = "client_swarm_views_retention.rs"]
+mod retention;
 #[path = "support/swarm_session.rs"]
 mod runtime;
 
@@ -49,3 +49,6 @@ proptest::proptest! {
 fn negative_control_omitting_a_swarm_bound_is_rejected() {
     assert!(std::panic::catch_unwind(|| limits::exercise(b"", true)).is_err());
 }
+
+#[path = "client_swarm_views_files.rs"]
+mod files;

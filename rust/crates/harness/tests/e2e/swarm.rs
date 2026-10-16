@@ -7,7 +7,7 @@ use super::{
 };
 use acyclic_harness::{
     Error,
-    client::{QueryViewLimits, SwarmClient, SwarmClientLimits, SwarmViewLimits},
+    client::{ClientViewLimits, QueryViewLimits, SwarmClient, SwarmClientLimits},
     task_volume::{Query, TaskVolume},
 };
 use acyclic_stream::MemoryStream;
@@ -68,7 +68,7 @@ pub(super) async fn run_with_fault(
             config_files: 1,
             snapshot_files: records,
         },
-        SwarmViewLimits {
+        ClientViewLimits {
             agents: case.agents,
             selected,
             overview_values: case.agents,

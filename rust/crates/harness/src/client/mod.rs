@@ -21,15 +21,15 @@ pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
 mod session;
+mod session_progress;
 pub use session::{
     ClientSession, ClientStateStore, MemoryClientState, SessionCheckpoint, SessionRecord,
 };
 mod transport;
 pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
 mod content;
-mod usage;
 mod views;
-pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
+pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,8 +54,8 @@ pub use file_query::{FileQueryView, GoalFileView};
 mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
-mod goal_view;
 mod goal_selection;
+mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]
 mod goal_panel;
@@ -96,10 +96,8 @@ mod offline;
 pub use offline::validate_offline_request;
 mod query_subscription;
 mod session_views;
-mod swarm_views;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};
-pub use swarm_views::{StatusView, SwarmChange, SwarmViewHandle, SwarmViewLimits, SwarmViews};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod query_verification {
@@ -108,7 +106,9 @@ pub mod query_verification {
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::WasmClientViews;
+pub use crate::wasm::swarm::WasmClientViews;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmHypothesisClient;
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;
 /// Persisted data specialized to a domain; never authoritative evidence.

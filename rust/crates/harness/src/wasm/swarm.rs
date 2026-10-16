@@ -5,8 +5,8 @@ use super::{
 };
 use crate::{
     client::{
-        InterestDocument, InterestTier, SwarmChange, SwarmClient, SwarmClientLimits,
-        SwarmViewHandle, SwarmViewLimits,
+        ClientViewHandle, ClientViewLimits, InterestDocument, InterestTier, SwarmChange,
+        SwarmClient, SwarmClientLimits,
     },
     task_volume::{Cursor, FileKey, Query, TaskVolume},
 };
@@ -103,11 +103,16 @@ struct SwarmStatusInfo<'a> {
 
 /// The exact read-only native views, readable while the follow awaits I/O.
 #[wasm_bindgen]
-pub struct WasmSwarmViews {
-    views: SwarmViewHandle,
+pub struct WasmClientViews {
+    views: ClientViewHandle,
+}
+impl From<ClientViewHandle> for WasmClientViews {
+    fn from(views: ClientViewHandle) -> Self {
+        Self { views }
+    }
 }
 #[wasm_bindgen]
-impl WasmSwarmViews {
+impl WasmClientViews {
     #[wasm_bindgen(unchecked_return_type = "string[]")]
     pub fn agents(&self) -> Result<JsValue, JsValue> {
         self.views
@@ -193,7 +198,7 @@ impl WasmSwarmViews {
 #[wasm_bindgen]
 pub struct WasmSwarmClient {
     client: RefCell<Option<SwarmClient>>,
-    views: SwarmViewHandle,
+    views: ClientViewHandle,
 }
 #[wasm_bindgen]
 impl WasmSwarmClient {
@@ -201,10 +206,10 @@ impl WasmSwarmClient {
     pub fn new(
         root: &str,
         #[wasm_bindgen(unchecked_param_type = "SwarmClientLimits")] limits: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "SwarmViewLimits")] view_limits: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ClientViewLimits")] view_limits: JsValue,
     ) -> Result<WasmSwarmClient, JsValue> {
         let limits: SwarmClientLimits = from_js(limits)?;
-        let view_limits: SwarmViewLimits = from_js(view_limits)?;
+        let view_limits: ClientViewLimits = from_js(view_limits)?;
         let client = SwarmClient::new(StreamPath::new(root).map_err(error)?, limits, view_limits)
             .map_err(error)?;
         let views = client.views();
@@ -214,10 +219,8 @@ impl WasmSwarmClient {
         })
     }
     #[wasm_bindgen]
-    pub fn views(&self) -> WasmSwarmViews {
-        WasmSwarmViews {
-            views: self.views.clone(),
-        }
+    pub fn views(&self) -> WasmClientViews {
+        WasmClientViews::from(self.views.clone())
     }
 
     /// Folds config queries and agent follows on the caller's shared pool. A

@@ -60,8 +60,8 @@ name = "client-model-views"
 path = "tests/client_model_views.rs"
 
 [[test]]
-name = "client-goal-views"
-path = "tests/client_goal_views.rs"
+name = "client-views-parity"
+path = "tests/client_views_parity.rs"
 required-features = ["wasm"]
 
 [[test]]

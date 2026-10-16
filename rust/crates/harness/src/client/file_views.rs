@@ -24,6 +24,7 @@ pub struct QueryViewLimits {
 }
 
 /// One query's materialized files; snapshots and deltas never concatenate text.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileViews {
     cursor: Cursor,
     files: Files,

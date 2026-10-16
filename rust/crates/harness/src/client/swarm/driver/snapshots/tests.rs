@@ -2,7 +2,7 @@
 use super::*;
 use proptest::{
     prelude::*,
-    test_runner::{Config, TestCaseError, TestCaseResult, TestError, TestRunner},
+    test_runner::{Config, TestCaseResult, TestError, TestRunner},
 };
 
 struct Model {

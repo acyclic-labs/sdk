@@ -5,7 +5,7 @@ use super::{
 };
 use acyclic_harness::{
     Error,
-    client::{QueryViewLimits, SwarmChange, SwarmViewHandle, query_verification::FileViews},
+    client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
     task_volume::{Change, FileValue, Generation, HeadFile, HeadSnapshot},
 };
 use acyclic_stream::{CommitId, Record, wire};
@@ -76,7 +76,7 @@ impl<'a> State<'a> {
     pub fn accept(
         &mut self,
         update: SwarmChange,
-        views: &SwarmViewHandle,
+        views: &ClientViewHandle,
     ) -> acyclic_harness::Result<Action> {
         let action = match update {
             SwarmChange::Agent { .. } => Action::None,

@@ -3,7 +3,7 @@ use super::{SwarmClientLimits, SwarmUpdate};
 use crate::{
     Error, Result,
     client::{
-        ClientInterests, SwarmChange, SwarmViewHandle, SwarmViewLimits, SwarmViews,
+        ClientInterests, ClientViewHandle, ClientViewLimits, ClientViews, SwarmChange,
         interest_files::InterestFiles,
     },
     task_volume::{HeadSnapshot, TaskVolume},
@@ -20,7 +20,7 @@ mod snapshots;
 pub struct SwarmClient {
     root: StreamPath,
     limits: SwarmClientLimits,
-    views: SwarmViewHandle,
+    views: ClientViewHandle,
 }
 
 impl SwarmClient {
@@ -28,7 +28,7 @@ impl SwarmClient {
     pub fn new(
         root: StreamPath,
         limits: SwarmClientLimits,
-        view_limits: SwarmViewLimits,
+        view_limits: ClientViewLimits,
     ) -> Result<Self> {
         if limits.agents == 0
             || limits.selected > limits.agents
@@ -42,7 +42,7 @@ impl SwarmClient {
         }
         StreamPath::new(format!("{}/agent/files", root.as_str()))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let views = SwarmViewHandle::new(SwarmViews::new(root.clone(), view_limits)?);
+        let views = ClientViewHandle::new(ClientViews::new(root.clone(), view_limits)?);
         Ok(Self {
             root,
             limits,
@@ -51,7 +51,7 @@ impl SwarmClient {
     }
 
     /// A read-only renderer handle; provider I/O never borrows its views.
-    pub fn views(&self) -> SwarmViewHandle {
+    pub fn views(&self) -> ClientViewHandle {
         self.views.clone()
     }
 

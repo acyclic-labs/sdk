@@ -134,7 +134,7 @@ proptest! {
         cap in prop_oneof![Just(2u32), 1u32..=u32::MAX], fraction in any::<u32>(),
     ) {
         futures::executor::block_on(async {
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let _follow = views.select_goal_view(&Source::goal("objective"), &Source::head(0), 4096).await.unwrap();
             let blocked = format!("---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {cap}).\n---\nobjective");
             let mut unrelated = publication(&Source::goal(&blocked), Query::File(FileKey::Goal), 4);
@@ -242,7 +242,7 @@ proptest! {
     fn identical_blocked_text_requires_its_own_publication(old in prop_oneof![Just(0u32), 0u32..u32::MAX]) {
         futures::executor::block_on(async {
             let blocked = "---\nstatus: blocked\nreason: waiting\n---\nobjective";
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let _follow = views.select_goal_view(&Source::goal(blocked).published(10), &Source::head(old).acknowledging(10), 4096).await.unwrap();
             let goal = [
                 publication(&Source::goal("objective").published(11), Query::File(FileKey::Goal), 2),

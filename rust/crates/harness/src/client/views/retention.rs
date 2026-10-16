@@ -27,9 +27,9 @@ fn retained(sizes: (usize, usize, usize, usize), history: bool, broken: bool) ->
     let mut kept = None;
     let allocation = allocation_counter::measure(|| {
         let path = |s| StreamPath::new(s).unwrap();
-        let mut views = SwarmViews::new(
+        let mut views = ClientViews::new(
             path("swarm"),
-            SwarmViewLimits {
+            ClientViewLimits {
                 agents: 1,
                 selected: 0,
                 overview_values: 2,

@@ -19,11 +19,11 @@ mod session;
 fn client(
     limits: acyclic_harness::client::SwarmClientLimits,
 ) -> acyclic_harness::Result<acyclic_harness::client::SwarmClient> {
-    use acyclic_harness::client::{QueryViewLimits, SwarmClient, SwarmViewLimits};
+    use acyclic_harness::client::{ClientViewLimits, QueryViewLimits, SwarmClient};
     SwarmClient::new(
         path("swarm"),
         limits,
-        SwarmViewLimits {
+        ClientViewLimits {
             agents: limits.agents,
             selected: limits.selected,
             overview_values: limits.agents * 2,
