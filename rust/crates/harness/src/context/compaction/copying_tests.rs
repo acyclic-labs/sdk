@@ -50,7 +50,7 @@ proptest! {
             let user = insert.then_some(&content);
             let len = first.len() + second.len() + usize::from(insert);
             let mut actual = None;
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 actual = Some(clone_messages(&first, user, &second, &mut None));
             });
             allocation_bound(measured.count_total, len)?;
@@ -63,7 +63,7 @@ proptest! {
                 prop_assert!(capacity_bound(oversized.capacity(), len).is_err());
             }
             if !first.is_empty() && (insert || !second.is_empty()) {
-                let old = allocation_counter::measure(|| {
+                let old = acyclic_test_support::measure(|| {
                     std::hint::black_box(original(&first, user, &second));
                 });
                 prop_assert!(allocation_bound(old.count_total, len).is_err());
