@@ -32,20 +32,27 @@ impl MessageContent {
         let limits = Limits::default();
         Ok(Some(match message.kind {
             MessageKind::ToolCall => {
-                let (call_id, name, arguments) = crate::projection::read_invocation(
+                let call = crate::projection::read_tool_call(
                     files,
                     &message.content,
                     limits.render_bytes,
                     None,
                 )
                 .await?;
-                crate::tool::ToolInvocation::validate_identity(&call_id, Some(&name), &mut None)?;
-                if message.tool_call_id.as_deref() != Some(call_id.as_str()) {
+                crate::tool::ToolInvocation::validate_identity(
+                    &call.call_id,
+                    Some(&call.name),
+                    &mut None,
+                )?;
+                if message.tool_call_id.as_deref() != Some(call.call_id.as_str()) {
                     return Err(Error::Invalid(
                         "tool artifact identity differs from its record".into(),
                     ));
                 }
-                Self::Call { name, arguments }
+                Self::Call {
+                    name: call.name,
+                    arguments: call.arguments,
+                }
             }
             MessageKind::ToolResult => Self::Output(
                 crate::projection::read_tool_output(message, files, limits, None).await?,

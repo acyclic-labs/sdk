@@ -538,11 +538,11 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     let model = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "read".into(),
-                    arguments: json!({"file": staged}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "read".into(),
+                    "read".into(),
+                    json!({"file": staged}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),

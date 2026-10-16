@@ -185,6 +185,7 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     nextest --workspace --all-features --locked
+    cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
   docs)
     # Independent workspaces qualify alongside the root workspace.

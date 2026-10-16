@@ -35,12 +35,12 @@ async fn run(case: Case) -> Result<()> {
     for (index, write) in case.writes.iter().enumerate() {
         if let Some(text) = write {
             script.push(ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: format!("goal-{index}"),
-                    name: "write".into(),
-                    arguments: json!({"path":"GOAL.md", "text":text,
+                ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    format!("goal-{index}"),
+                    "write".into(),
+                    json!({"path":"GOAL.md", "text":text,
                         "media_type":"text/markdown", "display_name":"GOAL.md"}),
-                }),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),

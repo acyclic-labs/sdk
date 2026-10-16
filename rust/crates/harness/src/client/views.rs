@@ -233,11 +233,12 @@ impl ClientViews {
                 .or_default()
                 .reasoning
                 .push_str(&delta),
-            ModelEvent::ToolCall {
+            ModelEvent::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => {
+                ..
+            }) => {
                 let tool = self
                     .tools
                     .entry(key)

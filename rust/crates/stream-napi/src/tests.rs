@@ -403,11 +403,15 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             path: "accounts/events".to_owned(),
             from: 0,
         };
-        let opened = client
-            .open_follow_result(Buffer::from(request.encode_to_vec()), None)
-            .await?;
-        assert!(opened.error.is_none(), "open returned an error envelope");
-        let follow = Arc::new(opened.follow.expect("open result omitted follow"));
+        let follow = Arc::new(
+            open_follow(
+                &client.provider,
+                Buffer::from(request.encode_to_vec()),
+                None,
+            )
+            .await
+            .map_err(|error| error.message)?,
+        );
         let pending = tokio::spawn({
             let follow = Arc::clone(&follow);
             async move { follow.next_result().await }
@@ -428,20 +432,19 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             .await
             .map_err(|_| "server follow stream was not dropped after close")?;
 
-        let opened = client
-            .open_children_result(
-                Buffer::from(
-                    wire::ChildrenRequest {
-                        parent: Some("agents".into()),
-                        limit: 1,
-                    }
-                    .encode_to_vec(),
-                ),
-                None,
-            )
-            .await?;
-        assert!(opened.error.is_none());
-        let children = opened.follow.ok_or("children cursor missing")?;
+        let children = open_children(
+            &client.provider,
+            Buffer::from(
+                wire::ChildrenRequest {
+                    parent: Some("agents".into()),
+                    limit: 1,
+                }
+                .encode_to_vec(),
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| error.message)?;
         let value = children.next_result().await?;
         assert!(value.error.is_none());
         let value = value.value.ok_or("child response missing")?;

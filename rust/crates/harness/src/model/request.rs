@@ -126,11 +126,12 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
-            ModelContentPart::ToolCall {
+            ModelContentPart::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => {
+                ..
+            }) => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                 if role != ModelRole::Assistant || pending.contains_key(call_id) {

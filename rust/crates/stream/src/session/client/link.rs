@@ -1,21 +1,6 @@
 use super::*;
 
 impl Pool {
-    pub(super) async fn add_link(
-        &mut self,
-        channel: TransportChannel,
-        destination: &str,
-    ) -> Result<String, StreamError> {
-        let ready = open_link(
-            channel,
-            destination,
-            self.identity.clone(),
-            self.authorization.clone(),
-            self.credential.clone(),
-        )
-        .await?;
-        self.install(ready)
-    }
     pub(super) fn install(
         &mut self,
         (node, mut link, response): Ready,

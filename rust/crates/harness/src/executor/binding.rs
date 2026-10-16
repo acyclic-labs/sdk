@@ -111,7 +111,7 @@ impl StockExecution<'_> {
         });
         preparation_digest(
             &Request {
-                executor: "acyclic.stock.v6",
+                executor: "acyclic.stock.v7",
                 input,
                 model: &self.stock.model,
                 max_output_tokens: self.output_tokens(),
