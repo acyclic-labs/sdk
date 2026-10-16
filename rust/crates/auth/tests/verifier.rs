@@ -27,6 +27,22 @@ fn caveat() -> impl Strategy<Value = Caveat> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
+    fn verified_admission_preserves_typed_noncanonical_denials(name in "[a-z]{1,8}") {
+        let trust = Snapshot::default();
+        let capability = verify(&root(|_| {}), &trust, NOW).unwrap();
+        let attributes = RecordAttributes::default(); let usage = limits(None);
+        let resource = format!("fs:/{name}/../secret");
+        let mut request = request(&resource, &attributes, &usage);
+        for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
+            prop_assert_eq!(capability.authorize(&trust, &request, policy), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalResource)));
+        }
+        request.target = acyclic_auth::authority::Target::Resource { action: "fs/read", resource: "fs:/public" };
+        request.audience = &resource;
+        for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
+            prop_assert_eq!(capability.authorize(&trust, &request, policy), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalAudience)));
+        }
+    }
+    #[test]
     fn signed_attenuation_never_widens_and_owner_deny_wins(
         before in prop::collection::vec(caveat(), 0..4),
         after in prop::collection::vec(caveat(), 0..4),
