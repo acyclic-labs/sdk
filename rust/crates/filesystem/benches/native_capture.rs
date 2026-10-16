@@ -21,6 +21,16 @@ fn main() {
 
 #[divan::bench(args = [(128, 0), (128, 80), (1024, 0)], sample_count = 3, sample_size = 1)]
 fn rescan(bencher: divan::Bencher, (count, bytes): (u32, usize)) {
+    capture_workload(bencher, count, bytes, false);
+}
+
+#[cfg(windows)]
+#[divan::bench(args = [65536, 262144], sample_count = 3, sample_size = 1)]
+fn sparse_rescan(bencher: divan::Bencher, bytes: usize) {
+    capture_workload(bencher, 1, bytes, true);
+}
+
+fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -32,11 +42,24 @@ fn rescan(bencher: divan::Bencher, (count, bytes): (u32, usize)) {
         .value;
     let source = tempfile::tempdir().unwrap();
     for index in 0..count {
-        std::fs::write(
-            source.path().join(format!("f{index:05}")),
-            vec![b'x'; bytes],
-        )
-        .unwrap();
+        let path = source.path().join(format!("f{index:05}"));
+        #[cfg(windows)]
+        if sparse {
+            use std::io::Write as _;
+            let mut file = std::fs::File::create(path).unwrap();
+            acyclic_native_runtime::device_control_in_place(
+                &file,
+                windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
+                &[],
+                &mut [],
+                None,
+            )
+            .unwrap();
+            file.write_all(&vec![0; bytes]).unwrap();
+            continue;
+        }
+        assert!(!sparse);
+        std::fs::write(path, vec![b'x'; bytes]).unwrap();
     }
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
