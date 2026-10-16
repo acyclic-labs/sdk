@@ -2,6 +2,7 @@ import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema, SessionLatestValueSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { verifyHistoryTimeoutPolicy } from "./remote-history.browser.js";
 
 export async function test(endpoint: string) {
   await init();
@@ -63,6 +64,7 @@ export async function test(endpoint: string) {
     const fresh = overlap.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);
     if (fresh.length !== 3 || fresh.some((record, offset) => record.sequence !== cut + BigInt(offset) || record.value[0] !== Number(cut) + offset)) throw new Error("overlap consumed replayed bytes or skipped a fresh cursor");
   }
+  const historyTimeouts = await verifyHistoryTimeoutPolicy(stream);
   follow.close(); sibling.close(); latest.close(); all.close(); stream.free();
-  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length };
+  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length, historyTimeouts };
 }

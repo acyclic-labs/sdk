@@ -21,9 +21,14 @@ impl Remote {
         Ok(Self { endpoint, sessions })
     }
     fn service(&self) -> Service {
-        self.service_with_options(tonic_web_wasm_client::options::FetchOptions::new())
+        self.service_with_options(
+            tonic_web_wasm_client::options::FetchOptions::new()
+                .timeout(std::time::Duration::from_secs(1)),
+        )
     }
     fn read_service(&self) -> Service {
+        // A history is independently bounded messages, not a unary response with
+        // one total deadline. Keep consuming until EOF, cancellation or I/O error.
         self.service_with_options(
             tonic_web_wasm_client::options::FetchOptions::new().streaming_response(),
         )
@@ -40,8 +45,7 @@ impl Remote {
                     tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
                         .expect("fixed positive command bound"),
                 )
-                .redirect(Redirect::Error)
-                .timeout(std::time::Duration::from_secs(1)),
+                .redirect(Redirect::Error),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)
