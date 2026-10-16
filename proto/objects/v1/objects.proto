@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package acyclic.objects.v1;
 
+import "validation/v1/options.proto";
+
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/objects/v1;objectsv1";
@@ -67,9 +69,9 @@ message DeleteBucketResponse {
   bool existed = 1;
 }
 service BucketsService {
-  rpc CreateBucket(CreateBucketRequest) returns (Bucket);
-  rpc HeadBucket(HeadBucketRequest) returns (Bucket);
-  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse);
+  rpc CreateBucket(CreateBucketRequest) returns (Bucket) { option (acyclic.validation.v1.auth) = { action: "objects/create-bucket" resource: "objects:/{name}" }; }
+  rpc HeadBucket(HeadBucketRequest) returns (Bucket) { option (acyclic.validation.v1.auth) = { action: "objects/head-bucket" resource: "objects:/{bucket.name}" }; }
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete-bucket" resource: "objects:/{bucket.name}" }; }
 }
 
 message PutObjectHeader {
@@ -182,11 +184,11 @@ message ListObjectsResponse {
   bool is_truncated = 4;
 }
 service ObjectsService {
-  rpc PutObject(stream PutObjectRequest) returns (ObjectInfo);
-  rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse);
-  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse);
-  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
-  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  rpc PutObject(stream PutObjectRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{header.bucket.name}/{header.object_key}" }; }
+  rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/{bucket.name}/{object_key}" }; }
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/{bucket.name}/{object_key}" }; }
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" resource: "objects:/{bucket.name}/{object_key}" }; }
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" extractor: "objects.list-visible-prefix" }; }
 }
 
 message CreateMultipartRequest {
@@ -250,11 +252,11 @@ message AbortMultipartResponse {
   bool existed = 1;
 }
 service MultipartService {
-  rpc CreateMultipart(CreateMultipartRequest) returns (MultipartUpload);
-  rpc UploadPart(stream UploadPartRequest) returns (UploadedPart);
-  rpc ListParts(ListPartsRequest) returns (ListPartsResponse);
-  rpc CompleteMultipart(CompleteMultipartRequest) returns (ObjectInfo);
-  rpc AbortMultipart(AbortMultipartRequest) returns (AbortMultipartResponse);
+  rpc CreateMultipart(CreateMultipartRequest) returns (MultipartUpload) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{bucket.name}/{object_key}" }; }
+  rpc UploadPart(stream UploadPartRequest) returns (UploadedPart) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
+  rpc ListParts(ListPartsRequest) returns (ListPartsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list-parts" extractor: "objects.multipart-list" }; }
+  rpc CompleteMultipart(CompleteMultipartRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
+  rpc AbortMultipart(AbortMultipartRequest) returns (AbortMultipartResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" extractor: "objects.multipart-delete" }; }
 }
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;

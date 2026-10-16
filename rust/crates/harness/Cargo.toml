@@ -17,6 +17,24 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "git_executor"
+path = "tests/git_executor.rs"
+required-features = ["filesystem-local", "native-execution"]
+
+[[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
+
+[[test]]
+name = "mcp-loom"
+path = "tests/mcp_loom.rs"
+
+[[test]]
+name = "goal-files"
+path = "tests/goal_files.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "local-recursive-fork"
 path = "tests/local_recursive_fork.rs"
 required-features = ["filesystem-local"]
@@ -30,6 +48,24 @@ required-features = ["filesystem-local"]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client_journal_model"
+path = "tests/client_journal_model.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "client_session"
+path = "tests/client_session.rs"
+
+[[test]]
+name = "client_history"
+path = "tests/client_history.rs"
+
+[[test]]
+name = "client_terminal"
+path = "tests/client_terminal.rs"
+required-features = ["terminal"]
 
 [[test]]
 name = "mcp-durable"
@@ -78,7 +114,9 @@ name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
 [features]
+tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = []
+model-checking = ["dep:loom"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
@@ -92,13 +130,14 @@ native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
-mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
@@ -116,6 +155,7 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.2"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
@@ -135,13 +175,16 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
+which = { version = "8.0.6", optional = true }
 tracing.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 
@@ -153,7 +196,8 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 allocation-counter = "=0.8.1"
 tracing-subscriber.workspace = true
 proptest.workspace = true
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+loom = "0.7.2"
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
 

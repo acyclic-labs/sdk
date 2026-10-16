@@ -1,10 +1,13 @@
 use super::*;
+use crate::sync::{Mutex, MutexGuard};
 use crate::{DemandError, WorkBudget, WorkCounters, WorkError};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Weak};
 
 #[derive(Debug)]
 pub(crate) struct NativeResourceAllowance {
     pub(super) budget: WorkBudget,
+    // After the original leaf; nested allowances lock ancestors first. Release
+    // every allowance guard before acquiring an original leaf.
     pub(super) state: Mutex<NativeResourceState>,
     pub(super) self_ref: Weak<Self>,
     pub(super) parent: Option<Arc<Self>>,

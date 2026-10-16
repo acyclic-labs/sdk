@@ -37,6 +37,91 @@ pub enum HistoryContentFuture<'a, T> {
     Native(crate::NativeFutureBundle<'a, T>),
 }
 
+impl<'a, T> HistoryContentFuture<'a, T> {
+    pub(crate) fn new<'w: 'a, F>(
+        work: &'a mut Option<&'w mut dyn HistoryIo>,
+        build: impl FnOnce(&'a mut Option<&'w mut dyn HistoryIo>) -> F,
+    ) -> Result<Self>
+    where
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work
+            .as_ref()
+            .and_then(|io| io.original_native_work())
+            .cloned()
+        {
+            return crate::NativeFutureBundle::new(&native, || build(work)).map(Self::Native);
+        }
+        let frame_bytes = if let Some(io) = work.as_deref_mut() {
+            let bytes = std::mem::size_of::<F>() as u64;
+            io.check_cancellation()?;
+            io.admit_owned(bytes)?;
+            io.retain_owned(bytes)?;
+            if bytes != 0
+                && let Err(error) = io.allocation_attempt(bytes)
+            {
+                let _ = io.release_owned(bytes);
+                return Err(error);
+            }
+            bytes
+        } else {
+            0
+        };
+        Ok(Self::Ordinary {
+            future: Box::pin(build(work)),
+            frame_bytes,
+        })
+    }
+
+    pub(crate) fn with_quota<'q, 'w: 'a, F>(
+        quota: &'a mut crate::wire_codec::CodecQuota<'q, 'w>,
+        build: impl FnOnce(&'a mut Option<&'w mut dyn HistoryIo>) -> F,
+    ) -> Result<Self>
+    where
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = quota
+            .work()
+            .as_ref()
+            .and_then(|io| io.original_native_work())
+            .cloned()
+        {
+            return crate::NativeFutureBundle::new(&native, || build(quota.work()))
+                .map(Self::Native);
+        }
+        let bytes = if let Some(io) = quota.work().as_deref_mut() {
+            io.check_cancellation()?;
+            std::mem::size_of::<F>() as u64
+        } else {
+            0
+        };
+        let retained = quota
+            .retained()
+            .checked_add(bytes)
+            .ok_or_else(|| Error::Storage("future frame custody overflows".into()))?;
+        quota.replace(retained)?;
+        if bytes != 0
+            && let Some(io) = quota.work().as_deref_mut()
+        {
+            io.allocation_attempt(bytes)?;
+        }
+        Ok(Self::Ordinary {
+            future: Box::pin(build(quota.work())),
+            frame_bytes: bytes,
+        })
+    }
+
+    pub(crate) const fn frame_bytes(&self) -> u64 {
+        match self {
+            Self::Ordinary { frame_bytes, .. } => *frame_bytes,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(_) => 0,
+        }
+    }
+}
+
 impl<T> Future for HistoryContentFuture<'_, T> {
     type Output = Result<T>;
 
@@ -404,6 +489,7 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
 }
 
 mod conversation;
+mod follow;
 mod forks;
 mod pages;
 pub(in crate::store) use pages::project_effect;

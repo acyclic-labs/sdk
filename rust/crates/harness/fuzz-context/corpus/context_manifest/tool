@@ -1,0 +1,1 @@
+{"discovery":{"instructions":[],"skills":[]},"selected_skills":[],"tools":[{"name":"read","revision":"1","description":"Read files","input_schema":{"type":"object"},"output_schema":{"type":"object"},"projection_schema":{"type":"object"}}]}

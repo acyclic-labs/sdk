@@ -35,7 +35,7 @@ impl McpRuntimeCallbacks {
             ));
         }
         Ok(Self {
-            executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()),
+            executor: executor.without_tool_authority(),
             journal,
             model_name,
             continuation,

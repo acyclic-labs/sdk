@@ -73,7 +73,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) async fn stage_empty_tree_with_accounting(
+    pub(crate) async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,

@@ -192,7 +192,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    #[ignore = "manual debug-profile request-path measurement"]
+    #[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
     fn request_path_measure_upload_frame_conversion() {
         for reuse in [false, true] {
             let chunks: Vec<_> = (0..256)

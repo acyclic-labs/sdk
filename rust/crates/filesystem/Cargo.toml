@@ -37,6 +37,10 @@ path = "tests/cloud_contract.rs"
 required-features = ["memory"]
 
 [[test]]
+name = "native_custody_accounting"
+path = "tests/native_custody_accounting.rs"
+
+[[test]]
 name = "native_owner_registry"
 path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]
@@ -44,6 +48,11 @@ required-features = ["native-watch"]
 [[test]]
 name = "projfs_names"
 path = "tests/projfs_names.rs"
+required-features = ["native-mount"]
+
+[[test]]
+name = "native_binding_model"
+path = "tests/native_binding_model.rs"
 required-features = ["native-mount"]
 
 [[test]]
@@ -60,6 +69,11 @@ required-features = ["memory"]
 name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
+
+[[test]]
+name = "native_source_watch_custody"
+path = "tests/native_source_watch_custody.rs"
+required-features = ["local", "native-mount"]
 
 [dependencies]
 async-trait.workspace = true
@@ -91,6 +105,9 @@ crc-fast = { version = "1.10.0", optional = true }
 prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+loom = "=0.7.2"
+
 [build-dependencies]
 cc = "1.2.56"
 prost.workspace = true
@@ -99,6 +116,7 @@ tonic-prost-build.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
+loom = { version = "0.7.2", optional = true }
 tempfile = { version = "3.27.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -118,6 +136,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
@@ -151,6 +170,7 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [features]
+model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tempfile"]
 memory = ["distributed"]
@@ -163,6 +183,7 @@ typescript = ["dep:tsify", "dep:wasm-bindgen"]
 napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+loom = "0.7.2"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

@@ -56,6 +56,9 @@ fn unavailable<T: Send>() -> BoxProviderFuture<'static, Result<T>> {
 }
 
 impl HarnessWireApi for WireFixture {
+    fn acknowledge<'a>(&'a self, _: wire::Acknowledge) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn handshake<'a>(
         &'a self,
         request: wire::HandshakeRequest,
@@ -73,6 +76,7 @@ impl HarnessWireApi for WireFixture {
     fn replay<'a>(
         &'a self,
         request: wire::ResumeRequest,
+        _mode: acyclic_harness::wire_api::ReplayMode,
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         async move {
             validate_resume_protocol(&request)?;
@@ -112,6 +116,13 @@ impl HarnessWireApi for WireFixture {
         unavailable()
     }
 
+    fn watch_operation<'a>(
+        &'a self,
+        _: wire::ObserveRequest,
+    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::OperationStatus>>>>
+    {
+        unavailable()
+    }
     fn cancel<'a>(
         &'a self,
         _: wire::CancelRequest,
