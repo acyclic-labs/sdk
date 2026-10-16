@@ -18,6 +18,8 @@ enum Fault {
     ChangeRequest,
     ChangeCeiling,
     IgnoreCancellation,
+    ForgetAfterLease,
+    MutateRejected,
 }
 
 struct Ledger {
@@ -80,53 +82,41 @@ fn event(input: Claim) -> SchedulerEvent {
 }
 
 fn assert_ledger(scheduler: &Scheduler, ledger: &Ledger) {
-    assert_eq!(
-        scheduler.model_claims.len(),
-        ledger.ceilings.iter().flatten().count()
-    );
+    let actual: BTreeMap<_, _> = scheduler
+        .model_claims
+        .iter()
+        .map(|(owner, claims)| {
+            (
+                *owner,
+                (claims.ceiling, claims.attempts.clone(), claims.used()),
+            )
+        })
+        .collect();
+    let mut expected = BTreeMap::new();
     for task in 0..2_u8 {
+        let Some(ceiling) = ledger.ceilings[usize::from(task)] else {
+            continue;
+        };
         let mut attempts: BTreeMap<OperationId, BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
+        let mut used = 0_u64;
         for (&(owner, attempt, step), &digest) in &ledger.entries {
             if owner == task {
                 attempts
                     .entry(id(attempt + 20))
                     .or_default()
                     .insert(u32::from(step), [digest; 32]);
+                used += 1;
             }
         }
-        match scheduler.model_claims.get(&id(task + 2)) {
-            Some(actual) => {
-                assert_eq!(
-                    actual.attempts, attempts,
-                    "claim ledger differs from independent inputs"
-                );
-                assert_eq!(
-                    Some(actual.ceiling),
-                    ledger.ceilings[usize::from(task)].map(u64::from)
-                );
-                assert_eq!(
-                    actual.used(),
-                    ledger
-                        .entries
-                        .keys()
-                        .filter(|(owner, _, _)| *owner == task)
-                        .count() as u64
-                );
-            }
-            None => assert!(attempts.is_empty()),
-        }
+        expected.insert(id(task + 2), (u64::from(ceiling), attempts, used));
     }
     assert_eq!(
-        scheduler
-            .model_claims
-            .values()
-            .map(TaskModelClaims::used)
-            .sum::<u64>(),
-        ledger.entries.len() as u64
+        actual, expected,
+        "claim ledger differs from independent inputs"
     );
 }
 
-fn apply(scheduler: &mut Scheduler, ledger: &mut Ledger, input: Claim, fault: Fault) {
+fn apply(scheduler: &mut Scheduler, ledger: &mut Ledger, input: Claim, fault: Fault) -> bool {
     assert_ledger(scheduler, ledger);
     let key = (input.task, input.attempt, input.step);
     let retained = ledger.entries.get(&key).copied();
@@ -160,20 +150,32 @@ fn apply(scheduler: &mut Scheduler, ledger: &mut Ledger, input: Claim, fault: Fa
         }
         _ => {}
     }
+    let substituted = *scheduler != before;
+    let accepted = scheduler.apply(&event(input), &mut None).is_ok();
     assert_eq!(
-        scheduler.apply(&event(input), &mut None).is_ok(),
+        accepted,
         refusal.is_none(),
         "{}: {input:?}",
         refusal.unwrap_or("valid claim was rejected")
     );
-    if refusal.is_some() {
-        assert_eq!(*scheduler, before, "rejected claim changed state");
+    if substituted {
+        return true;
     }
-    if fault == Fault::ChargeRetry
+    if refusal.is_some() {
+        if fault == Fault::MutateRejected {
+            // Preserve the real rejected result, but corrupt state after it.
+            scheduler.operations.get_mut(&op).unwrap().revision += 1;
+        }
+        assert_eq!(*scheduler, before, "rejected claim changed state");
+        if fault == Fault::MutateRejected {
+            return true;
+        }
+    }
+    let duplicate = fault == Fault::ChargeRetry
         && retained == Some(input.digest)
         && pinned == Some(input.ceiling)
-        && refusal.is_none()
-    {
+        && refusal.is_none();
+    if duplicate {
         scheduler
             .model_claims
             .get_mut(&op)
@@ -184,6 +186,7 @@ fn apply(scheduler: &mut Scheduler, ledger: &mut Ledger, input: Claim, fault: Fa
             .insert(0, [1; 32]);
     }
     assert_ledger(scheduler, ledger);
+    duplicate
 }
 
 fn fixture() -> Scheduler {
@@ -230,15 +233,21 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         ceiling,
         lease: 0,
     };
-    apply(&mut scheduler, &mut ledger, first, fault);
-    apply(&mut scheduler, &mut ledger, first, fault);
-    apply(
+    if apply(&mut scheduler, &mut ledger, first, fault) {
+        return;
+    }
+    if apply(&mut scheduler, &mut ledger, first, fault) {
+        return;
+    }
+    if apply(
         &mut scheduler,
         &mut ledger,
         Claim { digest: 2, ..first },
         fault,
-    );
-    apply(
+    ) {
+        return;
+    }
+    if apply(
         &mut scheduler,
         &mut ledger,
         Claim {
@@ -246,15 +255,21 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
             ..first
         },
         fault,
-    );
-    apply(
+    ) {
+        return;
+    }
+    if apply(
         &mut scheduler,
         &mut ledger,
         Claim { lease: 1, ..first },
         fault,
-    );
+    ) {
+        return;
+    }
     for &input in inputs {
-        apply(&mut scheduler, &mut ledger, input, fault);
+        if apply(&mut scheduler, &mut ledger, input, fault) {
+            return;
+        }
     }
     let second = Claim {
         task: 1,
@@ -262,15 +277,21 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         lease: 1,
         ..first
     };
-    apply(&mut scheduler, &mut ledger, second, fault);
-    apply(
+    if apply(&mut scheduler, &mut ledger, second, fault) {
+        return;
+    }
+    if apply(
         &mut scheduler,
         &mut ledger,
         Claim { step: 1, ..first },
         fault,
-    );
+    ) {
+        return;
+    }
     // Exact retries do not consume additional capacity, even at the shared ceiling.
-    apply(&mut scheduler, &mut ledger, first, fault);
+    if apply(&mut scheduler, &mut ledger, first, fault) {
+        return;
+    }
 
     ledger.cancelled[usize::from(cancel)] = true;
     scheduler
@@ -283,12 +304,14 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         )
         .unwrap();
     assert_ledger(&scheduler, &ledger);
-    apply(
+    if apply(
         &mut scheduler,
         &mut ledger,
         if cancel == 0 { first } else { second },
         fault,
-    );
+    ) {
+        return;
+    }
     let replacement = 1 - cancel;
     scheduler
         .apply(
@@ -301,10 +324,18 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         .unwrap();
     start(&mut scheduler, id(replacement + 2), reservation(2, 0)).unwrap();
     ledger.leases[usize::from(replacement)] = 2;
+    if fault == Fault::ForgetAfterLease {
+        scheduler.model_claims.remove(&id(replacement + 2));
+    }
     assert_ledger(&scheduler, &ledger);
+    if fault == Fault::ForgetAfterLease {
+        return;
+    }
     let original = if replacement == 0 { first } else { second };
-    apply(&mut scheduler, &mut ledger, original, fault);
-    apply(
+    if apply(&mut scheduler, &mut ledger, original, fault) {
+        return;
+    }
+    if apply(
         &mut scheduler,
         &mut ledger,
         Claim {
@@ -312,7 +343,9 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
             ..original
         },
         fault,
-    );
+    ) {
+        return;
+    }
     let fresh = Claim {
         task: replacement,
         attempt: 9,
@@ -321,7 +354,9 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         ceiling: ledger.ceilings[usize::from(replacement)].unwrap_or(2),
         lease: 2,
     };
-    apply(&mut scheduler, &mut ledger, fresh, fault);
+    if apply(&mut scheduler, &mut ledger, fresh, fault) {
+        return;
+    }
     scheduler
         .apply(
             &SchedulerEvent::Completed {
@@ -334,7 +369,9 @@ fn trace(ceiling: u8, inputs: &[Claim], cancel: u8, fault: Fault) {
         )
         .unwrap();
     assert_ledger(&scheduler, &ledger);
-    apply(&mut scheduler, &mut ledger, fresh, fault);
+    if apply(&mut scheduler, &mut ledger, fresh, fault) {
+        return;
+    }
 }
 
 proptest! {
@@ -379,4 +416,16 @@ fn negative_control_changes_the_pinned_task_ceiling() {
 #[should_panic(expected = "cancelled owner claim was accepted")]
 fn negative_control_charges_cancelled_execution() {
     trace(2, &[], 0, Fault::IgnoreCancellation);
+}
+
+#[test]
+#[should_panic(expected = "claim ledger differs from independent inputs")]
+fn negative_control_loses_charges_after_lease_replacement() {
+    trace(2, &[], 0, Fault::ForgetAfterLease);
+}
+
+#[test]
+#[should_panic(expected = "rejected claim changed state")]
+fn negative_control_mutates_a_rejected_claim() {
+    trace(2, &[], 0, Fault::MutateRejected);
 }
