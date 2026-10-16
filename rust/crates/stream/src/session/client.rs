@@ -7,11 +7,13 @@ use tokio::sync::mpsc;
 mod native;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use native::Connect;
-#[cfg(all(acyclic_stream_loom, not(target_arch = "wasm32")))]
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
 
+mod admissions;
+use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod credit;
@@ -27,11 +29,14 @@ type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
 #[cfg(acyclic_stream_loom)]
+pub use admissions::verify_admission_binding;
+#[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime, verify_registration_deadline,
+    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_terminal_cursor_dial,
 };
 mod progress;
 use progress::Progress;
@@ -61,6 +66,7 @@ pub struct Client {
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
+    admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
 }
@@ -123,12 +129,12 @@ struct Pool {
     routes: BTreeMap<u64, Route>,
     links: BTreeMap<String, Link>,
     reads: FuturesUnordered<Read>,
-    dials: FuturesUnordered<Dial>,
-    connecting: BTreeSet<String>,
+    dials: BTreeMap<String, Dial>,
     pending: VecDeque<(u64, u64)>,
     home_channel: Endpoint,
     next_link: u64,
     active: Arc<AtomicU64>,
+    admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
     dial_epoch: u64,
@@ -136,6 +142,11 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+}
+impl Route {
+    fn live(&self) -> bool {
+        !self.progress.cancelled() && !self.records.is_closed()
+    }
 }
 impl Drop for Link {
     fn drop(&mut self) {
@@ -158,6 +169,7 @@ impl Client {
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
         let active = Arc::new(AtomicU64::new(0));
+        let admissions = Arc::new(Admissions::new());
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
@@ -169,12 +181,12 @@ impl Client {
             routes: BTreeMap::new(),
             links: BTreeMap::new(),
             reads: FuturesUnordered::new(),
-            dials: FuturesUnordered::new(),
-            connecting: BTreeSet::new(),
+            dials: BTreeMap::new(),
             pending: VecDeque::new(),
             home_channel: channel.clone(),
             next_link: 1,
             active: Arc::clone(&active),
+            admissions: Arc::clone(&admissions),
             attempt_epoch: Arc::clone(&attempt_epoch),
             abandoned: Arc::clone(&abandoned),
             dial_epoch: 0,
@@ -183,12 +195,11 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        let context = super::runtime::OperationSpan::new(tracing::Span::current());
-        executor.spawn(Box::pin(context.scope(async move {
+        executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        })));
+        }));
         Self {
             connections,
             executor,
@@ -196,6 +207,7 @@ impl Client {
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
             active,
+            admissions,
             attempt_epoch,
             abandoned,
         }
@@ -386,6 +398,10 @@ impl Client {
                 active.checked_add(1)
             })
             .map_err(|_| StreamError::Capacity)?;
+        if let Err(error) = self.admissions.insert(id, Arc::clone(&progress)) {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
         Ok(Cursor {
             observation: Observation::channel(id),
             id,
@@ -406,6 +422,7 @@ impl Drop for Cursor {
     fn drop(&mut self) {
         self.progress.cancel();
         self.receiver.close();
+        let _ = self.client.admissions.remove(self.id);
         self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }

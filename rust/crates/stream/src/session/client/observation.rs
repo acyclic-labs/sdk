@@ -18,12 +18,16 @@ impl Observation {
         ))
     }
     pub(super) fn session(attempt: u32) -> Self {
-        Self::new(tracing::info_span!(
+        Self {
+            operation: OperationSpan::new_root(tracing::info_span!(
+            parent: None,
             "stream.session",
             attempt,
             outcome = Empty,
             error.kind = Empty
-        ))
+            )),
+            finished: false,
+        }
     }
     fn new(span: tracing::Span) -> Self {
         Self {

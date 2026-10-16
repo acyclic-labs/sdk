@@ -1,5 +1,7 @@
 use super::*;
 
+#[cfg(any(test, acyclic_stream_loom))]
+pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
 
@@ -7,12 +9,13 @@ impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
             self.sync_attempts()?;
+            self.close_idle();
             tokio::select! {
                 changed = self.abandoned.changed(false) => changed?,
                 command = self.commands.recv() => match command { Some(command) => self.command(command)?, None => return Ok(()) },
                 released = self.released.next() => { self.released(released?)?; },
                 id = self.removed.next() => self.remove(id?)?,
-                ready = self.dials.next(), if !self.dials.is_empty() => {
+                ready = future::poll_fn(|cx| poll_dials(&mut self.dials, cx)), if !self.dials.is_empty() => {
                     let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
                     self.dial_ready(node, epoch, result)?;
                 }
@@ -46,7 +49,6 @@ impl Pool {
         }
         self.dial_epoch = epoch;
         self.dials.clear();
-        self.connecting.clear();
         let stale = self
             .routes
             .iter()
@@ -58,7 +60,7 @@ impl Pool {
         }
         Ok(())
     }
-    fn dial_ready(
+    pub(super) fn dial_ready(
         &mut self,
         node: String,
         epoch: u64,
@@ -70,11 +72,14 @@ impl Pool {
             // Neither its failure nor its success belongs to the successor dial.
             return Ok(());
         }
-        self.connecting.remove(&node);
+        if !self.node_interested(&node) {
+            return Ok(());
+        }
         match result {
             Ok(ready) => {
                 let installed = self.install(ready)?;
                 if node.is_empty() && self.home.is_empty() {
+                    self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
                     for route in self
                         .routes
@@ -95,20 +100,37 @@ impl Pool {
         }
         Ok(())
     }
-    fn close_idle(&mut self) {
+    pub(super) fn close_idle(&mut self) {
         if self.active.load(Ordering::Acquire) == 0 {
             self.close_links();
+        } else {
+            let idle = self
+                .dials
+                .keys()
+                .filter(|node| !self.node_interested(node))
+                .cloned()
+                .collect::<Vec<_>>();
+            for node in idle {
+                // Dropping the owned future cancels connector/credential/Welcome
+                // work immediately; it cannot later publish a Link or failure.
+                self.dials.remove(&node);
+            }
         }
+    }
+    pub(super) fn node_interested(&self, node: &str) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.node == node && route.live())
+            || self.admissions.interested(node)
     }
     fn close_links(&mut self) {
         self.links.clear();
         self.reads.clear();
         self.dials.clear();
-        self.connecting.clear();
         self.pending.clear();
         self.routes.clear();
     }
-    fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
+    pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
             Ok(()) => true,
             Err(error) => {
@@ -138,6 +160,7 @@ impl Pool {
                 ready,
                 observation,
             } => {
+                self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
                     return Ok(());
@@ -445,4 +468,18 @@ impl Pool {
             }));
         }
     }
+}
+
+pub(super) fn poll_dials(
+    dials: &mut BTreeMap<String, Dial>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<Option<(String, u64, Result<Ready, StreamError>)>> {
+    for (node, dial) in dials.iter_mut() {
+        if let std::task::Poll::Ready(result) = dial.as_mut().poll(cx) {
+            let node = node.clone();
+            dials.remove(&node);
+            return std::task::Poll::Ready(Some(result));
+        }
+    }
+    std::task::Poll::Pending
 }

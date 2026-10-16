@@ -1,0 +1,6 @@
+{
+  "before":"old",
+  "after":"new",
+  "render":104,
+  "expect":{"added":1,"removed":1,"patch":"--- original\n+++ modified\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n","hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":1}]}
+}

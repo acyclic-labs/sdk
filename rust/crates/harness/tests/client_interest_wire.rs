@@ -6,7 +6,7 @@ use acyclic_harness::{
     task_volume::{Channel, FileKey, FileValue, Query, TaskVolume, Write},
 };
 use acyclic_stream::{AppendRequest, CommitId, MemoryStream, StreamProvider as _, wire};
-use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::Either};
+use futures::{StreamExt as _, channel::mpsc, future::Either};
 use prost::Message as _;
 use std::sync::Arc;
 use wire::{session_frame::Body, session_subscription::Kind};
@@ -17,6 +17,7 @@ enum Fault {
     MissingDiscoveryCursor,
     OpaqueContentAnchor,
     EvenChannel,
+    DuplicateContent,
 }
 
 fn frame(id: u64, body: Body) -> wire::SessionFrame {
@@ -91,7 +92,26 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
         receiver.boxed(),
     )
     .unwrap()
-    .map(|item| item.map_err(|error| Error::Storage(error.to_string())));
+    .flat_map(move |item| {
+        let item = item.map_err(|error| Error::Storage(error.to_string()));
+        let duplicate = matches!(fault, Fault::DuplicateContent)
+            && matches!(
+                &item,
+                Ok(wire::SessionFrame {
+                    body: Some(Body::Data(wire::SessionData {
+                        item: Some(wire::session_data::Item::Record(_)),
+                        ..
+                    })),
+                    ..
+                })
+            );
+        let mut frames = Vec::new();
+        if duplicate {
+            frames.push(Ok(item.as_ref().unwrap().clone()));
+        }
+        frames.push(item);
+        futures::stream::iter(frames)
+    });
     let sink = Box::pin(futures::sink::unfold(
         sender,
         move |sender, mut update: wire::SessionInterest| async move {
@@ -137,6 +157,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
     ));
     let mut snapshots = Vec::new();
     let mut delivered = Vec::new();
+    let mut through = None;
     let client = SwarmClient::new(
         path("swarm"),
         SwarmClientLimits {
@@ -157,6 +178,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
         |update| {
             match update {
                 SwarmUpdate::Snapshot { snapshot, .. } => {
+                    through = Some(snapshot.cursor.position + 1);
                     snapshots.push(snapshot);
                     // Actual append after C but before the production follow is sent.
                     return Either::Left(async {
@@ -169,9 +191,16 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                     data,
                     ..
                 } => {
+                    if !delivered.is_empty() {
+                        return Either::Right(futures::future::ready(Err(Error::Invalid(
+                            "duplicate content delivery".into(),
+                        ))));
+                    }
                     let Some(wire::session_data::Item::Record(record)) = data.item else {
                         panic!("content record")
                     };
+                    assert_eq!(data.after.as_ref().map(|cursor| cursor.next), through);
+                    assert_eq!(Some(record.sequence + 1), through);
                     let record = acyclic_stream::Record {
                         sequence: record.sequence,
                         value: record.value.into(),
@@ -184,26 +213,20 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                     assert_eq!(file.key.path(), ".tasks/t/turns/1/chunks/2");
                     assert_eq!(file.channel, Some(Channel::Text));
                     delivered.push(file.bytes);
-                    return Either::Right(futures::future::ready(Err(Error::Unsupported(
-                        "complete".into(),
-                    ))));
                 }
                 _ => {}
             }
             Either::Right(futures::future::ready(Ok(())))
         },
     );
-    // The memory provider already owns every required record. Pending is a
-    // delivery failure here, with no unbounded wait or wall-clock assumption.
-    let outcome = tokio::task::unconstrained(consume)
-        .now_or_never()
-        .expect("accepted in-memory records were not delivered");
+    // Drain all scheduled work, including controls after the known content cut.
+    // Returning early at that cut would hide a duplicate already queued behind it.
+    let mut consume = Box::pin(tokio::task::unconstrained(consume));
+    let outcome = super::quiescent::until_idle(consume.as_mut()).await;
+    drop(consume);
     match fault {
         Fault::None => {
-            assert!(
-                matches!(outcome, Err(Error::Unsupported(ref reason)) if reason == "complete"),
-                "{outcome:?}"
-            );
+            assert!(outcome.is_none(), "live follow ended: {outcome:?}");
             assert_eq!(snapshots.len(), 1);
             assert_eq!(snapshots[0].files.len(), 1);
             let bytes: Vec<_> = snapshots[0].files[0]
@@ -215,6 +238,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
             assert_eq!(delivered.len(), 1);
             assert_eq!(delivered[0].as_ref(), after);
             let current = files.heads(&Query::Root, None, 4).await.unwrap();
+            assert_eq!(Some(current.cursor.position), through);
             let actual: Vec<_> = current.files[0]
                 .segments
                 .iter()
@@ -222,11 +246,30 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                 .collect();
             assert_eq!(actual, [before, after].concat());
         }
+        Fault::DuplicateContent => {
+            assert!(
+                matches!(outcome, Some(Err(Error::Invalid(ref reason)))
+                if reason == "duplicate content delivery"),
+                "{outcome:?}"
+            );
+            assert_eq!(delivered.len(), 1);
+        }
         _ => {
-            assert!(matches!(outcome, Err(Error::Storage(_))), "{outcome:?}");
+            assert!(
+                matches!(outcome, Some(Err(Error::Storage(_)))),
+                "{outcome:?}"
+            );
             assert!(delivered.is_empty(), "malformed subscription admitted");
         }
     }
+}
+
+#[test]
+fn duplicate_delivery_after_the_known_cut_is_rejected() {
+    futures::executor::block_on(async {
+        exercise(b"before", b"after", Fault::None).await;
+        exercise(b"before", b"after", Fault::DuplicateContent).await;
+    });
 }
 
 #[test]

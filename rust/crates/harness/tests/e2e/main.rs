@@ -1,5 +1,9 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
+mod diff_case;
+mod diff_tests;
+mod diff_workspace;
+mod diffs;
 mod discovery;
 mod drivers;
 mod execution;
@@ -11,6 +15,8 @@ mod notifications;
 mod plan_query;
 mod plans;
 mod scenario;
+#[path = "../support/scenario_data.rs"]
+mod scenario_data;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;
@@ -19,26 +25,11 @@ use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-fn discover(root: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            discover(&path, paths)?;
-        } else if path.extension().is_some_and(|ext| ext == "json")
-            && path
-                .file_name()
-                .is_some_and(|name| name != "_defaults.json")
-        {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
+use scenario_data::discover;
 
 #[tokio::test]
 async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turns() -> TestResult {

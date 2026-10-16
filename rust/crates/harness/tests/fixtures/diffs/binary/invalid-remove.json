@@ -1,0 +1,5 @@
+{
+  "before":[255],
+  "after":null,
+  "expect":{"kind":"removed"}
+}

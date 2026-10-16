@@ -1,0 +1,8 @@
+{
+  "seed":{"plans/a.md":"λ\n"},
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"change","name":"write",
+    "arguments":{"path":"plans/a.md","text":"λ\n雪\n","media_type":"text/markdown","display_name":"a.md"}},
+    {"type":"event","kind":"completed","metadata":null}],"done"],
+  "expect":{"files":{"plans/a.md":"λ\n雪\n"},
+    "diffs":{"plans/a.md":{"kind":"modified","binary":false,"added":1,"removed":0,"hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":2}],"patch":"--- original\n+++ modified\n@@ -1 +1,2 @@\n λ\n+雪\n"}}}
+}

@@ -1,0 +1,6 @@
+{
+  "before":"one\n",
+  "after":null,
+  "render":45,
+  "expect":{"kind":"removed","removed":1,"patch":"--- original\n+++ modified\n@@ -1 +0,0 @@\n-one\n","hunks":[{"old_start":1,"old_lines":1,"new_start":0,"new_lines":0}]}
+}

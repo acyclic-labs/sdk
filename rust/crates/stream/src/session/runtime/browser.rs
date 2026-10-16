@@ -18,6 +18,11 @@ impl OperationSpan {
             dispatch: tracing::dispatcher::get_default(Clone::clone),
         }
     }
+    pub(crate) fn new_root(span: tracing::Span) -> Self {
+        // Physical spans use explicit parent: None and retain only their own
+        // dispatch. The browser executor carries no ambient Tokio task context.
+        Self::new(span)
+    }
     pub(crate) fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
         tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
     }

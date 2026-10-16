@@ -9,6 +9,8 @@ mod continuity;
 mod discovery;
 #[path = "client_interest_wire.rs"]
 mod platform;
+#[path = "support/quiescent.rs"]
+mod quiescent;
 #[path = "client_interest_session.rs"]
 mod session;
 

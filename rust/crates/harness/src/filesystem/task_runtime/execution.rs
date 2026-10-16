@@ -16,6 +16,7 @@ where
         model: &Model,
         provider: Arc<dyn ModelProvider>,
         pipeline: &ContextPipeline,
+        tools: ToolRegistry,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
         compaction: &crate::context::CompactionPolicy,
@@ -32,7 +33,7 @@ where
         crate::executor::NativeStockExecutor::new(
             (model, provider),
             pipeline,
-            &self.tools,
+            tools,
             (
                 Arc::clone(context),
                 operation,
@@ -48,7 +49,7 @@ where
         )
     }
 
-    /// Constructs stock execution with the task-owned journal and optional output volume.
+    /// Constructs stock execution with the task-owned journal, selected tools and output volume.
     pub async fn stock_execution(
         &self,
         task: TaskId,
@@ -57,6 +58,7 @@ where
         model: Model,
         provider: Arc<dyn ModelProvider>,
         context: ContextPipeline,
+        tools: ToolRegistry,
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let admission = self.host.observe_admission(task).await?;
@@ -82,7 +84,7 @@ where
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
             .await?;
-        let executor = StockExecutor::new(model, provider, context, self.tools.clone())
+        let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
             .with_durable_task(self.host.clone(), task, fence.clone())
