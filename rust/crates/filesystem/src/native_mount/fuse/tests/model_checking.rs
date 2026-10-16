@@ -7,25 +7,39 @@ type Volume = crate::facade::Volume<
 
 // Immutable backend input is seeded before the schedules. Source and core
 // synchronization are constructed afresh inside each Loom execution.
-pub(in crate::native_mount::fuse) fn volume() -> Volume {
+pub(in crate::native_mount::fuse) fn volume() -> (Volume, crate::GenerationId) {
     let fs = crate::Fs::memory();
     let cancellation = crate::CancellationToken::new();
-    tokio::runtime::Builder::new_current_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
-        .unwrap()
+        .unwrap();
+    let volume = runtime
         .block_on(Box::pin(fs.create_volume(
             posix_config(),
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
         )))
         .unwrap()
+        .value;
+    let creation = runtime
+        .block_on(Box::pin(fs.read_creation_record(
+            volume.id(),
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )))
+        .unwrap()
         .value
+        .0;
+    (
+        volume,
+        crate::GenerationId::new(creation.initial_generation_root.digest),
+    )
 }
 
 pub(in crate::native_mount::fuse) fn fixture(
-    volume: &Volume,
+    (volume, generation): &(Volume, crate::GenerationId),
 ) -> (Arc<ProjectionCore>, crate::NativeMaterializationWork) {
-    let checkout = checkout(volume);
+    let checkout = checkout(volume, *generation);
     let source = source(checkout);
     core(source)
 }
@@ -36,11 +50,11 @@ fn boxed<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<
 }
 
 #[inline(never)]
-fn checkout(volume: &Volume) -> Box<MemoryCheckout> {
+fn checkout(volume: &Volume, generation: crate::GenerationId) -> Box<MemoryCheckout> {
     let cancellation = crate::CancellationToken::new();
     let future = boxed(|| {
         volume.checkout(
-            crate::model::GenerationSelector::Head,
+            crate::model::GenerationSelector::Exact(generation),
             crate::model::CheckoutMode::read_only_pinned(),
             crate::WorkBudget::UNBOUNDED,
             &cancellation,
