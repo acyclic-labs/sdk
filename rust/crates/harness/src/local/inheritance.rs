@@ -21,8 +21,7 @@ async fn read<P: StreamProvider + ?Sized>(
     key: &FileKey,
     maximum: u64,
 ) -> Result<Option<Value>> {
-    let cut = volume
-        .snapshot(&Query::File(key.clone()), 1)
+    let cut = Box::pin(volume.snapshot(&Query::File(key.clone()), 1))
         .await
         .map_err(storage)?;
     cut.files
@@ -55,9 +54,8 @@ fn validate(value: &Value) -> Result<()> {
     .map_err(storage)?;
     Ok(())
 }
-// The parent marker is published last: its presence means both independently
-// bounded values are retained. Each immutable component uses the same modeled
-// first-publication path, including retry/reopen after a partial publication.
+// Claim the immutable parent before copying values. Partial preparation can be
+// completed by that parent only; admission follows both retained value files.
 async fn read_inheritance<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
     task: TaskId,
@@ -68,9 +66,11 @@ async fn read_inheritance<P: StreamProvider + ?Sized>(
     };
     let mut value = json!({"parent":parent});
     for field in ["model", "summary"] {
-        value[field] = read(volume, &key(task, &format!("inherited-{field}"))?, maximum)
-            .await?
-            .ok_or_else(|| Error::Invalid(format!("retained {field} is absent")))?;
+        let Some(saved) = read(volume, &key(task, &format!("inherited-{field}"))?, maximum).await?
+        else {
+            return Ok(None);
+        };
+        value[field] = saved;
     }
     validate(&value)?;
     Ok(Some(value))
@@ -82,15 +82,81 @@ async fn retain_inheritance<P: StreamProvider + ?Sized>(
     maximum: u64,
 ) -> Result<Value> {
     validate(&value)?;
-    for field in ["model", "summary", "parent"] {
-        let name = if field == "parent" {
-            "inherited".into()
-        } else {
-            format!("inherited-{field}")
-        };
-        value[field] = retain(volume, key(task, &name)?, value[field].take(), maximum).await?;
+    let parent = serde_json::from_value(value["parent"].clone()).map_err(storage)?;
+    value["parent"] = claim_parent(volume, task, parent, maximum).await?;
+    for field in ["model", "summary"] {
+        value[field] = retain(
+            volume,
+            key(task, &format!("inherited-{field}"))?,
+            value[field].take(),
+            maximum,
+        )
+        .await?;
     }
     Ok(value)
+}
+fn require_parent(retained: &Value, expected: Option<TaskId>) -> Result<()> {
+    #[cfg(all(test, acyclic_harness_loom))]
+    if model::broken_parent() {
+        return Ok(());
+    }
+    if retained != &json!(expected) {
+        return Err(Error::Conflict(
+            "task inheritance belongs to a different parent".into(),
+        ));
+    }
+    Ok(())
+}
+async fn claim_parent<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    parent: Option<TaskId>,
+    maximum: u64,
+) -> Result<Value> {
+    let retained = retain(volume, key(task, "inherited")?, json!(parent), maximum).await?;
+    require_parent(&retained, parent)?;
+    Ok(retained)
+}
+async fn prepare<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    parent: Option<TaskId>,
+    maximum: u64,
+    resolve: impl AsyncFnOnce() -> Result<Value>,
+) -> Result<()> {
+    if let Some(saved) = read_inheritance(volume, task, maximum).await? {
+        return require_parent(&saved["parent"], parent);
+    }
+    claim_parent(volume, task, parent, maximum).await?;
+    let mut value = resolve().await?;
+    value["parent"] = json!(parent);
+    let retained = retain_inheritance(volume, task, value, maximum).await?;
+    require_parent(&retained["parent"], parent)
+}
+// Admission is the outer lock, followed by task-volume/provider leaf locks.
+// The guard covers preparation and admission only, never tool/model execution.
+pub(super) fn admit_prepared<'a, T: Send + 'a>(
+    gate: &'a crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
+    preparation: BoxProviderFuture<'a, Result<()>>,
+    admit: BoxProviderFuture<'a, Result<T>>,
+) -> BoxProviderFuture<'a, Result<T>> {
+    Box::pin(async move {
+        super::admission::serialized(gate, async || {
+            preparation.await?;
+            admit.await
+        })
+        .await
+    })
+}
+async fn cached_parent<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    maximum: u64,
+) -> Result<Option<Option<TaskId>>> {
+    read(volume, &key(task, "inherited")?, maximum)
+        .await?
+        .map(|value| serde_json::from_value(value).map_err(storage))
+        .transpose()
 }
 // First publication pins inheritance. A competing creator's accepted value,
 // including after a lost acknowledgement, is always the value returned.
@@ -100,33 +166,21 @@ async fn retain<P: StreamProvider + ?Sized>(
     value: Value,
     maximum: u64,
 ) -> Result<Value> {
-    let cut = volume
-        .snapshot(&Query::File(key.clone()), 1)
+    let mut cut = Box::pin(volume.snapshot(&Query::File(key.clone()), 1))
         .await
         .map_err(storage)?;
-    retain_at_cut(volume, key, value, maximum, cut).await
-}
-async fn retain_at_cut<P: StreamProvider + ?Sized>(
-    volume: &TaskVolume<P>,
-    key: FileKey,
-    value: Value,
-    maximum: u64,
-    mut cut: crate::task_volume::Snapshot,
-) -> Result<Value> {
     let bytes = serde_json::to_vec(&value).map_err(storage)?;
     decode(&bytes, maximum)?;
     loop {
         if let Some(file) = cut.files.first() {
             return decode(&file.bytes, maximum);
         }
-        match volume
-            .create(cut.generation, &FileValue::new(key.clone(), bytes.clone()))
+        match Box::pin(volume.create(cut.generation, &FileValue::new(key.clone(), bytes.clone())))
             .await
         {
             Ok(_) => return Ok(value),
             Err(crate::task_volume::Error::Conflict(_)) => {
-                cut = volume
-                    .snapshot(&Query::File(key.clone()), 1)
+                cut = Box::pin(volume.snapshot(&Query::File(key.clone()), 1))
                     .await
                     .map_err(storage)?;
             }
@@ -140,19 +194,17 @@ impl LocalHarness {
         task: TaskId,
         parent: Option<TaskId>,
     ) -> Result<()> {
-        if read_inheritance(&self.task_files.inner, task, self.limits.file_bytes)
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
-        let mut value = match parent {
-            Some(parent) => self.resolved_inheritance(parent).await?,
-            None => json!({"model":null,"summary":null}),
-        };
-        value["parent"] = json!(parent);
-        retain_inheritance(&self.task_files.inner, task, value, self.limits.file_bytes).await?;
-        Ok(())
+        prepare(
+            &self.task_files.inner,
+            task,
+            parent,
+            self.limits.file_bytes,
+            async || match parent {
+                Some(parent) => self.resolved_inheritance(parent).await,
+                None => Ok(json!({"model":null,"summary":null})),
+            },
+        )
+        .await
     }
     fn inherited(&self, task: TaskId) -> BoxProviderFuture<'_, Result<Value>> {
         Box::pin(async move {
@@ -254,51 +306,64 @@ impl LocalHarness {
         task: Option<TaskId>,
         scope: TaskId,
     ) -> Result<bool> {
-        let mut cursor = task;
-        let mut missing = Vec::new();
-        let mut visited = HashSet::new();
-        let name = format!("ancestor-{scope}");
-        let mut matches = false;
-        while let Some(current) = cursor {
-            if current == scope {
-                matches = true;
-                break;
-            }
-            if !visited.insert(current) {
-                return Err(Error::Invalid("cyclic task inheritance".into()));
-            }
-            if let Some(saved) = read(
-                &self.task_files.inner,
-                &key(current, &name)?,
-                self.limits.file_bytes,
-            )
-            .await?
-            {
-                matches = saved
-                    .as_bool()
-                    .ok_or_else(|| Error::Invalid("ancestor cache must be boolean".into()))?;
-                break;
-            }
-            let inherited = self.inherited(current).await?;
-            cursor = serde_json::from_value(inherited["parent"].clone()).map_err(storage)?;
-            missing.push(current);
-        }
-        // The control file bounds the scope set. Each (task, scope) edge is
-        // visited once; later descendants stop at their parent's cached answer.
-        for task in missing {
-            let saved = retain(
-                &self.task_files.inner,
-                key(task, &name)?,
-                json!(matches),
-                self.limits.file_bytes,
-            )
-            .await?;
-            if saved != matches {
-                return Err(Error::Conflict("task ancestry cache changed".into()));
-            }
-        }
-        Ok(matches)
+        has_ancestor(
+            &self.task_files.inner,
+            task,
+            scope,
+            self.limits.file_bytes,
+            |task| {
+                Box::pin(async move {
+                    if let Some(parent) =
+                        cached_parent(&self.task_files.inner, task, self.limits.file_bytes).await?
+                    {
+                        return Ok(parent);
+                    }
+                    serde_json::from_value(self.inherited(task).await?["parent"].clone())
+                        .map_err(storage)
+                })
+            },
+        )
+        .await
     }
+}
+async fn has_ancestor<'a, P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: Option<TaskId>,
+    scope: TaskId,
+    maximum: u64,
+    parent_of: impl Fn(TaskId) -> BoxProviderFuture<'a, Result<Option<TaskId>>> + Sync,
+) -> Result<bool> {
+    let mut cursor = task;
+    let mut missing = Vec::new();
+    let mut visited = HashSet::new();
+    let name = format!("ancestor-{scope}");
+    let mut matches = false;
+    while let Some(current) = cursor {
+        if current == scope {
+            matches = true;
+            break;
+        }
+        if !visited.insert(current) {
+            return Err(Error::Invalid("cyclic task inheritance".into()));
+        }
+        if let Some(saved) = read(volume, &key(current, &name)?, maximum).await? {
+            matches = saved
+                .as_bool()
+                .ok_or_else(|| Error::Invalid("ancestor cache must be boolean".into()))?;
+            break;
+        }
+        cursor = parent_of(current).await?;
+        missing.push(current);
+    }
+    // The control file bounds the scope set. Each (task, scope) edge is
+    // visited once; later descendants stop at their parent's cached answer.
+    for task in missing {
+        let saved = retain(volume, key(task, &name)?, json!(matches), maximum).await?;
+        if saved != matches {
+            return Err(Error::Conflict("task ancestry cache changed".into()));
+        }
+    }
+    Ok(matches)
 }
 
 #[cfg(all(test, acyclic_harness_loom))]

@@ -75,24 +75,30 @@ impl LocalHarness {
             ));
         }
         let task = crate::runtime::task_id_for_admission(operation);
-        self.prepare_inheritance(task, Some(parent)).await?;
-        let prompt = self.prompt_context(Some(task), prompt).await?;
-        let (receive, model) = self.stage_turn(operation, &prompt).await?;
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let record = self.runtime.task_host().observe_admission(parent).await?;
-        self.runtime
-            .harness()
-            .durable_context(parent, record.operation_id, None)
-            .await?
-            .admit(
-                operation,
-                &definition,
-                serde_json::json!({"receive":receive,"model":model}),
-            )
-            .await
+        inheritance::admit_prepared(
+            &self.admission,
+            Box::pin(self.prepare_inheritance(task, Some(parent))),
+            Box::pin(async {
+                let prompt = self.prompt_context(Some(task), prompt).await?;
+                let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+                let record = self.runtime.task_host().observe_admission(parent).await?;
+                self.runtime
+                    .harness()
+                    .durable_context(parent, record.operation_id, None)
+                    .await?
+                    .admit(
+                        operation,
+                        &definition,
+                        serde_json::json!({"receive":receive,"model":model}),
+                    )
+                    .await
+            }),
+        )
+        .await
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(

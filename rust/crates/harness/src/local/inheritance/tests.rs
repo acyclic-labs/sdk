@@ -90,22 +90,32 @@ async fn conversation(turns: usize, full_collect: bool) -> Result<u64> {
     result?;
     Ok(calls)
 }
-async fn paired(turns: usize) -> Result<()> {
-    let small = conversation(turns, false).await?;
-    let large = conversation(2 * turns, false).await?;
+async fn assert_paired_work(turns: usize, full_collect: bool) -> Result<()> {
+    let small = conversation(turns, full_collect).await?;
+    let large = conversation(2 * turns, full_collect).await?;
+    println!("N={turns}, full_collect={full_collect}: {small}/{large} observe_admission calls");
     assert!(
         large <= 2 * small + 1,
         "nonlinear admission reads: {turns}={small}, {}={large}",
         2 * turns
     );
-    let broken_small = conversation(turns, true).await?;
-    let broken_large = conversation(2 * turns, true).await?;
+    Ok(())
+}
+async fn paired(turns: usize) -> Result<()> {
+    assert_paired_work(turns, false).await?;
+    let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        assert_paired_work(turns, true),
+    ))
+    .await
+    .expect_err("full-collect negative control did not panic at the linear assertion");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
     assert!(
-        broken_large > 2 * broken_small + 1,
-        "full-collect negative control did not fail the linear bound"
-    );
-    println!(
-        "N={turns}: {small}/{large} observe_admission calls; full-collect {broken_small}/{broken_large}"
+        message.contains("nonlinear admission reads"),
+        "unexpected negative control: {message}"
     );
     Ok(())
 }
@@ -181,12 +191,36 @@ async fn inherited_bindings_are_pinned_before_admission_and_survive_reopening() 
             },
         )
         .await?;
-    let mut waiting = Box::pin(local.wait_command_control(grandchild));
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(20), waiting.as_mut())
-            .await
-            .is_err()
-    );
+    let matched = std::sync::atomic::AtomicBool::new(false);
+    let mut waiting = Box::pin(CommandControl::wait_matching(
+        &local.task_files.inner,
+        |scope| {
+            let local = &local;
+            let matched = &matched;
+            Box::pin(async move {
+                let applies = local.command_has_ancestor(Some(grandchild), scope).await?;
+                if applies {
+                    matched.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok(applies)
+            })
+        },
+        local.limits.file_bytes,
+    ));
+    // The only scope is the paused root. Observe its completed match and a
+    // pending waiter in the same poll, so pending storage I/O cannot pass this.
+    futures::future::poll_fn(|cx| {
+        assert!(
+            std::future::Future::poll(waiting.as_mut(), cx).is_pending(),
+            "paused waiter completed"
+        );
+        if matched.load(std::sync::atomic::Ordering::Acquire) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
     local
         .dispatch_command(
             OperationId::new(),
@@ -315,4 +349,62 @@ proptest! {
             assert_eq!(read_inheritance(&volume, task, bound).await.unwrap(), Some(expected));
         });
     }
+}
+
+#[tokio::test]
+async fn retried_operation_cannot_change_its_prepared_parent_or_bypass_subtree_pause() -> Result<()>
+{
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let local = open(directory.path()).await?;
+    let a = child(&local, None).await?;
+    let b = child(&local, Some(a)).await?;
+    let operation = OperationId::new();
+    let task = crate::runtime::task_id_for_admission(operation);
+    local.prepare_inheritance(task, Some(a)).await?;
+    drop(local);
+    let local = open(directory.path()).await?;
+    local
+        .dispatch_command(
+            OperationId::new(),
+            Some(b),
+            CommandResolution::Submit {
+                request: CommandRequest::Pause {
+                    scope: CommandTaskScope::Subtree,
+                },
+            },
+        )
+        .await?;
+    assert!(matches!(
+        local.submit_to(operation, Some(b), "continue").await,
+        Err(Error::Conflict(_))
+    ));
+    assert!(matches!(
+        local.prepare_inheritance(task, None).await,
+        Err(Error::Conflict(_))
+    ));
+    assert!(matches!(
+        local.runtime.task_host().observe_admission(task).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(
+        matches!(local.submit_to(operation, Some(a), "continue").await?,
+        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) if task_id == task)
+    );
+    assert_eq!(
+        local
+            .runtime
+            .task_host()
+            .observe_admission(task)
+            .await?
+            .parent,
+        Some(a)
+    );
+    assert!(local.command_has_ancestor(Some(task), a).await?);
+    assert!(!local.command_has_ancestor(Some(task), b).await?);
+    // The admitted operation remains bound to A on a later retry too.
+    assert!(matches!(
+        local.submit_to(operation, Some(b), "continue").await,
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
 }

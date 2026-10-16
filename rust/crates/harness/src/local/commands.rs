@@ -361,22 +361,29 @@ impl LocalHarness {
             .harness()
             .task::<Value, crate::tool::ToolResult>("acyclic.direct_tool@1")?;
         let input = json!({"command":command});
-        self.prepare_inheritance(crate::runtime::task_id_for_admission(operation), parent)
-            .await?;
-        let admission = if let Some(parent) = parent {
-            let record = self.runtime.task_host().observe_admission(parent).await?;
-            self.runtime
-                .harness()
-                .durable_context(parent, record.operation_id, None)
-                .await?
-                .admit(operation, &definition, input)
-                .await?
-        } else {
-            self.runtime
-                .harness()
-                .admit(operation, &definition, input, None)
-                .await?
-        };
+        let admission = inheritance::admit_prepared(
+            &self.admission,
+            Box::pin(
+                self.prepare_inheritance(crate::runtime::task_id_for_admission(operation), parent),
+            ),
+            Box::pin(async {
+                if let Some(parent) = parent {
+                    let record = self.runtime.task_host().observe_admission(parent).await?;
+                    self.runtime
+                        .harness()
+                        .durable_context(parent, record.operation_id, None)
+                        .await?
+                        .admit(operation, &definition, input)
+                        .await
+                } else {
+                    self.runtime
+                        .harness()
+                        .admit(operation, &definition, input, None)
+                        .await
+                }
+            }),
+        )
+        .await?;
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
         Box::pin(self.advance(task, &self.commands()?)).await?;
