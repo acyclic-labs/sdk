@@ -253,9 +253,12 @@ impl<W: Write + Send + 'static> Owner<W> {
         }
         self.quiesce(true)?;
         let result = self.execute(Instant::now() + super::PROBE_TIMEOUT, true, move |guard| {
+            // Cancellation can leave a partial query even with an empty undo
+            // journal. Fence its worker first, then cancel the control string.
+            let cancel = guard.writer().write_all(b"\x18");
             let dec = guard.restore().or_else(|_| guard.restore());
             let os = os_restore(guard.writer());
-            dec.and(os)
+            cancel.and(dec).and(os)
         });
         // Even if teardown output blocks, keep cancelling until it returns.
         // OS mode restoration runs after every attempted DEC undo, before ack.
