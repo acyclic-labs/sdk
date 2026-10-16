@@ -9,7 +9,7 @@ import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/c
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -121,7 +121,7 @@ function streamGrpc(options: StreamGrpcOptions) {
       const client = createClient(StreamSessionService, transport);
       const incoming = async function* () {
         try { yield* client.session(input, { signal }); }
-        catch (error) { throw providerError(error, "session"); }
+        catch (error) { throw sessionTransportError(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false);
@@ -268,4 +268,10 @@ function providerError(error: unknown, operation: string): Error {
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
   return new StreamError(code, reason);
+}
+
+/** Platform callbacks use Rust codes; public aliases never enter the session engine. */
+function sessionTransportError(error: unknown): unknown {
+  if (!(error instanceof ConnectError)) return error;
+  return Object.assign(new Error(error.rawMessage), { code: grpcErrorCode(error.code, error.rawMessage) });
 }
