@@ -1,6 +1,7 @@
 use crate::{Line, Style, render, style::MUTED};
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) struct Table {
     pub(super) alignments: Vec<Alignment>,
@@ -119,14 +120,27 @@ impl Table {
 }
 
 pub(super) fn width(line: &Line) -> usize {
-    line.spans
-        .iter()
-        .map(|span| {
-            #[cfg(test)]
-            crate::work::scan(span.text.len());
-            UnicodeWidthStr::width(span.text.as_str())
-        })
-        .sum()
+    if let [span] = line.spans.as_slice() {
+        #[cfg(test)]
+        crate::work::scan(span.text.len());
+        UnicodeWidthStr::width(span.text.as_str())
+    } else {
+        let text = cell_text(line);
+        #[cfg(test)]
+        crate::work::scan(text.len());
+        UnicodeWidthStr::width(text.as_str())
+    }
+}
+
+fn cell_text(line: &Line) -> String {
+    let length = line.spans.iter().map(|span| span.text.len()).sum();
+    #[cfg(test)]
+    crate::work::copy(length);
+    let mut text = String::with_capacity(length);
+    for span in &line.spans {
+        text.push_str(&span.text);
+    }
+    text
 }
 
 pub(super) fn border(left: char, middle: char, right: char, widths: &[usize]) -> Line {
@@ -170,20 +184,23 @@ fn trim(mut cell: Line, size: usize) -> Line {
         return cell;
     }
     let limit = size.saturating_sub(1);
+    let text = cell_text(&cell);
     let mut used = 0;
+    let mut remaining = 0;
+    for (offset, cluster) in text.grapheme_indices(true) {
+        #[cfg(test)]
+        crate::work::scan(cluster.len());
+        let columns = UnicodeWidthStr::width(cluster);
+        if used + columns > limit {
+            break;
+        }
+        used += columns;
+        remaining = offset + cluster.len();
+    }
     let mut keep = 0;
     for (index, span) in cell.spans.iter_mut().enumerate() {
-        let mut end = 0;
-        for (offset, character) in span.text.char_indices() {
-            #[cfg(test)]
-            crate::work::scan(character.len_utf8());
-            let columns = character.width().unwrap_or(0);
-            if used + columns > limit {
-                break;
-            }
-            used += columns;
-            end = offset + character.len_utf8();
-        }
+        let end = remaining.min(span.text.len());
+        remaining -= end;
         let complete = end == span.text.len();
         span.text.truncate(end);
         keep = index + usize::from(end > 0);

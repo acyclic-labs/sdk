@@ -1,17 +1,24 @@
 use super::*;
-use crate::{Markdown, Parser, blocks, options};
+use crate::{Markdown, Parser, options};
 use proptest::prelude::*;
 
 fn full(source: &str, width: u16) -> Vec<Line> {
     let mut lines = Vec::new();
-    for (_, events) in blocks(Parser::new_ext(source, options()).into_offset_iter()) {
-        let mut renderer = render::Renderer::with_width(width);
-        for event in events {
-            renderer.event(&event);
+    let mut renderer = render::Renderer::with_width(width);
+    let mut depth = 0usize;
+    for event in Parser::new_ext(source, options()) {
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth -= 1,
+            _ => {}
         }
-        renderer.flush();
-        lines.extend(renderer.lines);
-        lines.push(Line::default());
+        renderer.event(&event);
+        if depth == 0 {
+            renderer.flush();
+            lines.append(&mut renderer.lines);
+            lines.push(Line::default());
+            renderer = render::Renderer::with_width(width);
+        }
     }
     while lines.last().is_some_and(|line| line.spans.is_empty()) {
         lines.pop();
@@ -31,7 +38,11 @@ fn bounded(lines: &[Line], input: usize, rows: usize, width: u16) -> usize {
         "{retained} retained output bytes > {bound}: input {input}, rows {rows}, width {width}"
     );
     for line in lines {
-        assert!(super::width(line) <= usize::from(width.max(1)));
+        let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
+        assert!(
+            UnicodeWidthStr::width(text.as_str()) <= usize::from(width.max(1)),
+            "display width exceeds {width}: {text:?}"
+        );
     }
     retained
 }
@@ -49,7 +60,7 @@ proptest! {
         columns in 1usize..24,
         rows in 1usize..65,
         length in 0usize..513,
-        atom in prop::sample::select(vec!["x", "界", "👩‍💻", "e\u{301}", "&#10;", "[x](u)", "**x**", "\\*"]),
+        atom in prop::sample::select(vec!["x", "界", "❤️", "❤\u{fe0e}", "❤\u{fe0f}", "👩‍💻", "👨‍👩‍👧‍👦", "e\u{301}", "a\u{308}\u{301}", "❤**\u{fe0f}**", "👩**\u{200d}**💻", "**e**\u{301}", "&#10;", "[x](u)", "**x**", "\\*"]),
         short_rows in any::<bool>(),
         large_in_header in any::<bool>(),
         large_row in 0usize..65,
@@ -139,4 +150,82 @@ fn output_property_detects_unbounded_column_width() {
         table.event(&event, None);
     }
     bounded(&table.render(), source.len(), 129, 8);
+}
+
+#[test]
+fn table_trim_preserves_graphemes_across_spans() {
+    for text in [
+        "❤️xx",
+        "❤\u{fe0e}xx",
+        "👩‍💻xx",
+        "👨‍👩‍👧‍👦xx",
+        "e\u{301}xx",
+        "❤**\u{fe0f}**xx",
+    ] {
+        for width in 5..12 {
+            let source = format!("|{text}|\n|---|\n");
+            let mut markdown = Markdown::with_width(width);
+            markdown.push(&source);
+            bounded(markdown.lines(), source.len(), 1, width);
+        }
+    }
+}
+
+fn table_limit_chunks(columns: usize, rows: usize, batch: usize, cells: usize, recover: bool) {
+    let header = format!("|{}\n|{}\n", "x|".repeat(columns), "---|".repeat(columns));
+    let mut source = header.clone();
+    let mut markdown = Markdown::with_width(80);
+    markdown.push(&header);
+    let mut consumer = markdown.lines().to_vec();
+    let row = format!("|{}\n", "x|".repeat(cells));
+    let mut count = 0;
+    while count < rows {
+        let take = batch.min(rows - count);
+        let delta = row.repeat(take);
+        source.push_str(&delta);
+        let changed = markdown.push(&delta);
+        assert!(changed <= markdown.lines().len());
+        consumer.truncate(changed);
+        consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+        count += take;
+        if count < rows && rows - count < batch {
+            assert_eq!(consumer, full(&source, 80));
+        }
+    }
+    assert_eq!(consumer, full(&source, 80));
+    if recover {
+        for delta in ["|x".to_owned(), format!("{}|\n", "|x".repeat(columns - 1))] {
+            source.push_str(&delta);
+            let changed = markdown.push(&delta);
+            consumer.truncate(changed);
+            consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+            assert_eq!(consumer, full(&source, 80));
+        }
+    }
+    bounded(markdown.lines(), source.len(), rows + 2, 80);
+}
+
+#[test]
+fn table_stream_preserves_empty_cell_limit() {
+    table_limit_chunks(1025, 258, 1, 2, false);
+    table_limit_chunks(1025, 256, 64, 2, true);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/table_width.txt")
+        ))),
+        ..ProptestConfig::with_cases(8)
+    })]
+    #[test]
+    fn table_shape_and_limits_survive_chunk_splits(
+        columns in 1023usize..1028,
+        around in 0usize..4,
+        batch in 64usize..130,
+        cells in 1usize..4,
+    ) {
+        let threshold = (1 << 18) / (columns - cells);
+        table_limit_chunks(columns, threshold - 1 + around, batch, cells, true);
+    }
 }

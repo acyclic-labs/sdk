@@ -553,6 +553,7 @@ dependencies = [
  "pulldown-cmark",
  "syntect",
  "unicase",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

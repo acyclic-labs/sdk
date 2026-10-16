@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 acyclic-markdown = { path = ".." }
 libfuzzer-sys = "0.4"
+unicode-width = "0.2"
 
 [[bin]]
 name = "streaming"

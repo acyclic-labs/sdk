@@ -7,6 +7,8 @@ pub(super) struct Stream {
     table: Table,
     widths: Vec<usize>,
     displayed: Vec<usize>,
+    columns: usize,
+    missing: usize,
     pub(super) cost: usize,
     pub(super) valid: Range<usize>,
 }
@@ -35,6 +37,10 @@ impl Markdown {
         else {
             return;
         };
+        let Some((Event::Start(Tag::Table(logical)), _)) = events.first() else {
+            return;
+        };
+        let columns = logical.len();
         let alignments = if table.alignments.is_empty() {
             &[pulldown_cmark::Alignment::None][..]
         } else {
@@ -64,6 +70,8 @@ impl Markdown {
             table,
             displayed: widths.clone(),
             widths,
+            columns,
+            missing: completions(source, &events, columns, source.len()).0,
             cost,
             valid,
         });
@@ -93,6 +101,17 @@ impl Markdown {
             options(),
             budget.saturating_sub(stream.cost),
         );
+        let complete = tail.rfind('\n').map_or(0, |index| index + 1);
+        let (missing, committed) = completions(
+            &source,
+            &events,
+            stream.columns,
+            stream.header.len() + complete,
+        );
+        // Match the pinned parser's per-table cap across incremental row batches.
+        if stream.missing.saturating_add(missing) > 1 << 18 {
+            return None;
+        }
         let mut addition = parsed_table(
             &source,
             &events,
@@ -100,16 +119,7 @@ impl Markdown {
             self.state.render_width(),
         )?;
         let stream = self.table.as_mut()?;
-        #[cfg(test)]
-        work::copy(stream.widths.len() * std::mem::size_of::<usize>());
-        let mut widths = stream.widths.clone();
-        for row in addition.rows.iter().skip(1) {
-            for (column, cell) in row.iter().enumerate() {
-                if let Some(size) = widths.get_mut(column) {
-                    *size = (*size).max(stream.table.cell_width(cell));
-                }
-            }
-        }
+        let widths = stream.widths_for(&addition);
         let old_rows = stream.table.rows.len();
         let table_start = self.stable_lines;
         let changed = if widths == stream.displayed {
@@ -149,7 +159,6 @@ impl Markdown {
         self.lines.push(border('└', '┴', '┘', &widths));
         self.lines.push(Line::default());
         // The final unterminated physical row is provisional and is reparsed alone.
-        let complete = tail.rfind('\n').map_or(0, |index| index + 1);
         let pending = usize::from(complete < tail.len());
         let keep = addition.rows.len().saturating_sub(pending);
         addition.rows.truncate(keep);
@@ -161,6 +170,7 @@ impl Markdown {
                 .iter()
                 .filter(|(end, _)| *end <= stream.header.len() + complete),
         );
+        stream.missing += committed;
         stream.parsed += complete;
         stream.displayed = widths;
         self.finish_visible();
@@ -169,13 +179,19 @@ impl Markdown {
 }
 
 impl Stream {
+    fn widths_for(&self, addition: &Table) -> Vec<usize> {
+        #[cfg(test)]
+        work::copy(self.widths.len() * std::mem::size_of::<usize>());
+        let mut widths = self.widths.clone();
+        for row in addition.rows.iter().skip(1) {
+            update_widths(&self.table, &mut widths, row);
+        }
+        widths
+    }
+
     fn append_rows(&mut self, rows: impl Iterator<Item = Vec<Line>>) {
         for row in rows {
-            for (column, cell) in row.iter().enumerate() {
-                if let Some(size) = self.widths.get_mut(column) {
-                    *size = (*size).max(self.table.cell_width(cell));
-                }
-            }
+            update_widths(&self.table, &mut self.widths, &row);
             #[cfg(test)]
             if self.table.rows.len() == self.table.rows.capacity() {
                 work::copy(self.table.rows.len() * std::mem::size_of::<Vec<Line>>());
@@ -183,6 +199,53 @@ impl Stream {
             self.table.rows.push(row);
         }
     }
+}
+
+fn update_widths(table: &Table, widths: &mut [usize], row: &[Line]) {
+    for (column, cell) in row.iter().enumerate() {
+        if let Some(size) = widths.get_mut(column) {
+            *size = (*size).max(table.cell_width(cell));
+        }
+    }
+}
+
+fn completions(
+    source: &str,
+    events: &[(Event<'_>, Range<usize>)],
+    columns: usize,
+    complete: usize,
+) -> (usize, usize) {
+    let (mut total, mut committed) = (0usize, 0usize);
+    for (event, range) in events {
+        #[cfg(test)]
+        work::scan(1);
+        if matches!(event, Event::Start(Tag::TableRow)) {
+            let missing =
+                columns.saturating_sub(row_cells(source.get(range.clone()).unwrap_or_default()));
+            total = total.saturating_add(missing);
+            if range.end <= complete {
+                committed = committed.saturating_add(missing);
+            }
+        }
+    }
+    (total, committed)
+}
+
+fn row_cells(row: &str) -> usize {
+    #[cfg(test)]
+    work::scan(row.len() * 3);
+    let row = row.trim_matches([' ', '\t', '\n', '\r', '\u{b}', '\u{c}']);
+    if row.is_empty() {
+        return 0;
+    }
+    let (mut pipes, mut previous, mut trailing) = (0usize, 0u8, false);
+    for byte in row.bytes() {
+        // GFM strips escaped pipes before inline parsing, including \\|.
+        trailing = byte == b'|' && previous != b'\\';
+        pipes += usize::from(trailing);
+        previous = byte;
+    }
+    (pipes + 1).saturating_sub(usize::from(row.starts_with('|')) + usize::from(trailing))
 }
 
 fn parsed_table(
@@ -233,3 +296,7 @@ impl Stream {
         (payload, metadata)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/table_shape.rs"]
+mod tests;
