@@ -7,6 +7,7 @@ struct Checks {
     // Single-thread test observations; never nested or held across an await.
     contents: Mutex<Vec<ModelContent>>,
     selections: AtomicUsize,
+    files: Journal,
 }
 
 impl ExecutionJournal for Checks {
@@ -76,11 +77,15 @@ impl ExecutionJournal for Checks {
     fn verify_selected_context<'a>(
         &'a self,
         _: OperationId,
-        _: &'a SelectedModelContext,
+        selected: &'a SelectedModelContext,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async {
             self.selections.fetch_add(1, Ordering::SeqCst);
+            for message in &selected.messages {
+                self.verify_model_content(&message.content, io, None)?
+                    .await?;
+            }
             Ok(())
         })
     }
@@ -93,7 +98,7 @@ impl ExecutionJournal for Checks {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async {
             self.contents.lock().unwrap().push(content.clone());
-            Ok(())
+            self.files.verify_model_content(content, io, None)?.await
         })
     }
 }
@@ -129,6 +134,7 @@ fn input(count: usize, text: &str) -> TurnInput {
 fn check_once(journal: &Checks, expected: &[ModelContent]) -> bool {
     journal.selections.load(Ordering::SeqCst) == 1
         && journal.contents.lock().unwrap().as_slice() == expected
+        && journal.files.4.load(Ordering::SeqCst) == expected.len()
 }
 
 fn rejected_parent(result: &Result<crate::context::ContextSummary>) -> bool {
@@ -148,17 +154,30 @@ proptest! {
             Arc::new(ScriptedModelProvider::new([])),
             ContextPipeline::default(), ToolRegistry::default(),
         );
-        let mut input = input(count, &text);
         let journal = Checks::default();
+        let mut input = input(count, &text);
+        futures::executor::block_on(async {
+            for (index, message) in input.selected_context.as_mut().unwrap().messages.iter_mut().enumerate() {
+                let file = journal.files.stage(input.operation_id, &format!("history-{index}"),
+                    text.as_bytes(), "text/plain", None)?.await?;
+                message.content = ModelContent::Part(ModelContentPart::File {
+                    file, policy: crate::model::FileProjectionPolicy::Reference,
+                });
+            }
+            Ok::<_, Error>(())
+        }).unwrap();
+        input.input = input.selected_context.as_ref().unwrap().messages.last().unwrap().content.clone();
         let expected: Vec<_> = input.selected_context.as_ref().unwrap().messages.iter()
             .map(|message| message.content.clone()).collect();
         futures::executor::block_on(StockExecution::ordinary(&executor)
             .validate_turn_input(&journal, &input)).unwrap();
         prop_assert!(check_once(&journal, &expected));
-        // The former path repeats the real content callback for this input.
+        // The former path re-reads every authenticated history file. Both paths
+        // load stored bytes and verify their descriptors, not just callbacks.
         futures::executor::block_on(verify_model_contents_scoped(&journal,
-            std::iter::once(&input.input), Limits::default(), None, None, None)).unwrap();
+            expected.iter(), Limits::default(), None, None, None)).unwrap();
         prop_assert!(!check_once(&journal, &expected));
+        prop_assert_eq!(journal.files.4.load(Ordering::SeqCst), 2 * count);
 
         input.input = ModelContent::Text("different input".into());
         let rejected = Checks::default();

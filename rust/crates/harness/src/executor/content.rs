@@ -113,15 +113,16 @@ impl StockExecution<'_> {
             journal
                 .verify_selected_context(input.operation_id, selected, self.io)?
                 .await?;
-            verify_model_contents_scoped(
-                journal,
-                selected.messages.iter().map(|message| &message.content),
-                self.stock.limits,
-                scope,
-                self.io,
-                self.original_context(),
-            )
-            .await?;
+            // Selection authenticates the projected files. Scope/grant checks
+            // above apply to every message; native options additionally require
+            // their original execution binding, not a second plain-file read.
+            for message in &selected.messages {
+                if message.content.native_configurations().next().is_some() {
+                    journal
+                        .verify_model_content(&message.content, self.io, self.original_context())?
+                        .await?;
+                }
+            }
         } else {
             // Selected history already includes this exact input as its final
             // message, checked by validate_for_input before any journal I/O.
