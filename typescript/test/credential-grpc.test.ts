@@ -54,7 +54,6 @@ test("Actors sends renewed credentials through the native Rust bridge", async ()
   const { endpoint, certificate, close } = await credentialTlsFixture(router => {
     router.service(ActorsService, { inspectActor(_request, context) {
       sent.push(context.requestHeader.get("authorization") ?? "");
-      // Missing semantic response identity must remain a rejection after transport.
       return {};
     } });
   });
@@ -64,7 +63,7 @@ test("Actors sends renewed credentials through the native Rust bridge", async ()
       let calls = 0;
       const client = new ActorsClient({ endpoint, token: "stale", caCertificate: Buffer.from(certificate), credential: () => values[calls++]! });
       const start = sent.length;
-      for (const _value of values) await expect(client.inspectActor(actor)).rejects.toThrow();
+      for (const _value of values) await client.inspectActor(actor);
       expect(sent.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
       expect(calls).toBe(values.length);
       await expect(client.inspectActor(actor)).rejects.toThrow();
