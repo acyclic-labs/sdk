@@ -90,7 +90,8 @@ async fn queued_prompts_keep_normalized_user_hooks_after_settings_change_and_reo
     let config = || -> Result<LocalHarnessConfig> {
         Ok(
             crate::test_support::local_harness_config(&workspace, (model()?, provider.clone()))?
-                .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))),
+                .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex")))
+                .state_directory(root.path().join("state")),
         )
     };
     let harness = LocalHarness::open(config()?).await?;
