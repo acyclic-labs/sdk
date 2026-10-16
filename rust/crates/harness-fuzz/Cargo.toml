@@ -180,3 +180,10 @@ path = "fuzz_targets/recorded_invocation.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bounded_json"
+path = "fuzz_targets/bounded_json.rs"
+test = false
+doc = false
+bench = false

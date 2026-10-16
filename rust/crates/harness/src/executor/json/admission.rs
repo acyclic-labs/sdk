@@ -293,6 +293,7 @@ fn document(
 pub(super) struct Lexical {
     pub(super) items: u64,
     pub(super) containers: u64,
+    pub(super) arrays: usize,
     pub(super) depth: u32,
     pub(super) string: bool,
     escape: bool,
@@ -305,7 +306,7 @@ impl Lexical {
         bounds: JsonBounds,
         code: Option<crate::wire::ErrorCode>,
         charge: &Charge<'_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if self.string {
             if self.escape {
                 self.escape = false;
@@ -314,7 +315,7 @@ impl Lexical {
             } else if byte == b'"' {
                 self.string = false;
             }
-            return Ok(());
+            return Ok(false);
         }
         let depth = self.depth;
         let item = match byte {
@@ -325,6 +326,7 @@ impl Lexical {
             }
             b'[' | b'{' => {
                 self.containers += 1;
+                self.arrays += usize::from(byte == b'[');
                 self.depth += 1;
                 self.atom = false;
                 true
@@ -333,7 +335,7 @@ impl Lexical {
                 self.depth = self
                     .depth
                     .checked_sub(1)
-                    .ok_or_else(|| boundary("invalid JSON nesting", code))?;
+                    .ok_or_else(|| input_error(JsonInputError::Nesting, code))?;
                 self.atom = false;
                 false
             }
@@ -352,12 +354,12 @@ impl Lexical {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {
-                return Err(boundary("JSON nesting limit exceeded", code));
+                return Err(input_error(JsonInputError::Depth, code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             self.items += 1;
         }
-        Ok(())
+        Ok(item)
     }
 }
 
@@ -381,7 +383,7 @@ pub(super) fn source(
         lexical.byte(*byte, bounds, code, &charge)?;
     }
     if lexical.string || lexical.depth != 0 {
-        return Err(boundary("incomplete JSON document", code));
+        return Err(input_error(JsonInputError::Incomplete, code));
     }
     let counts = document(
         bytes,
@@ -418,7 +420,7 @@ fn finish(
         return Err(boundary("JSON item limit exceeded", code));
     }
     if counts.depth > bounds.maximum_depth.min(256) {
-        return Err(boundary("JSON nesting limit exceeded", code));
+        return Err(input_error(JsonInputError::Depth, code));
     }
     Ok(JsonValueShape {
         input_bytes: bytes,

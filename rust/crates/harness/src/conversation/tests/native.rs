@@ -57,9 +57,13 @@ fn native_file_validation_and_descriptor_hash_use_original_static_denials() -> R
         source
             .descriptor()
             .verify(b"hello", &mut Some(&mut denied_io)),
-        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
-                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "bytes_hashed", .. })))
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "bytes_hashed",
+                ..
+            }),
+            custody: None,
+        })
     ));
     assert_eq!(denied.receipt().bytes_hashed, 0);
     Ok(())
@@ -215,9 +219,13 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
-        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
-                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "bytes_hashed", .. })))
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "bytes_hashed",
+                ..
+            }),
+            custody: None,
+        })
     ));
     assert_eq!(denied.receipt().bytes_hashed, 0);
     drop(io);
@@ -241,9 +249,13 @@ fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
     );
     assert!(matches!(
         state.append(message(&content, 5), &mut Some(&mut io)),
-        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
-            acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
-                WorkError::BudgetExceeded { counter: "allocation_operations", .. })))
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }),
+            custody: None,
+        })
     ));
     assert!(
         denied.receipt().bytes_hashed > 0,

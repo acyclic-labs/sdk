@@ -27,13 +27,14 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     // the locked graph, retaining only those exact local published owners.
     // Registry dependencies must never become documentation owners implicitly.
     let mut command = cargo_metadata::MetadataCommand::new();
-    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-    if let Some(cargo) = cargo_path {
-        command.cargo_path(cargo);
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path,
+        lock_selection: None,
     }
+    .configure_metadata(&mut command)
+    .map_err(profile_error)?;
     let resolved = command
         .manifest_path(root.join("Cargo.toml"))
-        .other_options(vec!["--locked".to_owned()])
         .exec()
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;
@@ -220,6 +221,13 @@ pub(super) fn execute_historical_profiles(
             ));
         }
         for (target, rustdoc_target) in targets {
+            let mut compiled = BTreeMap::new();
+            let feature_map = &execution_metadata
+                .packages
+                .iter()
+                .find(|owner| owner.name == package.name)
+                .ok_or_else(|| CliError("profile Cargo owner disappeared".into()))?
+                .features;
             let profiles = if matches!(rustdoc_target, RustdocTarget::Library) {
                 sdk_docs::rustdoc_profiles::historical_profiles_for_package(
                     execution_metadata,
@@ -265,24 +273,32 @@ pub(super) fn execute_historical_profiles(
                     root.join("Cargo.toml")
                 };
                 let lock = manifest.with_file_name("Cargo.lock");
-                execute_profile(
-                    &manifest,
-                    execution_metadata,
-                    &spec,
-                    &available,
-                    output.join(".profile-build"),
-                    &receipt,
-                    CargoExecutionContext {
-                        cargo_path: Some(cargo),
-                        lock_selection: historical::producer_lock_selection(
-                            config.as_deref(),
-                            &lock,
-                            plan.captured_source.as_ref(),
-                        ),
-                    },
-                    &rustdoc_target,
-                )
-                .map_err(profile_error)?;
+                let key = local_feature_configuration(feature_map, &spec);
+                if let Some(previous) = key.as_ref().and_then(|key| compiled.get(key)) {
+                    fs::copy(previous, &receipt).map_err(io_error)?;
+                } else {
+                    execute_profile(
+                        &manifest,
+                        execution_metadata,
+                        &spec,
+                        &available,
+                        output.join(".profile-build"),
+                        &receipt,
+                        CargoExecutionContext {
+                            cargo_path: Some(cargo),
+                            lock_selection: historical::producer_lock_selection(
+                                config.as_deref(),
+                                &lock,
+                                plan.captured_source.as_ref(),
+                            ),
+                        },
+                        &rustdoc_target,
+                    )
+                    .map_err(profile_error)?;
+                    if let Some(key) = key {
+                        compiled.insert(key, receipt.clone());
+                    }
+                }
                 retain_profile_generated_sources(root, &receipt)?;
                 fs::write(receipt.with_extension("source.sha256"), source_sha256)
                     .map_err(io_error)?;
@@ -310,37 +326,14 @@ pub(super) fn execute_default_profiles(
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
-    let cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", wasm_target])
-    .output()
-    .map_err(io_error)?;
-    if !cfg_output.status.success() {
-        return Err(CliError("rustc could not report browser target cfg".into()));
-    }
-    let browser_cfg = String::from_utf8_lossy(&cfg_output.stdout)
+    let (host_output, browser_output) =
+        sdk_docs::rustdoc_profiles::rustdoc_platform_cfgs().map_err(profile_error)?;
+    let browser_cfg = browser_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| CliError(format!("invalid rustc browser cfg: {error}")))?;
-
-    let host_cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", &host])
-    .output()
-    .map_err(io_error)?;
-    if !host_cfg_output.status.success() {
-        return Err(CliError("rustc could not report host target cfg".into()));
-    }
-    let host_cfg = String::from_utf8_lossy(&host_cfg_output.stdout)
+    let host_cfg = host_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
@@ -471,6 +464,7 @@ pub(super) fn execute_default_profiles(
                 profiles.push(profile);
             }
         }
+        let mut compiled = BTreeMap::new();
         for profile in profiles {
             let targets = BTreeSet::from([profile.target.clone()]);
             let receipt = if profile.default_features
@@ -487,17 +481,25 @@ pub(super) fn execute_default_profiles(
             if let Some(parent) = receipt.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
-            sdk_docs::rustdoc_profiles::execute_profile(
-                &manifest,
-                metadata,
-                &profile,
-                &targets,
-                &target_dir,
-                &receipt,
-                context,
-                &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
-            )
-            .map_err(profile_error)?;
+            let key = local_feature_configuration(&package.features, &profile);
+            if let Some(previous) = key.as_ref().and_then(|key| compiled.get(key)) {
+                fs::copy(previous, &receipt).map_err(io_error)?;
+            } else {
+                sdk_docs::rustdoc_profiles::execute_profile(
+                    &manifest,
+                    metadata,
+                    &profile,
+                    &targets,
+                    &target_dir,
+                    &receipt,
+                    context,
+                    &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
+                )
+                .map_err(profile_error)?;
+                if let Some(key) = key {
+                    compiled.insert(key, receipt.clone());
+                }
+            }
             retain_profile_generated_sources(root, &receipt)?;
             fs::write(receipt.with_extension("source.sha256"), source_sha256).map_err(io_error)?;
             executed.push(ExecutedProfile {
@@ -508,6 +510,35 @@ pub(super) fn execute_default_profiles(
         }
     }
     Ok(executed)
+}
+
+// Reuse only within one package/target batch with unchanged compiler, manifest,
+// environment and lock selection. Every local cfg feature, including `default`,
+// belongs in the key. Dependency/weak/qualified expressions stay Cargo-owned:
+// a graph containing any nonlocal edge disables this optimization entirely.
+fn local_feature_configuration(
+    features: &BTreeMap<String, Vec<String>>,
+    profile: &ProfileSpec,
+) -> Option<(String, String, BTreeSet<String>)> {
+    if features
+        .values()
+        .flatten()
+        .any(|feature| !features.contains_key(feature))
+    {
+        return None;
+    }
+    let mut pending = profile.features.iter().cloned().collect::<Vec<_>>();
+    if profile.default_features && features.contains_key("default") {
+        pending.push("default".into());
+    }
+    let mut enabled = BTreeSet::new();
+    while let Some(feature) = pending.pop() {
+        let children = features.get(&feature)?;
+        if enabled.insert(feature) {
+            pending.extend(children.iter().cloned());
+        }
+    }
+    Some((profile.package.clone(), profile.target.clone(), enabled))
 }
 
 // Feature identities stay complete in receipt metadata, while physical path
@@ -582,3 +613,6 @@ pub(super) fn retain_profile_generated_sources(
     .map_err(io_error)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

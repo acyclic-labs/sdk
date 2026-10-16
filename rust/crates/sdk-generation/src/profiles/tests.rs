@@ -1,0 +1,67 @@
+use super::*;
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn equivalent_profile_keys_are_exactly_the_transitive_local_cargo_feature_set(
+        graph in prop::array::uniform4(0u8..16),
+        requested in 0u8..16,
+        defaults in any::<bool>(),
+    ) {
+        let names = ["default", "base", "extra", "other"];
+        let features = names.iter().enumerate().map(|(from, name)| {
+            ((*name).to_owned(), names.iter().enumerate()
+                .filter(|(to, _)| graph[from] & (1 << to) != 0)
+                .map(|(_, name)| (*name).to_owned()).collect())
+        }).collect::<BTreeMap<_, Vec<_>>>();
+        let profile = ProfileSpec {
+            package: "demo".into(), target: "native".into(), default_features: defaults,
+            features: names.iter().enumerate().filter(|(bit, _)| requested & (1 << bit) != 0)
+                .map(|(_, name)| (*name).to_owned()).collect(),
+        };
+        // Independent reference: boolean-matrix transitive closure, including cycles.
+        let mut reach = std::array::from_fn::<_, 4, _>(|from| graph[from] | (1 << from));
+        for via in 0..4 {
+            for from in 0..4 {
+                if reach[from] & (1 << via) != 0 { reach[from] |= reach[via]; }
+            }
+        }
+        let seeds = requested | u8::from(defaults);
+        let expected = (0..4).filter(|from| seeds & (1 << from) != 0)
+            .fold(0, |all, from| all | reach[from]);
+        let expected = names.iter().enumerate().filter(|(bit, _)| expected & (1 << bit) != 0)
+            .map(|(_, name)| (*name).to_owned()).collect::<BTreeSet<_>>();
+        let key = local_feature_configuration(&features, &profile).unwrap();
+        prop_assert_eq!(&key.2, &expected);
+        let normalized = ProfileSpec { default_features: false, features: expected, ..profile.clone() };
+        prop_assert_eq!(Some(key), local_feature_configuration(&features, &normalized));
+        let mut nonlocal = features;
+        nonlocal.get_mut("other").unwrap().push("dependency/feature".into());
+        prop_assert!(local_feature_configuration(&nonlocal, &profile).is_none());
+    }
+}
+
+#[test]
+fn absent_default_feature_and_unknown_requests_are_distinct_from_declared_defaults() {
+    let mut features = BTreeMap::from([("base".into(), Vec::new())]);
+    let profile = ProfileSpec {
+        package: "demo".into(),
+        target: "native".into(),
+        default_features: true,
+        features: BTreeSet::new(),
+    };
+    assert!(local_feature_configuration(&features, &profile)
+        .unwrap()
+        .2
+        .is_empty());
+    features.insert("default".into(), vec!["base".into()]);
+    assert_eq!(
+        local_feature_configuration(&features, &profile).unwrap().2,
+        BTreeSet::from(["default".into(), "base".into()])
+    );
+    let invalid = ProfileSpec {
+        features: BTreeSet::from(["unknown".into()]),
+        ..profile
+    };
+    assert!(local_feature_configuration(&features, &invalid).is_none());
+}
