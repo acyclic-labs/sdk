@@ -216,7 +216,6 @@ impl HostStat {
         })
     }
 }
-#[cfg(unix)]
 /// Converts between integer widths that differ by Linux architecture (`nlink_t` is
 /// u64 on x86_64 and u32 on aarch64) without a same-type conversion on either.
 #[cfg(target_os = "linux")]
@@ -224,6 +223,7 @@ fn lossless<T, U: From<T>>(value: T) -> U {
     U::from(value)
 }
 
+#[cfg(unix)]
 pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::SystemTime> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
     let magnitude = nanos.unsigned_abs();
