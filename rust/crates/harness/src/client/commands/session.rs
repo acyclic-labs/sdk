@@ -128,6 +128,21 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(client)
     }
 
+    pub(super) fn volume(&self) -> &Arc<files::TaskVolume<P>> {
+        &self.volume
+    }
+
+    /// Open an independent observer of this authorized command volume.
+    pub fn reopen(&self) -> acyclic_stream::BoxProviderFuture<'static, Result<Self>>
+    where
+        P: 'static,
+    {
+        let volume = self.volume.clone();
+        let (session, maximum_bytes, maximum_files) =
+            (self.session, self.maximum_bytes, self.maximum_files);
+        Box::pin(async move { Self::open(volume, session, maximum_bytes, maximum_files).await })
+    }
+
     pub(super) fn position(&self) -> u64 {
         self.generation.position
     }

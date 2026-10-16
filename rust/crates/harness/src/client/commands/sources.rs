@@ -26,7 +26,6 @@ impl CommandSources {
     /// Subscribe before reading sources so edits during capture are not lost.
     pub async fn observe<P: StreamProvider + ?Sized>(
         client: &mut CommandSession<P>,
-        volume: &crate::task_volume::TaskVolume<P>,
         base: Vec<u8>,
         roots: Vec<CommandRoot>,
         skills: Vec<ContextRoot>,
@@ -37,6 +36,7 @@ impl CommandSources {
     ) -> Result<Self> {
         CommandCatalog::from_bytes(&base, maximum_bytes)?;
         limits.validate()?;
+        let volume = client.volume().clone();
         let observed = volume
             .observe(crate::task_volume::Query::Inputs, None, maximum_files)
             .await

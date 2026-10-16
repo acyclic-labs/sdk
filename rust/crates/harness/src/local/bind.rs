@@ -17,10 +17,7 @@ impl LocalHarness {
         config: LocalHarnessConfig,
         runtime: LocalTaskRuntime,
         files: Arc<LocalFilesystem>,
-        storage: (
-            acyclic_fs::LocalFs,
-            Arc<crate::task_volume::TaskVolume<LocalStream>>,
-        ),
+        storage: (acyclic_fs::LocalFs, Arc<LocalStream>),
         authority: (&AuthorityVerifier, &Scope),
         checkout: Option<&Path>,
     ) -> Result<Self> {
@@ -50,7 +47,17 @@ impl LocalHarness {
             runtime.tool_registry(),
             config.limits,
         )?;
-        let (filesystem, task_files) = storage;
+        let (filesystem, stream) = storage;
+        let task_files = Arc::new(
+            crate::task_volume::TaskFiles::open(
+                stream,
+                volume,
+                verifier,
+                signed,
+                config.limits.file_bytes,
+            )
+            .await?,
+        );
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
             let directory = owner::directory(&owner::state_directory(&config.project)?)?;

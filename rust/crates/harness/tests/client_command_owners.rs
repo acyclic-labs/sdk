@@ -27,7 +27,6 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
         CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 128).await?;
     let mut sources = CommandSources::observe(
         &mut client,
-        &volume,
         acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
         vec![CommandRoot {
             scope: CommandScope::Project,
@@ -126,7 +125,6 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
         CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 128).await?;
     let _sources = CommandSources::observe(
         &mut reopened,
-        &volume,
         acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
         vec![CommandRoot {
             scope: CommandScope::Project,
@@ -203,7 +201,7 @@ proptest! {
             };
             let cut = volume.snapshot(&Query::Inputs, 64).await.unwrap();
             volume.append(cut.generation, &FileValue::new(FileKey::parse(&path).unwrap(), source.into_bytes())).await.unwrap();
-            let _sources = CommandSources::observe(&mut client, &volume, acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(), vec![], vec![], Arc::new(NoReads), Default::default(), 32_768, 64).await.unwrap();
+            let _sources = CommandSources::observe(&mut client, acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(), vec![], vec![], Arc::new(NoReads), Default::default(), 32_768, 64).await.unwrap();
             let encoded = serde_json::to_vec(&client.catalog().commands().collect::<Vec<_>>()).unwrap();
             let decoded = CommandCatalog::from_bytes(&encoded, 32_768).unwrap();
             let result = decoded.resolve(&format!("/{name} {arguments}"), &NoReads, 32_768).await.unwrap();
@@ -240,7 +238,6 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
         .await?;
     let mut sources = CommandSources::observe(
         &mut client,
-        &volume,
         acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
         vec![],
         vec![],

@@ -166,13 +166,8 @@ async fn native_search_requires_the_registered_tool_executor() -> Result<()> {
     impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
     let directory = tempfile::tempdir().map_err(storage)?;
     let native = NativeSession::open(configuration(directory.path()).await?).await?;
-    let mut client = CommandSession::open(
-        native.owner.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        64,
-    )
-    .await?;
+    let mut client =
+        CommandSession::open_local(&native.owner, uuid::Uuid::new_v4(), 65_536, 64).await?;
     client.submit("/search needle", &NoReads).await?;
     let request = client.next_request().await?;
     let error = consume_local_command(&mut client, &native.owner, &request)

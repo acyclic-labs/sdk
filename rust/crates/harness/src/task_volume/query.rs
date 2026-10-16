@@ -269,8 +269,11 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
-            (Self::Inputs, FileKey::Input(_)) => true,
-            (Self::Config, FileKey::Input(path)) => path.0.starts_with("config/"),
+            (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
+            (Self::Config, FileKey::Input(path)) => matches!(
+                path.0.as_str(),
+                "config/settings.json" | "config/keymap.json" | "config/theme.json"
+            ),
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)

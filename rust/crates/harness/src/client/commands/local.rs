@@ -43,3 +43,28 @@ pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
     }
     Ok(result)
 }
+
+impl CommandSession<dyn acyclic_stream::StreamProvider> {
+    /// Observe command files in the local owner's already-authorized private volume.
+    pub async fn open_local(
+        local: &LocalHarness,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.min(local.task_files().maximum_bytes());
+        let volume = local
+            .task_files()
+            .inner
+            .reopen_erased()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        Self::open(
+            std::sync::Arc::new(volume),
+            session,
+            maximum_bytes,
+            maximum_files,
+        )
+        .await
+    }
+}

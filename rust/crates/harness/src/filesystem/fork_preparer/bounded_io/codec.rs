@@ -211,7 +211,10 @@ impl PreparationIo {
         bytes: &'de [u8],
         code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'a>)> {
-        let bounds = self.bounds(bytes.len() as u64, 128)?;
+        let bounds = self.bounds(
+            bytes.len() as u64,
+            crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        )?;
         let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
         let mut decoded = self.decode_guarded(

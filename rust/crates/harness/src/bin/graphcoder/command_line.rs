@@ -20,46 +20,36 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     let fixture = matches!(backend, Backend::Fixture(_));
     let interactive = !headless && std::io::stdin().is_terminal();
     let mut output = std::io::stdout().lock();
-    let (provider, identity): (Arc<dyn StreamProvider>, Vec<u8>) = match &backend {
-        Backend::Fixture(_) => (
-            Arc::new(acyclic_stream::MemoryStream::default()),
-            b"fixture".to_vec(),
-        ),
-        #[cfg(feature = "filesystem-local")]
-        Backend::Native(native) => {
-            use acyclic_harness::conversation::{ContentGrant, VolumeOperation};
-            let verifier = native.config.owner.verifier()?;
-            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                ContentGrant::verify(
-                    &verifier,
-                    &native.config.owner.scope,
-                    &native.config.private_volume,
-                    operation,
-                    terminal::MAX_FRAME_BYTES as u64,
-                    &mut None,
-                )?;
-            }
-            (
-                native.stream.clone(),
-                serde_json::to_vec(&native.config.private_volume).map_err(invalid)?,
-            )
-        }
-    };
-    let digest = blake3::hash(&identity);
     let session = match &backend {
         #[cfg(feature = "filesystem-local")]
         Backend::Native(native) => native.config.ui_session.unwrap_or_else(uuid::Uuid::new_v4),
         _ => uuid::Uuid::new_v4(),
     };
-    let path = StreamPath::new(format!("graphcoder-files/{}", digest.to_hex())).map_err(invalid)?;
-    let volume = Arc::new(TaskVolume::open(provider, path).await.map_err(invalid)?);
-    let mut client = CommandSession::open(
-        volume.clone(),
-        session,
-        terminal::MAX_FRAME_BYTES as u64,
-        4096,
-    )
-    .await?;
+    let mut client = match &backend {
+        #[cfg(feature = "filesystem-local")]
+        Backend::Native(native) => {
+            CommandSession::open_local(
+                &native.owner,
+                session,
+                terminal::MAX_FRAME_BYTES as u64,
+                4096,
+            )
+            .await?
+        }
+        Backend::Fixture(_) => {
+            let provider: Arc<dyn StreamProvider> =
+                Arc::new(acyclic_stream::MemoryStream::default());
+            let volume = Arc::new(
+                TaskVolume::open(
+                    provider,
+                    StreamPath::new(format!("graphcoder-fixture/{session}")).map_err(invalid)?,
+                )
+                .await
+                .map_err(invalid)?,
+            );
+            CommandSession::open(volume, session, terminal::MAX_FRAME_BYTES as u64, 4096).await?
+        }
+    };
     let defaults: Value = serde_json::from_slice(DEFAULT_COMMANDS_JSON).map_err(invalid)?;
     let mut specs = defaults
         .as_array()
@@ -81,7 +71,6 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         Some(
             acyclic_harness::client::CommandSources::observe(
                 &mut client,
-                &volume,
                 base.clone(),
                 native.config.command_roots.clone(),
                 native.config.skill_roots.clone(),
@@ -181,16 +170,10 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                     })
                     .map_err(invalid)?;
                 let worker_owner = Arc::clone(owner);
-                let volume = Arc::clone(&volume);
+                let consumer = client.reopen();
                 let owned_request = request.clone();
                 let effect = Box::pin(async move {
-                    let mut consumer = CommandSession::open(
-                        volume,
-                        session,
-                        terminal::MAX_FRAME_BYTES as u64,
-                        4096,
-                    )
-                    .await?;
+                    let mut consumer = consumer.await?;
                     loop {
                         match acyclic_harness::client::consume_local_command(
                             &mut consumer,
@@ -324,7 +307,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                         .await?;
                     let (task_views, task_changes) =
                         acyclic_harness::client::CommandViewFiles::observe(
-                            volume.as_ref(),
+                            native.owner.task_files(),
                             &task,
                             4096,
                             terminal::MAX_FRAME_BYTES,

@@ -243,18 +243,22 @@ proptest! {
     fn case_does_not_change_command_arguments(index in 0_usize..30, text in "[a-zA-Z0-9 @:/_-]{1,80}") {
         let catalog = CommandCatalog::builtins().unwrap();
         let spec = catalog.commands().nth(index).unwrap();
-        let arguments = match spec.arguments {
-            CommandArguments::None => String::new(),
-            CommandArguments::Word => " MixedCase-Model".into(),
-            _ => format!(" {text}"),
-        };
-        let expected = futures::executor::block_on(catalog.resolve(&format!("/{}{arguments}", spec.name), &DeniedReader, 1024)).unwrap();
-        for name in std::iter::once(&spec.name).chain(&spec.aliases) {
-            let upper = name.to_ascii_uppercase();
-            let actual = futures::executor::block_on(catalog.resolve(&format!("/{upper}{arguments}"), &DeniedReader, 1024)).unwrap();
-            prop_assert_eq!(actual, expected.clone());
-            prop_assert_eq!(catalog.complete(&upper).map(|s| &s.name).collect::<Vec<_>>(), catalog.complete(name).map(|s| &s.name).collect::<Vec<_>>());
-            prop_assert_eq!(catalog.complete_input(&format!("/{upper}")), catalog.complete_input(&format!("/{name}")));
+        for text in [text.as_str(), " "] {
+            let arguments = match spec.arguments {
+                CommandArguments::None => String::new(),
+                CommandArguments::Word => " MixedCase-Model".into(),
+                _ => format!(" {text}"),
+            };
+            let resolve = |name: &str| futures::executor::block_on(catalog.resolve(
+                &format!("/{name}{arguments}"), &DeniedReader, 1024,
+            )).map_err(|error| error.to_string().replacen(&format!("/{name}"), "/<command>", 1));
+            let expected = resolve(&spec.name);
+            for name in std::iter::once(&spec.name).chain(&spec.aliases) {
+                let upper = name.to_ascii_uppercase();
+                prop_assert_eq!(resolve(&upper), expected.clone());
+                prop_assert_eq!(catalog.complete(&upper).map(|s| &s.name).collect::<Vec<_>>(), catalog.complete(name).map(|s| &s.name).collect::<Vec<_>>());
+                prop_assert_eq!(catalog.complete_input(&format!("/{upper}")), catalog.complete_input(&format!("/{name}")));
+            }
         }
     }
 

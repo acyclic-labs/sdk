@@ -6,7 +6,12 @@ use serde_json::Value;
 mod admission;
 mod identity;
 mod records;
-pub(crate) use identity::{canonical_json_digest, json_byte_length, serialized_json_digest};
+pub(crate) use identity::{
+    canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
+};
+
+/// Nesting accepted by saved preparation-record readers.
+pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
 pub(crate) use diagnostics::{
     audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,

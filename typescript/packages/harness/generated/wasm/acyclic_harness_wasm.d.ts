@@ -486,6 +486,28 @@ export interface SearchMatches {
 export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: ModelDataPart[] };
 
 /**
+ * Complete provider tool call, shared by stream events and replayed context.
+ */
+export interface ToolCall {
+    /**
+     * Provider-owned call identity, scoped by the executor's dispatch.
+     */
+    call_id: string;
+    /**
+     * Registered tool name.
+     */
+    name: string;
+    /**
+     * Schema-defined arguments.
+     */
+    arguments: WasmModelJsonValue;
+    /**
+     * Opaque provider continuation data retained for follow-ups and replay.
+     */
+    metadata?: WasmModelJsonValue;
+}
+
+/**
  * Configuration claim bound to original task admission and code.
  */
 export interface NativeConfigurationBinding {
@@ -1350,7 +1372,7 @@ export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | 
 /**
  * Ordered streaming model event.
  */
-export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | ({ kind: "tool_call" } & ToolCall) | { kind: "completed"; metadata: WasmModelJsonValue };
 
 /**
  * Ordinary configurable threshold compaction; no model-family heuristic.
@@ -1675,7 +1697,7 @@ export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projecti
 /**
  * Structured content requiring an explicit provider projection.
  */
-export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | ({ kind: "tool_call" } & ToolCall) | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
 
 /**
  * Structured parent and stable logical child slot.
@@ -1996,6 +2018,10 @@ export class WasmClientViews {
      */
     begin(metadata: any, predicted: any, assumption: any): string;
     /**
+     * Associates the same two volume-scoped sources as the native client.
+     */
+    bindGoalSources(goal: any, request: any): void;
+    /**
      * Export one explicitly selected hypothesis, preserving reference values.
      */
     checkpoint(branch: string): any;
@@ -2011,6 +2037,14 @@ export class WasmClientViews {
      * Narrow changed hypothesis IDs and work; no full-state export.
      */
     observe(key: string, evidence: any): any;
+    /**
+     * Applies one accepted publication, retaining its original source cursor.
+     */
+    queryChange(change: any): boolean;
+    /**
+     * Applies the ordinary file-query snapshot through the shared Rust fold.
+     */
+    querySnapshot(query: any, snapshot: any, maximum_files: number, maximum_bytes: number): void;
     /**
      * Release an unreferenced demanded record.
      */
@@ -2035,6 +2069,10 @@ export class WasmClientViews {
      * Select only one demanded record and explicitly supplied overlays.
      */
     view(key: string, overlays: any): any;
+    /**
+     * Exports the shared view, preserving full-width cursors as BigInts.
+     */
+    views(): any;
 }
 
 /**
@@ -2873,6 +2911,10 @@ export interface InitOutput {
     readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
     readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_bindGoalSources: (a: number, b: any, c: any) => [number, number];
+    readonly wasmclientviews_queryChange: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_querySnapshot: (a: number, b: any, c: any, d: number, e: number) => [number, number];
+    readonly wasmclientviews_views: (a: number) => [number, number, number];
     readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];

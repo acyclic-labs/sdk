@@ -26,7 +26,6 @@ fn source_wakeup(broken: bool) {
             ))?;
             let mut sources = block_on(CommandSources::observe(
                 &mut client,
-                &volume,
                 DEFAULT_COMMANDS_JSON.to_vec(),
                 vec![],
                 vec![],

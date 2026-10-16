@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_harness::{
-    Admission, LocalHarness, LocalHarnessConfig, OperationId, TaskId,
+    Admission, LocalHarness, OperationId, TaskId,
     client::consume_local_command,
     model::Model,
     runtime::RuntimeTask,
@@ -50,15 +50,18 @@ async fn local_with_limits(
         .await?;
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     LocalHarness::open(
-        LocalHarnessConfig::new(directory.join("filesystem"), (model, provider))
-            .volume(volume)
-            .limits(limits),
+        acyclic_harness::test_support::local_harness_config(
+            directory.join("filesystem"),
+            (model, provider),
+        )?
+        .volume(volume)
+        .limits(limits),
     )
     .await
 }
 async fn send(
     local: &LocalHarness,
-    client: &mut CommandSession<acyclic_stream::LocalStream>,
+    client: &mut CommandSession<dyn acyclic_stream::StreamProvider>,
     text: &str,
 ) -> Result<Value> {
     client.submit(text, &NoReads).await?;
@@ -70,14 +73,8 @@ async fn send(
 async fn selected(
     local: &LocalHarness,
     task: TaskId,
-) -> Result<CommandSession<acyclic_stream::LocalStream>> {
-    let mut client = CommandSession::open(
-        local.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        256,
-    )
-    .await?;
+) -> Result<CommandSession<dyn acyclic_stream::StreamProvider>> {
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
     client
         .write_state(
             CommandFileRoot::Session,
@@ -155,12 +152,15 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
     let export = send(&local, &mut client, "/export").await?;
     let snapshot = local
         .task_files()
-        .snapshot(
-            &Query::File(FileKey::parse(export["export"].as_str().unwrap()).map_err(volume_error)?),
+        .observe(
+            Query::File(FileKey::parse(export["export"].as_str().unwrap()).map_err(volume_error)?),
+            None,
             1,
         )
         .await
-        .map_err(volume_error)?;
+        .map_err(volume_error)?
+        .snapshot
+        .expect("initial snapshot");
     let diagnostic: Value = serde_json::from_slice(&snapshot.files[0].bytes).unwrap();
     assert!(
         diagnostic["files"]
@@ -181,11 +181,13 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
     let provider = provider([
         acyclic_harness::test_support::ScriptedTurn::Events(vec![
             acyclic_harness::test_support::ScriptedEvent::Event(
-                acyclic_harness::model::ModelEvent::ToolCall {
-                    call_id: "child-read".into(),
-                    name: "bash".into(),
-                    arguments: json!({"command":"cat marker"}),
-                },
+                acyclic_harness::model::ModelEvent::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        "child-read".into(),
+                        "bash".into(),
+                        json!({"command":"cat marker"}),
+                    ),
+                ),
             ),
             acyclic_harness::test_support::ScriptedEvent::Event(
                 acyclic_harness::model::ModelEvent::Completed {
@@ -196,10 +198,10 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
         ScriptedTurn::Text("done".into()),
     ]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
-    let local = LocalHarness::open(LocalHarnessConfig::new(
+    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
         directory.path(),
         (model, provider.clone()),
-    ))
+    )?)
     .await?;
     let Admission::Accepted(RuntimeTask::Durable {
         task_id: parent, ..
@@ -266,13 +268,7 @@ async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns()
         ScriptedTurn::Text("child".into()),
     ]);
     let local = local(directory.path(), provider.clone()).await?;
-    let mut client = CommandSession::open(
-        local.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        256,
-    )
-    .await?;
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
     client.submit("/model other", &NoReads).await?;
     let root = send(&local, &mut client, "root prompt").await?;
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
@@ -292,13 +288,7 @@ async fn confirmed_delete_keeps_its_target_and_clear_cancels_conversations() -> 
     let directory = tempfile::tempdir().unwrap();
     let provider = provider([]);
     let local = local(directory.path(), provider.clone()).await?;
-    let mut client = CommandSession::open(
-        local.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        256,
-    )
-    .await?;
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
     let root = send(&local, &mut client, "root prompt").await?;
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
     client.submit("/delete", &NoReads).await?;
@@ -389,16 +379,14 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
     let provider = provider([]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     let local = LocalHarness::open(
-        LocalHarnessConfig::new(directory.path(), (model, provider.clone())).tool(web),
+        acyclic_harness::test_support::local_harness_config(
+            directory.path(),
+            (model, provider.clone()),
+        )?
+        .tool(web),
     )
     .await?;
-    let mut client = CommandSession::open(
-        local.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        256,
-    )
-    .await?;
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
     assert_eq!(
         send(&local, &mut client, "/search needle").await?,
         json!({"query":"needle"})
@@ -423,13 +411,7 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
         },
     )
     .await?;
-    let mut client = CommandSession::open(
-        local.task_files().clone(),
-        uuid::Uuid::new_v4(),
-        65_536,
-        128,
-    )
-    .await?;
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 128).await?;
     let root = send(&local, &mut client, "root").await?;
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
     let child = send(&local, &mut client, "child").await?;
@@ -439,13 +421,15 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
             .map_err(volume_error)?;
         let cut = local
             .task_files()
-            .snapshot(&Query::File(key.clone()), 1)
+            .observe(Query::File(key.clone()), None, 1)
             .await
             .map_err(volume_error)?
+            .snapshot
+            .expect("initial snapshot")
             .generation;
         local
             .task_files()
-            .append(cut, &FileValue::new(key, b"{}".to_vec()))
+            .write(cut, &FileValue::new(key, b"{}".to_vec()))
             .await
             .map_err(volume_error)?;
     }
@@ -462,5 +446,46 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
     assert_eq!(result["deleted_count"], 2);
     assert!(local.resume(root).await.is_err() && local.resume(child).await.is_err());
     assert!(client.selected_task()?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_observers_share_the_authorized_task_volume_without_exposing_host_writes()
+-> Result<()> {
+    use acyclic_harness::task_volume::{Component, TaskFile};
+    let directory = tempfile::tempdir().unwrap();
+    let local = local(directory.path(), provider([])).await?;
+    let session = uuid::Uuid::new_v4();
+    let mut client = CommandSession::open_local(&local, session, 65_536, 128).await?;
+    client.submit("/shortcuts", &NoReads).await?;
+    let observed = local
+        .task_files()
+        .observe(
+            Query::UiDirectory(Component::new(format!("session-{session}")).map_err(volume_error)?),
+            None,
+            8,
+        )
+        .await
+        .map_err(volume_error)?;
+    let snapshot = observed.snapshot.expect("authorized snapshot");
+    assert!(snapshot.files.iter().any(
+        |file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["open_view"] == "shortcuts"
+    ));
+    let status = FileValue::new(
+        FileKey::Task {
+            task: Component::new("other").map_err(volume_error)?,
+            file: TaskFile::Status,
+        },
+        b"{}".to_vec(),
+    );
+    assert!(matches!(
+        local.task_files().write(snapshot.generation, &status).await,
+        Err(acyclic_harness::task_volume::Error::Unauthorized)
+    ));
+    let reopened = client.reopen().await?;
+    assert_eq!(
+        reopened.state(CommandFileRoot::Session, "layout.json")?,
+        client.state(CommandFileRoot::Session, "layout.json")?
+    );
     Ok(())
 }

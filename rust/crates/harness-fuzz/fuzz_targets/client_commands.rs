@@ -75,7 +75,6 @@ fuzz_target!(|input: &[u8]| {
                 .map_err(|error| Error::Storage(error.to_string()))?;
             let _source = acyclic_harness::client::CommandSources::observe(
                 &mut client,
-                &volume,
                 acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
                 vec![],
                 vec![],

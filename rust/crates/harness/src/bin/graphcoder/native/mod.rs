@@ -133,19 +133,6 @@ impl NativeSession {
             config.deterministic_delay_ms,
             &config.model_invocation_ledger,
         )?);
-        let volume_identity = serde_json::to_vec(&config.private_volume).map_err(storage)?;
-        let task_files = Arc::new(
-            acyclic_harness::task_volume::TaskVolume::open(
-                stream.clone(),
-                acyclic_stream::StreamPath::new(format!(
-                    "graphcoder-files/{}",
-                    blake3::hash(&volume_identity).to_hex()
-                ))
-                .map_err(storage)?,
-            )
-            .await
-            .map_err(storage)?,
-        );
         let mut binding = acyclic_harness::LocalHarnessConfig::new(
             &config.filesystem_root,
             (
@@ -162,7 +149,7 @@ impl NativeSession {
                 binding,
                 runtime,
                 files.clone(),
-                (filesystem, task_files),
+                (filesystem, stream.clone()),
                 (&verifier, &config.owner.scope),
                 config.command_workspace.as_deref(),
             )

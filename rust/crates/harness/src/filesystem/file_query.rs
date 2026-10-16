@@ -276,6 +276,7 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
         let prefix = match query {
             Query::Plans => "plans",
             Query::File(task_volume::FileKey::Goal) => "",
+            Query::File(task_volume::FileKey::RequestHead) => "inputs",
             _ => {
                 return Err(crate::Error::Unsupported(
                     "ordinary file query selection is unsupported".into(),

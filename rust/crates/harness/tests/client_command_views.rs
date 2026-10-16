@@ -317,7 +317,6 @@ async fn source_conflict_case(description: &str, alias: &str) -> Result<()> {
     let mut client = client(volume.clone()).await;
     let mut sources = CommandSources::observe(
         &mut client,
-        &volume,
         acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
         vec![],
         vec![],

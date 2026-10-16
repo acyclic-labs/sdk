@@ -28,6 +28,7 @@ impl LocalHarness {
             };
             let snapshot = self
                 .task_files
+                .inner
                 .snapshot(&crate::task_volume::Query::File(key), 1)
                 .await
                 .map_err(storage)?;

@@ -88,7 +88,7 @@ impl LocalHarness {
                 };
                 let lineage = self.command_lineage(task).await?;
                 let paused = CommandControl::change(
-                    &self.task_files,
+                    &self.task_files.inner,
                     task,
                     &lineage,
                     paused,
@@ -124,6 +124,7 @@ impl LocalHarness {
         for task in self.command_lineage(target).await? {
             let snapshot = self
                 .task_files
+                .inner
                 .snapshot(&Query::File(compact_key(task)?), 1)
                 .await
                 .map_err(storage)?;
@@ -149,7 +150,7 @@ impl LocalHarness {
         if let Some(task) = target {
             let deleted = self.delete_conversation(task).await?;
             CommandControl::change(
-                &self.task_files,
+                &self.task_files.inner,
                 Some(task),
                 &[task],
                 Some(false),
@@ -165,6 +166,7 @@ impl LocalHarness {
         loop {
             let Some(page) = self
                 .task_files
+                .inner
                 .page(after.as_ref(), self.limits.context_messages.min(64))
                 .await
                 .map_err(storage)?
@@ -190,7 +192,7 @@ impl LocalHarness {
             tokio::task::yield_now().await;
         }
         CommandControl::change(
-            &self.task_files,
+            &self.task_files.inner,
             None,
             &[],
             Some(false),
@@ -212,6 +214,7 @@ impl LocalHarness {
         loop {
             let snapshot = self
                 .task_files
+                .inner
                 .snapshot(&Query::File(key.clone()), 1)
                 .await
                 .map_err(storage)?;
@@ -229,6 +232,7 @@ impl LocalHarness {
             let bytes = serde_json::to_vec(&settings).map_err(storage)?;
             match self
                 .task_files
+                .inner
                 .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
                 .await
             {
@@ -265,6 +269,7 @@ impl LocalHarness {
         loop {
             let snapshot = self
                 .task_files
+                .inner
                 .snapshot(&Query::File(key.clone()), 1)
                 .await
                 .map_err(storage)?;
@@ -273,6 +278,7 @@ impl LocalHarness {
             }
             match self
                 .task_files
+                .inner
                 .create(
                     snapshot.generation,
                     &FileValue::new(key.clone(), bytes.clone()),
@@ -378,6 +384,7 @@ impl LocalHarness {
         };
         let snapshot = self
             .task_files
+            .inner
             .snapshot(&query, self.limits.context_messages)
             .await
             .map_err(storage)?;
@@ -397,6 +404,7 @@ impl LocalHarness {
         };
         let path = key.path();
         self.task_files
+            .inner
             .create(snapshot.generation, &FileValue::new(key, bytes))
             .await
             .map_err(storage)?;
@@ -434,6 +442,7 @@ impl LocalHarness {
         }
         let snapshot = self
             .task_files
+            .inner
             .snapshot(
                 &Query::Turns(Component::new(target.to_string()).map_err(storage)?),
                 self.limits.context_messages,
@@ -468,6 +477,7 @@ impl LocalHarness {
         let key = compact_key(target)?;
         let cut = self
             .task_files
+            .inner
             .snapshot(&Query::File(key.clone()), 1)
             .await
             .map_err(storage)?;
@@ -479,6 +489,7 @@ impl LocalHarness {
             return Err(Error::Invalid("compaction exceeds file bound".into()));
         }
         self.task_files
+            .inner
             .append(cut.generation, &FileValue::new(key, bytes))
             .await
             .map_err(storage)?;
@@ -516,7 +527,8 @@ impl TaskCommandHost for CommandOwner<'_> {
                 .durable_task_id()
                 .ok_or_else(|| Error::Invalid("command task absent".into()))?;
             let lineage = context.lineage(task).await?;
-            CommandControl::wait(&self.0.task_files, &lineage, self.0.limits.file_bytes).await?;
+            CommandControl::wait(&self.0.task_files.inner, &lineage, self.0.limits.file_bytes)
+                .await?;
             self.0
                 .stock_commands(Some(task))
                 .await?

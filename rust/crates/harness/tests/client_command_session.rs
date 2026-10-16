@@ -51,9 +51,7 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
 ))]
 #[tokio::test]
 async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
-    use acyclic_harness::{
-        LocalHarness, LocalHarnessConfig, model::Model, test_support::ScriptedModelProvider,
-    };
+    use acyclic_harness::{LocalHarness, model::Model, test_support::ScriptedModelProvider};
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git")).unwrap();
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
@@ -63,13 +61,12 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
             output_tokens: 4096,
         },
     ));
-    let local = LocalHarness::open(LocalHarnessConfig::new(
+    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
         directory.path(),
         (model, provider.clone()),
-    ))
+    )?)
     .await?;
-    let volume = local.task_files().clone();
-    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    let mut client = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
     client
         .submit("/SH printf hi >> effect.txt; printf hi", &DeniedReader)
         .await?;
@@ -89,7 +86,7 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
             .is_none()
     );
     drop(client);
-    let mut reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
+    let mut reopened = CommandSession::open_local(&local, session_id(), 32_768, 128).await?;
     assert!(
         acyclic_harness::client::consume_local_command(&mut reopened, &local, &request)
             .await?
@@ -367,10 +364,12 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
         acyclic_stream::LocalStream::open(directory.path().join("stream"), Default::default())
             .await?,
     );
-    let digest = blake3::hash(&serde_json::to_vec(&volume)?);
     let files = TaskVolume::open(
         stream,
-        StreamPath::new(format!("graphcoder-files/{}", digest.to_hex()))?,
+        StreamPath::new(format!(
+            "harness/task-volumes/{}",
+            volume.storage_name(&mut None)?
+        ))?,
     )
     .await
     .map_err(volume_error)?;
