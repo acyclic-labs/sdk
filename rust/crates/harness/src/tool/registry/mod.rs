@@ -38,23 +38,28 @@ impl ToolRegistry {
     /// Adds a disjoint registry by moving its entries; collisions reject the whole assembly.
     pub fn extend(mut self, additional: Self) -> Result<Self> {
         if additional
+            .data
             .versions
             .keys()
-            .any(|key| self.versions.contains_key(key))
+            .any(|key| self.data.versions.contains_key(key))
             || additional
+                .data
                 .selected
                 .keys()
-                .any(|key| self.selected.contains_key(key))
+                .any(|key| self.data.selected.contains_key(key))
             || additional
+                .data
                 .catalog_revisions
                 .keys()
-                .any(|key| self.catalog_revisions.contains_key(key))
+                .any(|key| self.data.catalog_revisions.contains_key(key))
         {
             return Err(Error::Conflict("tool registries overlap".into()));
         }
-        self.versions.extend(additional.versions);
-        self.selected.extend(additional.selected);
-        self.catalog_revisions.extend(additional.catalog_revisions);
+        let data = Arc::make_mut(&mut self.data);
+        let additional = Arc::unwrap_or_clone(additional.data);
+        data.versions.extend(additional.versions);
+        data.selected.extend(additional.selected);
+        data.catalog_revisions.extend(additional.catalog_revisions);
         Ok(self)
     }
 }

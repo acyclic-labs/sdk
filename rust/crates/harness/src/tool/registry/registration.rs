@@ -70,21 +70,8 @@ impl ToolRegistry {
                     key.0, key.1
                 )));
             }
-            // Adjacent version keys answer name membership without scanning the catalog.
-            let previous = self.data.selected.contains_key(&key.0)
-                || self
-                    .data
-                    .versions
-                    .range(..=&key)
-                    .next_back()
-                    .is_some_and(|((logical, _), _)| logical == &key.0)
-                || self
-                    .data
-                    .versions
-                    .range(&key..)
-                    .next()
-                    .is_some_and(|((logical, _), _)| logical == &key.0);
-            let selection = if previous && self.data.selected.contains_key(&key.0) {
+            let previous = self.data.selected.contains_key(&key.0);
+            let selection = if previous {
                 None
             } else {
                 #[cfg(feature = "filesystem")]
