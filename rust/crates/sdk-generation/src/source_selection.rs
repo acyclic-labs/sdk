@@ -18,39 +18,69 @@ fn uncertain(name: &std::ffi::OsStr) -> bool {
         || bytes.last().is_some_and(|byte| matches!(byte, b'.' | b' '))
 }
 
+#[derive(Eq, PartialEq)]
+struct Name(OsString);
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        COMPARISONS.set(COMPARISONS.get() + 1);
+        self.0.cmp(&other.0)
+    }
+}
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+#[cfg(test)]
+thread_local! { static COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+fn key(mut name: OsString, windows: bool) -> Name {
+    if windows {
+        name.make_ascii_lowercase();
+    }
+    Name(name)
+}
+
 // The base projection has already attested the entire source inventory, which
-// final bundling validates again. Variants need only referenced filenames, but
-// retain ALL basename aliases: filtering must never hide an ambiguous fallback.
-// Uncertain Windows spellings keep the full inventory (8.3, Unicode, ADS, etc.).
+// final bundling validates again. Keep ALL basename aliases and conservatively
+// retain uncertain Windows spellings (8.3, Unicode, ADS, etc.). Index once rather
+// than scanning every reference for every inventory entry.
 pub(crate) fn referenced(
     sources: &[GeneratedSource],
     filenames: &BTreeSet<String>,
     windows: bool,
 ) -> Vec<GeneratedSource> {
+    select(sources, filenames, windows, BTreeSet::contains)
+}
+
+fn select(
+    sources: &[GeneratedSource],
+    filenames: &BTreeSet<String>,
+    windows: bool,
+    contains: impl Fn(&BTreeSet<Name>, &Name) -> bool,
+) -> Vec<GeneratedSource> {
     if filenames.is_empty() {
         return Vec::new();
     }
-    let names = filenames
-        .iter()
-        .map(|path| basename(Path::new(path), windows))
-        .collect::<Vec<_>>();
-    let all = names
-        .iter()
-        .any(|name| name.as_ref().is_none_or(|name| windows && uncertain(name)));
+    let mut names = BTreeSet::new();
+    let mut all = false;
+    for path in filenames {
+        match basename(Path::new(path), windows) {
+            Some(name) if !windows || !uncertain(&name) => {
+                names.insert(key(name, windows));
+            }
+            _ => all = true,
+        }
+    }
     sources
         .iter()
         .filter(|source| {
             let Some(name) = basename(&source.physical_path, windows) else {
                 return true;
             };
-            all || windows && uncertain(&name)
-                || names.iter().flatten().any(|other| {
-                    name == *other
-                        || windows
-                            && name
-                                .as_encoded_bytes()
-                                .eq_ignore_ascii_case(other.as_encoded_bytes())
-                })
+            all || windows && uncertain(&name) || contains(&names, &key(name, windows))
         })
         .cloned()
         .collect()
@@ -81,6 +111,26 @@ mod tests {
     }
 
     proptest! {
+        // The real key comparator counts insertion AND lookup work. A nested
+        // scan using the same selector must violate this logarithmic bound.
+        #[test]
+        fn reference_selection_work_is_logarithmic_per_entry(
+            references in 128usize..256, inventory in 128usize..256,
+            windows in any::<bool>(),
+        ) {
+            let filenames = (0..references).map(|i| format!("src/a{i:04}.rs")).collect();
+            let sources = (0..inventory).map(|i| source(format!("out/Z{i:04}.RS"), 0, 0)).collect::<Vec<_>>();
+            let bound = 4 * (references + inventory) * (references + 1).ilog2() as usize;
+            COMPARISONS.set(0);
+            prop_assert!(referenced(&sources, &filenames, windows).is_empty());
+            prop_assert!(COMPARISONS.get() <= bound, "{} > {}", COMPARISONS.get(), bound);
+            COMPARISONS.set(0);
+            let broken = select(&sources, &filenames, windows, |names, name| {
+                names.iter().any(|other| other.cmp(name).is_eq())
+            });
+            prop_assert!(broken.is_empty());
+            prop_assert!(COMPARISONS.get() > bound, "linear negative control escaped: {} <= {}", COMPARISONS.get(), bound);
+        }
         #[test]
         fn reference_selection_keeps_every_basename_alias_and_windows_uncertainty(
             leaf in "[a-z]{1,12}", other in "[a-z]{1,12}", windows in any::<bool>(),

@@ -210,6 +210,68 @@ pub(super) fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
         .eq_ignore_ascii_case(&sha256_hex(bytes))
 }
 
+// Scoped to one family projection. Resolve each filename once, then repeat
+// every check before returning the family; no filesystem result survives it.
+pub(super) fn cached_source_span(
+    repository_root: &Path,
+    rustdoc_source_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    paths: &mut HashMap<PathBuf, String>,
+    span: &rustdoc_types::Span,
+) -> Result<SourceSpan, Error> {
+    let path = match paths.get(&span.filename) {
+        Some(path) => path.clone(),
+        None => {
+            let resolved = source_span_from_base(
+                repository_root,
+                rustdoc_source_root,
+                generated_sources,
+                span,
+            )?;
+            paths.insert(span.filename.clone(), resolved.path.clone());
+            resolved.path
+        }
+    };
+    Ok(SourceSpan {
+        path,
+        begin_line: span.begin.0,
+        begin_column: span.begin.1,
+        end_line: span.end.0,
+        end_column: span.end.1,
+    })
+}
+
+pub(super) fn validate_source_paths(
+    repository_root: &Path,
+    rustdoc_source_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    paths: &HashMap<PathBuf, String>,
+) -> Result<(), Error> {
+    for (filename, expected) in paths {
+        let span = rustdoc_types::Span {
+            filename: filename.clone(),
+            begin: (0, 0),
+            end: (0, 0),
+        };
+        let actual = source_span_from_base(
+            repository_root,
+            rustdoc_source_root,
+            generated_sources,
+            &span,
+        )?;
+        if actual.path != *expected {
+            return Err(Error::Invalid(format!(
+                "Rustdoc source mapping changed during projection: {}",
+                filename.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static SOURCE_PATH_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 pub(super) fn source_span_from_base(
     repository_root: &Path,
     rustdoc_source_root: &Path,
@@ -228,6 +290,8 @@ pub(super) fn source_span_at_root(
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     span: &rustdoc_types::Span,
 ) -> Result<SourceSpan, Error> {
+    #[cfg(test)]
+    SOURCE_PATH_CHECKS.set(SOURCE_PATH_CHECKS.get() + 1);
     let source_path = if span.filename.is_absolute() {
         span.filename.clone()
     } else {
@@ -298,3 +362,7 @@ pub(super) fn item_name(item: &Item) -> Option<String> {
         _ => None,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/source_paths.rs"]
+mod tests;

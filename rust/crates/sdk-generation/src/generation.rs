@@ -496,7 +496,11 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
             build_data(&variant_input, &[])
         }
         .map_err(docs_error)?;
-        generated_source_artifacts.extend(variant_input.generated_sources.clone());
+        // Archive variants select a subset of the already retained base
+        // inventory. Other scopes may materialize new physical/logical aliases.
+        if !matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+            generated_source_artifacts.extend(variant_input.generated_sources);
+        }
         merge_profile_catalog(&mut data, variant_data).map_err(docs_error)?;
     }
     let availability =
