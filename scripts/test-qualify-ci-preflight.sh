@@ -188,7 +188,8 @@ chmod +x "$gate/bin/mcp_loom"
 mapfile -t cargo_calls <"$gate/cargo.log"
 [[ "${#cargo_calls[@]}" -eq 3 ]]
 [[ "${cargo_calls[0]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features -- --cfg loom' ]]
-[[ "${cargo_calls[1]}" == 'rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local' ]]
+timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
+[[ "${cargo_calls[1]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
 [[ "${cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 for lane in docs generation; do

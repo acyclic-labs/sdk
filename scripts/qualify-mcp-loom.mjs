@@ -7,7 +7,9 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
 }
 
 export function qualifyTimerLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "timer_loom", ["--features", "acyclic-stream/local"], run, {
+  return qualifyLoom("acyclic-actors", "timer_loom", [
+    "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
+  ], run, {
     env: { ...process.env, RUSTFLAGS: "--cfg acyclic_loom" }, targetCfg: [],
   });
 }

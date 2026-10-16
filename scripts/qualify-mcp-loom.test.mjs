@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import { qualifyMcpLoom, qualifyTimerLoom } from "./qualify-mcp-loom.mjs";
 
@@ -32,7 +33,7 @@ test("timer qualification instruments production Stream locks only through RUSTF
     return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(1) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local"], "--cfg acyclic_loom"],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom")], "--cfg acyclic_loom"],
     ["model-binary", [], undefined],
   ]);
 });
