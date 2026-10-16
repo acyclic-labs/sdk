@@ -45,7 +45,7 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
         let path = source.path().join(format!("f{index:05}"));
         #[cfg(windows)]
         if sparse {
-            use std::io::Write as _;
+            use std::io::{Seek as _, SeekFrom, Write as _};
             let mut file = std::fs::File::create(path).unwrap();
             acyclic_native_runtime::device_control_in_place(
                 &file,
@@ -55,6 +55,8 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
                 None,
             )
             .unwrap();
+            file.write_all(&vec![1; bytes]).unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
             file.write_all(&vec![0; bytes]).unwrap();
             continue;
         }
@@ -121,6 +123,9 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
                 ))
                 .unwrap();
             assert_eq!(captured.value.examined_paths, u64::from(count));
+            if sparse {
+                assert!(captured.work.source_bytes_read >= bytes as u64);
+            }
             if report_work {
                 eprintln!("capture={:?} work={:?}", captured.value, captured.work);
             }
