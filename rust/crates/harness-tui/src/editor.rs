@@ -47,7 +47,6 @@ pub struct Editor {
     kills: Vec<String>,
     kill_active: bool,
     yank: Option<(Buffer, usize)>,
-    history: PromptHistory,
     layout: RefCell<(usize, Rc<Layout>)>,
 }
 
@@ -85,13 +84,8 @@ impl Editor {
     pub fn collapsed_pastes(&self) -> &[Range<usize>] {
         &self.buffer.folds
     }
-    /// Mutable submitted-prompt history for the host to load or save.
-    pub fn history(&mut self) -> &mut PromptHistory {
-        &mut self.history
-    }
-
     /// Heap bytes retained by undo and redo, including edit and fold metadata.
-    /// Working text, wrapping, prompt history and the kill ring are excluded.
+    /// Working text, wrapping and the kill ring are excluded.
     pub fn retained_undo_bytes(&self) -> usize {
         (self.undo.capacity() + self.redo.capacity()) * size_of::<Edit>()
             + self
@@ -449,16 +443,16 @@ impl Editor {
     }
 
     /// Recall history only at the corresponding buffer edge.
-    pub fn recall(&mut self, previous: bool, now_ms: u64) -> bool {
+    pub fn recall(&mut self, history: &mut PromptHistory, previous: bool, now_ms: u64) -> bool {
         if !self.selection().is_empty()
             || self.cursor() != if previous { 0 } else { self.text().len() }
         {
             return false;
         }
         let text = if previous {
-            self.history.previous(&self.buffer.text)
+            history.previous(&self.buffer.text)
         } else {
-            self.history.next_entry()
+            history.next_entry()
         };
         if let Some(text) = text {
             let text = normalize(&text);
@@ -483,6 +477,7 @@ impl Editor {
     }
 
     /// Enter returns a submitted prompt, or inserts a newline when modified.
+    /// The caller appends submissions to the shared input history.
     /// A trailing backslash continues only at buffer end with no selection.
     pub fn enter(&mut self, modified: bool, now_ms: u64) -> Option<String> {
         if modified {
@@ -507,7 +502,6 @@ impl Editor {
             return None;
         }
         let text = self.text().to_owned();
-        self.history.push(text.clone());
         self.replace(0..self.text().len(), "", now_ms, 2, true, false);
         Some(text)
     }
