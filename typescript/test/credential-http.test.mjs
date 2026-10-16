@@ -6,6 +6,7 @@ import { HttpObjectsV1 } from "../packages/objects/src/v1-http.js";
 import { HeadBucketRequestSchema } from "../packages/objects/generated/proto/objects/v1/objects_pb.js";
 import { HttpMachinesProvider } from "../packages/machines/src/http.js";
 import { machineId } from "../packages/machines/src/index.js";
+import { HttpInferenceTransport } from "../packages/inference/src/index.js";
 import { openHostedFs } from "../packages/filesystem/src/hosted.js";
 import { HandshakeResponseSchema, FilesystemProfile } from "../packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js";
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../packages/filesystem/generated/descriptor-digest.js";
@@ -35,7 +36,7 @@ function handshake() {
 
 test("HTTP clients renew for each request and never fall back to fixed credentials", async () => {
   await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), async values => {
-    for (const product of ["streams", "fs", "objects", "machines"]) {
+    for (const product of ["streams", "fs", "objects", "machines", "inference"]) {
       let calls = 0;
       const sent = [];
       const fetcher = async (input, init) => {
@@ -52,6 +53,7 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         case "fs": { const client = await openHostedFs(options); invoke = () => client.openWorkspace("credential-test"); release = () => client.close(); break; }
         case "objects": { const client = new HttpObjectsV1(options); invoke = () => client.headBucket(create(HeadBucketRequestSchema, { bucket: { name: "credential-test" } })); break; }
         case "machines": { const client = new HttpMachinesProvider(options); invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003")); break; }
+        case "inference": { const client = new HttpInferenceTransport(options.endpoint, options, fetcher); invoke = () => client.listModels(); break; }
       }
       options.credential = async () => "mutated";
       try {
