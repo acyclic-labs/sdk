@@ -31,6 +31,9 @@ fn child(value: &str) -> wire::SessionFrame {
         channel_id: 1,
         generation: 1,
         body: Some(wire::session_frame::Body::Data(wire::SessionData {
+            after: Some(wire::SessionCursor { next: 1, ..Default::default() }),
+            accepted: 1,
+            durable: 1,
             item: Some(wire::session_data::Item::Child(wire::Child {
                 path: value.into(),
             })),
@@ -128,6 +131,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         assert_eq!(status.path, "swarm/unseen/status");
         assert_eq!(status.delivery, wire::SessionDelivery::Latest as i32);
         let attention = wire::SessionData {
+            after: Some(wire::SessionCursor { next: 42, ..Default::default() }),
             accepted: 42,
             durable: 41,
             item: Some(wire::session_data::Item::LatestValue(
@@ -179,6 +183,9 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
                 channel_id: content.channel.as_ref().unwrap().channel_id,
                 generation: 1,
                 body: Some(wire::session_frame::Body::Data(wire::SessionData {
+                    after: Some(wire::SessionCursor { next: snapshot_cut + 1, ..Default::default() }),
+                    accepted: snapshot_cut + 1,
+                    durable: snapshot_cut + 1,
                     item: Some(wire::session_data::Item::Record(
                         acyclic_stream::wire_codec::record_wire(record),
                     )),
