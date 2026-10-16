@@ -15,6 +15,8 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
+    pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context: ContextPipeline,
@@ -37,6 +39,7 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
         Self {
+            goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             model,
             context: ContextPipeline::default(),

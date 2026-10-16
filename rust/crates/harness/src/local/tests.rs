@@ -17,6 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod goals;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
