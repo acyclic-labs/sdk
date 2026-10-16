@@ -325,37 +325,14 @@ pub(super) fn execute_default_profiles(
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
-    let cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", wasm_target])
-    .output()
-    .map_err(io_error)?;
-    if !cfg_output.status.success() {
-        return Err(CliError("rustc could not report browser target cfg".into()));
-    }
-    let browser_cfg = String::from_utf8_lossy(&cfg_output.stdout)
+    let (host_output, browser_output) =
+        sdk_docs::rustdoc_profiles::rustdoc_platform_cfgs().map_err(profile_error)?;
+    let browser_cfg = browser_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| CliError(format!("invalid rustc browser cfg: {error}")))?;
-
-    let host_cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", &host])
-    .output()
-    .map_err(io_error)?;
-    if !host_cfg_output.status.success() {
-        return Err(CliError("rustc could not report host target cfg".into()));
-    }
-    let host_cfg = String::from_utf8_lossy(&host_cfg_output.stdout)
+    let host_cfg = host_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
