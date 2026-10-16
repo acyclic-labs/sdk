@@ -178,7 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     }
 
     #[cfg(feature = "native-mount")]
-    async fn stage_source_parents(
+    pub(super) async fn stage_source_parents(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         path: &str,
@@ -200,16 +200,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 let prefix = Owned::new(prefix, allocation, bytes);
                 let result =
                     async {
-                        if let Some(found) = transaction
+                        let (found, _allocation) = transaction
                             .checkout
-                            .lookup_no_follow_with_metadata_with_accounting(
+                            .lookup_no_follow_with_accounting(
                                 &prefix.value,
                                 ctx,
                                 cancellation(ctx),
+                                true,
                             )
-                            .await?
-                        {
-                            return if found.record.kind == FileKind::Directory {
+                            .await?;
+                        if let Some(record) = found.record {
+                            return if record.kind == FileKind::Directory {
                                 Ok(())
                             } else {
                                 Err(crate::FsError::NotDirectory.into())

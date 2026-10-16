@@ -6,9 +6,10 @@ async fn check_aliases(
     separate_parents: bool,
     watched: bool,
     writes: &[Vec<u8>],
+    rename_source: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let names = ["a", "b"].map(|leaf| {
+    let mut names = ["a", "b"].map(|leaf| {
         let directory = if separate_parents { leaf } else { "d" };
         let mut names = vec![directory; depth];
         names.push(leaf);
@@ -16,6 +17,14 @@ async fn check_aliases(
     });
     for name in &names {
         std::fs::create_dir_all(root.path().join(name).parent().expect("parent"))?;
+    }
+    if depth != 0 {
+        for name in &names {
+            std::fs::write(
+                root.path().join(name).with_file_name("untouched"),
+                b"untouched",
+            )?;
+        }
     }
     std::fs::write(root.path().join(&names[0]), b"source")?;
     std::fs::hard_link(root.path().join(&names[0]), root.path().join(&names[1]))?;
@@ -27,7 +36,7 @@ async fn check_aliases(
         crate::MemoryLazyWorkspaceStore::default(),
     )
     .await?;
-    let paths = names
+    let mut paths = names
         .each_ref()
         .map(|name| mounted(&name.split('/').collect::<Vec<_>>()));
     let mut parents = vec![MountPath::root()];
@@ -73,7 +82,53 @@ async fn check_aliases(
             );
         }
     }
+    if rename_source && depth != 0 {
+        let mut moved = Vec::new();
+        for name in &mut names {
+            let (directory, suffix) = name.split_once('/').expect("nested alias");
+            if !moved.contains(&directory.to_owned()) {
+                std::fs::rename(
+                    root.path().join(directory),
+                    root.path().join(format!("moved-{directory}")),
+                )?;
+                moved.push(directory.to_owned());
+            }
+            *name = format!("moved-{directory}/{suffix}");
+        }
+        view.fence_changes()?;
+        paths = names
+            .each_ref()
+            .map(|name| mounted(&name.split('/').collect::<Vec<_>>()));
+        for parent in parents
+            .iter_mut()
+            .filter(|parent| !parent.components().is_empty())
+        {
+            let first = String::from_utf8(parent.components()[0].clone())?;
+            parent.components[0] = format!("moved-{first}").into_bytes();
+        }
+        for name in &names {
+            let untouched = std::path::Path::new(name).with_file_name("untouched");
+            let path = mounted(
+                &untouched
+                    .to_str()
+                    .expect("portable path")
+                    .split('/')
+                    .collect::<Vec<_>>(),
+            );
+            let file = view.open_file(&path)?;
+            file.write_range(0, Bytes::from_static(b"changed"))?;
+            assert_eq!(file.read_range(0, 9)?.as_ref(), b"changeded");
+        }
+    }
     view.sync_async().await?;
+    let last = writes.last().expect("nonempty writes");
+    for path in &paths {
+        let alias = view.open_file(path)?;
+        let facts = alias.lookup()?.node;
+        assert_eq!(facts.file_id, identity);
+        assert_eq!(facts.logical_bytes, last.len() as u64);
+        assert_eq!(alias.read_range(0, last.len() as u32)?.as_ref(), last);
+    }
     for (parent, expected) in parents.iter().zip(identities) {
         assert_eq!(
             view.lookup(parent)?
@@ -89,33 +144,76 @@ async fn check_aliases(
 #[tokio::test(flavor = "multi_thread")]
 async fn alternating_source_alias_truncations_preserve_one_file()
 -> Result<(), Box<dyn std::error::Error>> {
-    check_aliases(1, false, true, &[b"first".to_vec(), b"second".to_vec()]).await
+    check_aliases(
+        1,
+        false,
+        true,
+        &[b"first".to_vec(), b"second".to_vec()],
+        false,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_directory_renames_keep_subsequent_writes_working()
+-> Result<(), Box<dyn std::error::Error>> {
+    for watched in [true, false] {
+        check_aliases(
+            1,
+            false,
+            watched,
+            &[b"first".to_vec(), b"second".to_vec()],
+            true,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[test]
 fn promotions_preserve_ancestor_and_alias_identities_for_generated_writes()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Property: every observed ancestor keeps its identity through any generated
-    // alias promotion/write sequence and publication; aliases share all bytes.
+    // Property: ancestors keep their identity through alias writes, external
+    // directory renames and publication; published aliases share all bytes.
+    // Independent runners keep all 32 cases and their shrinking, without serial
+    // native I/O. The runtime is shared by all runners.
     let runtime = tokio::runtime::Runtime::new()?;
-    let strategy = (
-        0usize..4,
-        any::<bool>(),
-        any::<bool>(),
-        proptest::collection::vec(proptest::collection::vec(any::<u8>(), 1..32), 1..5),
-    );
-    let config = proptest::test_runner::Config {
-        cases: 32,
-        source_file: Some(file!()),
-        ..Default::default()
-    };
-    proptest::test_runner::TestRunner::new(config).run(
-        &strategy,
-        |(depth, separate, watched, writes)| {
-            runtime
-                .block_on(check_aliases(depth, separate, watched, &writes))
-                .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))
-        },
-    )?;
+    std::thread::scope(|scope| {
+        let runners = (0..32)
+            .map(|_| {
+                let runtime = &runtime;
+                scope.spawn(move || {
+                    let strategy = (
+                        0usize..4,
+                        any::<bool>(),
+                        any::<bool>(),
+                        proptest::collection::vec(
+                            proptest::collection::vec(any::<u8>(), 1..32),
+                            1..5,
+                        ),
+                        any::<bool>(),
+                    );
+                    let config = proptest::test_runner::Config {
+                        cases: 1,
+                        source_file: Some(file!()),
+                        ..Default::default()
+                    };
+                    proptest::test_runner::TestRunner::new(config)
+                        .run(&strategy, |(depth, separate, watched, writes, rename)| {
+                            runtime
+                                .block_on(check_aliases(depth, separate, watched, &writes, rename))
+                                .map_err(|error| {
+                                    proptest::test_runner::TestCaseError::fail(error.to_string())
+                                })
+                        })
+                        .map_err(|error| error.to_string())
+                })
+            })
+            .collect::<Vec<_>>();
+        for runner in runners {
+            runner.join().expect("property runner panicked")?;
+        }
+        Ok::<_, String>(())
+    })?;
     Ok(())
 }

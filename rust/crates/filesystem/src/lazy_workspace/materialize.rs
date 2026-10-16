@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let mut mutations = Some(Owned::allocate(2, ctx)?);
+        let mut mutations = None;
         let result = async {
             let mut namespace = self.namespace_path(path, ctx)?;
             if node.kind == SourceNodeKind::Directory {
@@ -82,10 +82,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     directories.retire(ctx)?;
                     return Err(error.into());
                 }
-                transaction
+                match transaction
                     .checkout
                     .apply_mutations(directories, ctx, cancellation(ctx))
-                    .await?;
+                    .await
+                {
+                    Err(crate::FsError::Mutation(
+                        crate::kernel::GenerationMutationError::FileIdentityAlreadyExists,
+                    )) => {
+                        self.reconcile_source_directory(
+                            transaction,
+                            path,
+                            source,
+                            record.file_id,
+                            ctx,
+                        )
+                        .await?;
+                    }
+                    result => result?,
+                }
                 return Ok(());
             }
             if node.kind == SourceNodeKind::RegularFile {
@@ -135,6 +150,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     }
                 }
             }
+            mutations = Some(match Owned::allocate(2, ctx) {
+                Ok(mutations) => mutations,
+                Err(error) => {
+                    namespace.retire(ctx)?;
+                    return Err(error.into());
+                }
+            });
             let metadata = source_file_metadata(node.metadata);
             let mutation = async {
                 Ok::<_, LazyWorkspaceError>(match node.kind {
@@ -278,6 +300,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if let Some(pending) = mutations {
             pending.retire(ctx)?;
         }
+        result
+    }
+
+    async fn reconcile_source_directory(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        destination: &str,
+        source: SourceReference,
+        id: FileId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        let old = transaction
+            .checkout
+            .directory_binding_with_accounting(id, ctx, cancellation(ctx))
+            .await?;
+        let result = async {
+            // A second live source binding is not a rename. Never admit directory hard links.
+            if let Some(node) = self.source_lookup(source, &old.value, ctx).await? {
+                if self.source_file_id(&node.file_identity, ctx)? == id {
+                    return Err(crate::FsError::FileIdentityCollision.into());
+                }
+            }
+            accounted!(ctx, |work, cancel| transaction.rename(
+                &old.value,
+                destination,
+                false,
+                work,
+                cancel
+            ))?;
+            Ok(())
+        }
+        .await;
+        old.retire(ctx)?;
         result
     }
 }
