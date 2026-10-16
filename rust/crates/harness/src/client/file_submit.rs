@@ -91,6 +91,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             ));
         }
         let cursor = if let Some(file) = state.files.first() {
+            if limits.durability == FileClientDurability::Durable
+                && !outbox.file_is_durable(file).await.map_err(query_error)?
+            {
+                return Err(Error::Conflict(
+                    "outbox checkpoint awaits durability".into(),
+                ));
+            }
             let state: Checkpoint =
                 serde_json::from_slice(&file.bytes).map_err(|e| Error::Storage(e.to_string()))?;
             if state.target != target_id

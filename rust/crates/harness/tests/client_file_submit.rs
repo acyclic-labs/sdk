@@ -258,6 +258,41 @@ async fn stale_openers_cannot_regress_the_checkpoint() {
     assert_eq!(reopened.pending(), 0);
 }
 
+async fn reopen_requires_durable_checkpoint(id: u8) {
+    let local = Arc::new(Provider::default());
+    let outbox = volume(local.clone(), "client/files").await;
+    let target = volume(Arc::new(Provider::default()), "agent/files").await;
+    let mut client = FileClient::open(outbox.clone(), target.clone(), LIMITS)
+        .await
+        .unwrap();
+    client.enqueue(request(id)).await.unwrap();
+    let intent = outbox.head().await.unwrap();
+    local
+        .durable_through
+        .store(intent.position as usize, Ordering::SeqCst);
+    assert!(client.flush().await.is_err());
+    assert_eq!(client.pending(), 1);
+    drop(client);
+    // The target is durable, but the accepted checkpoint is not. Reopening may
+    // not report its cursor as committed until its own publication is durable.
+    assert!(
+        FileClient::open(outbox.clone(), target.clone(), LIMITS)
+            .await
+            .is_err()
+    );
+    local.durable_through.store(usize::MAX, Ordering::SeqCst);
+    let restored = FileClient::open(outbox, target, LIMITS).await.unwrap();
+    assert_eq!(restored.pending(), 0);
+    assert_eq!(restored.cursor().position, intent.position);
+}
+
+#[tokio::test]
+async fn reopening_cannot_promote_an_accepted_checkpoint_to_durable() {
+    for id in [0, 1, u8::MAX] {
+        reopen_requires_durable_checkpoint(id).await;
+    }
+}
+
 #[tokio::test]
 async fn quotas_and_target_identity_fail_before_submission() {
     let outbox = volume(Arc::new(Provider::default()), "client/files").await;
@@ -415,6 +450,11 @@ async fn negative_control_acknowledging_before_target_publication_is_detected() 
 }
 
 proptest::proptest! {
+    #[test]
+    fn restoration_requires_its_own_checkpoint_durability(id in proptest::num::u8::ANY) {
+        futures::executor::block_on(reopen_requires_durable_checkpoint(id));
+    }
+
     // Unrelated accepted suffixes cannot hold back a durable request or its
     // checkpoint, for either publication stage and every request identity.
     #[test]
