@@ -389,6 +389,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-stream",
  "allocation-counter",
+ "blake3",
  "bytes",
  "diffy",
  "futures",

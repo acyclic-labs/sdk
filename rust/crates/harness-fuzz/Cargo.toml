@@ -16,6 +16,7 @@ runtime = ["dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", 
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
+blake3.workspace = true
 acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }

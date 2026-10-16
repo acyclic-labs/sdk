@@ -21,7 +21,10 @@ mod pool;
 #[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
-pub use pool::model::{verify_interest_accounting, verify_link_isolation, verify_pool_lifetime};
+pub use pool::model::{
+    verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
+    verify_pool_lifetime,
+};
 mod progress;
 use progress::Progress;
 #[cfg(test)]
@@ -32,7 +35,7 @@ type Connect = std::sync::Arc<
         + Sync,
 >;
 type Ready = (String, Link, Response);
-type Dial = BoxFuture<'static, (String, Result<Ready, StreamError>)>;
+type Dial = BoxFuture<'static, (String, u64, Result<Ready, StreamError>)>;
 type Response = tonic::Streaming<wire::SessionFrame>;
 type Read = BoxFuture<
     'static,
@@ -53,6 +56,8 @@ pub struct Client {
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
+    attempt_epoch: Arc<AtomicU64>,
+    abandoned: Arc<gate::Gate>,
 }
 struct Delivery {
     item: Received,
@@ -68,6 +73,7 @@ enum Received {
 enum Command {
     Open {
         id: u64,
+        attempt_epoch: u64,
         acknowledge: bool,
         kind: Kind,
         progress: Arc<Progress>,
@@ -77,6 +83,7 @@ enum Command {
 }
 struct Route {
     node: String,
+    attempt_epoch: u64,
     kind: Kind,
     generation: u64,
     placement_epoch: u64,
@@ -114,6 +121,9 @@ struct Pool {
     home_channel: TransportChannel,
     next_link: u64,
     active: Arc<AtomicU64>,
+    attempt_epoch: Arc<AtomicU64>,
+    abandoned: Arc<gate::Gate>,
+    dial_epoch: u64,
     commands: mpsc::Receiver<Command>,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
@@ -156,6 +166,8 @@ impl Client {
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
         let active = Arc::new(AtomicU64::new(0));
+        let attempt_epoch = Arc::new(AtomicU64::new(0));
+        let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
@@ -171,6 +183,9 @@ impl Client {
             home_channel: channel.clone(),
             next_link: 1,
             active: Arc::clone(&active),
+            attempt_epoch: Arc::clone(&attempt_epoch),
+            abandoned: Arc::clone(&abandoned),
+            dial_epoch: 0,
             commands: receiver,
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
@@ -186,7 +201,17 @@ impl Client {
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
             active,
+            attempt_epoch,
+            abandoned,
         }
+    }
+    pub(crate) fn abandon_pending(&self) -> Result<(), StreamError> {
+        self.attempt_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| StreamError::Capacity)?;
+        self.abandoned.set(true)
     }
     /// Opens a logical follow on the shared session, without a per-stream RPC.
     pub async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
@@ -198,10 +223,29 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
+        self.follow_records(path, from, None, acknowledge).await
+    }
+    /// Atomically confirms the preceding history on a shared logical channel.
+    pub async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: crate::CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_records(path, from, Some(preceding), true).await
+    }
+    pub(crate) async fn follow_records(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        acknowledge: bool,
+    ) -> Result<RecordStream, StreamError> {
         let kind = Kind::Follow(wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
-            ..Default::default()
+            preceding_commit_id: preceding
+                .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         });
         Ok(self
             .open_kind(kind, from, acknowledge)
@@ -239,7 +283,21 @@ impl Client {
     ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
-        let progress = Arc::new(Progress::new(from));
+        let preceding = match &kind {
+            Kind::Follow(follow) => wire_codec::session::preceding_follow(
+                follow,
+                &wire::SessionCursor {
+                    next: from,
+                    opaque: Bytes::new(),
+                },
+            )?
+            .map(|id| *id.as_bytes()),
+            _ => None,
+        };
+        let progress = Arc::new(match preceding {
+            Some(preceding) => Progress::with_preceding(from, Some(preceding)),
+            None => Progress::new(from),
+        });
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -247,6 +305,7 @@ impl Client {
         self.commands
             .send(Command::Open {
                 id,
+                attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
                 acknowledge,
                 kind,
                 progress,
@@ -268,16 +327,17 @@ impl Client {
                     .ok_or(StreamError::Unavailable)??;
                 // Delivery disposal returns capacity on every exit, including
                 // stale-generation suppression and cancellation of the cursor.
-                let fresh = if delivery.opaque.is_empty() {
-                    cursor
-                        .progress
-                        .consume(delivery.generation, delivery.sequence)?
-                } else {
-                    cursor.progress.consume_opaque(
+                let fresh = match &delivery.item {
+                    Received::Record(record) => cursor.progress.consume_record(
+                        delivery.generation,
+                        delivery.sequence,
+                        *record.commit_id.as_bytes(),
+                    )?,
+                    Received::Child(_) => cursor.progress.consume_opaque(
                         delivery.generation,
                         delivery.sequence,
                         &delivery.opaque,
-                    )?
+                    )?,
                 };
                 drop(delivery.credit);
                 if fresh {

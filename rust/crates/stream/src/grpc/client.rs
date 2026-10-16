@@ -1,6 +1,11 @@
 use super::*;
 
 impl Client {
+    /// Abandons pending Session handshakes when their credential scope ends.
+    /// Existing sessions remain owned by their logical cursors.
+    pub fn abandon_session_attempts(&self) -> Result<(), StreamError> {
+        self.sessions.abandon_pending()
+    }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
             crate::session::Client::open(
@@ -191,6 +196,17 @@ impl StreamProvider for Client {
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.session()?.children(request).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.session()?
+            .follow_records(path, from, Some(preceding), self.acknowledge_deliveries)
+            .await
     }
 
     async fn children_page(

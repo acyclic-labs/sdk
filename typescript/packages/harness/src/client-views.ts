@@ -93,6 +93,27 @@ export class ClientViews<Value, Assumption, Evidence> {
 
   #live(): void { if (this.#disposed) throw new Error("client views are disposed"); }
 
+  /** Applies the existing bounded file-query snapshot through Rust. */
+  querySnapshot(query: unknown, snapshot: unknown, maximumFiles: number, maximumBytes: number): void {
+    this.#live();
+    this.#kernel.querySnapshot(query, snapshot, maximumFiles, maximumBytes);
+  }
+
+  /** Folds one pushed publication; replay follows the native cursor rules. */
+  queryChange(change: unknown): boolean {
+    this.#live();
+    return this.#kernel.queryChange(change);
+  }
+
+  /** Associates the two existing volume-scoped source identities. */
+  bindGoalSources(goal: unknown, request: unknown): void {
+    this.#live();
+    this.#kernel.bindGoalSources(goal, request);
+  }
+
+  /** Reads the shared rendering, including goal state and both source cursors. */
+  views(): unknown { this.#live(); return this.#kernel.views(); }
+
   begin(request: ClientPrediction<Value, Assumption>): BranchId {
     this.#live();
     return this.#kernel.begin({ key: request.key, basis: request.basis, operation: request.operation,

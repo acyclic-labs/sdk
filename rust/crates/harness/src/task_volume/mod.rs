@@ -109,7 +109,7 @@ pub struct Generation {
 }
 
 /// One logical file backed by a shared immutable slice of its publication segment.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileValue {
     /// Logical immutable identity or mutable state location.
     pub key: FileKey,
