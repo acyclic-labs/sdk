@@ -60,17 +60,7 @@ pub(super) async fn settled_sparse_ranges(
                 let last =
                     usize::try_from(block_end - position).map_err(|_| WorkError::Overflow)?;
                 let block = chunk.0.get(first..last).ok_or(WorkError::Overflow)?;
-                let mut nonzero = false;
-                for byte in block {
-                    capture_charge(
-                        meter,
-                        crate::materializer::NativeResourceCredit::Items.delta(1),
-                    )?;
-                    if *byte != 0 {
-                        nonzero = true;
-                        break;
-                    }
-                }
+                let nonzero = sparse_scan::block_has_data(block, meter)?;
                 if nonzero {
                     if let Some(last) = settled.last_mut()
                         && last.offset.checked_add(last.length) == Some(start)
