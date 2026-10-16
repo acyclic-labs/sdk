@@ -392,3 +392,118 @@ proptest! {
         })?;
     }
 }
+
+#[tokio::test]
+async fn renamed_theme_action_accepts_picker_input() -> Result<()> {
+    let volume = volume().await;
+    let mut client = client(volume).await;
+    let mut catalog: Value =
+        serde_json::from_slice(acyclic_harness::client::DEFAULT_COMMANDS_JSON).unwrap();
+    let theme = catalog
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|spec| spec["name"] == "theme")
+        .unwrap();
+    theme["name"] = json!("palette");
+    theme["aliases"] = json!([]);
+    client
+        .install_catalog(serde_json::to_vec(&catalog).unwrap())
+        .await?;
+    client
+        .write_state(Root::Config, "themes.json", &json!(["Light", "DARK"]))
+        .await?;
+    client.submit("/palette", &DeniedReader).await?;
+    client.submit("dark", &DeniedReader).await?;
+    assert_eq!(
+        client.state(Root::Config, "theme.json")?.unwrap()["name"],
+        "DARK"
+    );
+    assert!(client.take_request().is_none());
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn recent_task_windows_remain_bounded_through_snapshot_and_follow(count in 1usize..32, recent in 1u32..6, budget in 8usize..96) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use acyclic_harness::task_volume::{Component, TaskFile};
+            let volume=volume().await;
+            let task=Component::new("00000000-0000-0000-0000-000000000001").unwrap();
+            let query=Query::TaskView { task:task.clone(), recent, reasoning:false,details:false,terminal:false };
+            let add=|sequence| FileValue { key:FileKey::Task { task:task.clone(), file:TaskFile::Chunk { turn:0,sequence } }, channel:Some(acyclic_harness::task_volume::Channel::Text),bytes:vec![b'x'; 8].into() };
+            for sequence in 0..count as u64 {
+                let file=add(sequence);
+                let cut=volume.snapshot(&Query::File(file.key.clone()),1).await.unwrap().generation;
+                volume.append(cut,&file).await.unwrap();
+            }
+            let (mut view, mut changes)=CommandViewFiles::observe(volume.as_ref(),&[query.clone()],16,budget).await.unwrap();
+            for sequence in count as u64..count as u64+8 {
+                let file=add(sequence);
+                let cut=volume.snapshot(&Query::File(file.key.clone()),1).await.unwrap().generation;
+                volume.append(cut,&file).await.unwrap();
+                view.apply(changes.next().await.unwrap().unwrap()).unwrap();
+                let selected=view.0[0].files();
+                prop_assert!(selected.len() <= recent as usize);
+                prop_assert!(selected.values().map(|file| file.bytes.len()).sum::<usize>() <= budget);
+                prop_assert!(selected.keys().all(|key| query.matches(key)));
+                prop_assert!(selected.contains_key(&file.key));
+            }
+            let encoded=serde_json::to_vec(&query).unwrap();
+            prop_assert_eq!(serde_json::from_slice::<Query>(&encoded).unwrap(),query);
+            Ok(())
+        })?;
+    }
+}
+
+#[tokio::test]
+async fn hidden_archived_results_do_not_fill_the_selected_task_view() -> Result<()> {
+    let volume = volume().await;
+    let mut client = client(volume.clone()).await;
+    let task = acyclic_harness::TaskId::from_bytes([3; 16]);
+    client
+        .write_state(Root::Session, "layout.json", &json!({"selected_task":task}))
+        .await?;
+    for id in 0..48u8 {
+        let operation = uuid::Uuid::from_bytes([id; 16]);
+        let path = format!(".tasks/{task}/executions/{operation}/result.json");
+        put(
+            &volume,
+            &path,
+            &serde_json::to_string(
+                &json!({"sequence":u64::from(id)+1,"ok":{"stdout":"x".repeat(4096)}}),
+            )
+            .unwrap(),
+        )
+        .await;
+    }
+    put(
+        &volume,
+        &format!(".tasks/{task}/turns/0/chunks/0"),
+        "visible model text",
+    )
+    .await;
+    let queries = client.view_queries()?;
+    let (mut view, mut follows) =
+        CommandViewFiles::observe(volume.as_ref(), &queries, 128, 65_536).await?;
+    assert!(client.render_view(&view)?.contains("visible model text"));
+    put(
+        &volume,
+        &format!(
+            ".tasks/{task}/executions/{}/result.json",
+            uuid::Uuid::from_bytes([55; 16])
+        ),
+        &serde_json::to_string(&json!({"sequence":55,"ok":{"stdout":"y".repeat(4096)}})).unwrap(),
+    )
+    .await;
+    view.apply(follows.next().await.unwrap().map_err(volume_error)?)?;
+    assert!(client.render_view(&view)?.contains("visible model text"));
+    assert!(view.0.iter().all(|fold| {
+        fold.files()
+            .values()
+            .map(|file| file.bytes.len())
+            .sum::<usize>()
+            <= 65_536
+    }));
+    Ok(())
+}

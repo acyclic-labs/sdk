@@ -16,8 +16,12 @@ use parse::{expand, has_frontmatter, validate_name};
 mod presentation;
 pub use presentation::*;
 mod control;
+#[cfg(not(target_arch = "wasm32"))]
+mod driver;
 mod scheduling;
-pub use scheduling::schedule_command_effect;
+#[cfg(not(target_arch = "wasm32"))]
+pub use driver::{render_command_record, run_command_client};
+pub use scheduling::{command_loop_finished, schedule_command_effect};
 mod diff;
 mod files;
 pub use diff::render_command_diff;

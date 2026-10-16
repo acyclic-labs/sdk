@@ -140,7 +140,11 @@ impl CommandResolution {
             } => &[(Config, "settings.json")],
             Self::Select {
                 query: CommandQuery::Attention,
-            } => &[(Session, "layout.json"), (Session, "attention.json")],
+            } => &[
+                (Session, "layout.json"),
+                (Config, "attention.json"),
+                (Session, "attention.json"),
+            ],
             Self::Submit {
                 request: CommandRequest::Quit,
             }
@@ -336,7 +340,12 @@ impl CommandResolution {
                 query: CommandQuery::Attention,
             } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
-                let attention = document(snapshot, CommandFileRoot::Session, "attention.json")?;
+                let shared = document(snapshot, CommandFileRoot::Config, "attention.json")?;
+                let attention = if shared.contains_key("tasks") {
+                    shared
+                } else {
+                    document(snapshot, CommandFileRoot::Session, "attention.json")?
+                };
                 let candidates = match attention.get("tasks") {
                     None => &[][..],
                     Some(Value::Array(tasks)) => tasks.as_slice(),

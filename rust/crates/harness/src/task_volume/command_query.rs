@@ -1,6 +1,17 @@
 use super::{Component, Error, FileKey, FileValue, Index, Query, Result, TaskFile};
 use std::collections::BTreeMap;
 
+pub(crate) fn identity(id: &Component) -> Option<(Option<uuid::Uuid>, crate::OperationId)> {
+    let text = id.as_str();
+    let (session, operation) = if let Some(owned) = text.strip_prefix("command-") {
+        let (session, operation) = owned.split_once('.')?;
+        (Some(uuid::Uuid::parse_str(session).ok()?), operation)
+    } else {
+        (None, text)
+    };
+    Some((session, crate::OperationId::parse(operation).ok()?))
+}
+
 pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<FileKey> {
     let (FileKey::Session { file, .. } | FileKey::Task { file, .. }) = key else {
         return None;
@@ -10,6 +21,7 @@ pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<
     else {
         return None;
     };
+    identity(id)?;
     let file = make(id.clone());
     Some(match key {
         FileKey::Session { session, .. } => FileKey::Session {
@@ -40,7 +52,13 @@ pub(crate) fn is_result(key: &FileKey) -> bool {
 pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
     match key {
         FileKey::Session { session: owner, .. } => owner == session,
-        FileKey::Task { .. } => related(key, TaskFile::Request).is_some(),
+        FileKey::Task {
+            file:
+                TaskFile::Request(id) | TaskFile::ExecutionClaim(id) | TaskFile::ExecutionResult(id),
+            ..
+        } => identity(id).is_some_and(|(owner, _)| {
+            owner.is_none_or(|owner| owner.to_string() == session.as_str())
+        }),
         FileKey::Ui { directory, .. } => {
             directory.as_str() == "config"
                 || directory.as_str().strip_prefix("session-") == Some(session.as_str())
@@ -93,6 +111,7 @@ pub(super) fn snapshot(
         .executions
         .range((None, 0)..=(None, u64::MAX))
         .rev()
+        .filter(|(_, key)| matches(session, key))
         .peekable();
     let mut own = index
         .executions

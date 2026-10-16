@@ -111,7 +111,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
-        let files = if let Query::CommandSession { session, recent } = query {
+        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
             let mut files = Vec::new();

@@ -36,6 +36,21 @@ pub enum Query {
     Tasks,
     /// One task subtree.
     Task(Component),
+    /// Recent display files, excluding request and dispatch-claim archives.
+    TaskView {
+        /// Selected task.
+        task: Component,
+        /// Recent files retained from each visible content class.
+        recent: u32,
+        /// Include provider reasoning.
+        reasoning: bool,
+        /// Include tool details.
+        details: bool,
+        /// Include terminal output.
+        terminal: bool,
+    },
+    /// Task lifecycle records, excluding task archives.
+    TaskOverviews,
     /// Immutable task requests.
     Requests(Component),
     /// Immutable dispatch claims and outcomes for submitted requests.
@@ -234,7 +249,9 @@ impl Query {
                 TaskFile::Notification(minimum),
                 TaskFile::Notification(maximum),
             ),
-            Self::Task(task) => range(task, TaskFile::Request(minimum), TaskFile::Context(maximum)),
+            Self::Task(task) | Self::TaskView { task, .. } => {
+                range(task, TaskFile::Request(minimum), TaskFile::Context(maximum))
+            }
             Self::File(key) => (Included(key.clone()), Included(key.clone())),
             _ => (Unbounded, Unbounded),
         }]
@@ -316,6 +333,32 @@ impl Query {
                         },
                 },
             ) => t == task && turn == n && call == c,
+            (
+                Self::TaskOverviews,
+                FileKey::Task {
+                    file: TaskFile::Status,
+                    ..
+                },
+            ) => true,
+            (
+                Self::TaskView {
+                    task: selected,
+                    reasoning,
+                    details,
+                    terminal,
+                    ..
+                },
+                FileKey::Task { task, .. },
+            ) => {
+                selected == task
+                    && super::super::recent::kind(key).is_some_and(|kind| match kind {
+                        3 => *reasoning,
+                        4 => *details,
+                        5 => *terminal,
+                        6 => *details || *terminal,
+                        _ => true,
+                    })
+            }
             (Self::Task(t), FileKey::Task { task, .. })
             | (
                 Self::Executions(t),
@@ -353,6 +396,9 @@ impl Query {
     pub(crate) fn matches_file(&self, file: &super::super::FileValue) -> bool {
         self.matches(&file.key)
             && match self {
+                Self::TaskView { reasoning, .. } => {
+                    *reasoning || file.channel != Some(super::Channel::Reasoning)
+                }
                 Self::File(FileKey::Task {
                     file: TaskFile::TextHead { channel, .. },
                     ..

@@ -272,6 +272,7 @@ impl LocalHarness {
                 _ => break,
             }
         }
+        self.refresh_command_task(task).await?;
         Ok(())
     }
 
@@ -319,6 +320,7 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         }
+        self.refresh_command_task(task).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),

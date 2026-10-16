@@ -2,6 +2,11 @@
 use super::{CommandRequest, CommandResolution, CommandTool};
 use std::future::Future;
 
+/// EOF drains admitted effects; explicit quit cancels them immediately.
+pub fn command_loop_finished(quit: bool, input_closed: bool, effects_pending: bool) -> bool {
+    quit || input_closed && !effects_pending
+}
+
 /// Schedule the real owner effect without parking the input/follow loop. The
 /// caller supplies its executor; all admission decisions live here.
 pub async fn schedule_command_effect<F: Future>(

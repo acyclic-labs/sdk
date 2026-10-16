@@ -1,11 +1,7 @@
 use super::*;
 use acyclic_harness::{
-    AgentId, Capabilities, IdempotencyKey, OperationId, TaskId,
+    OperationId, TaskId,
     client::{CommandFileRoot, CommandSession, CommandTool},
-    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::FilesystemHost,
-    resources::ProviderRef,
     task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
@@ -96,295 +92,6 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
         std::fs::read(directory.path().join("effect.txt")).unwrap(),
         b"hi"
     );
-    Ok(())
-}
-
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    feature = "test-support"
-))]
-#[tokio::test]
-async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live()
--> std::result::Result<(), Box<dyn std::error::Error>> {
-    use std::{io::Write as _, process::Stdio, time::Duration};
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    let data: Value = serde_json::from_str(include_str!(
-        "../src/bin/graphcoder/native_scenario/data.json"
-    ))?;
-    let fs_provider = ProviderRef::new(
-        "command-client".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let stream_provider = ProviderRef::new(
-        "command-client".into(),
-        "stream".into(),
-        "2".into(),
-        &mut None,
-    )?;
-    let agent = AgentId::new();
-    let volume = VolumeRef::new(
-        fs_provider.clone(),
-        "private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
-    let authority = Authority {
-        kind: AggregateKind::Conversation,
-        id: "command-client".into(),
-    };
-    let issuer = AuthorityIssuer::new("command-client", [9; 32], authority.clone());
-    let mut grants: Vec<String> = serde_json::from_value(data["grants"].clone())?;
-    grants.extend([
-        volume.capability(VolumeOperation::Read, &mut None)?,
-        volume.capability(VolumeOperation::Write, &mut None)?,
-        volume.directory_read_capability("", &mut None)?,
-        "task:spawn:acyclic.direct_tool@1".into(),
-        "tool:call:bash".into(),
-    ]);
-    let scope = issuer.issue(
-        "terminal user",
-        &Capabilities::new(grants),
-        Some(agent),
-        None,
-        &mut None,
-    )?;
-    let checkout = directory.path().join("checkout");
-    std::fs::create_dir(&checkout)?;
-    let fs_root = directory.path().join("filesystem");
-    let host = FilesystemHost::new(
-        acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&fs_root)).await?,
-        &fs_provider,
-        None,
-    )?;
-    host.create_volume(&volume).await?;
-    let writer = ContentGrant::verify(
-        &issuer.verifier(&mut None)?,
-        &scope,
-        &volume,
-        VolumeOperation::Write,
-        32_768,
-        &mut None,
-    )?;
-    host.put_content(
-        &volume,
-        &writer,
-        ".claude/commands/greet.md",
-        b"Hello $ARGUMENTS",
-        "text/markdown",
-        "greet",
-        32_768,
-        &IdempotencyKey::new("custom-command")?,
-        None,
-        None,
-    )
-    .await?;
-    let mut manifest = acyclic_harness::context::ContextManifest::new(
-        Default::default(),
-        Vec::new(),
-        &acyclic_harness::tools::defaults()?,
-    )?;
-    manifest.tools.retain(|tool| tool.name == "bash");
-    let limits = serde_json::from_value(data["config"]["limits"].clone())?;
-    let context_manifest = host
-        .put_content(
-            &volume,
-            &writer,
-            "context/commands.json",
-            &manifest.encode(limits)?,
-            "application/json",
-            "commands context",
-            32_768,
-            &IdempotencyKey::new("command-context")?,
-            None,
-            None,
-        )
-        .await?;
-    drop(host);
-    let mut config = data["config"].clone();
-    let fields = json!({
-        "filesystem_root":fs_root,"stream_root":directory.path().join("stream"),
-        "filesystem_provider":fs_provider,"stream_provider":stream_provider,"private_volume":volume,
-        "owner":{"authority":authority,"issuer":"command-client","key":vec![9_u8;32],"scope":scope},
-        "generation":"commands-test","model_invocation_ledger":directory.path().join("model.jsonl"),
-        "session_limits":{"active_tasks":6,"depth":3,"model_steps":7,"total_tasks":12},
-        "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":checkout,
-        "command_roots":[{"scope":"user","root":{"volume":volume,"directory":""}}],
-        "deterministic_delay_ms":0,"context_manifest":context_manifest
-    });
-    for (name, value) in fields.as_object().unwrap() {
-        config[name] = value.clone();
-    }
-    let config_path = directory.path().join("config.json");
-    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
-    let mut input = tempfile::NamedTempFile::new_in(directory.path())?;
-    input.write_all(b"/does-not-exist\n")?;
-    let script = if cfg!(windows) {
-        "/SH [System.IO.File]::WriteAllText('cli-effect.txt','hi'); Write-Output shell-completed\n/KEYS\n"
-    } else {
-        "/SH printf hi > cli-effect.txt; printf shell-completed\n/KEYS\n"
-    };
-    let mut stage = 0;
-    let mut observed = String::new();
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
-    command
-        .args(["--session", config_path.to_str().unwrap(), "--headless"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let result = acyclic_native_runtime::ProcessTree::spawn(&mut command)?
-        .wait_with_output(
-            Duration::from_secs(5),
-            65_536,
-            Some(acyclic_native_runtime::CaptureInput::Exchange {
-                initial: b"seed prompt\n",
-                maximum: 4096,
-            }),
-            || Ok(()),
-            |chunk| {
-                observed.push_str(&String::from_utf8_lossy(chunk));
-                let next = match stage {
-                    0 if observed.contains("command-json=")
-                        && observed.contains("selected_task") =>
-                    {
-                        Some("/stop\n")
-                    }
-                    1 if observed.contains("\"paused\":true") => Some(script),
-                    2 if observed.contains("/greet ") => {
-                        assert!(
-                            !checkout.join("cli-effect.txt").exists(),
-                            "paused shell ran before resume"
-                        );
-                        Some("/resume\n")
-                    }
-                    3 if observed.contains("shell-completed") => Some(
-                        "/reason\n/detail\n/term\n/agents\n/view\n/m\n/find\nshell-completed\n/feedback\na local report\n/model selected\n/model\n/mcp\n/KEYS\n/back 0\n/back 0\n/stop\n/shell echo never > quit-effect.txt\n/q\n",
-                    ),
-                    _ => None,
-                };
-                let bytes = next.map_or_else(Vec::new, |text| {
-                    stage += 1;
-                    text.as_bytes().to_vec()
-                });
-                Ok(acyclic_native_runtime::ProcessInput {
-                    bytes,
-                    complete: false,
-                })
-            },
-            None,
-            None,
-        )
-        .map_err(|failure| {
-            eprintln!(
-                "{}\n{}",
-                String::from_utf8_lossy(&failure.stdout),
-                String::from_utf8_lossy(&failure.stderr)
-            );
-            failure.error
-        })?;
-    assert!(
-        result.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let rendered = String::from_utf8(result.stdout)?;
-    assert!(rendered.contains("command-json="), "{rendered}");
-    assert!(
-        rendered.contains("/shell")
-            && rendered.contains("/shortcuts")
-            && rendered.contains("/greet"),
-        "catalog help: {rendered}"
-    );
-    assert_eq!(
-        rendered.matches("/greet —").count(),
-        2,
-        "repeated help renders: {rendered}"
-    );
-    assert_eq!(
-        rendered.matches("command-json=").count(),
-        7,
-        "repeated archive renders: {rendered}"
-    );
-    for expected in [
-        "reasoning=true",
-        "tool-details=true",
-        "terminal=true",
-        "tree=true",
-        "diff-mode=unified",
-        "mode=plan",
-        "Find in transcript",
-        "Feedback saved locally: a local report",
-        "Model: selected",
-        "Registered tools and MCP diagnostics",
-    ] {
-        assert!(
-            rendered.contains(expected),
-            "missing parity consumer {expected}: {rendered}"
-        );
-    }
-    assert_eq!(
-        stage, 4,
-        "client failed to process the complete control sequence: {observed}"
-    );
-    assert_eq!(std::fs::read(checkout.join("cli-effect.txt"))?, b"hi");
-    assert!(
-        !checkout.join("quit-effect.txt").exists(),
-        "quit dispatched a paused effect"
-    );
-    assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
-    config["command_workspace"] = Value::Null;
-    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
-    std::fs::write(input.path(), b"/does-not-exist\n")?;
-    let mut unknown = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
-    unknown
-        .args(["--session", config_path.to_str().unwrap(), "--headless"])
-        .stdin(Stdio::from(std::fs::File::open(input.path())?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let rejected = acyclic_native_runtime::ProcessTree::spawn(&mut unknown)?
-        .wait_with_output(
-            Duration::from_secs(4),
-            65_536,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)?;
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8(rejected.stderr)?.contains("Unknown command: /does-not-exist"));
-    assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
-    let stream = Arc::new(
-        acyclic_stream::LocalStream::open(directory.path().join("stream"), Default::default())
-            .await?,
-    );
-    let files = TaskVolume::open(
-        stream,
-        StreamPath::new(format!(
-            "harness/task-volumes/{}",
-            volume.storage_name(&mut None)?
-        ))?,
-    )
-    .await
-    .map_err(volume_error)?;
-    let snapshot = files
-        .snapshot(&Query::Root, 64)
-        .await
-        .map_err(volume_error)?;
-    let exits: Vec<_> = snapshot.files.iter().filter(|file| matches!(&file.key, FileKey::Ui { directory, name } if directory.as_str().starts_with("session-") && name.as_str() == "layout.json"))
-        .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["exit_requested"].as_bool().unwrap()).collect();
-    assert_eq!(
-        exits.len(),
-        2,
-        "terminals must have distinct persisted UI sessions"
-    );
-    assert!(exits.contains(&true) && exits.contains(&false));
     Ok(())
 }
 
@@ -858,5 +565,74 @@ proptest! {
         for bad in [format!(".ui/../{name}"), format!(".ui/{directory}//{name}"), format!(".ui/{directory}/{name}/.."), format!(".ui/{directory}/.")] {
             prop_assert!(FileKey::parse(&bad).is_err());
         }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_search_requests_never_enter_the_command_inbox() -> Result<()> {
+    let volume = volume().await?;
+    let file = FileValue::new(
+        FileKey::parse(".tasks/00000000-0000-0000-0000-000000000001/requests/search-native.json")
+            .map_err(volume_error)?,
+        b"{\"query\":\"native search\"}".to_vec(),
+    );
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
+    assert!(client.take_request().is_none());
+    let file = FileValue::new(
+        FileKey::parse(".tasks/00000000-0000-0000-0000-000000000001/requests/search-followed.json")
+            .map_err(volume_error)?,
+        b"{}".to_vec(),
+    );
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    client.refresh_files().await?;
+    assert!(client.take_request().is_none());
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn submitting_session_owns_the_request_and_its_selection(bytes in any::<[u8;16]>()) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let volume=volume().await.unwrap();
+            let session=uuid::Uuid::from_bytes(bytes);
+            let mut other_bytes=bytes; other_bytes[0] ^= 1;
+            let other=uuid::Uuid::from_bytes(other_bytes);
+            let mut author=CommandSession::open(volume.clone(),session,32_768,128).await.unwrap();
+            let mut observer=CommandSession::open(volume.clone(),other,32_768,128).await.unwrap();
+            let parent=TaskId::from_bytes([3;16]); let child=TaskId::from_bytes([4;16]);
+            author.refresh_files().await.unwrap();
+            author.write_state(CommandFileRoot::Session,"layout.json",&json!({"selected_task":parent})).await.unwrap();
+            observer.refresh_files().await.unwrap();
+            observer.write_state(CommandFileRoot::Session,"layout.json",&json!({"selected_task":parent})).await.unwrap();
+            author.refresh_files().await.unwrap();
+            let operation=author.submit("child prompt",&DeniedReader).await.unwrap();
+            let request=author.take_request().unwrap();
+            prop_assert_eq!(FileKey::parse(&request.key.path()).unwrap(),request.key.clone());
+            observer.refresh_files().await.unwrap();
+            prop_assert!(observer.take_request().is_none());
+            prop_assert!(observer.consume(&request,|_,_,_| async { panic!("foreign request dispatched") }).await.is_err(), "foreign command requests must be rejected");
+            author.refresh_files().await.unwrap();
+            author.consume(&request,|id,target,_| async move {
+                assert_eq!(id,operation); assert_eq!(target,Some(parent)); Ok(json!({"selected_task":child}))
+            }).await.unwrap();
+            observer.refresh_files().await.unwrap();
+            prop_assert_eq!(author.selected_task().unwrap(),Some(child));
+            prop_assert_eq!(observer.selected_task().unwrap(),Some(parent));
+            drop(author); drop(observer);
+            prop_assert_eq!(CommandSession::open(volume.clone(),session,32_768,128).await.unwrap().selected_task().unwrap(),Some(child));
+            prop_assert_eq!(CommandSession::open(volume,other,32_768,128).await.unwrap().selected_task().unwrap(),Some(parent));
+            Ok(())
+        })?;
     }
 }

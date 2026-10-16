@@ -184,6 +184,33 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         self.outputs.keys().next_back().copied().unwrap_or(0)
     }
 
+    /// Every retained result after the renderer's own cursor, oldest first.
+    pub fn output_since(&self, after: u64) -> impl Iterator<Item = Result<(u64, Value)>> + '_ {
+        self.outputs
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .map(|(sequence, key)| {
+                let file = self
+                    .files
+                    .get(key)
+                    .ok_or_else(|| Error::Conflict("output file missing".into()))?;
+                Ok((
+                    *sequence,
+                    serde_json::from_slice(&file.bytes).map_err(codec)?,
+                ))
+            })
+    }
+
+    /// Follow through the currently accepted file cut, including results folded
+    /// while another input or worker was being processed.
+    pub async fn refresh_files(&mut self) -> Result<()> {
+        self.read_file(&ui("config", "settings.json")?).await?;
+        Ok(())
+    }
+
+    fn request_id(&self, operation: OperationId) -> Result<files::Component> {
+        component(format!("command-{}.{operation}", self.session))
+    }
+
     /// SDK activity selection derived from its immutable outcome files.
     pub fn activity_cursor(&self) -> Option<&str> {
         self.activity_cursor
@@ -364,7 +391,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 } else {
                     self.selected_task()?
                 };
-                let file = files::TaskFile::Request(component(operation.to_string())?);
+                let file = files::TaskFile::Request(self.request_id(operation)?);
                 match task {
                     Some(task) => files::FileKey::Task {
                         task: component(task.to_string())?,
@@ -389,6 +416,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     fn fold(&mut self, file: files::FileValue) -> Result<()> {
+        if matches!(&file.key, files::FileKey::Task { .. })
+            && !files::command_query::matches(&component(self.session.to_string())?, &file.key)
+        {
+            return Ok(());
+        }
         if matches!(&file.key, files::FileKey::Session { session, .. } if session.as_str() != self.session.to_string())
         {
             return Ok(());
@@ -619,7 +651,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 ));
             }
         };
-        let operation = OperationId::parse(id.as_str())?;
+        let (owner, operation) = files::command_query::identity(id)
+            .ok_or_else(|| Error::Invalid("not a command request identity".into()))?;
+        if owner.is_some_and(|owner| owner != self.session) {
+            return Err(Error::Invalid(
+                "command belongs to another UI session".into(),
+            ));
+        }
         let key = |file| match &request.key {
             files::FileKey::Task { task, .. } => files::FileKey::Task {
                 task: task.clone(),
@@ -683,6 +721,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         self.persist_activity().await?;
+        if let Ok(value) = &result {
+            self.apply_outcome(value).await?;
+        }
         result.map(Some)
     }
 

@@ -294,7 +294,17 @@ impl CommandSources {
                     name.clone(),
                     CommandSpec {
                         name,
-                        aliases: vec![],
+                        aliases: client
+                            .catalog()
+                            .commands()
+                            .find(|spec| match &spec.action {
+                                CommandAction::Template { file, .. } => file == key,
+                                CommandAction::Prompt { source, .. } => source.path == path,
+                                CommandAction::Skill { skill } => skill.source.path == path,
+                                _ => false,
+                            })
+                            .map(|spec| spec.aliases.clone())
+                            .unwrap_or_default(),
                         description,
                         arguments: CommandArguments::Text,
                         action: CommandAction::Template {

@@ -66,10 +66,6 @@ async fn configuration(root: &Path) -> Result<Config> {
             scope,
         },
         generation: "initial".into(),
-        command_workspace: None,
-        ui_session: None,
-        command_roots: Vec::new(),
-        skill_roots: Vec::new(),
         model_invocation_ledger: root.join("invocations.jsonl"),
         limits: Limits::default(),
         run_limits: Default::default(),
@@ -90,96 +86,6 @@ async fn configuration(root: &Path) -> Result<Config> {
         native_publications: Vec::new(),
         project_source_root: None,
     })
-}
-
-#[tokio::test]
-async fn command_requests_and_sdk_controls_share_the_native_runtime_without_a_checkout()
--> Result<()> {
-    use acyclic_harness::client::{CommandRequest, CommandResolution, CommandTaskScope};
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let mut config = configuration(directory.path()).await?;
-    config.deterministic_delay_ms = 0;
-    let native = NativeSession::open(config).await?;
-    let queued = native
-        .owner
-        .dispatch_command(
-            OperationId::new(),
-            None,
-            CommandResolution::Prompt {
-                text: "shared task".into(),
-                source: None,
-                mentions: Vec::new(),
-            },
-        )
-        .await?;
-    let task = TaskId::parse(
-        queued["task"]
-            .as_str()
-            .ok_or_else(|| invalid("missing task"))?,
-    )?;
-    let admission = native.runtime.task_host().observe_admission(task).await?;
-    assert_eq!(admission.task.name, "acyclic.stock_turn");
-    for (request, expected) in [
-        (
-            CommandRequest::Pause {
-                scope: CommandTaskScope::Subtree,
-            },
-            true,
-        ),
-        (
-            CommandRequest::Resume {
-                scope: CommandTaskScope::Subtree,
-            },
-            false,
-        ),
-    ] {
-        let result = native
-            .owner
-            .dispatch_command(
-                OperationId::new(),
-                Some(task),
-                CommandResolution::Submit { request },
-            )
-            .await?;
-        assert_eq!(result["paused"], expected);
-    }
-    let worker = Worker {
-        id: "shared-owner".into(),
-        available: Default::default(),
-        labels: Default::default(),
-    };
-    let WorkPull::Claimed(lease) = native.claim(task, &worker).await? else {
-        return Err(invalid("SDK command could not claim the request-file task"));
-    };
-    native.resume(lease).await?;
-    assert!(matches!(
-        native.runtime.task_host().outcome(task).await?,
-        Some(acyclic_harness::Outcome::Succeeded(_))
-    ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn native_search_requires_the_registered_tool_executor() -> Result<()> {
-    use acyclic_harness::client::{CommandSession, consume_local_command};
-    struct NoReads;
-    impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let native = NativeSession::open(configuration(directory.path()).await?).await?;
-    let mut client =
-        CommandSession::open_local(&native.owner, uuid::Uuid::new_v4(), 65_536, 64).await?;
-    client.submit("/search needle", &NoReads).await?;
-    let request = client.next_request().await?;
-    let error = consume_local_command(&mut client, &native.owner, &request)
-        .await
-        .expect_err("no registered web_search executor");
-    assert!(
-        error
-            .to_string()
-            .contains("tool web_search is not installed"),
-        "{error}"
-    );
-    Ok(())
 }
 
 #[tokio::test]
@@ -389,7 +295,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
             }
             Ok::<_, Error>(())
         });
-        crate::command_line::run(crate::Backend::Native(native), false).await?;
+        crate::run_backend(crate::Backend::Native(native), false).await?;
         writer.await??;
     } else {
         let directory = tempfile::tempdir()?;

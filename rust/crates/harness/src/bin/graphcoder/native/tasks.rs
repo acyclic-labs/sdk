@@ -83,7 +83,13 @@ impl NativeSession {
             .await
     }
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
-        let commands = self.owner.commands()?;
+        let commands = self.runtime.commands().with_model(
+            &crate::provider::model(self.config.deterministic_delay_ms),
+            self.model_provider.clone(),
+            &self.context,
+            &Default::default(),
+            None,
+        )?;
         render_attempt(self.runtime.resume_task(lease, &commands, 16, None).await)
     }
     pub async fn caller_context(&self, caller: TaskId, lease: &WorkLease) -> Result<TaskContext> {

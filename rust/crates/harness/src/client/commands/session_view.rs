@@ -32,15 +32,12 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 .await?;
             }
             "theme" => {
-                let CommandResolution::Submit {
-                    request: CommandRequest::Theme { name },
-                } = self
+                let name = self
                     .catalog
-                    .resolve(&format!("/theme {input}"), &NoReads, self.maximum_bytes)
-                    .await?
-                else {
-                    return Err(Error::Invalid("select a configured theme name".into()));
-                };
+                    .themes
+                    .iter()
+                    .find(|name| name.to_lowercase() == input.trim().to_lowercase())
+                    .ok_or_else(|| Error::Invalid("select a configured theme name".into()))?;
                 self.write_state(CommandFileRoot::Config, "theme.json", &json!({"name":name}))
                     .await?;
                 layout["open_view"] = Value::Null;
@@ -54,5 +51,3 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(Some(operation))
     }
 }
-struct NoReads;
-impl ContentResidencyVerifier for NoReads {}

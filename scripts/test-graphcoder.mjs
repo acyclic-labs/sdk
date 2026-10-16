@@ -84,9 +84,9 @@ function run(args, input, success, timeout = 5_000) {
 }
 run([], "", false);
 const args = ["--fixture", "wire", "--headless"];
-run(args, "hello\n/activity-next\n", false);
-run(args, "/activity-next\n/activity-next\n/reset\n/activity-next\n/quit\n", true);
-run(args, "x".repeat(65_537) + "\n/activity-next\n", false);
+run(args, "hello\n/next\n", false);
+run(args, "/next\n/next\n/reset\n/next\n/quit\n", true);
+run(args, "x".repeat(65_537) + "\n/next\n", false);
   class InstalledSession {
     constructor(configuration) {
       this.stdout = "";
@@ -195,7 +195,7 @@ if (session) {
     assert.ok(childrenPage[0].includes(left[1]) && childrenPage[0].includes(right[1]));
     assert.ok(!childrenPage[0].includes(grandchild[1]), "direct-child demand cannot hydrate grandchildren");
 
-    const claim = await active.command(`/run-task ${root[1]}`, /worker-claim task=[^\n]+ lease-json-hex=([0-9a-f]+)/);
+    const claim = await active.command(`/run ${root[1]}`, /worker-claim task=[^\n]+ lease-json-hex=([0-9a-f]+)/);
     await active.expect(/deterministic-dispatch operation=[0-9a-f-]+ step=0 request=[0-9a-f]+/, "stderr");
     await active.command(`/cancel-task ${right[1]}`, /cancellation requested task=/);
     await active.command(`/outcome ${right[1]}`, /outcome=Some\(Cancelled\)/);
@@ -210,11 +210,11 @@ if (session) {
     active = new InstalledSession(session);
     await active.expect(/actual local Harness runtime/);
     await active.command(`/reconcile ${root[2]}`, /retained=Some/);
-    await active.command(`/resume-lease ${lease}`, /worker completed task=/);
+    await active.command(`/resume ${lease}`, /worker completed task=/);
     for (const task of [left[1], grandchild[1]]) {
-      await active.command(`/run-task ${task}`, /worker completed task=/);
+      await active.command(`/run ${task}`, /worker completed task=/);
     }
-    await active.command(`/run-task ${right[1]}`, /worker idle task=/);
+    await active.command(`/run ${right[1]}`, /worker idle task=/);
     const outcomes = [];
     for (const task of tasks) {
       const outcome = await active.command(`/outcome ${task}`, /outcome=Some\([^\n]+\n/);
@@ -226,7 +226,7 @@ if (session) {
     for (let index = 0; index < tasks.length; index++) {
       const after = await active.command(`/outcome ${tasks[index]}`, /outcome=Some\([^\n]+\n/);
       assert.equal(after[0], outcomes[index]);
-      await active.command(`/run-task ${tasks[index]}`, /worker idle task=/);
+      await active.command(`/run ${tasks[index]}`, /worker idle task=/);
     }
     await active.quit();
 
@@ -235,7 +235,7 @@ if (session) {
     for (let index = 0; index < tasks.length; index++) {
       const after = await active.command(`/outcome ${tasks[index]}`, /outcome=Some\([^\n]+\n/);
       assert.equal(after[0], outcomes[index]);
-      await active.command(`/run-task ${tasks[index]}`, /worker idle task=/);
+      await active.command(`/run ${tasks[index]}`, /worker idle task=/);
     }
   } finally {
     if (active) await active.stop();
@@ -429,14 +429,14 @@ if (scenarioDirectory) {
     const mailboxLeasePath = join(temporary, "mailbox-original-lease.json");
     writeFileSync(mailboxLeasePath, mailboxLeaseBytes);
     const mailboxStart = active.stdout.length;
-    await active.command(`/resume-lease ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker suspended task=${mailbox.task} checkpoint=`), "stdout", mailboxStart);
     await active.commandJson(`/mail ${input({
       caller: root, lease: leases.root, recipient: mailbox.task,
       operation: randomUUID(), payload: manifest.files.root_project_before,
     })}`, "mail");
     const dispatchStart = active.stderr.length, modelStart = active.stdout.length;
-    await active.command(`/resume-lease ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     const mailboxDispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/, "stderr", dispatchStart);
     const consumed = await modelCheckpoint(active, mailbox.task, mailboxLease);
     bindDispatch(mailbox.modelCommand, mailboxDispatch, consumed.transition);
@@ -469,14 +469,14 @@ if (scenarioDirectory) {
     await restart();
     assert.equal((await active.command(`/prepare ${pendingCross.request}`, preparePattern))[0], admittedPreparation[0]);
     const crossStart = active.stdout.length;
-    await active.command(`/run-task ${pendingCross.task}`, /worker-claim task=[^\n]+ lease-json-hex=[0-9a-f]+/);
+    await active.command(`/run ${pendingCross.task}`, /worker-claim task=[^\n]+ lease-json-hex=[0-9a-f]+/);
     await active.expect(new RegExp(`worker completed task=${pendingCross.task}`), "stdout", crossStart);
     const preparedReport = await active.commandJson(`/outcome ${pendingCross.task}`, "task");
     assert.equal(preparedReport.task, pendingCross.task);
     assert.ok(preparedReport.outcome.Succeeded, "real creator preparation must authoritatively succeed");
     await restart();
     assert.deepEqual(await active.commandJson(`/outcome ${pendingCross.task}`, "task"), preparedReport);
-    await active.command(`/run-task ${pendingCross.task}`, /worker idle task=/);
+    await active.command(`/run ${pendingCross.task}`, /worker idle task=/);
     const publishPath = input({
       caller: left, lease: leases.left, preparation: pendingCross.task,
     });
@@ -534,7 +534,7 @@ if (scenarioDirectory) {
     const negativeCrossRequest = load(negativeCross.request);
     await negativeActive.command(`/prepare ${negativeCross.request}`, /queued preparation-task=/);
     const negativeCrossStart = negativeActive.stdout.length;
-    await negativeActive.command(`/run-task ${negativeCross.task}`, /worker-claim task=[^\n]+ lease-json-hex=[0-9a-f]+/);
+    await negativeActive.command(`/run ${negativeCross.task}`, /worker-claim task=[^\n]+ lease-json-hex=[0-9a-f]+/);
     await negativeActive.expect(new RegExp(`worker completed task=${negativeCross.task}`), "stdout", negativeCrossStart);
     const negativePrepared = await negativeActive.commandJson(`/outcome ${negativeCross.task}`, "task");
     assert.ok(negativePrepared.outcome.Succeeded);
@@ -609,7 +609,7 @@ if (scenarioDirectory) {
     ]) {
       const started = active.stdout.length;
       const dispatchedFrom = active.stderr.length;
-      await active.command(`/resume-lease ${leasePath}`, /original lease submitted for authoritative reconciliation/);
+      await active.command(`/resume ${leasePath}`, /original lease submitted for authoritative reconciliation/);
       const dispatch = await active.expect(
         /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
         "stderr", dispatchedFrom);
@@ -628,7 +628,7 @@ if (scenarioDirectory) {
     const rootLeaseBytes = readFileSync(manifest.leases.root);
     const rootDispatchStart = active.stderr.length;
     const rootStart = active.stdout.length;
-    await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
     const rootDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", rootDispatchStart);
@@ -652,7 +652,7 @@ if (scenarioDirectory) {
     assert.equal(readFileSync(nativeFacts.conflicting_edit_path, "utf8"), before.root);
     assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
     const rootResumeStart = active.stdout.length;
-    await active.command(`/resume-lease ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume ${manifest.leases.root}`, /original lease submitted for authoritative reconciliation/);
     await active.expect(new RegExp(`worker completed task=${root}`), "stdout", rootResumeStart);
     const rootOutcome = await active.commandJson(`/outcome ${root}`, "task");
     assert.ok(rootOutcome.outcome.Succeeded.text.includes(rootDispatch[2]));
@@ -661,7 +661,7 @@ if (scenarioDirectory) {
     snapshotInvocations([rootModelOperation]);
     const bootstrapStart = active.stdout.length;
     const bootstrapDispatchStart = active.stderr.length;
-    await active.command(`/resume-lease ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
+    await active.command(`/resume ${manifest.leases.bootstrap_seed}`, /original lease submitted for authoritative reconciliation/);
     const bootstrapDispatch = await active.expect(
       /deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/,
       "stderr", bootstrapDispatchStart);
@@ -686,7 +686,7 @@ if (scenarioDirectory) {
     await active.expect(/actual local Harness runtime/);
     for (const [task, original] of outcomes) {
       assert.deepEqual(await active.commandJson(`/outcome ${task}`, "task"), original);
-      await active.command(`/run-task ${task}`, /worker idle task=/);
+      await active.command(`/run ${task}`, /worker idle task=/);
     }
     assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
     assert.equal(digest(negative.native_publication.conflicting_edit_path), overlappingHash);
@@ -719,7 +719,7 @@ if (scenarioDirectory) {
     active = new InstalledSession(cancellation.config);
     await active.expect(/actual local Harness runtime/);
     assert.equal((await active.commandJson(`/outcome ${cancelledPreparation.task}`, "task")).outcome, "Cancelled");
-    await active.command(`/run-task ${cancelledPreparation.task}`, /worker idle task=/);
+    await active.command(`/run ${cancelledPreparation.task}`, /worker idle task=/);
     await active.command(`/reconcile ${cancelledRequest.request.child.operation_id}`, /retained=None/);
     assert.deepEqual(await active.commandJson(`/read-path ${sourcePath}`, "file"), originalSource);
     await active.quit();

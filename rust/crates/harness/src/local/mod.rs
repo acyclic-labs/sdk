@@ -29,6 +29,7 @@ mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod command_machine;
+mod command_views;
 mod commands;
 mod compaction;
 mod config;

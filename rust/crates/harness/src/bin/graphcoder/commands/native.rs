@@ -125,10 +125,8 @@ macro_rules! dispatch {
     };
 }
 
-pub(super) async fn execute_sdk(
-    operation: &str,
-    argument: &str,
-    settings: &Value,
+pub(super) async fn execute(
+    command: &str,
     backend: &mut Option<Backend>,
     parent: &mut Option<TaskId>,
     workers: &mut tokio::task::JoinSet<Result<String>>,
@@ -137,7 +135,7 @@ pub(super) async fn execute_sdk(
     let api = backend
         .as_ref()
         .ok_or_else(|| Error::Conflict("session is closed".into()))?;
-    if operation == "reopen" {
+    if command == "/reopen" {
         if !workers.is_empty() {
             return Err(Error::Conflict(
                 "active workers must settle before reopen".into(),
@@ -154,14 +152,31 @@ pub(super) async fn execute_sdk(
     let runtime = &native.runtime;
     let host = runtime.task_host();
     let harness = runtime.harness();
-    let command_name = format!("/{operation}");
-    let name = command_name.as_str();
+    let (name, argument) = command.split_once(' ').unwrap_or(("", command));
     let path = Path::new(argument);
-    if matches!(name, "/run" | "/claim" | "/resume-lease")
-        && workers.len() >= terminal::MAX_PAGE_EVENTS
-    {
+    if matches!(name, "/run" | "/claim" | "/resume") && workers.len() >= terminal::MAX_PAGE_EVENTS {
         return Err(Error::Invalid(
             "active frontend worker bound reached".into(),
+        ));
+    }
+    if !command.starts_with('/') {
+        let operation = OperationId::new();
+        let command_operation = OperationId::new();
+        emit(
+            output,
+            format_args!("prompt-publication-attempt command-operation={command_operation}"),
+        )?;
+        let command = native.prompt_command(command, command_operation).await?;
+        emit(
+            output,
+            format_args!(
+                "admission-attempt operation={operation} command-operation={}",
+                command.operation_id
+            ),
+        )?;
+        return Ok(format!(
+            "queued task={} admission-operation={operation}\n",
+            admitted(native.queue(operation, command, *parent).await?)?
         ));
     }
     dispatch!(name, path,
@@ -234,7 +249,7 @@ pub(super) async fn execute_sdk(
                 "admission operation={operation} retained={found:?}\n"
             )));
         }
-        "/resume-lease"  => [] {
+        "/resume"  => [] {
             let lease = read_json(path)?;
             let native = Arc::clone(native);
             workers.spawn(async move { native.resume(lease).await });
@@ -478,10 +493,13 @@ pub(super) async fn execute_sdk(
             let context = native.caller_context(caller, &lease).await?;
             let old = context.read_file(&before, None).await?;
             let new = context.read_file(&after, None).await?;
-            acyclic_harness::client::render_command_diff(
-                &old, &new, settings["diff_mode"].as_str().unwrap_or("auto"),
-                terminal::MAX_FRAME_BYTES, terminal::MAX_FRAME_BYTES * 16,
-            )
+            Ok(format!(
+                "diff exact before={} after={}\n--- before\n{}\n+++ after\n{}\n",
+                terminal::text(before.path()),
+                terminal::text(after.path()),
+                terminal::text(utf8(&old)?),
+                terminal::text(utf8(&new)?)
+            ))
         }
     )
 }

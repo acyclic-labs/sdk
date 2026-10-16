@@ -94,7 +94,7 @@ fn worker_keeps_resume_input_live(broken: bool) {
             StreamPath::new("worker-control-model")?,
         ))?);
         let task = TaskId::from_bytes([1; 16]);
-        // The same scheduling function called by command_line::run decides
+        // The same scheduling function called by run_command_client decides
         // whether the input owner waits or launches the owner effect. Model
         // both legal orders of the executor's first poll relative to input.
         for early in [false, true] {
@@ -255,4 +255,51 @@ fn control_publications_survive_concurrent_owner_claims() {
 #[should_panic(expected = "resume publication lost to competing claim")]
 fn negative_control_detects_a_lost_resume_on_claim_conflict() {
     control_claim_race(true);
+}
+
+fn eof_keeps_a_parked_effect(broken: bool) {
+    check(move || {
+        let volume = Arc::new(block_on(TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("eof-model")?,
+        ))?);
+        let task = TaskId::from_bytes([1; 16]);
+        block_on(CommandControl::change(
+            &volume,
+            Some(task),
+            &[task],
+            Some(true),
+            1024,
+        ))?;
+        let lineage = [task];
+        let mut worker = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+        assert!(
+            worker
+                .as_mut()
+                .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
+        let finished = broken || super::super::command_loop_finished(false, true, true);
+        assert!(!finished, "EOF cancelled a parked command");
+        block_on(CommandControl::change(
+            &volume,
+            Some(task),
+            &lineage,
+            Some(false),
+            1024,
+        ))?;
+        block_on(worker)?;
+        assert!(super::super::command_loop_finished(false, true, false));
+        assert!(super::super::command_loop_finished(true, false, true));
+        Ok(())
+    });
+}
+#[test]
+fn eof_drains_a_parked_owner_while_file_resume_remains_live() {
+    eof_keeps_a_parked_effect(false);
+}
+#[test]
+#[should_panic(expected = "EOF cancelled a parked command")]
+fn negative_control_detects_exiting_at_eof_before_the_owner_finishes() {
+    eof_keeps_a_parked_effect(true);
 }

@@ -236,7 +236,10 @@ impl LocalHarness {
                 .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
                 .await
             {
-                Ok(_) => return Ok(true),
+                Ok(_) => {
+                    self.refresh_command_task(task).await?;
+                    return Ok(true);
+                }
                 Err(crate::task_volume::Error::Conflict(_)) => continue,
                 Err(error) => return Err(storage(error)),
             }
@@ -291,7 +294,8 @@ impl LocalHarness {
             }
         }
         let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
-        Ok(json!({"task":task,"selected_task":task}))
+        self.refresh_command_task(task).await?;
+        Ok(json!({"task":task,"selected_task":task,"admission_operation":operation}))
     }
     async fn direct_tool(
         &self,

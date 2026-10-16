@@ -16,11 +16,19 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .unwrap_or(json!({}));
         let mut queries = Vec::new();
         if layout["tree"] == true {
-            queries.extend([Query::Tasks, Query::Agents]);
-        } else if let Some(task) = self.selected_task()? {
-            queries.push(Query::Task(
-                crate::task_volume::Component::new(task.to_string()).map_err(storage)?,
-            ));
+            queries.extend([Query::TaskOverviews, Query::Agents]);
+        }
+        if let Some(task) = self.selected_task()? {
+            let settings = self
+                .state(CommandFileRoot::Config, "settings.json")?
+                .unwrap_or(json!({}));
+            queries.push(Query::TaskView {
+                task: crate::task_volume::Component::new(task.to_string()).map_err(storage)?,
+                recent: 16,
+                reasoning: settings["reasoning"] == true,
+                details: settings["tool_details"] == true,
+                terminal: layout["terminal"] == true,
+            });
         }
         match layout["open_view"].as_str() {
             Some("plan") => queries.push(Query::Plans),

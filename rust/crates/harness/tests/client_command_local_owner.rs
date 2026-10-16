@@ -149,6 +149,7 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
     let task = TaskId::parse(queued["task"].as_str().unwrap())?;
     assert_eq!(local.resume(task).await?.text, "continued");
     assert!(provider.requests().last().unwrap().messages.iter().any(|message| matches!(&message.content, acyclic_harness::model::ModelContent::Text(text) if text.contains("remember the invariant"))));
+    client.refresh_files().await?;
     let export = send(&local, &mut client, "/export").await?;
     let snapshot = local
         .task_files()
@@ -277,6 +278,7 @@ async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns()
     assert_eq!(local.resume(root).await?.text, "first");
     assert_eq!(provider.requests()[0].model.name, "other");
     // The task is already admitted; dispatch must read the followed selection.
+    client.refresh_files().await?;
     client.submit("/model child-model", &NoReads).await?;
     assert_eq!(local.resume(child).await?.text, "child");
     assert_eq!(provider.requests()[1].model.name, "child-model");
@@ -486,6 +488,46 @@ async fn command_observers_share_the_authorized_task_volume_without_exposing_hos
     assert_eq!(
         reopened.state(CommandFileRoot::Session, "layout.json")?,
         client.state(CommandFileRoot::Session, "layout.json")?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn settled_owner_tasks_publish_attention_for_live_clients() -> Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let local = local(
+        directory.path(),
+        provider([ScriptedTurn::Text("finished".into())]),
+    )
+    .await?;
+    let task = match local.submit(OperationId::new(), "finish").await? {
+        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
+        _ => panic!("durable admission"),
+    };
+    local.resume(task).await?;
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
+    client.submit("/attention", &NoReads).await?;
+    assert_eq!(client.selected_task()?, Some(task));
+    assert!(
+        client
+            .state(CommandFileRoot::Config, "attention.json")?
+            .unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| *id == json!(task))
+    );
+    client.submit("/delete", &NoReads).await?;
+    client.submit("yes", &NoReads).await?;
+    let request = client.next_request().await?;
+    consume_local_command(&mut client, &local, &request).await?;
+    assert!(
+        client
+            .state(CommandFileRoot::Config, "attention.json")?
+            .unwrap()["tasks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
     Ok(())
 }

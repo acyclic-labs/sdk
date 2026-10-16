@@ -340,3 +340,92 @@ proptest! {
         })?;
     }
 }
+
+#[tokio::test]
+async fn generated_alias_survives_source_edit_and_reopening() -> Result<()> {
+    let fixture = Fixture::new(&[]).await?;
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("generated-alias")?,
+        )
+        .await
+        .map_err(volume_error)?,
+    );
+    let session = uuid::Uuid::new_v4();
+    let mut client = CommandSession::open(volume.clone(), session, 32_768, 128).await?;
+    let publish = |text: &str| {
+        FileValue::new(
+            FileKey::parse(".claude/commands/custom.md").unwrap(),
+            text.as_bytes().to_vec(),
+        )
+    };
+    let file = publish("Original $ARGUMENTS");
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    let mut sources = CommandSources::observe(
+        &mut client,
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+        vec![],
+        vec![],
+        fixture.reader.clone(),
+        Default::default(),
+        32_768,
+        128,
+    )
+    .await?;
+    let mut specs = serde_json::to_value(client.catalog().commands().collect::<Vec<_>>()).unwrap();
+    specs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|spec| spec["name"] == "custom")
+        .unwrap()["aliases"] = json!(["shortcut"]);
+    client
+        .install_catalog(serde_json::to_vec(&specs).unwrap())
+        .await?;
+    let file = publish("Updated $ARGUMENTS");
+    let cut = volume
+        .snapshot(&Query::File(file.key.clone()), 1)
+        .await
+        .map_err(volume_error)?
+        .generation;
+    volume.append(cut, &file).await.map_err(volume_error)?;
+    for _ in 0..16 {
+        sources.changed().await?;
+        if let Err(error) = sources.refresh(&mut client).await {
+            if !matches!(error, Error::Conflict(_)) {
+                return Err(error);
+            }
+        }
+        if matches!(client.catalog().resolve("/shortcut now",fixture.reader.as_ref(),32_768).await,Ok(CommandResolution::Prompt { text,.. }) if text=="Updated now")
+        {
+            break;
+        }
+    }
+    assert!(
+        matches!(client.catalog().resolve("/shortcut now",fixture.reader.as_ref(),32_768).await?,CommandResolution::Prompt { text,.. } if text=="Updated now")
+    );
+    drop(sources);
+    drop(client);
+    let mut client = CommandSession::open(volume, session, 32_768, 128).await?;
+    CommandSources::observe(
+        &mut client,
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+        vec![],
+        vec![],
+        fixture.reader.clone(),
+        Default::default(),
+        32_768,
+        128,
+    )
+    .await?;
+    assert!(
+        matches!(client.catalog().resolve("/shortcut again",fixture.reader.as_ref(),32_768).await?,CommandResolution::Prompt { text,.. } if text=="Updated again")
+    );
+    Ok(())
+}

@@ -2,10 +2,8 @@ use super::*;
 #[cfg(feature = "filesystem-local")]
 mod native;
 
-pub(super) async fn execute_sdk(
+pub(super) async fn execute(
     command: &str,
-    arguments: &str,
-    settings: &serde_json::Value,
     backend: &mut Option<Backend>,
     cursor: &mut acyclic_harness::wire::ReplayCursor,
     #[cfg(feature = "filesystem-local")] parent: &mut Option<acyclic_harness::TaskId>,
@@ -19,8 +17,8 @@ pub(super) async fn execute_sdk(
         .as_ref()
         .ok_or_else(|| Error::Conflict("session is closed".into()))?;
     #[cfg(not(feature = "filesystem-local"))]
-    let _ = (output, settings);
-    if command == "reset" {
+    let _ = output;
+    if command == "/reset" {
         match api {
             Backend::Fixture(fixture) => *cursor = fixture.start_cursor(),
             #[cfg(feature = "filesystem-local")]
@@ -30,13 +28,13 @@ pub(super) async fn execute_sdk(
         }
         return Ok("fixture display reset; no session restored\n".into());
     }
-    let request = if command == "next" {
+    let request = if command == "/next" {
         wire::client_frame::Frame::Resume(wire::ResumeRequest {
             protocol: Some(current_protocol()),
             cursors: vec![cursor.clone()],
         })
-    } else if command == "cursor" {
-        let wire::client_frame::Frame::Resume(request) = read_request(arguments)? else {
+    } else if let Some(path) = command.strip_prefix("/cursor ") {
+        let wire::client_frame::Frame::Resume(request) = read_request(path)? else {
             return Err(Error::Invalid("cursor must contain a Resume frame".into()));
         };
         acyclic_harness::wire_api::validate_resume_protocol(&request)?;
@@ -44,8 +42,8 @@ pub(super) async fn execute_sdk(
             return Err(Error::Invalid("select exactly one aggregate cursor".into()));
         }
         wire::client_frame::Frame::Resume(request)
-    } else if command == "approve" {
-        let request = read_request(arguments)?;
+    } else if let Some(path) = command.strip_prefix("/approve ") {
+        let request = read_request(path)?;
         let wire::client_frame::Frame::Command(envelope) = &request else {
             return Err(Error::Invalid(
                 "approval must contain a Command frame".into(),
@@ -55,14 +53,11 @@ pub(super) async fn execute_sdk(
             return Err(Error::Invalid("approval has the wrong action".into()));
         }
         request
-    } else if command == "request" {
-        read_request(arguments)?
+    } else if let Some(path) = command.strip_prefix("/request ") {
+        read_request(path)?
     } else {
         #[cfg(feature = "filesystem-local")]
-        return native::execute_sdk(
-            command, arguments, settings, backend, parent, workers, output,
-        )
-        .await;
+        return native::execute(command, backend, parent, workers, output).await;
         #[cfg(not(feature = "filesystem-local"))]
         return Err(Error::Unsupported(
             "operation requires a durable product host".into(),

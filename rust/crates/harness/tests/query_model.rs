@@ -27,7 +27,7 @@ fn active_command_cut_control(broken: bool) {
         let request = Write::new(
             FileKey::Session {
                 session: session.clone(),
-                file: TaskFile::Request(Component::new("request")?),
+                file: TaskFile::Request(Component::new("00000000-0000-0000-0000-000000000002")?),
             },
             OwnedBytes::from_static(b"request"),
         );
@@ -46,7 +46,9 @@ fn active_command_cut_control(broken: bool) {
                     &Write::new(
                         FileKey::Session {
                             session,
-                            file: TaskFile::ExecutionResult(Component::new("request")?),
+                            file: TaskFile::ExecutionResult(Component::new(
+                                "00000000-0000-0000-0000-000000000002",
+                            )?),
                         },
                         OwnedBytes::from_static(b"done"),
                     ),
@@ -96,7 +98,9 @@ fn create_claim_control(broken: bool, session: bool) {
             let first = block_on(TaskVolume::open(provider.clone(), path.clone()))?;
             let second = block_on(TaskVolume::open(provider, path))?;
             let cut = block_on(first.snapshot(&Query::Root, 1))?.generation;
-            let body = TaskFile::ExecutionClaim(Component::new("claim")?);
+            let body = TaskFile::ExecutionClaim(Component::new(
+                "command-00000000-0000-0000-0000-000000000001.00000000-0000-0000-0000-000000000002",
+            )?);
             let key = if session {
                 FileKey::Session {
                     session: Component::new("session")?,

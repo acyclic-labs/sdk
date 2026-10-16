@@ -14,6 +14,8 @@ fn volume_error(error: acyclic_harness::task_volume::Error) -> acyclic_harness::
     acyclic_harness::Error::Storage(error.to_string())
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "terminal"))]
+mod client_command_driver;
 mod client_command_files;
 #[cfg(not(target_arch = "wasm32"))]
 mod client_command_owners;

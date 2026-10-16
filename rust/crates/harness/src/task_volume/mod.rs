@@ -8,6 +8,7 @@ mod heads;
 pub mod model_checking;
 mod page;
 mod plan_name;
+mod recent;
 mod schema;
 mod segment;
 mod source;
@@ -194,6 +195,9 @@ struct Index {
     files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
     pending_commands: BTreeSet<FileKey>,
+    view_order: BTreeMap<(Component, u8, u64), FileKey>,
+    view_revisions: BTreeMap<FileKey, (u8, u64)>,
+    overviews: BTreeMap<Component, FileKey>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -518,6 +522,7 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue) {
+    recent::record(index, &file);
     if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
         let owner = match &file.key {
             FileKey::Session { session, .. } => Some(session.clone()),

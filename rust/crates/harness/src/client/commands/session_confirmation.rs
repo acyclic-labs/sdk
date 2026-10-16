@@ -18,7 +18,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Err(Error::Invalid("invalid confirmation request".into()));
         }
         if accepted {
-            let id = component(operation.to_string())?;
+            let id = self.request_id(operation)?;
             let file = files::TaskFile::Request(id);
             let key = if request == CommandRequest::Delete {
                 let task = TaskId::parse(

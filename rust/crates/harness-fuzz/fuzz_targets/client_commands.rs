@@ -54,6 +54,30 @@ fuzz_target!(|input: &[u8]| {
                     let _ = client.submit("no", &NoReads).await;
                 }
             }
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
+                if let Some(path) = value["command_key"].as_str() {
+                    if let Ok(key) = FileKey::parse(path) {
+                        let cut = volume
+                            .snapshot(&Query::File(key.clone()), 1)
+                            .await
+                            .map_err(|error| Error::Storage(error.to_string()))?
+                            .generation;
+                        let bytes = serde_json::to_vec(&CommandResolution::Prompt {
+                            text: "fuzz request".into(),
+                            source: None,
+                            mentions: vec![],
+                        })
+                        .unwrap();
+                        let _ = volume.append(cut, &FileValue::new(key, bytes)).await;
+                        client.refresh_files().await?;
+                        if let Some(request) = client.take_request() {
+                            let _ = client
+                                .consume(&request, |_, _, _| async { Ok(serde_json::Value::Null) })
+                                .await;
+                        }
+                    }
+                }
+            }
             let (path, bytes) = if input.first() == Some(&1) {
                 ("skills/fuzz/SKILL.md", &input[1..])
             } else {
