@@ -32,6 +32,18 @@ pub(crate) fn add_condition(
     (request, custody): &mut (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
+    #[cfg(all(
+        test,
+        acyclic_harness_loom,
+        acyclic_loom,
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
+    if super::super::tests::model_checking::omit_owner_condition()
+        && matches!(&condition, acyclic_stream::CommitCondition::Tail { path, .. } if path.as_str() == COORDINATOR_PATH)
+    {
+        return Ok(());
+    }
     custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
     request.conditions.push(condition);
     Ok(())
