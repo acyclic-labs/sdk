@@ -221,16 +221,26 @@ async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestRes
             &["commit", "-m", "parent"],
         )
         .await?;
+        let merge = execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["merge", "topic"],
+        )
+        .await;
         assert!(
-            execute(
-                &filesystem,
-                &store,
-                (&main).into(),
-                repository,
-                &["merge", "topic"]
-            )
-            .await
-            .is_err()
+            matches!(merge, Err(Error::Conflict(_))),
+            "merge: {:?}",
+            merge.err()
+        );
+        assert_eq!(
+            View::Volume(&main).read("/note", 64).await?.as_ref(),
+            if ours_deleted {
+                b"child\n".as_slice()
+            } else {
+                b"parent\n".as_slice()
+            }
         );
         if delete_resolution {
             main.remove("/note").await?;

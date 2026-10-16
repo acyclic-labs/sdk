@@ -35,26 +35,27 @@ where
         };
         let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
         let mut unresolved = false;
-        let outcome = if let JoinOutcome::Conflicted {
-            conflicts,
-            truncated,
-        } = initial
-        {
-            let typed = plan.describe_conflicts(conflicts, truncated).await?;
-            if typed.truncated {
-                return Err(Self::error("Git join conflict frontier is incomplete"));
-            }
-            let paths = typed
-                .conflicts
-                .iter()
-                .map(|conflict| {
-                    conflict
-                        .path
-                        .clone()
-                        .ok_or_else(|| Self::error("Git join conflict has no resolvable path"))
-                })
-                .collect::<crate::Result<BTreeSet<_>>>()?;
-            let candidate = super::materialize::prepared(
+        let outcome =
+            if let JoinOutcome::Conflicted {
+                conflicts,
+                truncated,
+            } = initial
+            {
+                let typed = plan.describe_conflicts(conflicts, truncated).await?;
+                if typed.truncated {
+                    return Err(Self::error("Git join conflict frontier is incomplete"));
+                }
+                let paths = typed
+                    .conflicts
+                    .iter()
+                    .map(|conflict| {
+                        conflict
+                            .path
+                            .clone()
+                            .ok_or_else(|| Self::error("Git join conflict has no resolvable path"))
+                    })
+                    .collect::<crate::Result<BTreeSet<_>>>()?;
+                let candidate = super::materialize::prepared(
                 async {
                     let mut cache = self.merge_cache.lock().await;
                     let mut resolutions = BTreeMap::new();
@@ -82,7 +83,10 @@ where
                                 ),
                             ) => {
                                 unresolved = true;
-                                acyclic_fs::MergeResolution::Select(acyclic_fs::ConflictSide::Ours)
+                                acyclic_fs::MergeResolution::Select(
+                                    if matches!(conflict.ours, acyclic_fs::ConflictValue::Absent) {
+                                        acyclic_fs::ConflictSide::Theirs
+                                    } else { acyclic_fs::ConflictSide::Ours })
                             }
                             Err(error) => {
                                 return Err(Error::from(acyclic_fs::DrivenJoinError::Resolution(
@@ -102,25 +106,25 @@ where
                 &|| self.validate(),
             )
             .await?;
-            // This is metadata in the existing durable transition, not another
-            // conflict index. Persist before any projection can become visible.
-            GitCompatRepository::new(self.repository_id, self.store.clone())
-                .record_merge_conflicts(operation, &paths)
-                .await
-                .map_err(super::errors::compat_error)?;
-            let resolutions = super::materialize::prepared(
-                async {
-                    plan.prepare_candidate(&candidate)
-                        .await
-                        .map_err(Error::from)
-                },
-                &|| self.validate(),
-            )
-            .await?;
-            plan.apply(options, resolutions, self.permit).await?
-        } else {
-            initial
-        };
+                // This is metadata in the existing durable transition, not another
+                // conflict index. Persist before any projection can become visible.
+                GitCompatRepository::new(self.repository_id, self.store.clone())
+                    .record_merge_conflicts(operation, &paths)
+                    .await
+                    .map_err(super::errors::compat_error)?;
+                let resolutions = super::materialize::prepared(
+                    async {
+                        plan.prepare_candidate(&candidate)
+                            .await
+                            .map_err(Error::from)
+                    },
+                    &|| self.validate(),
+                )
+                .await?;
+                plan.apply(options, resolutions, self.permit).await?
+            } else {
+                initial
+            };
         let generation = match outcome {
             JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application) => {
                 application.generation

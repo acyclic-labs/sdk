@@ -30,6 +30,65 @@ fn metadata(base: FileMetadata, mut ours: FileMetadata, theirs: FileMetadata) ->
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    pub(super) async fn git_delete_binding(
+        &self,
+        conflict: &crate::ConflictView,
+        resolution: &MergeConflictResolution,
+        resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
+    ) -> Result<(), DrivenJoinError> {
+        if !self.git_metadata
+            || !matches!(conflict.kind, ConflictKind::Record)
+            || (matches!(conflict.ours, ConflictValue::Absent)
+                == matches!(conflict.theirs, ConflictValue::Absent))
+        {
+            return Ok(());
+        }
+        let Some(path) = &conflict.path else {
+            return Ok(());
+        };
+        let view = if matches!(conflict.ours, ConflictValue::Absent) {
+            &self.source_head
+        } else {
+            &self.target_head
+        };
+        let config = self.target_head.workspace.volume.config;
+        let namespace = customer_path(path, config)?;
+        let (_, name) = namespace
+            .split_last()
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let (parent, _) = path
+            .rsplit_once('/')
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let parent = view
+            .stat(
+                if parent.is_empty() { "/" } else { parent },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let binding = match resolution {
+            MergeConflictResolution::Select(side) => MergeConflictResolution::Select(*side),
+            MergeConflictResolution::File(Some(_)) => {
+                MergeConflictResolution::Select(if matches!(conflict.ours, ConflictValue::Absent) {
+                    MergeConflictSide::Theirs
+                } else {
+                    MergeConflictSide::Ours
+                })
+            }
+            MergeConflictResolution::File(None) => MergeConflictResolution::Binding(None),
+            _ => return Ok(()),
+        };
+        resolutions
+            .entry(MergeConflict::Binding {
+                directory_id: parent.file_id,
+                name: name.clone(),
+            })
+            .or_insert(binding);
+        Ok(())
+    }
+
     pub(super) async fn git_resolution(
         &self,
         key: &ConflictKey,
@@ -108,6 +167,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+        #[test]
+        fn git_delete_modify_keeps_the_selected_binding(ours_deleted in any::<bool>(), text in "[a-z]{1,24}") {
+            futures::executor::block_on(async {
+                let text = format!("modified:{text}");
+                let fs = crate::Fs::memory();
+                let stop = CancellationToken::new();
+                let main = fs.create_workspace("main", WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                main.write_text("/note", "base").await.unwrap();
+                let generation = main.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let child = main.fork::<_, _, WorkspaceError>("child", crate::ForkOptions::from_generation(generation, IdempotencyKey::new()),
+                    crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &stop, ()).await.unwrap().value;
+                if ours_deleted { main.remove("/note").await.unwrap(); child.write_text("/note", &text).await.unwrap(); }
+                else { child.remove("/note").await.unwrap(); main.write_text("/note", &text).await.unwrap(); }
+                child.write_text("/clean", "source").await.unwrap();
+                let plan = child.join_into(&main).git_metadata().plan(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let options = ApplyOptions { if_target: plan.target_head(), idempotency_key: IdempotencyKey::new() };
+                let JoinOutcome::Conflicted { conflicts, truncated } = plan.apply(options, BTreeMap::new(), crate::PublicationPermit::Unrestricted).await.unwrap()
+                    else { return Err(TestCaseError::fail("expected delete/modify conflict")); };
+                let typed = plan.describe_conflicts(conflicts, truncated).await.unwrap();
+                let resolutions = typed.conflicts.iter().map(|conflict| (conflict.key.clone(),
+                    MergeResolution::Select(if matches!(conflict.ours, ConflictValue::Absent) { ConflictSide::Theirs } else { ConflictSide::Ours }))).collect();
+                let candidate = UnpublishedMergeCandidate { plan: typed, resolutions };
+                let outcome = plan.apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted).await.unwrap();
+                prop_assert!(matches!(outcome, JoinOutcome::Applied(_) | JoinOutcome::NoChanges(_)));
+                let head = main.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let bytes = head.read("/note", 64, WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                prop_assert_eq!(bytes.as_ref(), text.as_bytes());
+                let clean = head.read("/clean", 64, WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                prop_assert_eq!(clean.as_ref(), b"source");
+                prop_assert_eq!(head.stat("/note", WorkBudget::UNBOUNDED, &stop).await.unwrap().value.link_count, 1);
+                Ok(())
+            })?;
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
