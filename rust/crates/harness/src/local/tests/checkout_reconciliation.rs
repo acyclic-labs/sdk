@@ -17,10 +17,10 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
         super::checked_commands::call(6, "bash", "test $(cat upstream.txt) = recovered"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     for (expired, expected) in [(false, "closed"), (true, "recovered")] {
@@ -85,10 +85,10 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
         super::checked_commands::call(3, "bash", "printf child > note.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();

@@ -2,11 +2,73 @@ use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
 
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "test-support",
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+mod isolation {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Property: workspace spelling never changes the isolated settings roots;
+        // the owned temporary home survives construction and is removed on drop.
+        #[test]
+        fn local_test_config_cannot_resolve_user_settings(workspace in ".{0,64}") {
+            let config = crate::test_support::local_harness_config(
+                PathBuf::from(workspace),
+                (
+                    crate::model::Model::new("test".into(), "settings".into(), "1".into(), Value::Null).unwrap(),
+                    std::sync::Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ),
+            ).unwrap();
+            let settings = config.settings.expect("test configuration must select settings");
+            let temporary = settings._test_home.as_ref().expect("test settings must own their temporary home");
+            prop_assert_eq!(&settings.home, temporary.path());
+            prop_assert_eq!(&settings.codex_home, &temporary.path().join(".codex"));
+            prop_assert!(temporary.path().is_dir());
+            let home = settings.home.clone();
+            drop(settings);
+            prop_assert!(!home.exists(), "temporary settings must be cleaned up");
+        }
+    }
+}
 struct Fixture {
     _root: tempfile::TempDir,
     home: PathBuf,
     workspace: PathBuf,
     codex: PathBuf,
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn project_keys_accept_nonverbatim_case_and_separator_aliases() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let canonical = std::fs::canonicalize(&fixture.workspace).map_err(Error::process_io)?;
+    let key = canonical
+        .to_str()
+        .unwrap()
+        .strip_prefix(r"\\?\")
+        .unwrap()
+        .replace('\\', "/")
+        .to_lowercase();
+    write(
+        &fixture.home.join(".claude.json"),
+        json!({"projects":{
+            key.as_str():{"mcpServers":{"selected":{"command":"selected"}}},
+            "unrelated":{"mcpServers":42}
+        }})
+        .to_string(),
+    )?;
+    let mut config = fixture.config();
+    config.workspace = fixture.workspace.join(".");
+    let snapshot = NativeSettings::load(config).await?;
+    assert_eq!(
+        snapshot.mcp.server_names().collect::<Vec<_>>(),
+        ["selected"]
+    );
+    Ok(())
 }
 
 impl Fixture {

@@ -112,32 +112,8 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            if paths.allocation.is_none() {
-                return read_locked(&mut paths);
-            }
-            with_lock(&mut paths, |paths| {
-                let journal = read_recoverable::<MaterializationJournal>(paths)?.map(
-                    |(mut journal, allocation)| {
-                        journal.custody = allocation;
-                        journal
-                    },
-                );
-                paths
-                    .allocation
-                    .as_ref()
-                    .ok_or(NativeTreeMaterializationError::MissingCustody)?
-                    .work()
-                    .set_original_work(
-                        journal
-                            .as_ref()
-                            .map_or_else(crate::WorkCounters::default, |record| record.work),
-                    );
-                Ok(journal)
-            })
-        })
-        .await
+        self.load_materialization_with_retry(operation_id, retry_record_lock)
+            .await
     }
 
     async fn compare_and_swap(
@@ -296,6 +272,43 @@ pub(super) fn prepare_materialization_encoding(
 }
 
 impl LocalCoreStateStore {
+    pub(super) async fn load_materialization_with_retry(
+        &self,
+        operation_id: OperationId,
+        retry: impl FnMut(Instant) -> bool + Send + 'static,
+    ) -> Result<Option<MaterializationJournal>, LocalCoreStateStoreError> {
+        self.transaction(move |namespace| {
+            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+            if paths.allocation.is_none() {
+                return read_locked_with_retry(&mut paths, retry);
+            }
+            with_lock_with_retry(
+                &mut paths,
+                |paths| {
+                    let journal = read_recoverable::<MaterializationJournal>(paths)?.map(
+                        |(mut journal, allocation)| {
+                            journal.custody = allocation;
+                            journal
+                        },
+                    );
+                    paths
+                        .allocation
+                        .as_ref()
+                        .ok_or(NativeTreeMaterializationError::MissingCustody)?
+                        .work()
+                        .set_original_work(
+                            journal
+                                .as_ref()
+                                .map_or_else(crate::WorkCounters::default, |record| record.work),
+                        );
+                    Ok(journal)
+                },
+                retry,
+            )
+        })
+        .await
+    }
+
     /// Binds the existing journal family to the native execution accounting boundary.
     pub fn materialization(&self, work: crate::materializer::NativeMaterializationWork) -> Self {
         Self {
