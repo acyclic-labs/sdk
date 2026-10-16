@@ -13,6 +13,7 @@
 *.bin binary
 *.wasm binary
 *.node binary
+rust/crates/auth/fuzz/corpus/** binary
 
 # Preserve byte-exact patch context.
 patches/*.patch -whitespace

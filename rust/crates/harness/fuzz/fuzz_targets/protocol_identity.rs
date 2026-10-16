@@ -1,7 +1,7 @@
 //! Fuzz protocol validation and protobuf round-trip stability.
 #![no_main]
 
-use acyclic_harness::{wire, wire_api};
+use acyclic_harness::{wire, wire_api, wire_codec};
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
 
@@ -20,12 +20,25 @@ fuzz_target!(|data: &[u8]| {
         wire_api::validate_command_protocol(&command).map_err(|error| error.code()),
         expected
     );
+    let decoded = wire_codec::decode_command_envelope(command.clone())
+        .map_err(|error| (error.code(), error.to_string()));
+    if data == include_bytes!("../corpus/protocol_identity/command-valid") {
+        assert!(decoded.is_ok(), "valid seed must reach action decoding");
+    }
+    if let Err(code) = expected {
+        assert!(matches!(&decoded, Err((actual, _)) if *actual == code));
+    }
     let restored = wire::CommandEnvelope::decode(command.encode_to_vec().as_slice());
     assert!(matches!(&restored, Ok(restored) if restored == &command));
     if let Ok(restored) = restored {
         assert_eq!(
             wire_api::validate_command_protocol(&restored).map_err(|error| error.code()),
             expected
+        );
+        assert_eq!(
+            wire_codec::decode_command_envelope(restored)
+                .map_err(|error| (error.code(), error.to_string())),
+            decoded
         );
     }
     let resume = wire::ResumeRequest {
