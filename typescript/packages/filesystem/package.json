@@ -54,20 +54,22 @@
     }
   },
   "scripts": {
-    "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path proto/filesystem/v2 && bun x buf lint && bun run generate",
+    "build:proto": "cd ../../.. && bun x buf format --diff --exit-code --path rust/crates/filesystem/proto/filesystem/v2 && bun x buf lint && bun scripts/generate.mjs filesystem",
     "clean": "bun -e \"import { rmSync } from 'node:fs'; for (const path of ['dist', 'tsconfig.tsbuildinfo']) rmSync(path, { recursive: true, force: true })\"",
-    "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
+    "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
     "build:clean": "bun run clean && bun run build",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs filesystem",
-    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
+    "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json --pretty false",
-    "test": "bun run build && bun run test:composition && bun run test:s3",
+    "test": "bun run generate && bun run build && bun run test:composition && bun run test:s3",
     "test:composition": "bun test/node-memory.mjs",
     "test:native:installed": "node test/native-public-installed.mjs",
     "test:s3": "bun test test/hosted-s3.test.mjs",
     "test:browser": "bun test/browser-qualify.mjs",
     "pack:dry": "bun run build:clean && bun pm pack --dry-run",
-    "test:cloud": "node --test test/cloud-contract.test.mjs"
+    "test:cloud": "node --test test/cloud-contract.test.mjs",
+    "generate": "bun ../../../scripts/generate.mjs filesystem",
+    "prepack": "bun run generate"
   },
   "dependencies": {
     "@acyclic-labs/actors": "0.2.0",

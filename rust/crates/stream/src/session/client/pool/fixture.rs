@@ -62,6 +62,7 @@ pub(in crate::session::client) fn fixture(
             "good",
             Kind::Follow(wire::SessionFollow {
                 path: "healthy".into(),
+                delivery: wire::SessionDelivery::All as i32,
                 ..Default::default()
             }),
         ),

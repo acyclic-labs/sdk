@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
 name = "acyclic-harness"
 version.workspace = true
@@ -139,7 +140,7 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
-required-features = ["filesystem", "test-support"]
+required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[test]]
 name = "search-http-codec"

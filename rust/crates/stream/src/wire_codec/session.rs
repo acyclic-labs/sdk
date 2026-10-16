@@ -83,6 +83,42 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     }
 }
 
+/// Validates a peer's ALL/LATEST data against the next received cursor.
+/// LATEST can skip conflated values; ALL must remain consecutive. The caller
+/// advances application progress only when this admitted delivery is consumed.
+pub fn follow_sequence(
+    delivery: i32,
+    next: u64,
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    use wire::{SessionDelivery, session_data::Item};
+    let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+    if !after.opaque.is_empty() || data.accepted < after.next || data.durable > data.accepted {
+        return Err(StreamError::Unavailable);
+    }
+    match (SessionDelivery::try_from(delivery), &data.item) {
+        (Ok(SessionDelivery::All), Some(Item::Record(record)))
+            if record.commit_id.len() == 32 && record.sequence == next =>
+        {
+            if after.next
+                != record
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(StreamError::OutOfRange)?
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(record.sequence)
+        }
+        (Ok(SessionDelivery::Latest), Some(Item::LatestValue(value)))
+            if !value.key.is_empty() && after.next > next =>
+        {
+            Ok(after.next - 1)
+        }
+        _ => Err(StreamError::Unavailable),
+    }
+}
+
 /// Adds a receive-credit grant without partially applying an overflowing grant.
 pub fn grant_credit(
     remaining: &mut wire::SessionWindow,

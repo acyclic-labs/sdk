@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
+mod binding;
 mod lookup;
 
 #[cfg(feature = "filesystem")]
@@ -23,7 +24,7 @@ proptest! {
             template.definition.revision = existing.to_string();
             tools.register((template.clone(), None), &mut None, None)?;
         }
-        tools.pin_model_definitions(&[])?;
+        tools.pin_model_definitions(&[], None)?;
         template.definition.name = "target".into();
         template.definition.revision = ((existing + offset) % 16).to_string();
         tools.register((template, None), &mut None, None)?;
@@ -206,7 +207,7 @@ proptest::proptest! {
                 6 => {
                     let selected = registry.data.versions.get(&(name.clone(), revision.clone()))
                         .map(|tool| vec![tool.definition.clone()]).unwrap_or_default();
-                    checked(registry.pin_model_definitions(&selected))?;
+                    checked(registry.pin_model_definitions(&selected, None))?;
                     proptest::prop_assert_eq!(checked(registry.definitions(None))?, selected);
                 }
                 _ => {

@@ -3,7 +3,9 @@ use acyclic_harness::{
     AgentId, Capabilities,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner},
 };
-use std::{path::Path, time::Duration};
+use std::path::Path;
+#[cfg(all(unix, feature = "tui"))]
+use std::time::Duration;
 
 async fn configuration(root: &Path) -> Result<Config> {
     acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
@@ -88,73 +90,160 @@ async fn configuration(root: &Path) -> Result<Config> {
     })
 }
 
-#[tokio::test]
-async fn default_manifest_survives_restart_of_an_unfinished_native_turn() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let config = configuration(directory.path()).await?;
-    let first = NativeSession::open(config.clone()).await?;
-    let contracts = first.context.contracts(None)?;
-    let command = first
-        .prompt_command("keep the plan in plans/release.md", OperationId::new())
-        .await?;
-    let task = match first.queue(OperationId::new(), command, None).await? {
-        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
-        _ => panic!("expected an admitted durable task"),
+async fn publish_manifest(
+    session: &NativeSession,
+    label: &str,
+) -> Result<acyclic_harness::conversation::FileRef> {
+    let publisher = FilesystemContentPublisher::new(
+        session.files.clone(),
+        &session.config.private_volume,
+        &session.config.owner.verifier()?,
+        &session.config.owner.scope,
+        MAX_FRAME_BYTES as u64,
+        None,
+    )?;
+    let manifest = ContextManifest {
+        conventions: vec![label.into()],
+        tools: acyclic_harness::tools::defaults()?.definitions(None)?,
+        ..Default::default()
     };
-    let WorkPull::Claimed(lease) = first
-        .claim(
-            task,
-            &Worker {
-                id: "restart".into(),
-                available: Default::default(),
-                labels: Default::default(),
-            },
+    manifest
+        .publish(
+            publisher.as_ref(),
+            OperationId::new(),
+            &format!("context/{label}.json"),
+            session.config.limits,
         )
-        .await?
-    else {
-        panic!("expected the original lease")
+        .await
+}
+
+// Exercise the real prompt publication, durable admission and resume paths.
+// No dispatch has occurred in the first case; the second crashes after dispatch
+// and must reconcile A without generating again, even though startup selects B.
+#[tokio::test]
+async fn queued_manifest_survives_restart_with_a_different_binding() -> Result<()> {
+    use acyclic_harness::{
+        model::{ModelContent, ModelEvent},
+        test_support::{
+            ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+        },
     };
-    {
-        let running = first.resume(lease);
-        tokio::pin!(running);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                tokio::select! {
-                    outcome = &mut running => panic!("turn completed before its delayed model: {outcome:?}"),
-                    _ = tokio::time::sleep(Duration::from_millis(5)) => {},
-                }
-                if std::fs::read_to_string(&config.model_invocation_ledger).map_err(storage)?.contains("\"phase\":\"generate\"") { break; }
+    for dispatched in [false, true] {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let mut config = configuration(directory.path()).await?;
+        config.deterministic_delay_ms = 0;
+        let setup = NativeSession::open(config.clone()).await?;
+        let a = publish_manifest(&setup, "ORIGINAL_A").await?;
+        let b = publish_manifest(&setup, "REPLACEMENT_B").await?;
+        drop(setup);
+        config.context_manifest = Some(a.clone());
+        let mut first = NativeSession::open(config.clone()).await?;
+        let command = first
+            .prompt_command("pinned prompt", OperationId::new())
+            .await?;
+        let reader = FilesystemContentVerifier::new(
+            first.files.clone(),
+            &config.owner.verifier()?,
+            &config.owner.scope,
+            MAX_FRAME_BYTES as u64,
+            None,
+        )?;
+        use acyclic_harness::conversation::ContentResidencyVerifier as _;
+        let bytes = reader
+            .read(&command.payload, MAX_FRAME_BYTES as u64, None)?
+            .await?;
+        let retained: acyclic_harness::filesystem::ModelTaskCommand =
+            serde_json::from_slice(&bytes).map_err(invalid)?;
+        assert_eq!(retained.context_manifest, a);
+        drop((bytes, reader, retained, a));
+        let task = match first.queue(OperationId::new(), command, None).await? {
+            Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
+            _ => panic!("expected an admitted durable task"),
+        };
+        let signal = Arc::new(tokio::sync::Notify::new());
+        let observer = signal.clone();
+        let original = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
+                .with_dispatch_observer(move |_| observer.notify_one()),
+        );
+        if dispatched {
+            first.model_provider = original.clone();
+            let WorkPull::Claimed(lease) = first
+                .claim(
+                    task,
+                    &Worker {
+                        id: "original".into(),
+                        available: Default::default(),
+                        labels: Default::default(),
+                    },
+                )
+                .await?
+            else {
+                panic!("original lease missing")
+            };
+            let running = first.resume(lease);
+            tokio::pin!(running);
+            tokio::select! {
+                outcome = &mut running => panic!("completed before crash: {outcome:?}"),
+                _ = signal.notified() => {},
             }
-            Ok::<_, Error>(())
-        }).await.expect("model dispatch was never reached")?;
+        }
+        drop(first);
+        config.context_manifest = Some(b);
+        let mut reopened = NativeSession::open(config).await?;
+        let recovered = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_reconciliations([
+                ScriptedReconciliation {
+                    orphan: true,
+                    observed: Vec::new(),
+                    continuation: Some(vec![ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    }]),
+                },
+            ]),
+        );
+        reopened.model_provider = recovered.clone();
+        let pull = if dispatched {
+            reopened
+                .runtime
+                .task_host()
+                .recover_work(task, &mut None)
+                .await?
+        } else {
+            reopened
+                .claim(
+                    task,
+                    &Worker {
+                        id: "recovered".into(),
+                        available: Default::default(),
+                        labels: Default::default(),
+                    },
+                )
+                .await?
+        };
+        let WorkPull::Claimed(lease) = pull else {
+            panic!("retained task missing")
+        };
+        let outcome = reopened.resume(lease).await?;
+        assert!(outcome.starts_with("worker completed"), "{outcome}");
+        let requests = if dispatched {
+            original.requests()
+        } else {
+            recovered.requests()
+        };
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].messages[0].content,
+            ModelContent::Text("ORIGINAL_A".into())
+        );
+        assert!(
+            !serde_json::to_string(&requests)
+                .map_err(invalid)?
+                .contains("REPLACEMENT_B")
+        );
+        assert_eq!(recovered.requests().len(), usize::from(!dispatched));
+        assert_eq!(recovered.reconciliations().len(), usize::from(dispatched));
     }
-    drop(first);
-    let reopened = NativeSession::open(config.clone()).await?;
-    assert_eq!(reopened.context.contracts(None)?, contracts);
-    let WorkPull::Claimed(lease) = reopened
-        .runtime
-        .task_host()
-        .recover_work(task, &mut None)
-        .await?
-    else {
-        panic!("original lease was not retained")
-    };
-    let outcome = reopened.resume(lease).await?;
-    assert!(outcome.starts_with("worker completed"), "{outcome}");
-    let records: Vec<serde_json::Value> = std::fs::read_to_string(&config.model_invocation_ledger)
-        .map_err(storage)?
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<std::result::Result<_, _>>()
-        .map_err(invalid)?;
-    assert_eq!(
-        records
-            .iter()
-            .map(|record| record["phase"].as_str().expect("phase"))
-            .collect::<Vec<_>>(),
-        ["generate", "reconcile"]
-    );
-    assert_eq!(records[0]["request_digest"], records[1]["request_digest"]);
     Ok(())
 }
 

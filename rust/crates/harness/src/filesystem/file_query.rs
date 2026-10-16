@@ -13,7 +13,7 @@ use std::sync::Arc;
 mod projection;
 use projection::{Selection, generation};
 
-/// An authorized query of ordinary private files, backed by their original history.
+/// An authorized query of ordinary agent or project files and their original history.
 pub struct FilesystemFileQuery<P, O> {
     reader: Arc<FilesystemContentVerifier<StreamAuthorityStore<P>, O>>,
     volume: VolumeRef,
@@ -38,12 +38,14 @@ impl<P, O> FilesystemContentVerifier<StreamAuthorityStore<P>, O> {
         budget: WorkBudget,
     ) -> crate::Result<FilesystemFileQuery<P, O>> {
         volume.validate(&mut None)?;
-        if volume.class() != VolumeClass::AgentPrivate
-            || volume.provider() != &self.host.provider
+        if !matches!(
+            volume.class(),
+            VolumeClass::AgentPrivate | VolumeClass::Project
+        ) || volume.provider() != &self.host.provider
             || !budget.has_finite_allowances()
         {
             return Err(crate::Error::Invalid(
-                "file query requires a private volume and finite work".into(),
+                "file query requires an agent or project volume and finite work".into(),
             ));
         }
         Ok(FilesystemFileQuery {

@@ -1,4 +1,5 @@
 [
+  "acyclic-proto-build",
   "acyclic-inference",
   "acyclic-machines",
   "acyclic-native-runtime",

@@ -1,0 +1,3 @@
+{
+  "expect":{"kind":"modified","binary":false,"added":0,"removed":0,"hunks":[],"patch":"--- original\n+++ modified\n"}
+}

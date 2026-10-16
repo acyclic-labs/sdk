@@ -22,7 +22,7 @@ test("Cloud filesystem fixture provenance pins its handler tests and exact descr
   assert.equal(source.test, "write_read_list_and_delete_through_reconstructed_replica");
   assert.ok(source.files.some(file => file.path === "svc/fs/tests/multi_tenant.rs"));
   for (const file of source.files) assert.match(file.blob, /^[a-f0-9]{40}$/);
-  const descriptor = readFileSync(new URL("../../../../rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin", import.meta.url));
+  const descriptor = readFileSync(new URL("../../../../compatibility/descriptors/filesystem-v2.bin", import.meta.url));
   const blob = createHash("sha1").update(`blob ${descriptor.length}\0`).update(descriptor).digest("hex");
   assert.equal(blob, source.descriptor_blob, "refresh Cloud's SDK pin and these fixtures together");
   for (const method of ["CreateWorkspace", "ApplyTransaction", "Read", "ListDirectory", "DeleteWorkspace"]) {

@@ -376,29 +376,38 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let after = data.after.ok_or(StreamError::Unavailable)?;
-        let (item, sequence) = match (&route.kind, data.item) {
-            (Kind::Follow(_), Some(Item::Record(record))) if after.opaque.is_empty() => {
-                let record = wire_codec::record(record)?;
-                let sequence = record.sequence;
-                (Received::Record(record), sequence)
+        let (item, sequence, after) = match &route.kind {
+            Kind::Follow(follow) => {
+                let sequence =
+                    wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?;
+                let after = data.after.clone().ok_or(StreamError::Unavailable)?;
+                (Received::Data(data), sequence, after)
             }
-            (Kind::Children(request), Some(Item::Child(child))) => {
+            Kind::Children(request) => {
+                let after = data.after.ok_or(StreamError::Unavailable)?;
+                let Some(Item::Child(child)) = data.item else {
+                    return Err(StreamError::Unavailable);
+                };
                 let path = StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?;
-                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref() {
+                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
+                    || after.next
+                        != route
+                            .received
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?
+                    || data.durable > data.accepted
+                    || data.accepted < after.next
+                {
                     return Err(StreamError::Unavailable);
                 }
-                (Received::Child(crate::Child { path }), route.received)
+                (
+                    Received::Child(crate::Child { path }),
+                    route.received,
+                    after,
+                )
             }
             _ => return Err(StreamError::Unavailable),
         };
-        if sequence != route.received
-            || after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
-            || data.durable > data.accepted
-            || data.accepted < after.next
-        {
-            return Err(StreamError::Unavailable);
-        }
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
         let delivery = Delivery {

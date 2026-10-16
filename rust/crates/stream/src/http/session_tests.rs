@@ -73,6 +73,37 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
     );
     let result: TestResult = async {
         let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
+        let status_path = StreamPath::new("status")?;
+        let latest_value = wire::SessionLatestValue {
+            key: Bytes::from_static(b"agent"),
+            value: Bytes::from_static(b"running"),
+            attention: true,
+        };
+        provider
+            .append(AppendRequest {
+                path: status_path,
+                records: vec![latest_value.encode_to_vec().into()],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let mut overview = client
+            .follow_data(
+                wire::SessionFollow {
+                    path: "status".into(),
+                    delivery: wire::SessionDelivery::Latest as i32,
+                    ..Default::default()
+                },
+                0,
+            )
+            .await?;
+        let data = overview.next().await.ok_or("latest ended")??;
+        assert_eq!(
+            data.item,
+            Some(wire::session_data::Item::LatestValue(latest_value))
+        );
+        assert_eq!(data.after.as_ref().map(|cursor| cursor.next), Some(1));
+        assert_eq!((data.accepted, data.durable), (1, 0));
         let path = StreamPath::new("events")?;
         assert_eq!(
             client.watermarks(path.clone()).await?,

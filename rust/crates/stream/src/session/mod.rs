@@ -40,6 +40,8 @@ const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES +
 } else {
     crate::MAX_RECORD_BYTES + 128
 };
+#[cfg(acyclic_stream_loom)]
+pub use client::verify_latest_progress;
 #[cfg(test)]
 mod tests;
 
