@@ -17,7 +17,7 @@ fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
             assert_eq!(work.spent().bytes_encoded, length as u64);
             assert_eq!(
                 work.spent().bytes_copied,
-                (14 + suffix.len() + length) as u64
+                (b"fs/authorities/".len() + suffix.len() + length) as u64
             );
             assert_eq!(work.spent().allocation_operations, 1);
         }
@@ -47,18 +47,18 @@ proptest::proptest! {
         let expected = format!("fs/authorities/{}{}{}", hex::encode(identity), suffix,
             digest.map_or_else(String::new, hex::encode));
         let length = expected.len();
-        let writes = codec_work(length as u64, (14 + suffix.len()) as u64, 0);
+        let writes = codec_work(length as u64, (b"fs/authorities/".len() + suffix.len()) as u64, 0);
         let mut budget = BUDGET;
         match limit {
             1 => budget.bytes_encoded = length as u64 - 1,
-            2 => budget.bytes_copied = (14 + suffix.len()) as u64 - 1,
+            2 => budget.bytes_copied = (b"fs/authorities/".len() + suffix.len()) as u64 - 1,
             3 => budget.allocation_operations = 0,
             4 => budget.peak_allocation_bytes = 0,
-            5 => budget.bytes_copied = (14 + suffix.len() + length) as u64 - 1,
+            5 => budget.bytes_copied = (b"fs/authorities/".len() + suffix.len() + length) as u64 - 1,
             6 => {
                 budget.peak_allocation_bytes = length as u64;
                 budget.bytes_encoded = length as u64;
-                budget.bytes_copied = (14 + suffix.len() + length) as u64;
+                budget.bytes_copied = (b"fs/authorities/".len() + suffix.len() + length) as u64;
             }
             _ => {}
         }
