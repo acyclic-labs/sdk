@@ -225,6 +225,7 @@ fn signed_parser_seed_corpus() {
         assert_eq!(parsed.encode().as_slice(), bytes.as_slice());
         // Explicit corpus regeneration shares the same fully signed fixtures.
         if let Some(directory) = std::env::var_os("AUTH_CORPUS_OUTPUT") {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(directory);
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(std::path::Path::new(&directory).join(name), bytes.as_slice()).unwrap();
         }
