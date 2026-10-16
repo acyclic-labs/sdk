@@ -394,3 +394,52 @@ mod properties {
         }
     }
 }
+
+/// Typed model/tool JSON must preserve literal maps, including reserved serde keys.
+pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
+    use acyclic_harness::model::{
+        Model, ModelContentPart, ModelEvent, ToolCall, ToolResultContent,
+    };
+    fn round_trip<
+        T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + PartialEq,
+    >(
+        value: T,
+    ) {
+        let encoded = serde_json::to_value(&value).unwrap();
+        let replay: T = serde_json::from_value(encoded).unwrap();
+        assert_eq!(replay, value);
+    }
+    let call =
+        ToolCall::new("call".into(), "echo".into(), value.clone()).with_metadata(value.clone());
+    round_trip(ModelEvent::ToolCall(call.clone()));
+    round_trip(ModelContentPart::ToolCall(call));
+    round_trip(ModelEvent::Completed {
+        metadata: value.clone(),
+    });
+    round_trip(ToolResultContent::Json {
+        value: value.clone(),
+    });
+    round_trip(Model {
+        provider: "fixture".into(),
+        name: "model".into(),
+        revision: "1".into(),
+        options: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolInvocation {
+        operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+        call_id: "call".into(),
+        name: "echo".into(),
+        arguments: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolResult {
+        value: value.clone(),
+    });
+    round_trip(acyclic_harness::tool::ToolDefinition {
+        name: "echo".into(),
+        revision: "1".into(),
+        description: "Echo".into(),
+        input_schema: value.clone(),
+        output_schema: value.clone(),
+        projection_schema: value.clone(),
+    });
+}

@@ -15,7 +15,7 @@ function assertOrder(parts: readonly ModelContentPart[], blocks: readonly Block[
   const assistant = parts.filter(part => part.kind === "reasoning" || part.kind === "tool_call");
   expect(assistant.map(part => part.kind)).toEqual(blocks.flatMap((_, index) =>
     index + 1 === blocks.length ? ["reasoning"] : ["reasoning", "tool_call"]));
-  expect(assistant.filter(part => part.kind === "reasoning").map(part => part.block)).toEqual(blocks);
+  expect(assistant.filter(part => part.kind === "reasoning").map(part => part.block)).toEqual([...blocks]);
 }
 
 function block(text: string): Block {
@@ -39,7 +39,7 @@ test("ordered reasoning survives tool batches, final answers and the next conver
           for (const [index, item] of blocks.entries()) {
             yield { kind: "reasoning_block" as const, block: item };
             if (index + 1 < blocks.length) yield { kind: "tool_call" as const, callId: `call_${index}`, name: "echo",
-              arguments: {}, metadata: { signature: "opaque", "$serde_json::private::RawValue": "null" } };
+              arguments: {}, metadata: { signature: "opaque", "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } } };
           }
         } else {
           const parts = request.messages.flatMap(message => typeof message.content === "string" ? []

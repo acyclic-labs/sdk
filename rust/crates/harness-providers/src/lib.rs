@@ -88,5 +88,9 @@ fn http_error(status: u16) -> Error {
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {
-    serde_json::from_slice(bytes).map_err(|error| invalid(error.to_string()))
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = acyclic_harness::deserialize_json_value(&mut decoder)
+        .map_err(|error| invalid(error.to_string()))?;
+    decoder.end().map_err(|error| invalid(error.to_string()))?;
+    Ok(value)
 }

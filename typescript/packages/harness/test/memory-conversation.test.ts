@@ -306,12 +306,13 @@ test("partial tool-history publication is idempotent across a transient retry", 
 
   await expect(host.runConversation(runtime, operation, content)).rejects.toThrow();
   expect(host.conversation().messages.map(message => message.kind)).toEqual([
-    "user", "tool_call", "tool_result",
+    "user", "tool_call",
   ]);
   const recovered = await host.runConversation(runtime, operation, content);
   expect(recovered.text).toBe("published");
+  expect(step).toBe(2);
   expect(host.conversation().messages.map(message => message.kind)).toEqual([
-    "user", "tool_call", "tool_result", "tool_call", "tool_result", "assistant",
+    "user", "tool_call", "tool_call", "tool_result", "tool_result", "assistant",
   ]);
   expect(new Set(host.conversation().messages.map(message => message.id)).size)
     .toBe(host.conversation().messages.length);

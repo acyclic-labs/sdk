@@ -398,3 +398,24 @@ fn typed_numbers_and_arbitrary_model_json_have_distinct_wire_encodings() -> Resu
     );
     Ok(())
 }
+
+#[wasm_bindgen_test]
+fn model_json_keeps_prototype_and_private_marker_keys_literal() -> Result<(), JsValue> {
+    let data = json!({"__proto__":{"polluted":true}, "$serde_json::private::RawValue":"null"});
+    let encoded = to_js_json(&data)?;
+    assert!(
+        js_sys::Object::keys(&js_sys::Object::from(encoded.clone()))
+            .includes(&JsValue::from_str("__proto__"), 0)
+    );
+    let decoded =
+        acyclic_harness::deserialize_json_value(serde_wasm_bindgen::Deserializer::from(encoded))
+            .map_err(error)?;
+    assert_eq!(decoded, data);
+    // Negative control: the default object setter consumes __proto__ as a prototype.
+    let legacy = to_js(&data)?;
+    assert!(
+        !js_sys::Object::keys(&js_sys::Object::from(legacy))
+            .includes(&JsValue::from_str("__proto__"), 0)
+    );
+    Ok(())
+}

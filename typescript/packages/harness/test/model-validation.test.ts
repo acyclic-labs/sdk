@@ -494,15 +494,16 @@ test("model event admission rejects unknown event fields", () => {
   expect(() => contracts.admitModelEvent({ kind: "content", delta: "ok", extra: true } as never, DEFAULT_LIMITS)).toThrow();
 });
 
-test("model event admission preserves full-width BigInts in provider JSON", () => {
-  const value = 9_007_199_254_740_993n;
-  const toolCall = contracts.admitModelEvent({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1n, cursor: value },
-  }, DEFAULT_LIMITS);
-  expect(toolCall.event).toEqual({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1, cursor: value },
-  });
-
+test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {
+  const maximum = 9_007_199_254_740_991n;
+  const value = maximum + 2n;
+  const call = (cursor: bigint) => ({ kind: "tool_call" as const, callId: "bigint-call", name: "lookup",
+    arguments: { tokens: 1n, cursor } });
+  const admitted = contracts.admitModelEvent(call(maximum), DEFAULT_LIMITS);
+  expect(admitted.event).toEqual({ ...call(maximum), arguments: { tokens: 1, cursor: Number(maximum) } });
+  for (const cursor of [maximum + 1n, value]) {
+    expect(() => contracts.admitModelEvent(call(cursor), DEFAULT_LIMITS)).toThrow("inexact number");
+  }
   const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
   expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
 });

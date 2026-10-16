@@ -28,13 +28,35 @@ fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
         .map_err(error)
 }
 
-/// Arbitrary model JSON retains every 64-bit integer across the JS boundary.
+#[wasm_bindgen(inline_js = r#"
+export function literalObjects(value) {
+  if (value instanceof Map) {
+    return Object.fromEntries((function* () {
+      for (const entry of value) { entry[1] = literalObjects(entry[1]); yield entry; }
+    })());
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = literalObjects(value[i]);
+  } else if (value !== null && typeof value === 'object') {
+    for (const key of Object.keys(value)) value[key] = literalObjects(value[key]);
+  }
+  return value;
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen(js_name = literalObjects)]
+    fn literal_objects(value: JsValue) -> JsValue;
+}
+
+/// Arbitrary model JSON retains integers and literal map keys across the JS boundary.
 fn to_js_json(value: &impl Serialize) -> Result<JsValue, JsValue> {
     value
         .serialize(
-            &serde_wasm_bindgen::Serializer::json_compatible()
+            &serde_wasm_bindgen::Serializer::new()
+                .serialize_missing_as_null(true)
                 .serialize_large_number_types_as_bigints(true),
         )
+        .map(literal_objects)
         .map_err(error)
 }
 
@@ -47,6 +69,7 @@ export interface ProviderRequest {
   readonly signal?: AbortSignal;
 }
 export interface ProviderDispatch { readonly operationId: string; readonly step: number }
+export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 export interface ProviderCapacity { readonly contextTokens: number; readonly outputTokens: number }
 export interface ProviderTokenCount {
   readonly requestDigest: Uint8Array;
@@ -75,9 +98,7 @@ impl WasmProviderRegistry {
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "Readonly<Record<string, string>>")] keys: JsValue,
         #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
-        #[wasm_bindgen(unchecked_optional_param_type = "typeof globalThis.fetch")] fetch: Option<
-            Function,
-        >,
+        #[wasm_bindgen(unchecked_optional_param_type = "ProviderFetch")] fetch: Option<Function>,
         #[wasm_bindgen(
             unchecked_optional_param_type = "(file: WasmFileRefWire, maximumBytes: number) => Promise<Uint8Array>"
         )]
@@ -117,7 +138,10 @@ impl WasmProviderRegistry {
     ) -> Result<WasmModelProvider, JsValue> {
         let options = match options {
             None => serde_json::json!({}),
-            Some(options) => from_js(options)?,
+            Some(options) => acyclic_harness::deserialize_json_value(
+                serde_wasm_bindgen::Deserializer::from(options),
+            )
+            .map_err(error)?,
         };
         Ok(WasmModelProvider {
             provider: Rc::new(
@@ -165,7 +189,7 @@ impl WasmModelProvider {
         }))
     }
 
-    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "Promise<ProviderTokenCount>")]
+    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "ProviderTokenCount")]
     pub async fn count_tokens(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ProviderRequest")] request: JsValue,
