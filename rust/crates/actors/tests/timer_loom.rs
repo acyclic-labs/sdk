@@ -34,6 +34,7 @@ fn lost_ack_restart_and_append() -> Result {
     // Production recovery releases the source read lock before taking the target
     // write lock. A reopened handle is published only after recovery completes.
     block_on(acyclic_stream::verification::recover(&restarted, &retained))?;
+    drop(retained);
     let mut follow = block_on(restarted.follow(inbox.clone(), 1))?;
     let pushed = Arc::new(Pushed(AtomicBool::new(false)));
     let waker = Waker::from(pushed.clone());
@@ -71,9 +72,17 @@ fn lost_ack_restart_and_append() -> Result {
     assert_eq!(delivered.sequence, 1);
     assert_eq!(delivered.value.as_slice(), b"concurrent");
     assert_eq!(
-        block_on(restarted.tail(inbox))?,
+        block_on(restarted.tail(inbox.clone()))?,
         2,
         "timer delivered twice after restart"
+    );
+    let mut history = block_on(restarted.follow(inbox, 0))?;
+    let original = block_on(history.next()).ok_or("restored timer missing")??;
+    assert_eq!(original.sequence, 0);
+    assert_eq!(
+        TimerRecord::decode(&original.value)?,
+        timer,
+        "restored timer state was torn"
     );
     Ok(())
 }
