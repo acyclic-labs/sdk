@@ -6,6 +6,20 @@ pub fn exercise(file: ConfigFile, bytes: &[u8]) {
     if let Ok(value) = parse_bytes(file, Scope::User, bytes) {
         let encoded = serde_json::to_vec(&value).unwrap();
         assert_eq!(parse_bytes(file, Scope::User, &encoded).unwrap(), value);
+        if file == ConfigFile::Keymap {
+            let map =
+                acyclic_harness_tui::InputKeymap::parse(std::str::from_utf8(&encoded).unwrap())
+                    .unwrap();
+            let canonical = map.encode();
+            assert_eq!(
+                acyclic_harness_tui::InputKeymap::parse(&canonical).unwrap(),
+                map
+            );
+            assert_eq!(
+                parse_bytes(file, Scope::User, canonical.as_bytes()).unwrap(),
+                value
+            );
+        }
     }
     unknown_key_control(file, false);
 }

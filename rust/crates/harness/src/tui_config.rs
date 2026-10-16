@@ -19,6 +19,8 @@ pub enum ConfigError {
     Volume(crate::task_volume::Error),
     /// Rejected configuration fields.
     Diagnostics(Vec<Diagnostic>),
+    /// A higher-precedence file prevents a selected-scope shortcut taking effect.
+    ShadowedSetting,
 }
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -117,13 +119,23 @@ impl ConfigFiles {
         profile: &Capabilities,
     ) -> Result<()> {
         let change = change.ok_or(crate::task_volume::Error::ResetRequired)??;
-        if let Some(file) = change.file {
+        self.cursors[scope.index()] = change.cursor;
+        let mut changed = false;
+        for file in change.file.into_iter().chain(change.files) {
             if let Some(kind) = ConfigFile::from_path(&file.key.path()) {
                 self.view.set_bytes(scope, kind, &file.bytes);
+                changed = true;
             }
         }
-        self.cursors[scope.index()] = change.cursor;
-        self.view.apply(input, profile)?;
+        for key in change.removed {
+            if let Some(kind) = ConfigFile::from_path(&key.path()) {
+                self.view.set_file(scope, kind, None);
+                changed = true;
+            }
+        }
+        if changed {
+            self.view.apply(input, profile)?;
+        }
         Ok(())
     }
     /// Publish a patch against a fresh, fenced file cut. Changes become visible
@@ -170,6 +182,22 @@ impl ConfigFiles {
             }
             _ => return Ok(false),
         };
+        let before = current.effective(file)?;
+        let saved = match snapshot.files.first() {
+            Some(value) => parse_bytes(file, scope, &value.bytes)?,
+            None => serde_json::json!({}),
+        };
+        let desired = fold(&saved, Some(&patch), None);
+        current.set_bytes(scope, file, desired.to_string().as_bytes());
+        let after = current.effective(file)?;
+        if patch
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(key, value)| after[key] != *value || before[key] == after[key])
+        {
+            return Err(ConfigError::ShadowedSetting);
+        }
         publish(volume, snapshot, scope, file, &patch).await?;
         Ok(true)
     }
@@ -219,3 +247,6 @@ async fn publish<P: StreamProvider + ?Sized>(
         )
         .await?)
 }
+
+#[cfg(test)]
+mod tests;

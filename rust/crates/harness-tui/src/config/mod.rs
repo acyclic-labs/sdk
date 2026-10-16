@@ -248,30 +248,7 @@ impl ConfigView {
         profile: &crate::term::Capabilities,
     ) -> Result<(), Vec<Diagnostic>> {
         let settings = self.settings()?;
-        let keymap = self.effective(ConfigFile::Keymap)?;
-        let bindings = keymap["bindings"].as_object().cloned().unwrap_or_default();
-        let mapping: serde_json::Map<String, Value> = bindings
-            .into_iter()
-            .map(|(key, value)| {
-                (
-                    key,
-                    if value.is_null() {
-                        Value::String(String::new())
-                    } else {
-                        value
-                    },
-                )
-            })
-            .collect();
-        let keymap = InputKeymap::from_json(&Value::Object(mapping).to_string()).map_err(|e| {
-            vec![Diagnostic {
-                file: ConfigFile::Keymap,
-                scope: Scope::User,
-                path: "bindings".into(),
-                kind: DiagnosticKind::Conflict,
-                detail: e.to_string(),
-            }]
-        })?;
+        let keymap = InputKeymap::from_bindings(&self.effective(ConfigFile::Keymap)?);
         let theme = self.theme(profile)?;
         input.set_settings(settings);
         input.set_keymap(keymap);

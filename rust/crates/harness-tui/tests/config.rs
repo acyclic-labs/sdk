@@ -559,3 +559,40 @@ proptest! {
         prop_assert_eq!(input.editor.text(), text);
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    #[test]
+    fn saved_keymap_loads_and_live_file_projection_agree(
+        action in 0usize..ACTIONS.len(), disabled in any::<bool>(), key in 1u8..25,
+    ) {
+        let chord = format!("F{key}");
+        let target = if disabled { serde_json::Value::Null } else { ACTIONS[action].chord.into() };
+        let text = json!({"bindings":{chord.clone():target}}).to_string();
+        let map = acyclic_harness_tui::InputKeymap::parse(&text).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config/keymap.json");
+        map.save(&path).unwrap();
+        let restored = acyclic_harness_tui::InputKeymap::load(&path).unwrap();
+        prop_assert_eq!(&restored, &map);
+        let saved = std::fs::read_to_string(path).unwrap();
+        let mut view = ConfigView::default();
+        view.set_file(Scope::User, ConfigFile::Keymap, Some(&saved));
+        prop_assert_eq!(view.diagnostics().count(), 0);
+        let mut input = PromptInput::default();
+        apply(&view, &mut input);
+        prop_assert_eq!(input.keymap.resolve(&chord).map(|b| b.action), map.resolve(&chord).map(|b| b.action));
+        prop_assert_eq!(parse(ConfigFile::Keymap, Scope::User, &saved).unwrap()["bindings"][&chord].clone(), target);
+    }
+}
+
+#[test]
+fn obsolete_flat_and_chord_target_formats_are_rejected() {
+    for text in [
+        r#"{"Ctrl+l":"Home"}"#,
+        r#"{"bindings":{"Ctrl+l":"Home"}}"#,
+        r#"{"bindings":{"Ctrl+l":""}}"#,
+    ] {
+        assert!(acyclic_harness_tui::InputKeymap::parse(text).is_err());
+    }
+}

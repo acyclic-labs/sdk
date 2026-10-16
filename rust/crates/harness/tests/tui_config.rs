@@ -245,3 +245,78 @@ fn either_volume_can_publish_while_the_other_is_idle() -> Result {
             Ok(())
         })
 }
+
+#[test]
+fn shadowed_user_shortcuts_are_rejected_and_workspace_toggles_work() -> Result {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let user = volume("conflict/user").await?;
+            let workspace = volume("conflict/workspace").await?;
+            put(
+                &user,
+                "config/settings.json",
+                br#"{"wrap":true,"notifications":"on"}"#,
+            )
+            .await?;
+            put(
+                &workspace,
+                "config/settings.json",
+                br#"{"wrap":false,"notifications":"off"}"#,
+            )
+            .await?;
+            let profile = Capabilities::default();
+            let mut input = PromptInput::default();
+            let mut files = ConfigFiles::observe(&user, &workspace, &mut input, &profile).await?;
+            let before = user.snapshot(&Query::Config, 3).await?;
+            for action in [AppAction::ToggleWrap, AppAction::ToggleNotifications] {
+                assert!(matches!(
+                    files.action(&user, Scope::User, action).await,
+                    Err(acyclic_harness::tui_config::ConfigError::ShadowedSetting)
+                ));
+            }
+            let after = user.snapshot(&Query::Config, 3).await?;
+            assert_eq!(
+                before.generation, after.generation,
+                "rejected shortcuts must not publish"
+            );
+            assert!(!input.editor.settings().wrap);
+            assert!(
+                files
+                    .action(&workspace, Scope::Workspace, AppAction::ToggleWrap)
+                    .await?
+            );
+            files.next_any(&mut input, &profile).await?;
+            assert!(input.editor.settings().wrap);
+            let saved: serde_json::Value = serde_json::from_slice(
+                &workspace.snapshot(&Query::Config, 3).await?.files[0].bytes,
+            )?;
+            assert_eq!(saved["wrap"], true);
+            Ok(())
+        })
+}
+
+#[test]
+fn unrelated_publications_keep_the_configuration_and_advance_cursors() -> Result {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let user = volume("unrelated/user").await?;
+            let workspace = volume("unrelated/workspace").await?;
+            let profile = Capabilities::default();
+            let mut input = PromptInput::new(Editor::new("draft"));
+            let mut files = ConfigFiles::observe(&user, &workspace, &mut input, &profile).await?;
+            let cursor = files.cursors[0].clone();
+            put(&user, "workspace/unrelated.rs", b"source").await?;
+            files.next(Scope::User, &mut input, &profile).await?;
+            assert!(files.cursors[0].position > cursor.position);
+            assert_eq!(input.editor.text(), "draft");
+            assert_eq!(
+                *input.editor.settings(),
+                acyclic_harness::tui::DEFAULT_SETTINGS
+            );
+            Ok(())
+        })
+}
