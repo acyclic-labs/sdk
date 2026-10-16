@@ -277,6 +277,9 @@ impl PreparedModelRequest {
     pub fn request(&self) -> &ModelRequest {
         &self.request
     }
+    pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
+        self.request.messages
+    }
     /// Exact canonical provider-neutral bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
