@@ -8,6 +8,25 @@ use acyclic_stream::StreamProvider;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 
+/// Render an immutable command outcome, preserving admission identities used by
+/// installed clients. The terminal adapter applies its own text encoding.
+pub fn render_command_record(value: &Value) -> String {
+    let value = value.get("ok").unwrap_or(value);
+    if let Some(text) = value["rendered"].as_str() {
+        return text.to_owned();
+    }
+    let mut text = String::new();
+    if let (Some(task), Some(operation)) = (
+        value["task"].as_str(),
+        value["admission_operation"].as_str(),
+    ) {
+        text.push_str(&format!(
+            "queued task={task} admission-operation={operation}\n"
+        ));
+    }
+    text.push_str(&format!("command-json={value}\n"));
+    text
+}
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Private query selections needed by the current file-backed layout.
     pub fn view_queries(&self) -> Result<Vec<Query>> {
@@ -61,7 +80,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .transpose()?
                     .flatten()
                 {
-                    Some(value) => out.push_str(&driver::render_command_record(&value)),
+                    Some(value) => out.push_str(&render_command_record(&value)),
                     None => writeln!(out, "History page {page} is unavailable.").unwrap(),
                 }
             }

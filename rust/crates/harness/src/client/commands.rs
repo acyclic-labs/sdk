@@ -20,12 +20,13 @@ mod control;
 mod driver;
 mod scheduling;
 #[cfg(not(target_arch = "wasm32"))]
-pub use driver::{render_command_record, run_command_client};
+pub use driver::run_command_client;
 pub use scheduling::{command_loop_finished, schedule_command_effect};
 mod diff;
 mod files;
 pub use diff::render_command_diff;
 mod view;
+pub use view::render_command_record;
 mod view_files;
 pub use view_files::CommandViewFiles;
 #[cfg(all(test, acyclic_loom))]

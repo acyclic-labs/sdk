@@ -6,25 +6,6 @@ use futures::{Stream, StreamExt as _};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Render an immutable command outcome, preserving admission identities used by
-/// installed clients. The terminal adapter applies its own text encoding.
-pub fn render_command_record(value: &Value) -> String {
-    let value = value.get("ok").unwrap_or(value);
-    if let Some(text) = value["rendered"].as_str() {
-        return text.to_owned();
-    }
-    let mut text = String::new();
-    if let (Some(task), Some(operation)) = (
-        value["task"].as_str(),
-        value["admission_operation"].as_str(),
-    ) {
-        text.push_str(&format!(
-            "queued task={task} admission-operation={operation}\n"
-        ));
-    }
-    text.push_str(&format!("command-json={value}\n"));
-    text
-}
 async fn consume<P, D, Fut>(
     session: &mut CommandSession<P>,
     request: &crate::task_volume::FileValue,
