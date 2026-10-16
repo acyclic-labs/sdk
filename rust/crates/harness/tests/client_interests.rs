@@ -4,18 +4,25 @@ use acyclic_stream::{StreamPath, wire::SessionDelivery};
 use std::collections::BTreeSet;
 
 #[path = "client_interest_continuity.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod continuity;
 #[path = "client_interest_discovery.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod discovery;
 #[path = "client_interest_wire.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod platform;
 #[path = "support/quiescent.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod quiescent;
 #[path = "support/swarm_session.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod runtime;
 #[path = "client_interest_session.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod session;
 
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 fn client(
     limits: acyclic_harness::client::SwarmClientLimits,
 ) -> acyclic_harness::Result<acyclic_harness::client::SwarmClient> {

@@ -5,13 +5,16 @@ mod limits;
 mod oracle;
 
 #[path = "client_swarm_views_follow.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod follow;
 
 #[path = "support/quiescent.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod quiescent;
 #[path = "client_swarm_views_retention.rs"]
 mod retention;
 #[path = "support/swarm_session.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod runtime;
 
 #[test]
