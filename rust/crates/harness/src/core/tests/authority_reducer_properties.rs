@@ -81,7 +81,31 @@ fn guarantee(index: u8) -> EffectGuarantee {
     }
 }
 
-type History = Vec<(Option<EffectAttemptId>, EffectStatus)>;
+#[derive(Default)]
+struct ExpectedHistory {
+    revision: u64,
+    attempts: Vec<EffectAttemptId>,
+    status: Option<EffectStatus>,
+    guarantee: Option<EffectGuarantee>,
+}
+
+// Update from the submitted input before calling any production reducer API.
+fn expect_transition(history: &mut ExpectedHistory, action: &Action) {
+    let status = match action {
+        Action::PlanEffect { guarantee, .. } => {
+            history.guarantee = Some(*guarantee);
+            EffectStatus::Planned
+        }
+        Action::MarkEffectDispatched { attempt_id, .. } => {
+            history.attempts.push(*attempt_id);
+            EffectStatus::Dispatched
+        }
+        Action::ResolveEffect { observation } => observation.status.clone(),
+        _ => unreachable!("only effect transitions are recorded"),
+    };
+    history.revision += 1;
+    history.status = Some(status);
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Fault {
@@ -92,60 +116,56 @@ enum Fault {
     ReplayAgain,
 }
 
-fn assert_history(reducer: &Reducer, history: &History) {
+fn assert_history(reducer: &Reducer, history: &ExpectedHistory) {
     assert_eq!(
         reducer.revision(),
-        history.len() as u64,
+        history.revision,
         "revision differs from independent history"
     );
     let effect = reducer.effect(EffectId::from_bytes([9; 16]));
-    let Some((_, status)) = history.last() else {
+    let Some(status) = &history.status else {
         assert!(effect.is_none());
         return;
     };
     let effect = effect.unwrap();
-    let attempts: Vec<_> = history.iter().filter_map(|(attempt, _)| *attempt).collect();
     assert_eq!(
         effect.attempts.len(),
-        attempts.len(),
+        history.attempts.len(),
         "dispatch attempt count differs from independent history"
     );
     assert_eq!(
-        effect.attempts, attempts,
+        effect.attempts, history.attempts,
         "dispatch attempt order differs from independent history"
     );
     assert_eq!(
         &effect.status, status,
         "status differs from independent history"
     );
+    assert_eq!(
+        Some(effect.guarantee),
+        history.guarantee,
+        "guarantee differs from independent history"
+    );
 }
 
 fn commit(
     reducer: &mut Reducer,
     replay: &mut Reducer,
-    history: &mut History,
+    history: &mut ExpectedHistory,
     fault: Fault,
     action: Action,
 ) -> Command {
     assert_history(reducer, history);
-    let expected = match &action {
-        Action::PlanEffect { .. } => (None, EffectStatus::Planned),
-        Action::MarkEffectDispatched { attempt_id, .. } => {
-            (Some(*attempt_id), EffectStatus::Dispatched)
-        }
-        Action::ResolveEffect { observation } => (None, observation.status.clone()),
-        _ => unreachable!("only effect transitions are recorded"),
-    };
     let cmd = command(
-        operation(history.len() as u8 + 1),
-        history.len() as u64,
+        operation(history.revision as u8 + 1),
+        history.revision,
         action,
     );
+    expect_transition(history, &cmd.action);
     let before = reducer.copy(&mut None).unwrap();
     let planned = reducer.plan(&cmd).unwrap();
     assert_eq!(*reducer, before, "effect planning changed state");
     let applied = reducer.apply(&cmd).unwrap();
-    history.push(expected);
     if fault == Fault::DuplicateAttempt
         && let Action::MarkEffectDispatched {
             effect_id,
@@ -165,7 +185,7 @@ fn commit(
     let ApplyResult::Applied { event } = applied else {
         panic!("fresh effect operation replayed")
     };
-    assert_eq!(event.revision, history.len() as u64);
+    assert_eq!(event.revision, history.revision);
     replay.apply_committed(event.clone(), &mut None).unwrap();
     assert_history(replay, history);
     assert_eq!(reducer, replay, "committed effect replay diverged");
@@ -188,7 +208,7 @@ fn commit(
     }
     assert_eq!(
         reducer.revision(),
-        history.len() as u64,
+        history.revision,
         "exact retry advanced independent history"
     );
     assert_history(reducer, history);
@@ -207,10 +227,10 @@ fn plan_effect(id: EffectId, guarantee: EffectGuarantee, payload: &[u8]) -> Acti
     }
 }
 
-fn rejected(reducer: &mut Reducer, history: &History, id: u8, action: Action) {
+fn rejected(reducer: &mut Reducer, history: &ExpectedHistory, id: u8, action: Action) {
     assert_history(reducer, history);
     let before = reducer.copy(&mut None).unwrap();
-    let cmd = command(operation(id), history.len() as u64, action);
+    let cmd = command(operation(id), history.revision, action);
     assert!(reducer.plan(&cmd).is_err(), "invalid effect was planned");
     assert_eq!(*reducer, before);
     assert!(reducer.apply(&cmd).is_err(), "invalid effect was applied");
@@ -218,7 +238,7 @@ fn rejected(reducer: &mut Reducer, history: &History, id: u8, action: Action) {
     assert_history(reducer, history);
     let mut event = reducer.events.back().unwrap().clone();
     event.operation_id = cmd.operation_id;
-    event.revision = history.len() as u64 + 1;
+    event.revision = history.revision + 1;
     event.intent_digest = crate::executor::json::canonical_json_digest(
         &cmd,
         crate::store::default_projection_read_limits().maximum_bytes,
@@ -256,7 +276,7 @@ fn attestation_fields(payload: &[u8], key_byte: usize, bit: u8, use_original: bo
     let attempt = EffectAttemptId::from_bytes([10; 16]);
     let mut reducer = reducer_fixture();
     let mut replay = reducer_fixture();
-    let mut history = Vec::new();
+    let mut history = ExpectedHistory::default();
     commit(
         &mut reducer,
         &mut replay,
@@ -334,7 +354,7 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, faul
     let id = EffectId::from_bytes([9; 16]);
     let mut reducer = reducer_fixture();
     let mut replay = reducer_fixture();
-    let mut history = Vec::new();
+    let mut history = ExpectedHistory::default();
     commit(
         &mut reducer,
         &mut replay,
@@ -389,8 +409,8 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, faul
         let previous_attempt = attempt;
         let next_attempt = EffectAttemptId::from_bytes([20 + round as u8; 16]);
         let cmd = command(
-            operation(history.len() as u8 + 1),
-            history.len() as u64,
+            operation(history.revision as u8 + 1),
+            history.revision,
             Action::MarkEffectDispatched {
                 effect_id: id,
                 attempt_id: next_attempt,
@@ -404,7 +424,12 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, faul
         );
         if guarantee != EffectGuarantee::IdempotentRetry {
             assert_eq!(reducer, before);
-            rejected(&mut reducer, &history, history.len() as u8 + 1, cmd.action);
+            rejected(
+                &mut reducer,
+                &history,
+                history.revision as u8 + 1,
+                cmd.action,
+            );
             break;
         }
         commit(&mut reducer, &mut replay, &mut history, fault, cmd.action);
@@ -425,11 +450,7 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, faul
             .unwrap()
             .verify_effect(&stale, &mut None)
             .unwrap();
-        let expected_attempt = history
-            .iter()
-            .rev()
-            .find_map(|(attempt, _)| *attempt)
-            .unwrap();
+        let expected_attempt = history.attempts.last().copied().unwrap();
         assert_eq!(expected_attempt, attempt);
         assert_ne!(
             stale.attempt_id, expected_attempt,
@@ -447,7 +468,7 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, faul
         }
         let stale_command = command(
             operation(200),
-            history.len() as u64,
+            history.revision,
             Action::ResolveEffect {
                 observation: stale.clone(),
             },
