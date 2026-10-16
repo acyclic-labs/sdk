@@ -196,7 +196,11 @@ impl CommandSources {
             }
             let mut catalog = CommandCatalog::from_bytes(&self.base, self.maximum_bytes)?
                 .with_sources(self.reader.as_ref(), &self.roots, &self.skills, self.limits)
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    Error::Conflict(message) => Error::Invalid(message),
+                    error => error,
+                })?;
             let changed: BTreeSet<_> = self
                 .files
                 .keys()
@@ -263,7 +267,7 @@ impl CommandSources {
                 }
                 validate_name(&name)?;
                 if catalog.commands.contains_key(&name) {
-                    return Err(Error::Conflict(format!("reserved command: {name}")));
+                    return Err(Error::Invalid(format!("reserved command: {name}")));
                 }
                 let body = std::str::from_utf8(body)
                     .map_err(|error| Error::Invalid(error.to_string()))?

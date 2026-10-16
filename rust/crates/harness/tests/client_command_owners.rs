@@ -223,15 +223,29 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
         64,
     )
     .await?;
-    for (body, valid) in [
-        (b"bad\0source".as_slice(), false),
-        (b"Hello $ARGUMENTS".as_slice(), true),
+    for (path, body, valid) in [
+        (".codex/prompts/added.md", b"bad\0source".as_slice(), false),
+        (
+            ".codex/prompts/added.md",
+            b"Hello $ARGUMENTS".as_slice(),
+            true,
+        ),
+        (
+            "skills/corrected/SKILL.md",
+            b"---\nname: model\ndescription: reserved\n---\nBad".as_slice(),
+            false,
+        ),
+        (
+            "skills/corrected/SKILL.md",
+            b"---\nname: corrected\ndescription: corrected\n---\nGood".as_slice(),
+            true,
+        ),
     ] {
         let cut = volume.snapshot(&Query::Inputs, 64).await?;
         volume
             .append(
                 cut.generation,
-                &FileValue::new(FileKey::parse(".codex/prompts/added.md")?, body.to_vec()),
+                &FileValue::new(FileKey::parse(path)?, body.to_vec()),
             )
             .await?;
         sources.changed().await?;
@@ -239,6 +253,14 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
         assert_eq!(result.is_ok(), valid);
         if valid {
             assert!(client.catalog().commands().any(|spec| spec.name == "added"));
+            if path.starts_with("skills/") {
+                assert!(
+                    client
+                        .catalog()
+                        .commands()
+                        .any(|spec| spec.name == "corrected")
+                );
+            }
         }
         assert_eq!(
             client.catalog().complete("CHOOSE").next().unwrap().name,
