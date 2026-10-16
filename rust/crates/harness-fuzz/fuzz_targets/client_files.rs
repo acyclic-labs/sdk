@@ -8,7 +8,7 @@ use acyclic_harness::{
         VolumeRef,
     },
     core::EventPayload,
-    executor::PreparationIo,
+    filesystem::PreparationIo,
     resources::ProviderRef,
     wire,
     wire_api::{HarnessWireApi, OperationControlRequest, ReplayMode, current_protocol, negotiate},
