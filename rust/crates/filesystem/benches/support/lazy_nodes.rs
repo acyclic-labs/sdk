@@ -1,3 +1,4 @@
+use acyclic_fs::facade::FsWork;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation};
 use acyclic_fs::lazy_workspace::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceStore,
@@ -82,7 +83,7 @@ fn accounting<'a>(
 ) -> KernelAccounting<'a> {
     match work {
         Some(work) => KernelAccounting::NativeOriginal { work, cancellation },
-        None => KernelAccounting::standalone(BUDGET, cancellation),
+        None => BUDGET.accounting(cancellation),
     }
 }
 
