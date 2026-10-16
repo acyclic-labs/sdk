@@ -31,6 +31,7 @@ proptest! {
         };
         let key = if positional { &raw[5] } else { &raw["expiresAtMs"] };
         let original = key.as_str().ok_or("expiry string")?.as_ptr();
+        let bytes = serde_json::to_vec(&raw)?;
         let mut decoded = None;
         let allocation = allocation_counter::measure(|| {
             decoded = Some(serde_json::from_value::<AdmittedCaller>(raw));
@@ -39,6 +40,12 @@ proptest! {
         let decoded = decoded.ok_or("decode ran")??;
         prop_assert_eq!(decoded.expires_at_ms().as_ptr(), original);
         prop_assert_eq!(decoded.expires_at_ms(), expiry.to_string());
+        let mut from_bytes = None;
+        let allocation = allocation_counter::measure(|| {
+            from_bytes = Some(serde_json::from_slice::<AdmittedCaller>(&bytes));
+        });
+        prop_assert_eq!(allocation.count_total, 6 + u64::from(capability), "only the six wire strings and optional capability handle are allocated");
+        prop_assert_eq!(from_bytes.ok_or("byte decode ran")??, decoded);
 
         let fields = ["a".into(), "o".into(), principal, "c".into(), "i".into()];
         let [account, org, principal, credential, actor] = fields;
@@ -47,7 +54,8 @@ proptest! {
             constructed = Some(AdmittedCaller::new(account, org, principal, credential, actor, expiry));
         });
         prop_assert_eq!(allocation.count_total, 1, "only the canonical expiry string is allocated");
-        prop_assert_eq!(constructed.ok_or("construction ran")??.expires_at_ms(), expiry.to_string());
+        let constructed = constructed.ok_or("construction ran")??;
+        prop_assert_eq!(constructed.expires_at_ms(), expiry.to_string());
     }
 
     /// UTF-8 bytes, not character count, bound every constructor and serde route.
