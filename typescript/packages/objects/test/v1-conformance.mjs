@@ -11,7 +11,7 @@ import { MemoryObjectsV1 } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../generated/wasm/acyclic_objects_wasm.js";
 
-const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
+const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "objects/restore", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
 const make = (name, value) => create(wire[`${name}Schema`], value);
 const fail = (code) => error => error.code === code;
 const bytes = new Uint8Array(135000).map((_, index) => index % 251);

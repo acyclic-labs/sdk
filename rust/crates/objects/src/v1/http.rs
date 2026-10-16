@@ -507,6 +507,14 @@ impl ObjectsProvider for HttpObjects {
         )
         .await
     }
+    async fn restore(
+        &self,
+        query: wire::RestoreObjectsRequest,
+    ) -> Result<wire::RestoreObjectsResponse, Error> {
+        request::restore(&query)?;
+        self.call("objects/restore", query, |_, result| Ok(result))
+            .await
+    }
     async fn delete(
         &self,
         query: wire::DeleteObjectRequest,

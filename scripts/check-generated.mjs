@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedTypeScript, packagedRustBindings, packagedRustProjection, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 import { nativeFamily } from "./native-family.mjs";
 
@@ -167,9 +167,10 @@ try {
   }
   const freshTypeScript = join(temporary, "generated/typescript");
   const freshRust = join(temporary, "generated/rust");
-  for (const [relative, packaged] of packagedRustBindings) {
-    const fresh = normalizeGeneratedRust(relative, readFileSync(join(freshRust, relative), "utf8"));
-    if (fresh !== readFileSync(join(root, packaged), "utf8")) throw new Error(`packaged Rust drift: ${packaged}`);
+  for (const [relative] of packagedRustBindings) {
+    for (const [path, fresh] of packagedRustProjection(relative, readFileSync(join(freshRust, relative), "utf8"))) {
+      if (fresh !== readFileSync(join(root, path), "utf8")) throw new Error(`packaged Rust drift: ${path}`);
+    }
   }
   for (const [source, destination] of generatedDescriptors) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));

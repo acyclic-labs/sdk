@@ -9,6 +9,9 @@ export async function lifecycle(provider) {
   assert.equal((await provider.createBucket(make("CreateBucketRequest", { name: bucket.name }))).bucket.name, bucket.name);
   assert.equal((await provider.headBucket(make("HeadBucketRequest", { bucket }))).bucket.name, bucket.name);
   const query = make("GetObjectRequest", { bucket, objectKey: "data" });
+  await assert.rejects(provider.restore(make("RestoreObjectsRequest", {
+    bucket, prefix: "", at: { seconds: 42n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
+  })), fail(wire.ErrorCode.UNSUPPORTED));
   const put = make("PutObjectHeader", { bucket, objectKey: "data", mutation: { idempotencyKey: "publication" } });
   const original = await provider.put(put, bytes);
   assert.equal(original.size, BigInt(bytes.length));

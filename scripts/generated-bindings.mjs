@@ -119,7 +119,7 @@ export const normalizeGeneratedTypeScript = source => {
   let normalized = `${source.trimEnd()}\n`;
   // Preserve documentation while keeping large generated projections within
   // the source-file bound. Repeated normalization is byte-idempotent.
-  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto")) && normalized.split("\n").length > 800) {
+  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto") || normalized.includes("from file objects/v1/objects.proto")) && normalized.split("\n").length > 800) {
     normalized = normalized.replaceAll("\n\n", "\n");
     if (normalized.split("\n").length > 800) {
       normalized = normalized.replace(/\/\*\*([\s\S]*?)\*\//g, (_, body) =>
@@ -127,4 +127,24 @@ export const normalizeGeneratedTypeScript = source => {
     }
   }
   return normalized;
+};
+
+// Keep the canonical tonic modules separate so each packaged source stays bounded.
+/** @returns {[string, string][]} */
+export const packagedRustProjection = (relative, source) => {
+  const binding = packagedRustBindings.find(([name]) => name === relative);
+  if (!binding) throw new Error(`unknown packaged Rust binding: ${relative}`);
+  const destination = binding[1];
+  const normalized = normalizeGeneratedRust(relative, source);
+  if (relative !== "acyclic/objects/v1/acyclic.objects.v1.tonic.rs") return [[destination, normalized]];
+  const parts = normalized.split(/(?=^\/\/\/ Generated (?:client|server) implementations\.$)/m);
+  if (parts.length !== 7) throw new Error("expected three Objects tonic client/server pairs");
+  /** @type {[string, string][]} */
+  const files = parts.slice(1).map(part => {
+    const module = /^\/\/\/ Generated (?:client|server) implementations\.\npub mod (\w+)_service_(client|server) \{/u.exec(part);
+    if (!module) throw new Error("unexpected tonic module layout");
+    const [, service, side] = module;
+    return [`rust/crates/objects/src/generated/services/${service}/${side}.rs`, part];
+  });
+  return [[destination, parts[0] + files.map(([path]) => `include!("${path.split("/generated/")[1]}");\n`).join("")], ...files];
 };

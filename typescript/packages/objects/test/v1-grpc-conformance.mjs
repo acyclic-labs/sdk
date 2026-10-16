@@ -77,7 +77,7 @@ if (process.argv.includes("--client")) {
     await lifecycle(client);
     await assert.rejects(wrong.headBucket(create(wire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === wire.ErrorCode.ACCESS_DENIED);
   } finally { client.close(); wrong.close(); bounded.close(); }
-  console.log(`${process.versions.bun ? "Bun" : "Node"} Objects v1 TLS gRPC: all 13 operations, streaming, canonical errors and authentication pass`);
+  console.log(`${process.versions.bun ? "Bun" : "Node"} Objects v1 TLS gRPC: all operations, streaming, canonical errors and authentication pass`);
 } else {
   await MemoryObjectsV1.create();
   const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
@@ -85,7 +85,7 @@ if (process.argv.includes("--client")) {
   const identity = JSON.parse(generated.stdout);
   const routes = {
     CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
-    PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head", DeleteObject: "objects/delete", ListObjects: "objects/list",
+    PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head", DeleteObject: "objects/delete", ListObjects: "objects/list", RestoreObjects: "objects/restore",
     CreateMultipart: "multipart/create", UploadPart: "multipart/upload-part", ListParts: "multipart/list-parts", CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
   };
   let memory;
