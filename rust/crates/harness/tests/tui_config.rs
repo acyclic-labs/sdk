@@ -192,3 +192,56 @@ fn rapid_setting_actions_read_the_file_before_toggling() -> Result {
             Ok(())
         })
 }
+
+#[test]
+fn either_volume_can_publish_while_the_other_is_idle() -> Result {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let user = volume("either/user").await?;
+            let workspace = volume("either/workspace").await?;
+            let profile = Capabilities::default();
+            let mut input = PromptInput::default();
+            let mut files = ConfigFiles::observe(&user, &workspace, &mut input, &profile).await?;
+            for (scope, value) in [
+                (Scope::Workspace, 3),
+                (Scope::User, 2),
+                (Scope::Workspace, 5),
+                (Scope::User, 7),
+            ] {
+                let source = if scope == Scope::User {
+                    &user
+                } else {
+                    &workspace
+                };
+                let bytes = serde_json::json!({"tab_width":value}).to_string();
+                put(source, "config/settings.json", bytes.as_bytes()).await?;
+                let observed = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    files.next_any(&mut input, &profile),
+                )
+                .await??;
+                assert_eq!(observed, scope);
+                assert_eq!(
+                    input.editor.settings().tab_width,
+                    if scope == Scope::Workspace {
+                        value
+                    } else if value == 2 {
+                        3
+                    } else {
+                        5
+                    }
+                );
+            }
+            // Both queued streams are retained even when the other wins selection.
+            put(&user, "config/settings.json", br#"{"wrap":false}"#).await?;
+            put(&workspace, "config/settings.json", br#"{"tab_width":9}"#).await?;
+            let first = files.next_any(&mut input, &profile).await?;
+            let second = files.next_any(&mut input, &profile).await?;
+            assert_ne!(first, second);
+            assert!(!input.editor.settings().wrap);
+            assert_eq!(input.editor.settings().tab_width, 9);
+            Ok(())
+        })
+}

@@ -82,6 +82,22 @@ impl ConfigFiles {
             changes,
         })
     }
+    /// Wait for either config volume. Both existing cursor-follow streams remain
+    /// registered; dropping the losing `next` future does not consume a change.
+    pub async fn next_any(
+        &mut self,
+        input: &mut PromptInput,
+        profile: &Capabilities,
+    ) -> Result<Scope> {
+        let [user, workspace] = &mut self.changes;
+        let (scope, change) = match futures::future::select(user.next(), workspace.next()).await {
+            futures::future::Either::Left((change, _)) => (Scope::User, change),
+            futures::future::Either::Right((change, _)) => (Scope::Workspace, change),
+        };
+        self.apply_change(scope, change, input, profile)?;
+        Ok(scope)
+    }
+
     /// Fold one publication from the selected volume into the mounted input.
     pub async fn next(
         &mut self,
@@ -89,10 +105,18 @@ impl ConfigFiles {
         input: &mut PromptInput,
         profile: &Capabilities,
     ) -> Result<()> {
-        let change = self.changes[scope.index()]
-            .next()
-            .await
-            .ok_or(crate::task_volume::Error::ResetRequired)??;
+        let change = self.changes[scope.index()].next().await;
+        self.apply_change(scope, change, input, profile)
+    }
+
+    fn apply_change(
+        &mut self,
+        scope: Scope,
+        change: Option<crate::task_volume::Result<crate::task_volume::Change>>,
+        input: &mut PromptInput,
+        profile: &Capabilities,
+    ) -> Result<()> {
+        let change = change.ok_or(crate::task_volume::Error::ResetRequired)??;
         if let Some(file) = change.file {
             if let Some(kind) = ConfigFile::from_path(&file.key.path()) {
                 self.view.set_bytes(scope, kind, &file.bytes);
