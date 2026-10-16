@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
+mod binding;
 mod lookup;
 
 #[cfg(feature = "filesystem")]

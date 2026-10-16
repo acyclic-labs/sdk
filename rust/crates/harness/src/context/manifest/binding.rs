@@ -12,7 +12,7 @@ impl ContextManifest {
     pub(crate) async fn bind_observed(
         reference: FileRef,
         reader: &dyn ContentResidencyVerifier,
-        tools: &ToolRegistry,
+        mut tools: ToolRegistry,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
@@ -49,23 +49,6 @@ impl ContextManifest {
             manifest.validate_observed(limits, io)?;
         }
         drop(bytes);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut tools = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
-                stock_boundary(
-                    Some(io),
-                    ErrorCode::Unsupported,
-                    "manifest requires original work",
-                )
-            })?;
-            let (tools, custody) = tools.clone_with_native_work(work)?;
-            io.absorb_native_custody(custody)?;
-            tools
-        } else {
-            tools.clone()
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let mut tools = tools.clone();
         tools.pin_model_definitions(&manifest.tools, io)?;
         let mut messages = Vec::new();
         crate::executor::with_history_io(io, |work| {

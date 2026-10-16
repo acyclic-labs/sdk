@@ -3,7 +3,6 @@
 use super::{WasmReducer, from_js, js_error, key_bytes};
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{ContentGrant, FileRef, Limits, VolumeOperation, VolumeRef},
     core::Scope,
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
@@ -663,13 +662,9 @@ impl WasmTaskRuntime {
     > {
         let commands = self.runtime.commands();
         match &self.model {
-            Some((model, provider, compaction)) => commands.with_model(
-                model,
-                provider.clone(),
-                &ContextPipeline::new([]),
-                compaction,
-                None,
-            ),
+            Some((model, provider, compaction)) => {
+                commands.with_model(model, provider.clone(), compaction, None)
+            }
             None => Ok(commands),
         }
     }

@@ -16,11 +16,7 @@ fuzz_target!(|input: &[u8]| {
         return;
     }
     if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input) {
-        if command
-            .context_manifest
-            .as_ref()
-            .is_none_or(|reference| reference.validate(&mut None).is_ok())
-        {
+        if command.context_manifest.validate(&mut None).is_ok() {
             let encoded = serde_json::to_vec(&command).unwrap();
             assert_eq!(
                 serde_json::from_slice::<ModelTaskCommand>(&encoded).unwrap(),

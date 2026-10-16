@@ -140,8 +140,7 @@ pub struct ModelTaskCommand {
     /// Provider-neutral user input, subject to retained task file grants.
     pub input: ModelContent,
     /// Exact immutable manifest file retained with this admitted command.
-    #[serde(default)]
-    pub context_manifest: Option<FileRef>,
+    pub context_manifest: FileRef,
     /// An exact recorded history selection, when available.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
@@ -196,7 +195,6 @@ pub struct PreparedTaskAdmitCommand {
 struct ModelBinding {
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
     compaction: crate::context::CompactionPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -223,7 +221,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         mut self,
         model: &Model,
         provider: Arc<dyn ModelProvider>,
-        context: &ContextPipeline,
         compaction: &crate::context::CompactionPolicy,
         io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
@@ -249,7 +246,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         }
         let model = crate::model::clone_model(model, io)?;
-        let context = context.copy(io)?;
         let compaction = compaction.copy(io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io
@@ -268,7 +264,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         self.model = Some(ModelBinding {
             model,
             provider,
-            context,
             compaction,
             #[cfg(not(target_arch = "wasm32"))]
             native_custody,

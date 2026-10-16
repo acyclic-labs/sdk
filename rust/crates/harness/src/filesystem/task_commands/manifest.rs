@@ -93,32 +93,32 @@ where
 {
     pub(super) async fn model_context(
         &self,
-        reference: Option<FileRef>,
+        reference: FileRef,
         context: &TaskContext,
-        pipeline: &ContextPipeline,
         io: Option<&PreparationIo>,
     ) -> Result<(ContextPipeline, crate::tool::ToolRegistry)> {
-        let Some(reference) = reference else {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io.original_native_work().ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        ErrorCode::Unsupported,
-                        "model configuration requires original work",
-                    )
-                })?;
-                let (tools, custody) = self.runtime.tool_registry().clone_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                return Ok((pipeline.copy(Some(io))?, tools));
-            }
-            return Ok((pipeline.copy(io)?, self.runtime.tool_registry().clone()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let tools = if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    ErrorCode::Unsupported,
+                    "manifest requires original work",
+                )
+            })?;
+            let (tools, custody) = self.runtime.tool_registry().clone_with_native_work(work)?;
+            io.absorb_native_custody(custody)?;
+            tools
+        } else {
+            self.runtime.tool_registry().clone()
         };
+        #[cfg(target_arch = "wasm32")]
+        let tools = self.runtime.tool_registry().clone();
         let reader = ManifestReader(context);
         let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
             &reader,
-            self.runtime.tool_registry(),
+            tools,
             context.scope().limits(),
             io,
         )

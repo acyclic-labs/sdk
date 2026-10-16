@@ -136,12 +136,7 @@ where
             )?;
         }
         let (pipeline, tools) = BoundedContentFuture::new(io, || {
-            self.model_context(
-                command.context_manifest.take(),
-                &context,
-                &binding.context,
-                io,
-            )
+            self.model_context(command.context_manifest, &context, io)
         })?
         .await?;
         let input = TurnInput {

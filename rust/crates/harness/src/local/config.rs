@@ -19,7 +19,7 @@ pub struct LocalHarnessConfig {
     pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
-    pub(super) context: ContextPipeline,
+    pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
     pub(super) limits: Limits,
@@ -42,7 +42,7 @@ impl LocalHarnessConfig {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             model,
-            context: ContextPipeline::default(),
+            context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
             limits: Limits::default(),
@@ -72,10 +72,10 @@ impl LocalHarnessConfig {
         self.project = LocalProject::Volume { directory, volume };
         self
     }
-    /// Selects the stock model's context pipeline.
+    /// Selects the immutable context manifest retained with each submitted turn.
     #[must_use]
-    pub fn context(mut self, context: ContextPipeline) -> Self {
-        self.context = context;
+    pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
+        self.context_manifest = Some(reference);
         self
     }
     /// Disables the default set, retaining every custom tool.

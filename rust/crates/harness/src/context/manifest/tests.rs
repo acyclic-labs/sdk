@@ -81,12 +81,17 @@ proptest! {
             "manifest.json".into(), &mut None,
         )?;
         let command = crate::filesystem::ModelTaskCommand {
-            context_manifest: Some(reference.clone()), input: ModelContent::Text(text),
+            context_manifest: reference.clone(), input: ModelContent::Text(text),
             selected_context: None, max_steps: 1, max_output_tokens: None,
             mailbox_operation: None, selected_output_volume: None,
         };
         let encoded = serde_json::to_vec(&command).unwrap();
         prop_assert_eq!(serde_json::from_slice::<crate::filesystem::ModelTaskCommand>(&encoded).unwrap(), command);
+        let mut omitted = serde_json::from_slice::<Value>(&encoded).unwrap();
+        omitted.as_object_mut().unwrap().remove("context_manifest");
+        prop_assert!(serde_json::from_value::<crate::filesystem::ModelTaskCommand>(omitted.clone()).is_err());
+        omitted["context_manifest"] = Value::Null;
+        prop_assert!(serde_json::from_value::<crate::filesystem::ModelTaskCommand>(omitted).is_err());
         let manifest = ContextManifest { sources: vec![reference.clone()], ..Default::default() };
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;

@@ -2,7 +2,6 @@
 
 use crate::{
     Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{
         ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -62,7 +61,7 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context: ContextPipeline,
+    context_manifest: crate::conversation::FileRef,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -253,6 +252,20 @@ impl LocalHarness {
                 )
                 .await?,
             );
+            let context_manifest = match config.context_manifest {
+                Some(reference) => reference,
+                None => {
+                    let publisher = FilesystemContentPublisher::new(
+                        files.clone(),
+                        &journal,
+                        &verifier,
+                        &signed,
+                        config.limits.file_bytes,
+                        None,
+                    )?;
+                    turn::default_manifest(publisher.as_ref(), &tools, config.limits).await?
+                }
+            };
             Ok(Self {
                 files,
                 task_files,
@@ -264,7 +277,7 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context: config.context,
+                context_manifest,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

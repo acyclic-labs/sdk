@@ -133,7 +133,6 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let commands = runtime.commands().with_model(
                 &model.clone(),
                 provider_model.clone(),
-                &ContextPipeline::default(),
                 &acyclic_harness::context::CompactionPolicy::Disabled,
                 None,
             )?;
@@ -143,7 +142,18 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                         operation,
                         "model",
                         &serde_json::to_vec(&ModelTaskCommand {
-                            context_manifest: None,
+                            context_manifest: acyclic_harness::context::ContextManifest::new(
+                                Default::default(),
+                                Vec::new(),
+                                &ToolRegistry::default(),
+                            )?
+                            .publish(
+                                payloads.as_ref(),
+                                OperationId::new(),
+                                "manifest.json",
+                                Limits::default(),
+                            )
+                            .await?,
                             input: ModelContent::Text("original prompt".into()),
                             selected_context: None,
                             max_steps: 1,

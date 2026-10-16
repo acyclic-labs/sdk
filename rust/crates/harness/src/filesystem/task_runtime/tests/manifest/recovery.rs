@@ -143,11 +143,7 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
         .admit_command(
             &runtime,
             MODEL_TASK_COMMAND_KIND,
-            serde_json::to_value(ModelTaskCommand {
-                context_manifest: Some(publish_sources(&fixture).await?),
-                ..command()
-            })
-            .unwrap(),
+            serde_json::to_value(command(publish_sources(&fixture).await?)).unwrap(),
         )
         .await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -160,23 +156,9 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
     let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
         "done".into(),
     )]));
-    let current_context =
-        ContextPipeline::default().with(Arc::new(crate::context::SourceStage::new(
-            "current-context",
-            "2",
-            Arc::new(crate::context::Context {
-                messages: vec![crate::model::ModelMessage {
-                    role: crate::model::ModelRole::System,
-                    content: ModelContent::Text("REPLACED CURRENT PIPELINE".into()),
-                }],
-                ..Default::default()
-            }),
-            crate::context::ContextPlacement::Prepend,
-        )));
     let commands = runtime.commands().with_model(
         &model()?,
         provider.clone(),
-        &current_context,
         &CompactionPolicy::Disabled,
         None,
     )?;
@@ -231,7 +213,7 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
         .read(&transition.commands[0].payload, 65_536, None)?
         .await?;
     let retained: ModelTaskCommand = serde_json::from_slice(&bytes).unwrap();
-    let manifest_file = retained.context_manifest.unwrap();
+    let manifest_file = retained.context_manifest;
     assert_eq!(manifest_file.path(), "context/manifest.json");
     let bytes = reader(&fixture)?
         .read(&manifest_file, 65_536, None)?
@@ -259,7 +241,6 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
     let commands = runtime.commands().with_model(
         &model()?,
         provider.clone(),
-        &current_context,
         &CompactionPolicy::Disabled,
         None,
     )?;

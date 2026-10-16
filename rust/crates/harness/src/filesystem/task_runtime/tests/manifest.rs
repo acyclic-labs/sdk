@@ -10,14 +10,15 @@ use crate::{
 use proptest::prelude::*;
 
 mod recovery;
+mod skill_work;
 
 fn model() -> Result<Model> {
     Model::new("test".into(), "manifest".into(), "1".into(), Value::Null)
 }
 
-fn command() -> ModelTaskCommand {
+fn command(context_manifest: FileRef) -> ModelTaskCommand {
     ModelTaskCommand {
-        context_manifest: None,
+        context_manifest,
         input: ModelContent::Text("use pinned context".into()),
         selected_context: None,
         max_steps: 1,
@@ -39,7 +40,7 @@ fn reader(
     )
 }
 
-async fn manifest(
+pub(super) async fn manifest(
     fixture: &Fixture,
     selected: bool,
     text: &str,
@@ -106,11 +107,8 @@ async fn retained_command(
         .admit_command(
             runtime,
             MODEL_TASK_COMMAND_KIND,
-            serde_json::to_value(ModelTaskCommand {
-                context_manifest: Some(reference),
-                ..command()
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::to_value(command(reference))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
         )
         .await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -133,7 +131,7 @@ async fn retained_command(
     let payload =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     let decoded: ModelTaskCommand = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(decoded.context_manifest.as_ref(), Some(&expected));
+    assert_eq!(decoded.context_manifest, expected);
     assert_eq!(
         serde_json::from_value::<ModelTaskCommand>(serde_json::to_value(&decoded).unwrap())
             .unwrap(),
@@ -226,7 +224,6 @@ fn command_requests_use_manifest_not_live_catalog() {
                             let commands = runtime.commands().with_model(
                                 &model()?,
                                 provider.clone(),
-                                &ContextPipeline::default(),
                                 &CompactionPolicy::Disabled,
                                 None,
                             )?;
@@ -271,7 +268,6 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
     let commands = runtime.commands().with_model(
         &model()?,
         provider.clone(),
-        &ContextPipeline::default(),
         &CompactionPolicy::Disabled,
         None,
     )?;
@@ -289,7 +285,6 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
     let commands = reopened.commands().with_model(
         &model()?,
         provider.clone(),
-        &ContextPipeline::default(),
         &CompactionPolicy::Disabled,
         None,
     )?;
@@ -325,11 +320,8 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         .native_lease_command(
             &runtime,
             MODEL_TASK_COMMAND_KIND,
-            serde_json::to_value(ModelTaskCommand {
-                context_manifest: Some(reference),
-                ..command()
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::to_value(command(reference))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             &work,
         )
         .await?;
@@ -344,7 +336,6 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     let commands = runtime.commands().with_model(
         &model()?,
         provider.clone(),
-        &ContextPipeline::default(),
         &CompactionPolicy::Disabled,
         None,
     )?;
