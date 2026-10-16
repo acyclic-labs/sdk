@@ -1,4 +1,4 @@
-import { credentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { type HostedFsOptions, type HostedFsEngine, type HostedFsCapabilities } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
@@ -21,7 +21,13 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  const credential = credentialProvider({ ...(options.bearerToken === undefined ? {} : { token: options.bearerToken }), ...(options.credential === undefined ? {} : { credential: options.credential }) });
+  let credential: CredentialProvider;
+  try {
+    credential = credentialProvider({ ...(options.bearerToken === undefined ? {} : { token: options.bearerToken }), ...(options.credential === undefined ? {} : { credential: options.credential }) });
+  } catch (error) {
+    if (options.credential === undefined && error instanceof TypeError) throw new RangeError("invalid hosted filesystem bearer credential");
+    throw error;
+  }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
   if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
