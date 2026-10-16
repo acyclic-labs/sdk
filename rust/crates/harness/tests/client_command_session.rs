@@ -186,11 +186,12 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
         None,
     )
     .await?;
-    let manifest = acyclic_harness::context::ContextManifest::new(
+    let mut manifest = acyclic_harness::context::ContextManifest::new(
         Default::default(),
         Vec::new(),
-        &acyclic_harness::tool::ToolRegistry::default(),
+        &acyclic_harness::tools::defaults()?,
     )?;
+    manifest.tools.retain(|tool| tool.name == "bash");
     let limits = serde_json::from_value(data["config"]["limits"].clone())?;
     let context_manifest = host
         .put_content(
