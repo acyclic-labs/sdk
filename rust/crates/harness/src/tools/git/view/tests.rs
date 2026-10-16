@@ -194,9 +194,46 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
     assert!(
         matches!(continuation, Err(Error::Conflict(ref message)) if message.contains("unresolved conflict markers"))
     );
-    assert_eq!(compatibility.pending_transition().await?, Some(before));
-    main.write("/note", bytes::Bytes::from_static(b"\xffresolved"))
+    assert_eq!(
+        compatibility.pending_transition().await?,
+        Some(before.clone())
+    );
+    let stop = CancellationToken::new();
+    let mut transaction = main
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    transaction
+        .rename("/note", "/renamed", false, WorkBudget::UNBOUNDED, &stop)
         .await?;
+    transaction
+        .commit::<WorkspaceError, _, _>(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
+    main.write("/renamed", bytes::Bytes::from_static(b"\xffresolved"))
+        .await?;
+    main.write_text("/untracked", "not part of the merge")
+        .await?;
+    let current = main.head(WorkBudget::UNBOUNDED, &stop).await?.value;
+    let GitFilesystemAction::Join { tracked_paths, .. } = &before.action else {
+        panic!("pending join");
+    };
+    // Negative control: filtering only the original names loses the rename.
+    assert!(
+        !existing_tracked_paths(&current, tracked_paths)
+            .await?
+            .contains("renamed")
+    );
     execute(
         &filesystem,
         &store,
@@ -206,10 +243,32 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
     )
     .await?;
     assert!(compatibility.pending_transition().await?.is_none());
+    let tracked = compatibility.tracked_paths().await?;
+    assert!(tracked.contains("renamed"));
+    assert!(!tracked.contains("note"));
+    assert!(!tracked.contains("untracked"));
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["clean", "-f"],
+    )
+    .await?;
     assert_eq!(
-        View::Volume(&main).read("/note", 64).await?.as_ref(),
+        View::Volume(&main).read("/renamed", 64).await?.as_ref(),
         b"\xffresolved"
     );
+    let current = main.head(WorkBudget::UNBOUNDED, &stop).await?.value;
+    assert!(matches!(
+        current
+            .stat("/untracked", WorkBudget::UNBOUNDED, &stop)
+            .await,
+        Err(acyclic_fs::OperationFailure {
+            error: WorkspaceError::NotFound,
+            ..
+        })
+    ));
 
     Ok(())
 }

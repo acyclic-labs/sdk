@@ -1,64 +1,80 @@
 //! Validate only unresolved identities retained in the pending Git join.
 use super::*;
 
-/// Checks only the actual conflicted paths in the current immutable view.
-/// Marker recognition streams bounded ranges; clean files are never read.
-/// Removing a conflicted path is a valid explicit deletion resolution.
-pub async fn git_merge_is_resolved<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+/// Returns the live Git-relative tracked paths, or `None` while markers remain.
+/// Retained conflict identities follow renames. Only conflicted regular files
+/// are streamed; removing a conflict is a valid explicit deletion resolution.
+pub async fn git_merge_resolution<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     current: &Generation<A, O>,
     conflicts: &BTreeMap<String, Option<crate::FileId>>,
-) -> Result<bool, GitCaptureError> {
+    tracked: &BTreeSet<String>,
+) -> Result<Option<BTreeSet<String>>, GitCaptureError> {
     let cancellation = CancellationToken::new();
-    let mut paths: BTreeSet<_> = conflicts.keys().cloned().collect();
+    let mut paths: BTreeMap<_, _> = tracked
+        .iter()
+        .map(|path| (format!("/{path}"), false))
+        .collect();
+    for path in conflicts.keys() {
+        paths.insert(path.clone(), true);
+    }
     for renamed in current
         .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
         .await?
         .into_values()
     {
-        paths.extend(renamed);
+        for path in renamed {
+            paths.insert(path, true);
+        }
     }
-    for path in &paths {
+    let mut resolved = BTreeSet::new();
+    for (mut path, conflicted) in paths {
         let stat = match current
-            .stat(path, WorkBudget::UNBOUNDED, &cancellation)
+            .stat(&path, WorkBudget::UNBOUNDED, &cancellation)
             .await
         {
             Ok(receipt) => receipt.value,
             Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => continue,
             Err(failure) => return Err(failure.error.into()),
         };
-        if stat.kind != FileKind::Regular {
+        if stat.kind == FileKind::Directory {
             continue;
         }
-        let length = stat
-            .logical_bytes
-            .ok_or(WorkspaceError::InvalidMergeResolution)?;
-        let mut scanner = merge_markers::Scanner::new();
-        let mut offset = 0;
-        while offset < length {
-            let bytes = current
-                .read_range(
-                    path,
-                    offset,
-                    (length - offset).min(64 * 1024),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| failure.error)?
-                .value;
-            if bytes.bytes.is_empty() {
-                return Err(WorkspaceError::InvalidMergeResolution.into());
+        if conflicted && stat.kind == FileKind::Regular {
+            let length = stat
+                .logical_bytes
+                .ok_or(WorkspaceError::InvalidMergeResolution)?;
+            let mut scanner = merge_markers::Scanner::new();
+            let mut offset = 0;
+            while offset < length {
+                let bytes = current
+                    .read_range(
+                        &path,
+                        offset,
+                        (length - offset).min(64 * 1024),
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value;
+                if bytes.bytes.is_empty() {
+                    return Err(WorkspaceError::InvalidMergeResolution.into());
+                }
+                offset += bytes.bytes.len() as u64;
+                if scanner.push(&bytes.bytes) {
+                    return Ok(None);
+                }
             }
-            offset += bytes.bytes.len() as u64;
-            if scanner.push(&bytes.bytes) {
-                return Ok(false);
+            if scanner.finish() {
+                return Ok(None);
             }
         }
-        if scanner.finish() {
-            return Ok(false);
+        if path.starts_with('/') {
+            path.remove(0);
         }
+        resolved.insert(path);
     }
-    Ok(true)
+    Ok(Some(resolved))
 }
 
 #[cfg(all(test, not(acyclic_fs_loom)))]
@@ -120,12 +136,18 @@ mod tests {
                 .await
                 .unwrap();
             let paths = BTreeMap::from([("/note".into(), None)]);
+            let tracked = BTreeSet::from(["note".into(), "large".into()]);
             let head = workspace
                 .head(WorkBudget::UNBOUNDED, &stop)
                 .await
                 .unwrap()
                 .value;
-            assert!(!git_merge_is_resolved(&head, &paths).await.unwrap());
+            assert!(
+                git_merge_resolution(&head, &paths, &tracked)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             // Negative control: the former all-changed-files full read fails.
             assert!(
                 head.read("/large", 64 * 1024 * 1024, WorkBudget::UNBOUNDED, &stop)
@@ -138,16 +160,19 @@ mod tests {
                 .await
                 .unwrap()
                 .value;
-            assert!(git_merge_is_resolved(&head, &paths).await.unwrap());
+            assert_eq!(
+                git_merge_resolution(&head, &paths, &tracked).await.unwrap(),
+                Some(tracked)
+            );
         });
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
-        // Only replacing the projected marker file resolves it. Unrelated
-        // writes and a failed resolution leave the exact same entry unresolved.
+        // Resolution follows retained identities through renames and deletions;
+        // unrelated files never enter the resulting tracked set.
         #[test]
-        fn continuation_checks_the_projected_file(mutation in 0u8..10, text in "[a-z ]{0,32}") {
+        fn continuation_checks_the_projected_file(mutation in 0u8..10, text in "[a-z ]{0,32}", suffix in "[a-z]{1,16}") {
             futures::executor::block_on(async {
                 let fs = crate::Fs::memory();
                 let stop = CancellationToken::new();
@@ -156,6 +181,8 @@ mod tests {
                 workspace.write_text("/note", &format!("<<<<<<< ours\nours\n=======\n{text}\n>>>>>>> theirs\n")).await.unwrap();
                 let before = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
                 let id = before.stat("/note", WorkBudget::UNBOUNDED, &stop).await.unwrap().value.file_id;
+                workspace.write_text("/untracked", &text).await.unwrap();
+                let renamed = format!("/renamed-{suffix}");
                 match mutation {
                     0 => {},
                     1 => { workspace.write_text("/note", &text).await.unwrap(); },
@@ -163,10 +190,10 @@ mod tests {
                     3 => { workspace.remove("/note").await.unwrap(); },
                     8 | 9 => {
                         let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
-                        transaction.rename("/note", "/renamed", false, WorkBudget::UNBOUNDED, &stop).await.unwrap();
+                        transaction.rename("/note", &renamed, false, WorkBudget::UNBOUNDED, &stop).await.unwrap();
                         transaction.commit::<WorkspaceError, _, _>(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &stop,
                             |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }).await.unwrap();
-                        if mutation == 9 { workspace.write_text("/renamed", &text).await.unwrap(); }
+                        if mutation == 9 { workspace.write_text(&renamed, &text).await.unwrap(); }
                     },
                     value => {
                         let marker = ["<<<<<<< ours", "||||||| base", "=======", ">>>>>>> theirs"][usize::from(value - 4)];
@@ -174,7 +201,14 @@ mod tests {
                     },
                 }
                 let current = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
-                prop_assert_eq!(git_merge_is_resolved(&current, &BTreeMap::from([("/note".into(), Some(id))])).await.unwrap(), matches!(mutation, 1 | 3 | 9));
+                let resolved = git_merge_resolution(&current, &BTreeMap::from([("/note".into(), Some(id))]), &BTreeSet::from(["note".into()])).await.unwrap();
+                let expected = match mutation {
+                    1 => Some(BTreeSet::from(["note".into()])),
+                    3 => Some(BTreeSet::new()),
+                    9 => Some(BTreeSet::from([format!("renamed-{suffix}")])),
+                    _ => None,
+                };
+                prop_assert_eq!(resolved, expected);
                 Ok(())
             })?;
         }

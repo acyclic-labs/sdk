@@ -61,7 +61,7 @@ mod patch;
 pub use patch::*;
 mod merge;
 mod merge_markers;
-pub use merge::git_merge_is_resolved;
+pub use merge::git_merge_resolution;
 mod diff;
 pub use diff::*;
 

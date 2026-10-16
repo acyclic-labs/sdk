@@ -260,9 +260,10 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         super::checked_commands::call(
             13,
             "bash",
-            "grep -q '^<<<<<<<' note.txt && printf 'resolved\n' > note.txt",
+            "grep -q '^<<<<<<<' note.txt && mv note.txt renamed.txt && printf 'resolved\n' > renamed.txt",
         ),
         super::checked_commands::call(14, "fs", "merge --continue"),
+        super::checked_commands::call(15, "fs", "clean -f"),
         ScriptedTurn::Text("resolved".into()),
     ]);
     let harness = LocalHarness::open(
@@ -286,9 +287,10 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         .await?;
     assert_eq!(harness.resume(task_id).await?.text, "resolved");
     assert_eq!(
-        std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
+        std::fs::read(directory.path().join("renamed.txt")).map_err(super::super::storage)?,
         b"resolved\n"
     );
+    assert!(!directory.path().join("note.txt").exists());
     let requests = provider.requests();
     let results: std::collections::BTreeMap<_, _> = requests
         .last()
@@ -325,6 +327,11 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         results["checkout-14"].get("result").is_some(),
         "merge continuation failed: {}",
         results["checkout-14"]
+    );
+    assert!(
+        results["checkout-15"].get("result").is_some(),
+        "{}",
+        results["checkout-15"]
     );
     Ok(())
 }

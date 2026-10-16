@@ -59,12 +59,13 @@ where
             ));
         };
         let current = self.generation(tree).await?;
-        if !acyclic_fs::git_merge_is_resolved(&current, paths).await? {
+        let Some(tracked_paths) =
+            acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
+        else {
             return Err(Self::error(
                 "Git merge still contains unresolved conflict markers",
             ));
-        }
-        let tracked_paths = existing_tracked_paths(&current, tracked_paths).await?;
+        };
         self.validate().await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(tree),
