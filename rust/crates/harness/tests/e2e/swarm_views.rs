@@ -1,6 +1,7 @@
 use super::{
     swarm_case::SwarmCase,
     swarm_publish::{self as publish, Receipt},
+    swarm_wire::Fault,
 };
 use acyclic_harness::{
     Error,
@@ -35,13 +36,19 @@ pub(super) struct State<'a> {
     content_done: usize,
     pub snapshots: usize,
     peak_heads: usize,
-    render_visits: usize,
+    visible_updates: usize,
+    fold_items: u64,
+    fault: Fault,
     full_records: usize,
     receipts: mpsc::UnboundedSender<Receipt>,
 }
 
 impl<'a> State<'a> {
-    pub fn new(case: &'a SwarmCase, receipts: mpsc::UnboundedSender<Receipt>) -> Self {
+    pub fn new(
+        case: &'a SwarmCase,
+        receipts: mpsc::UnboundedSender<Receipt>,
+        fault: Fault,
+    ) -> Self {
         Self {
             case,
             phase: 0,
@@ -55,7 +62,9 @@ impl<'a> State<'a> {
             content_done: 0,
             snapshots: 0,
             peak_heads: 0,
-            render_visits: 0,
+            visible_updates: 0,
+            fold_items: 0,
+            fault,
             full_records: 0,
             receipts,
         }
@@ -79,7 +88,7 @@ impl<'a> State<'a> {
                 }
                 self.heads
                     .retain(|id, _| expected.selected().any(|selected| selected == *id));
-                self.render_visits += demand.visible().count();
+                self.visible_updates += demand.visible().count();
                 self.waiting_layout = false;
                 Action::Phase(self.phase)
             }
@@ -115,6 +124,7 @@ impl<'a> State<'a> {
                 && self.content_done == self.case.layouts[self.phase].selected().count()
                 && self.attention.len() == needed
             {
+                self.verify_prefix()?;
                 if self.phase + 1 == self.case.layouts.len() {
                     self.complete = true;
                 } else {
@@ -269,11 +279,24 @@ impl<'a> State<'a> {
             removed: vec![],
             cursor,
         };
-        let apply = view.prepare(&change).map_err(publish::storage)?;
-        apply(view).map_err(publish::storage)?;
+        let (result, examined) = acyclic_harness::test_support::measure_task_volume_work(|| {
+            if self.fault == Fault::ScanRetainedViews {
+                // Broken fold: inspect retained entries on every new publication.
+                std::hint::black_box(view.files().count());
+            }
+            let apply = view.prepare(&change)?;
+            apply(view)
+        });
+        result.map_err(publish::storage)?;
+        if examined != 3 {
+            return Err(Error::Invalid(format!(
+                "file fold examined {examined} items instead of 3"
+            )));
+        }
+        self.fold_items += examined;
         self.full_records += 1;
         if self.case.layouts[self.phase].rendered(id) {
-            self.render_visits += 1;
+            self.visible_updates += 1;
         }
         let through = self.case.through(self.phase) + 1;
         if before < through && next == through {
@@ -285,9 +308,39 @@ impl<'a> State<'a> {
         Ok(())
     }
 
+    fn verify_prefix(&self) -> acyclic_harness::Result<()> {
+        let expected: String = self.case.turns[..=self.phase]
+            .iter()
+            .flatten()
+            .cloned()
+            .collect();
+        for id in self.case.layouts[self.phase].selected() {
+            let view = self
+                .heads
+                .get(&id)
+                .ok_or_else(|| Error::Invalid("selected view missing".into()))?;
+            let files: Vec<_> = view.files().collect();
+            if files.len() != 1
+                || files[0]
+                    .segments
+                    .iter()
+                    .flat_map(|s| s.iter())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    != expected.as_bytes()
+                || view.cursor().position != self.case.through(self.phase) + 1
+            {
+                return Err(Error::Invalid(format!(
+                    "selected agent {id} has a tier gap or extra content"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"statuses":self.statuses_done,"attention":self.attention.len(),"snapshots":self.snapshots,
-            "peak_heads":self.peak_heads,"retained_full":self.heads.len(),"render_visits":self.render_visits,"full_records":self.full_records})
+            "peak_heads":self.peak_heads,"retained_full":self.heads.len(),"visible_updates":self.visible_updates,"fold_items":self.fold_items,"full_records":self.full_records})
     }
 
     pub fn verify(&self) -> acyclic_harness::Result<()> {
@@ -297,23 +350,7 @@ impl<'a> State<'a> {
                 self.report()
             )));
         }
-        for (id, view) in &self.heads {
-            let files: Vec<_> = view.files().collect();
-            if files.len() != 1
-                || files[0]
-                    .segments
-                    .iter()
-                    .flat_map(|s| s.iter())
-                    .copied()
-                    .collect::<Vec<_>>()
-                    != self.case.expect.text.as_bytes()
-                || view.cursor().position != self.case.through(self.phase) + 1
-            {
-                return Err(Error::Invalid(format!(
-                    "selected agent {id} has a tier gap or extra content"
-                )));
-            }
-        }
+        self.verify_prefix()?;
         for id in 0..self.case.agents {
             let expected = 1 + self.case.layouts.len() as u64
                 * (3 + u64::from(id % self.case.attention_every == 0));

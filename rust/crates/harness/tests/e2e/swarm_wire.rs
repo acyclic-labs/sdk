@@ -17,6 +17,9 @@ pub(super) enum Fault {
     DropAttention,
     DropBoundary,
     DuplicateContent,
+    IgnoreRemoval,
+    CorruptSnapshot,
+    ScanRetainedViews,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -28,6 +31,8 @@ pub(super) struct Counts {
     pub content_follows: usize,
     pub removed: usize,
     pub peak_full: usize,
+    #[serde(skip)]
+    pub live_full: usize,
     #[serde(skip)]
     pub root_credit: usize,
     #[serde(skip)]
@@ -96,7 +101,10 @@ impl Wire {
         )?;
         let counts = Arc::new(Mutex::new(Counts::default()));
         let outgoing = session::serve(
-            provider,
+            Arc::new(super::swarm_provider::Observed {
+                memory: provider,
+                counts: counts.clone(),
+            }),
             "node".into(),
             Default::default(),
             receiver.boxed(),
@@ -105,7 +113,7 @@ impl Wire {
         let sink_counts = counts.clone();
         let sink = Box::pin(futures::sink::unfold(
             sender.clone(),
-            move |sender, update: wire::SessionInterest| {
+            move |sender, mut update: wire::SessionInterest| {
                 let counts = sink_counts.clone();
                 async move {
                     {
@@ -156,9 +164,11 @@ impl Wire {
                                 }
                             }
                         }
-                        counts.peak_full = counts.peak_full.max(counts.full.len());
                     }
                     let channels: Vec<_> = update.upsert.iter().filter_map(|s| s.channel).collect();
+                    if fault == Fault::IgnoreRemoval {
+                        update.remove.clear();
+                    }
                     send(&sender, 0, Body::Interest(update))?;
                     for channel in channels {
                         window(&sender, channel.channel_id, 2)?;

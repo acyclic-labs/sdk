@@ -45,7 +45,7 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
     let (phases, receive_phases) = mpsc::unbounded();
     let (receipts, receive_receipts) = mpsc::unbounded();
     let (gates, mut paused) = mpsc::unbounded();
-    let mut state = State::new(&case, receipts);
+    let mut state = State::new(&case, receipts, fault);
     let mut measured = Vec::new();
     let records = case.turns.iter().map(Vec::len).sum::<usize>();
     let selected = case
@@ -70,8 +70,18 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
         sink,
         incoming,
         |agent, maximum| {
-            let volume = volumes[publish::id(&agent).expect("generated agent")].clone();
-            async move { volume.heads(&Query::Root, None, maximum).await }
+            let id = publish::id(&agent).expect("generated agent");
+            let volume = volumes[id].clone();
+            async move {
+                let mut snapshot = volume.heads(&Query::Root, None, maximum).await?;
+                if fault == Fault::CorruptSnapshot && id == 0 {
+                    // Keep the genuine cut and omit only the initial client bytes.
+                    let file = &mut snapshot.files[0];
+                    let missing = std::mem::replace(&mut file.segments[0], Vec::new().into());
+                    file.length -= missing.len() as u64;
+                }
+                Ok(snapshot)
+            }
         },
         |update| {
             let action = state.accept(update);
@@ -141,7 +151,22 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
             .unwrap_or_else(|| Error::Invalid("swarm detached".into()))
             .into());
     }
+    {
+        let observed = counts.lock().unwrap_or_else(|p| p.into_inner());
+        if observed.peak_full > selected
+            || observed.live_full != case.layouts.last().unwrap().selected().count()
+        {
+            return Err(format!(
+                "live server follows exceeded selected bound: peak={} live={} bound={selected}",
+                observed.peak_full, observed.live_full
+            )
+            .into());
+        }
+    }
     drop(running);
+    if counts.lock().unwrap_or_else(|p| p.into_inner()).live_full != 0 {
+        return Err("server retained follows after session drop".into());
+    }
     state.verify()?;
     let mut wire = serde_json::to_value(&*counts.lock().unwrap_or_else(|p| p.into_inner()))?;
     wire.as_object_mut()

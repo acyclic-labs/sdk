@@ -22,6 +22,7 @@ mod scenario_data;
 mod swarm;
 mod swarm_case;
 mod swarm_publish;
+mod swarm_provider;
 mod swarm_tests;
 mod swarm_views;
 mod swarm_wire;

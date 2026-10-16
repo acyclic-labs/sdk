@@ -30,7 +30,7 @@ fn small(agents: usize, before: String, gap: String, live: String, promote: bool
             wire: serde_json::json!({
             "sessions":1,"children":1,"actor_channels":0,"status_follows":agents,"content_follows":snapshots,
             "removed":usize::from(!promote),"peak_full":2,"snapshots":snapshots,"peak_heads":snapshots,
-            "retained_full":2,"render_visits":6,"full_records":8,"statuses":agents,"attention":agents.div_ceil(2)*2}),
+            "retained_full":2,"visible_updates":6,"fold_items":24,"full_records":8,"statuses":agents,"attention":agents.div_ceil(2)*2}),
         },
     }
 }
@@ -49,7 +49,7 @@ proptest! {
                 layout.visible = [0, 0];
                 layout.prefetch = [0, 0];
             }
-            for field in ["content_follows", "removed", "peak_full", "snapshots", "peak_heads", "retained_full", "render_visits", "full_records"] {
+            for field in ["content_follows", "removed", "peak_full", "snapshots", "peak_heads", "retained_full", "visible_updates", "fold_items", "full_records"] {
                 case.expect.wire[field] = 0.into();
             }
         }
@@ -59,6 +59,50 @@ proptest! {
         prop_assert!(case.validate().is_ok());
         futures::executor::block_on(swarm::run(decoded)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Count opened provider streams, including their lifetime through cancellation.
+    // The maximum must depend on selected views, independent of swarm size/history.
+    #[test]
+    fn live_server_follows_stay_within_the_selected_bound(
+        width in 1usize..5, shift in 0usize..5, extra in 0usize..20,
+        before in ".{0,6}", live in ".{0,6}",
+    ) {
+        let shift = shift.min(width);
+        let mut case = small(3 * width + extra, before, "gap".into(), live, false);
+        case.layouts = vec![
+            Layout { visible: [0, width], prefetch: [width, 2 * width] },
+            Layout { visible: [shift, width + shift], prefetch: [width + shift, 2 * width + shift] },
+        ];
+        case.expect.wire = serde_json::json!({});
+        futures::executor::block_on(swarm::run(case)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+    }
+}
+
+#[tokio::test]
+async fn retained_server_follows_and_corrupt_retired_snapshots_break_unchanged_expectations()
+-> TestResult {
+    let case = small(3, "before".into(), "gap".into(), "live".into(), false);
+    swarm::run(case.clone()).await?;
+    for (fault, reason) in [
+        (
+            Fault::IgnoreRemoval,
+            "live server follows exceeded selected bound",
+        ),
+        (Fault::CorruptSnapshot, "selected agent 0 has a tier gap"),
+        (
+            Fault::ScanRetainedViews,
+            "file fold examined 4 items instead of 3",
+        ),
+    ] {
+        let error = swarm::run_with_fault(case.clone(), fault)
+            .await
+            .expect_err("accepted injected fault");
+        assert!(error.to_string().contains(reason), "{fault:?}: {error}");
+    }
+    Ok(())
 }
 
 #[tokio::test]
