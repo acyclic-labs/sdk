@@ -74,7 +74,10 @@ proptest! {
         let state = futures::executor::block_on(provider.state.read());
         let actual = result(missing_paths(&state, destinations.iter()));
         verify(&state, &destinations, actual.clone());
-        prop_assert_eq!(actual, result(old_missing_paths(&state, destinations.iter())));
+        prop_assert_eq!(&actual, &result(old_missing_paths(&state, destinations.iter())));
+        let (planned, _) = provider.paths(&state, destinations.iter()).unwrap();
+        prop_assert_eq!(actual, planned.iter().map(|(path, _)| path.as_str().to_owned()).collect::<Vec<_>>());
+
     }
 }
 
@@ -146,4 +149,40 @@ fn old_missing_paths<'a>(
             })
             .map(move |end| (destination, end))
     })
+}
+
+#[test]
+fn existing_commit_path_planning_scans_each_destination_once() {
+    let path = StreamPath::new("swarm/a00000/files").unwrap();
+    let provider = provider(std::slice::from_ref(&path));
+    let state = futures::executor::block_on(provider.state.read());
+    PATH_LOOKUPS.with(|count| count.set(0));
+    for _ in 0..10_000 {
+        // Previous production implementation counts then reconstructs the scan.
+        assert_eq!(missing_paths(&state, std::iter::once(&path)).count(), 0);
+        assert_eq!(missing_paths(&state, std::iter::once(&path)).count(), 0);
+    }
+    let before = PATH_LOOKUPS.with(std::cell::Cell::get);
+    PATH_LOOKUPS.with(|count| count.set(0));
+    for _ in 0..10_000 {
+        assert!(
+            provider
+                .paths(&state, std::iter::once(&path))
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
+    let after = PATH_LOOKUPS.with(std::cell::Cell::get);
+    let bound = |count| count <= 10_000;
+    assert!(
+        bound(after),
+        "commit path planning repeats the destination scan"
+    );
+    assert!(
+        !bound(before),
+        "count-then-reconstruct control passed the same bound"
+    );
+    assert_eq!((before, after), (20_000, 10_000));
+    eprintln!("commit_path_lookups commits=10000 before={before} after={after}");
 }
