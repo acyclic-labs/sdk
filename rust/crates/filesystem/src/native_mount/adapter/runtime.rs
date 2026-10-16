@@ -10,6 +10,12 @@ pub(in crate::native_mount) struct CallbackRuntime {
 static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> =
     OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static BEFORE_PARK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct ParkedCallback {
     woken: StdMutex<bool>,
     changed: std::sync::Condvar,
@@ -212,6 +218,10 @@ impl CallbackRuntime {
             if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
                 drop(future);
                 return output;
+            }
+            #[cfg(test)]
+            if let Some(before_park) = BEFORE_PARK.with_borrow_mut(Option::take) {
+                before_park();
             }
             let mut woken = parked.woken.lock().unwrap_or_else(PoisonError::into_inner);
             while !*woken {

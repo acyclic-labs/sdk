@@ -1,6 +1,86 @@
 use super::*;
 use proptest::prelude::*;
 
+fn cancel_binding_wait(
+    wrapped: bool,
+    lifetime: bool,
+) -> Result<(crate::WorkCounters, u64), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Portable)?;
+    let writer = source
+        .runtime
+        .wait(|| async { Ok(source.checkout.view_gate.write().await) })?;
+    let cancellation = CancellationToken::new();
+    let work = capture_meter(WorkBudget::UNBOUNDED, &cancellation)?;
+    let initial = work.live_allocation_bytes();
+    let cancelled = if lifetime {
+        source.cancellation().clone()
+    } else {
+        cancellation.clone()
+    };
+    let pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = std::rc::Rc::clone(&pending);
+    let waiting_work = work.clone();
+    super::super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+        assert!(hook.is_none());
+        *hook = Some(Box::new(move || {
+            // A held writer forces the real gate future to register its waits
+            // before returning Pending. Cancel at that exact poll boundary.
+            assert!(waiting_work.live_allocation_bytes() > initial);
+            observed.set(true);
+            cancelled.cancel();
+        }));
+    });
+    let owner = ViewGate::callback_owner()?;
+    let result = if wrapped {
+        source.binding_lease(None, &work).map(drop)
+    } else {
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        source.runtime.wait(|| async {
+            source
+                .checkout
+                .view_gate
+                .read_for_callback_with_carrier(
+                    owner,
+                    None,
+                    &mut carrier,
+                    work.cancellation(),
+                    Some(source.cancellation()),
+                )
+                .await
+                .map(drop)
+        })
+    };
+    assert!(pending.get());
+    assert!(if lifetime {
+        matches!(result, Err(MountSourceError::Stale))
+    } else {
+        matches!(result, Err(MountSourceError::Cancelled))
+    });
+    assert!(!source.checkout.view_gate.reads_for_callback(owner));
+    assert_eq!(work.live_allocation_bytes(), initial);
+    drop(writer);
+    Ok((work.receipt(), work.live_allocation_bytes()))
+}
+
+#[test]
+fn cancelled_binding_wait_releases_its_waker_and_registrations()
+-> Result<(), Box<dyn std::error::Error>> {
+    for lifetime in [false, true] {
+        let (reference, retained) = cancel_binding_wait(false, lifetime)?;
+        let (mut actual, live) = cancel_binding_wait(true, lifetime)?;
+        // Cancellation happens before a returned lease can be allocated.
+        assert_eq!(
+            actual.allocation_operations,
+            reference.allocation_operations + 1
+        );
+        assert_eq!(live, retained);
+        actual.allocation_operations = reference.allocation_operations;
+        actual.peak_allocation_bytes = reference.peak_allocation_bytes;
+        assert_eq!(actual, reference);
+    }
+    Ok(())
+}
+
 #[test]
 fn binding_lease_only_allocates_its_waker_and_owned_payload()
 -> Result<(), Box<dyn std::error::Error>> {
