@@ -122,7 +122,9 @@ async fn run_case(case: Case) -> Result {
         assert_eq!(change.file.map(|f| f.key.path()), expected, "{}", case.name);
     }
     assert!(
-        changes.next().now_or_never().is_none(),
+        tokio::time::timeout(Duration::from_millis(10), changes.next())
+            .await
+            .is_err(),
         "extra changes: {}",
         case.name
     );
@@ -133,8 +135,6 @@ async fn run_case(case: Case) -> Result {
     assert_eq!(recovered.cursor, snapshot.cursor, "{}", case.name);
     Ok(())
 }
-
-use futures::FutureExt as _;
 
 #[tokio::test]
 async fn declarative_scenarios() -> Result {
@@ -200,7 +200,11 @@ async fn every_accepted_cursor_reconnects_without_duplicates_or_gaps() -> Result
                 Some(expected)
             );
         }
-        assert!(stream.next().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.next())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }

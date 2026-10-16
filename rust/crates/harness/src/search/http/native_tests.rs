@@ -1,7 +1,6 @@
 use super::*;
 use crate::search::native::response_bytes;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use futures::FutureExt as _;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt as _;
 
@@ -219,7 +218,11 @@ async fn search_native_http_exhaustion_rejects_before_network() -> Result<()> {
             .unwrap_err();
         assert!(matches!(error, Error::NativeWork { .. }));
         assert!(error.is_native_failure());
-        assert!(listener.accept().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }

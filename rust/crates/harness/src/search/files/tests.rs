@@ -4,7 +4,6 @@ use crate::{
     test_support::{ScriptedSearch, ScriptedSearchProvider},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::FutureExt as _;
 use serde_json::json;
 use std::cell::Cell;
 
@@ -225,17 +224,16 @@ async fn host_worker_follows_requests_and_clients_follow_results() -> Result<()>
     tokio::select! { biased; result = worker => panic!("worker stopped: {result:?}"), result = client => result? }
     assert_eq!(resolves.get(), 2);
     assert_eq!(backend.remaining(), 0);
-    assert!(
-        follow(
-            &volume,
-            &owner,
-            || panic!("same-owner replay redispatched"),
-            None,
-            6
-        )
-        .now_or_never()
-        .is_none()
-    );
+    drive_for_test(
+        &volume,
+        &task,
+        owner.task_binding().1,
+        || panic!("same-owner replay redispatched"),
+        condition(&owner, None, false).await?,
+        None,
+        6,
+    )
+    .await?;
     Ok(())
 }
 
@@ -279,18 +277,22 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
             .await
             .map_err(storage)?;
     }
-    assert!(
-        follow(
-            &volume,
-            &old,
-            || panic!("active claim redispatched"),
-            None,
-            6
-        )
-        .now_or_never()
-        .is_none()
-    );
+    drive_for_test(
+        &volume,
+        &task,
+        old.task_binding().1,
+        || panic!("active claim redispatched"),
+        condition(&old, None, false).await?,
+        None,
+        6,
+    )
+    .await?;
     let replacement = fixture.replace(1).await?;
+    let mut client = volume
+        .observe(Query::File(file(&task, &id, true)), None, 1)
+        .await
+        .map_err(storage)?;
+    assert!(client.snapshot.take().unwrap().files.is_empty());
     let recovering = follow(
         &volume,
         &replacement,
@@ -298,13 +300,13 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
         None,
         6,
     );
-    assert!(recovering.now_or_never().is_none());
-    let snapshot = volume
-        .snapshot(&Query::File(file(&task, &id, true)), 1)
-        .await
-        .map_err(storage)?;
+    let result = tokio::select! { biased;
+        result = recovering => panic!("replacement worker stopped: {result:?}"),
+        result = published(&mut client) => result?,
+    };
+    assert_eq!(result.key, file(&task, &id, true));
     assert_eq!(
-        serde_json::from_slice::<SearchOutcome>(&snapshot.files[0].bytes).unwrap(),
+        serde_json::from_slice::<SearchOutcome>(&result.bytes).unwrap(),
         SearchOutcome::Indeterminate
     );
     let snapshot = volume
@@ -462,17 +464,16 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     assert!(work.receipt().source_bytes_read > 0);
     assert!(work.receipt().bytes_encoded > 0);
     assert!(work.receipt().bytes_copied >= 2 * 32_768);
-    assert!(
-        follow(
-            &volume,
-            &owner,
-            || panic!("native replay contacted provider"),
-            Some(&work),
-            3
-        )
-        .now_or_never()
-        .is_none()
-    );
+    drive_for_test(
+        &volume,
+        &task,
+        owner.task_binding().1,
+        || panic!("native replay contacted provider"),
+        condition(&owner, Some(&work), false).await?,
+        Some(&work),
+        3,
+    )
+    .await?;
     assert_eq!(
         volume
             .snapshot(&Query::Task(task), 3)

@@ -1,6 +1,5 @@
 use super::*;
 use crate::search::SearchResult;
-use futures::FutureExt as _;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -237,7 +236,11 @@ pub(super) async fn serve(
         );
         // Early body rejection may close the socket before all bytes are written.
         let _ = socket.write_all(output.as_bytes()).await;
-        assert!(listener.accept().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
         String::from_utf8(input).map_err(|e| Error::Invalid(e.to_string()))
     });
     Ok((format!("http://{address}/"), task))
