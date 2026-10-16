@@ -337,6 +337,7 @@ dependencies = [
  "protoc-bin-vendored",
  "pulldown-cmark",
  "ratatui",
+ "rcgen",
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
