@@ -1,3 +1,4 @@
+//! Timer source compatibility, stable identities and inbox wake behavior.
 use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire, schedule};
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
