@@ -54,7 +54,7 @@ fn spare_read_prefix_matches_source_and_rejects_overpublication()
             let mut meter = ReadBudgetMeter::new(8, 256);
             meter.cancel_after_read = post_cancel;
             meter.cancelled.store(pre_cancel, Ordering::Release);
-            let expected = if pre_cancel {
+            let available = if pre_cancel {
                 0
             } else {
                 body.len().saturating_sub(offset).min(maximum)
@@ -68,16 +68,22 @@ fn spare_read_prefix_matches_source_and_rejects_overpublication()
                 &meter,
             );
             let success = result.is_ok();
-            if pre_cancel || (post_cancel && expected != 0) {
+            let charged = meter.read.load(Ordering::Acquire) as usize;
+            prop_assert_eq!(charged, data.len());
+            if post_cancel && available != 0 {
+                prop_assert!((1..=available).contains(&charged));
+            } else {
+                prop_assert_eq!(charged, available);
+            }
+            if pre_cancel || (post_cancel && available != 0) {
                 prop_assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
-            } else if exact && expected != maximum {
+            } else if exact && available != maximum {
                 prop_assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
             } else {
-                prop_assert_eq!(result.unwrap(), expected);
+                prop_assert_eq!(result.unwrap(), available);
             }
-            let expected_bytes = body.get(offset..offset + expected).unwrap_or_default();
+            let expected_bytes = body.get(offset..offset + charged).unwrap_or_default();
             prefix_matches(&data, expected_bytes, success)?;
-            prop_assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
             // Broken publication includes one unwritten tail byte. Initialize
             // its sentinel so the negative control itself never invokes UB.
             data.resize(expected_bytes.len() + 1, 0x55);
@@ -94,7 +100,7 @@ fn spare_reads_miri_initialized_prefixes() -> io::Result<()> {
     let path = directory.path().join("miri-spare");
     std::fs::write(&path, b"actual")?;
     let file = open_source(&path)?;
-    for (offset, maximum, exact, cancelled, after_read, expected) in [
+    for (offset, maximum, exact, cancelled, after_read, available) in [
         (0, 0, false, false, false, 0),
         (0, 3, true, false, false, 3),
         (0, 8, false, false, false, 6),
@@ -109,20 +115,24 @@ fn spare_reads_miri_initialized_prefixes() -> io::Result<()> {
         meter.cancel_after_read = after_read;
         let result =
             crate::file::read_bounded_spare(&file, offset, &mut data, maximum, exact, &meter);
-        if result.is_ok() {
-            assert_eq!(data.len(), expected);
+        let charged = meter.read.load(Ordering::Acquire) as usize;
+        assert_eq!(charged, data.len());
+        if after_read {
+            // Cancellation follows the first positive OS completion, which
+            // can legally initialize less than the requested prefix.
+            assert!((1..=available).contains(&charged));
+        } else {
+            assert_eq!(charged, available);
         }
-        assert!(data.len() <= expected);
         assert_eq!(
             data,
             b"actual"
                 .get(offset as usize..offset as usize + data.len())
                 .unwrap_or_default()
         );
-        assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
         assert_eq!(
             result.is_err(),
-            cancelled || after_read || (exact && expected != maximum)
+            cancelled || after_read || (exact && available != maximum)
         );
     }
     let mut data = Vec::with_capacity(3);
