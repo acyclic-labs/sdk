@@ -32,20 +32,29 @@ impl Pool {
         let Some(route) = self.routes.get(&owner) else {
             return;
         };
+        let recovering = route.generation > 1;
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
-                let outcome = async {
-                    let channel = match channel {
-                        Some(channel) => channel,
-                        None => connect(node).await?,
-                    };
-                    open_link(channel, &name, identity, executor).await
-                }
-                .await;
+                let outcome = loop {
+                    let result = async {
+                        let channel = match &channel {
+                            Some(channel) => channel.clone(),
+                            None => connect(node.clone()).await?,
+                        };
+                        open_link(channel, &name, identity.clone(), executor.clone()).await
+                    }
+                    .await;
+                    match result {
+                        // Existing interests own recovery until cancellation.
+                        // Initial admission and credential rejection stay bounded.
+                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        result => break result,
+                    }
+                };
                 (name, epoch, outcome)
             })),
         );

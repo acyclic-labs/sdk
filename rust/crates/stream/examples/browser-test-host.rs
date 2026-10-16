@@ -16,8 +16,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
-use tower_http::cors::CorsLayer;
 use tower::Layer as _;
+use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 struct Host {
@@ -25,6 +25,7 @@ struct Host {
     disconnect: Arc<Notify>,
     online: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
+    refusals: Arc<AtomicUsize>,
 }
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         disconnect: Arc::new(Notify::new()),
         online: Arc::new(AtomicBool::new(true)),
         connections: Arc::new(AtomicUsize::new(0)),
+        refusals: Arc::new(AtomicUsize::new(0)),
     };
     let online = host.online.clone();
     let service = wire::stream_service_server::StreamServiceServer::with_interceptor(
@@ -52,7 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(request)
         },
     );
-    let routes = tonic::service::Routes::new(tonic_web::GrpcWebLayer::new().layer(service)).into_axum_router();
+    let routes = tonic::service::Routes::new(tonic_web::GrpcWebLayer::new().layer(service))
+        .into_axum_router();
     let app = Router::new()
         .route("/v1/stream/session", get(upgrade))
         .route(
@@ -71,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/fixture/recover",
             post(|State(host): State<Host>| async move {
                 host.online.store(true, Ordering::Release);
+                host.refusals.store(4, Ordering::Release);
                 host.disconnect.notify_waiters();
             }),
         )
@@ -87,6 +91,15 @@ async fn upgrade(
     headers: axum::http::HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Result<axum::response::Response, StatusCode> {
+    if host
+        .refusals
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+            left.checked_sub(1)
+        })
+        .is_ok()
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     let protocols = headers
         .get("sec-websocket-protocol")
         .and_then(|v| v.to_str().ok())

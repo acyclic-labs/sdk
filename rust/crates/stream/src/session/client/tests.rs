@@ -17,6 +17,7 @@ mod data;
 mod isolation;
 mod lifecycle;
 mod outbound;
+mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 mod fixture {
