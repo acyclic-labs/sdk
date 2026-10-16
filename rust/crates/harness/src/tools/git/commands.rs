@@ -1,15 +1,17 @@
 use super::*;
 
 /// Whether a command needs an exact working tree.
-pub fn git_requires_exact_workspace(argv: &[String]) -> bool {
+pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
     matches!(
         argv.first().map(String::as_str),
-        Some("status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore")
+        Some(
+            "commit" | "status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore"
+        )
     )
 }
 
 /// Whether a command resolves an outstanding transition.
-pub fn git_transition_command(argv: &[String]) -> bool {
+pub(crate) fn git_transition_command(argv: &[String]) -> bool {
     matches!(
         argv,
         [command, option] if command == "merge" && matches!(option.as_str(), "--continue" | "--abort")
@@ -17,7 +19,7 @@ pub fn git_transition_command(argv: &[String]) -> bool {
 }
 
 /// Recovers a pending transition or executes one facade command.
-pub async fn run_git_command<E: GitFilesystemExecutor>(
+pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     repository: &GitCompatRepository<LocalCoreStateStore>,
     argv: &[String],
     workspace_tree: GitTreeRef,
@@ -25,12 +27,12 @@ pub async fn run_git_command<E: GitFilesystemExecutor>(
     author: &str,
     authored_at_seconds: i64,
     executor: &E,
-) -> Result<Option<GitCommandOutput>, String> {
+) -> Result<Option<GitCommandOutput>, Error> {
     if !git_transition_command(argv)
         && repository
             .resume(executor)
             .await
-            .map_err(display)?
+            .map_err(super::errors::run_error)?
             .is_some()
     {
         return Ok(None);
@@ -50,26 +52,28 @@ pub async fn run_git_command<E: GitFilesystemExecutor>(
             .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
             .await
     };
-    output.map(Some).map_err(display)
+    output.map(Some).map_err(super::errors::run_error)
 }
 
 /// Reads a patch file from the managed workspace.
-pub async fn git_apply_patch(
+pub(crate) async fn git_apply_patch(
     workspace: &LocalLazyWorkspace,
     root: &Path,
     argv: &[String],
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<Vec<u8>>, Error> {
     if argv.first().is_none_or(|command| command != "apply") {
         return Ok(None);
     }
     let [_, patch_path] = argv else {
-        return Err("acyclic git apply requires exactly one patch file".to_owned());
+        return Err(Error::Invalid(
+            "acyclic git apply requires exactly one patch file".to_owned(),
+        ));
     };
     if patch_path == "-" {
-        return Err(
+        return Err(Error::Invalid(
             "acyclic git apply does not accept stdin through the service; pass a patch file"
                 .to_owned(),
-        );
+        ));
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
     workspace
@@ -80,21 +84,21 @@ pub async fn git_apply_patch(
         )
         .await
         .map(|chunk| Some(chunk.bytes.to_vec()))
-        .map_err(display)
+        .map_err(Error::from)
 }
 
 /// Captures the lazy or exact tree required by the command.
-pub async fn git_workspace_tree(
+pub(crate) async fn git_workspace_tree(
     workspace: &LocalLazyWorkspace,
     argv: &[String],
     permit: Option<PublicationPermit>,
-) -> Result<GitTreeRef, String> {
+) -> Result<GitTreeRef, Error> {
     if !git_requires_exact_workspace(argv) {
         return workspace
             .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
             .await
             .map(GitTreeRef::Lazy)
-            .map_err(display);
+            .map_err(Error::from);
     }
     let exact = workspace
         .exactify(
@@ -103,36 +107,16 @@ pub async fn git_workspace_tree(
             &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
         )
         .await
-        .map_err(display)?;
+        .map_err(Error::from)?;
     Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
 /// Loads ignore and merge policies from the workspace.
-pub async fn git_policy(
+pub(crate) async fn git_policy(
     workspace: &LocalLazyWorkspace,
-) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), String> {
+) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), Error> {
     Ok((
-        git_ignore_policy(workspace).await?,
-        merge_drivers_for(workspace).await?,
+        crate::filesystem::workspace_policy::ignore_for(workspace).await?,
+        crate::filesystem::workspace_policy::merge_drivers_for(workspace).await?,
     ))
-}
-
-/// Loads ignore rules, including reserved metadata directories.
-pub async fn git_ignore_policy(workspace: &LocalLazyWorkspace) -> Result<GitIgnorePolicy, String> {
-    let ignore_text = match workspace
-        .read(
-            "/.gitignore",
-            1024 * 1024,
-            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-        )
-        .await
-    {
-        Ok(chunk) => String::from_utf8_lossy(&chunk.bytes).into_owned(),
-        Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
-        Err(error) => return Err(display(error)),
-    };
-    Ok(GitIgnorePolicy::parse(&format!(
-        "{ignore_text}\n{}",
-        reserved_ignore_rules()
-    )))
 }

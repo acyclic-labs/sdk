@@ -64,21 +64,17 @@ use acyclic_fs::model::{
 };
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    CancellationToken, CaptureOptions, CapturePolicy, Generation, GitCommandOutput,
-    GitCompatRepository, GitDirtyState, GitFilesystemResult, GitIgnorePolicy, GitPublicationRecord,
-    GitTreeRef, IdempotencyKey, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
-    LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
-    MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
-    MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
-    MountOptions, MultiRootMaterializer, MultiRootMergeCandidate, MultiRootMergePlan,
-    MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
+    CancellationToken, CaptureOptions, CapturePolicy, Generation, GitCommandOutput, GitDirtyState,
+    GitFilesystemResult, IdempotencyKey, LazyMount, LazyWorkspace, LocalAuthorityBackend,
+    LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
+    MaterializingWorkspaceMultiRootPublisherError, MergeConflict, MountOptions,
+    MultiRootMergeCandidate, MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
     OperationId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease,
     Publication, PublicationPermit, WatchBatch, WatchChange, WorkBudget, Workspace,
     WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState,
-    WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceMultiRootPublisherError,
-    WorkspaceOperationFinish, WorkspaceRootId, capture_baseline,
-    capture_git_compatible_generation_at, capture_watch_batch,
+    WorkspaceDelete, WorkspaceGraph, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish,
+    WorkspaceRootId, capture_baseline, capture_watch_batch,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -103,10 +99,6 @@ use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use acyclic_harness::filesystem::native_paths::{
-    remove_tree_checked, root_materialization_directory,
-};
-use acyclic_harness::tools::git::*;
 use adapter_state::*;
 use cli_output::*;
 use control_plane::*;

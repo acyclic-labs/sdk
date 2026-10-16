@@ -82,7 +82,7 @@ impl PiControlHost<'_> {
             work,
         )
         .await?;
-        let options_path = work.path(&root.operation_directory, None)?;
+        let options_path = work.path(root.publication.directory(), None)?;
         let options = acyclic_fs::MaterializeOptions::native(options_path.0);
         let generations = build_writeback_generations(
             &root,
@@ -188,7 +188,7 @@ impl PiControlHost<'_> {
             invalid("approval codec returned non-UTF8")
         })?;
         let approval_data = (digest.0, canonical, digest.1);
-        let root_display = work.display(&root.path.display())?;
+        let root_display = work.display(&root.publication.root().display())?;
         let source_display = self
             .native()?
             .project_mount(input.source, &source.volume)

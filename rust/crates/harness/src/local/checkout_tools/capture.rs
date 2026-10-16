@@ -9,41 +9,87 @@ use acyclic_fs::{
 };
 use std::time::Duration;
 
+mod arrivals;
+
 const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
+
+pub(super) struct Cursor {
+    watcher: NativeWatch,
+    initial: Option<WatchBatch>,
+    #[cfg(target_os = "macos")]
+    work: acyclic_fs::NativeMaterializationWork,
+}
+
+impl Cursor {
+    fn open(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
+        let config = workspace.view().workspace().volume_config();
+        // The held native source fences delivery without writing a cookie into
+        // the checkout. Register directories once; subsequent commands consume
+        // only push hints on this persistent watcher.
+        let mut options = NativeWatchOptions::new(config.limits);
+        options.recursive = false;
+        #[cfg(not(target_os = "macos"))]
+        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+            .map_err(storage)?;
+        // FSEvents' held-source adapter requires retained native custody. Linux
+        // and Windows already select their held source for a nonrecursive watch.
+        #[cfg(target_os = "macos")]
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| storage(cause))?;
+        #[cfg(target_os = "macos")]
+        let mut watcher = NativeWatch::open_with_profile_with_native_work(
+            &workspace.path,
+            config.profile,
+            options,
+            &work,
+        )
+        .map_err(storage)?;
+        watcher
+            .exclude_subtrees(policy.excluded_prefixes())
+            .map_err(storage)?;
+        Ok(Self {
+            watcher,
+            initial: None,
+            #[cfg(target_os = "macos")]
+            work,
+        })
+    }
+
+    pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
+        let mut cursor = Self::open(workspace, policy)?;
+        cursor.watcher.begin_rescan().map_err(storage)?;
+        cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
+        cursor.initial = Some(cursor.watcher.finish_rescan().map_err(storage)?);
+        Ok(cursor)
+    }
+}
 
 impl CheckoutTools {
     pub(super) async fn capture(
         &self,
         view: &workspace::View,
-        slot: &mut Option<NativeWatch>,
+        slot: &mut Option<Cursor>,
         operation: OperationId,
         phase: u8,
+        permit: PublicationPermit,
     ) -> Result<()> {
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
-        let config = workspace.volume_config();
         let options = &self.capture_options;
         let policy = &self.capture_policy;
         // On failure discard the cursor: the next command must establish a new
         // baseline rather than skip changes consumed before a failed commit.
         let baseline = slot.is_none();
-        let mut watcher = match slot.take() {
-            Some(watcher) => watcher,
-            None => {
-                let mut watcher = NativeWatch::open_with_profile(
-                    &self.workspace.path,
-                    config.profile,
-                    NativeWatchOptions::new(config.limits),
-                )
-                .map_err(storage)?;
-                watcher
-                    .exclude_subtrees(self.capture_policy.excluded_prefixes())
-                    .map_err(storage)?;
-                watcher
-            }
+        let mut cursor = match slot.take() {
+            Some(cursor) => cursor,
+            None => Cursor::open(&self.workspace, &self.capture_policy)?,
         };
+        let watcher = &mut cursor.watcher;
         if watcher.root_identity() != self.workspace.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
@@ -57,20 +103,36 @@ impl CheckoutTools {
             .await
             .map_err(storage)?
             .value;
+        // The producer's native payload guards and its returned vector retain
+        // their original ledger through capture, including the await points.
+        #[cfg(target_os = "macos")]
+        let mut batch_owner = None;
         let batch = if baseline {
             None
         } else {
-            watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-            Some(
-                watcher
-                    .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(storage)?
-                    .value,
-            )
+            watcher
+                .fence(WATCH_FENCE_TIMEOUT)
+                .map_err(|error| Error::Storage(format!("checkout watch fence: {error:?}")))?;
+            #[cfg(target_os = "macos")]
+            let batch = {
+                let (batch, owner) = watcher
+                    .poll_with_native_work_guarded(MAXIMUM_PATHS, &cursor.work, |_| Ok(()))
+                    .map_err(storage)?;
+                batch_owner = Some(owner);
+                batch
+            };
+            #[cfg(not(target_os = "macos"))]
+            let batch = watcher
+                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(storage)?
+                .value;
+            Some(batch)
         };
+        let initial = cursor.initial.take();
+        let reset = matches!(initial, Some(WatchBatch::RescanRequired { .. }));
         let batch = match batch {
-            Some(batch @ WatchBatch::Changes { .. }) => batch,
-            None | Some(WatchBatch::RescanRequired { .. }) => {
+            Some(batch @ WatchBatch::Changes { .. }) if !reset => batch,
+            None | Some(_) => {
                 // A reset is an explicit requirement to replace the baseline.
                 // Register push watches first, then include changes delivered
                 // during the scan before committing the captured generation.
@@ -88,6 +150,20 @@ impl CheckoutTools {
                 watcher.finish_rescan().map_err(storage)?
             }
         };
+        arrivals::register(watcher, &batch, &self.workspace, policy)?;
+        if let Some(initial @ WatchBatch::Changes { .. }) = initial {
+            arrivals::register(watcher, &initial, &self.workspace, policy)?;
+            capture_watch_batch(
+                &mut checkout,
+                initial,
+                options,
+                policy,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?;
+        }
         capture_watch_batch(
             &mut checkout,
             batch,
@@ -98,6 +174,8 @@ impl CheckoutTools {
         )
         .await
         .map_err(storage)?;
+        #[cfg(target_os = "macos")]
+        drop(batch_owner);
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
             let committed = checkout
@@ -106,7 +184,7 @@ impl CheckoutTools {
                     None,
                     None,
                     None,
-                    PublicationPermit::Unrestricted,
+                    permit,
                     WorkBudget::UNBOUNDED,
                     &cancellation,
                     |_| {
@@ -133,7 +211,7 @@ impl CheckoutTools {
                 ));
             }
         }
-        *slot = Some(watcher);
+        *slot = Some(cursor);
         Ok(())
     }
 }

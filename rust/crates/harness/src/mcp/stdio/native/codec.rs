@@ -99,7 +99,7 @@ impl Write for BoundedWrite<'_> {
     }
 }
 
-#[cfg(all(test, loom))]
+#[cfg(all(test, acyclic_harness_loom))]
 mod tests {
     use super::*;
     use loom::sync::mpsc;

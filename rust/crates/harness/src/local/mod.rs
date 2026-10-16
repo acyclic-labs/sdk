@@ -29,7 +29,6 @@ mod admission;
 mod checkout_tools;
 mod compaction;
 mod config;
-mod lock;
 mod owner;
 mod owner_record;
 mod runtime;
@@ -66,7 +65,7 @@ pub struct LocalHarness {
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     // Outermost lock: admission -> filesystem/provider locks. Never held during
     // model/tool execution, and provider callbacks never acquire admission.
-    admission: lock::Arc<lock::Mutex<()>>,
+    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
@@ -136,12 +135,29 @@ impl LocalHarness {
                         &directory,
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
+                        false,
                     )
                     .await?,
                 )),
-                LocalProject::Volume { .. } => None,
+                LocalProject::Volume { .. } => Some(Arc::new(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                )),
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
             // A configured project is opened, never silently replaced by an empty volume.
             files
                 .resolve(
@@ -215,7 +231,7 @@ impl LocalHarness {
                 limits: config.limits,
                 compaction,
                 goal_continuations: config.goal_continuations,
-                admission: lock::Arc::new(lock::Mutex::new(())),
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
             })

@@ -7,14 +7,11 @@ use acyclic_fs::{
     demand::native::NativeDemandSource,
     model::{Lifecycle, VolumeConfig},
 };
-use acyclic_harness::tools::git::{
-    WorkspaceGitExecutor, git_policy, git_workspace_tree, run_git_command,
-};
-use std::{
-    borrow::Cow,
-    sync::{Arc, Mutex},
-};
-use tokio::sync::Mutex as AsyncMutex;
+use acyclic_harness::{Error, tools::git};
+use std::{borrow::Cow, sync::Arc};
+
+#[path = "../src/tools/git/path.rs"]
+mod workspace_paths;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -99,72 +96,32 @@ async fn run(
     args: &[&str],
 ) -> Result<(GitCommandOutput, Option<Lazy>)> {
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
-    let tree = git_workspace_tree(lazy, &argv, None).await?;
-    let (ignore, merge_drivers) = git_policy(lazy).await?;
-    let executor = WorkspaceGitExecutor {
-        fs,
-        store,
-        current: lazy.workspace().clone(),
-        lazy_current: lazy,
-        repository_id,
-        ignore,
-        permit: PublicationPermit::Unrestricted,
-        lease: None,
-        merge_drivers,
-        merge_cache: AsyncMutex::new(Default::default()),
-        switched: Mutex::new(None),
-    };
-    let output = run_git_command(
-        &acyclic_fs::GitCompatRepository::new(repository_id, store.clone()),
+    let output = git::run(
+        git::Workspace {
+            filesystem: fs,
+            store,
+            view: lazy,
+            root: std::path::Path::new("."),
+            repository: repository_id,
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+        },
         &argv,
-        tree,
-        None,
-        "test",
-        1,
-        &executor,
     )
-    .await
-    .map_err(|error| format!("fs {args:?}: {error}"))?
-    .ok_or("pending git transition")?;
-    Ok((output, executor.switched_workspace()?))
+    .await?;
+    Ok((
+        output.command.ok_or("pending git transition")?,
+        output.switched,
+    ))
 }
 
 #[tokio::test]
 async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
-    acyclic_native_runtime::initialize_native_io_services().unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("root");
-    std::fs::create_dir(&root).unwrap();
-    let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
-        .await
-        .unwrap();
-    let store = LocalCoreStateStore::open_owned(temp.path().join("core")).unwrap();
-    let config = VolumeConfig::native(Lifecycle::Durable);
+    let (_temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
-    let source = NativeDemandSource::open(
-        Cow::Borrowed(&root),
-        config.profile,
-        config.limits,
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        &stop,
-    )
-    .await
-    .unwrap()
-    .value;
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
-    let (main, _) = LazyWorkspace::attach(
-        &fs,
-        "main",
-        Arc::new(source),
-        store.clone(),
-        config,
-        OperationId::new(),
-        &mut work,
-    )
-    .await
-    .unwrap();
     main.write(
         "/file.txt",
         bytes::Bytes::from_static(b"base\n").into(),
@@ -214,6 +171,24 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             .as_ref(),
         b"child\n"
     );
+    for (args, invalid) in [
+        (&["apply", "../escape.patch"][..], true),
+        (&["apply", "-"][..], true),
+        (&["fetch"][..], false),
+    ] {
+        let error = match run(&fs, &store, &main, repo, args).await {
+            Err(error) => error,
+            Ok(_) => return Err("invalid command unexpectedly succeeded".into()),
+        };
+        let error = error
+            .downcast_ref::<acyclic_harness::Error>()
+            .ok_or("lost harness error type")?;
+        if invalid {
+            assert!(matches!(error, acyclic_harness::Error::Invalid(_)));
+        } else {
+            assert!(matches!(error, acyclic_harness::Error::Unsupported(_)));
+        }
+    }
     for args in [
         &["diff"][..],
         &["grep", "child"],
@@ -225,5 +200,349 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             GitCommandOutput::Filesystem(_)
         ));
     }
+    let missing = run(&fs, &store, &main, repo, &["apply", "missing.patch"]).await;
+    let error = missing
+        .err()
+        .ok_or("missing patch unexpectedly succeeded")?;
+    assert!(matches!(
+        error.downcast_ref::<acyclic_harness::Error>(),
+        Some(acyclic_harness::Error::NativeSource { source, .. })
+            if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    main.write(
+        "/.volumes/user.txt",
+        bytes::Bytes::from_static(b"user-owned\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = run(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &["check-ignore", ".volumes/user.txt"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected check-ignore paths".into());
+    };
+    assert_eq!(value["paths"], serde_json::json!([]));
+    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
+    assert!(matches!(
+        main.read("/.volumes/user.txt", 64, &mut work).await,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    child
+        .write(
+            "/.gitattributes",
+            bytes::Bytes::from_static(b"*.lock merge=ours\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    child
+        .write(
+            "/.gitignore",
+            bytes::Bytes::from_static(b"ignored/\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    for path in ["/ignored/child.txt", "/.acyclic-sdk/state", "/result.txt"] {
+        child
+            .write(
+                path,
+                bytes::Bytes::from_static(b"child\n").into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    let plan =
+        acyclic_harness::filesystem::plan_agent_merge(&fs, &store, &child, main.workspace(), repo)
+            .await?;
+    assert!(
+        plan.child_wins_bindings
+            .contains(&"/ignored/child.txt".to_owned())
+    );
+    assert!(
+        plan.child_wins_bindings
+            .contains(&"/.acyclic-sdk/state".to_owned())
+    );
+    assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
+    Ok(())
+}
+
+async fn fixture() -> Result<(
+    tempfile::TempDir,
+    std::path::PathBuf,
+    LocalFs,
+    LocalCoreStateStore,
+    Lazy,
+)> {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let fs = LocalFs::local(LocalOptions::new(temp.path().join("fs")))
+        .await
+        .unwrap();
+    let store = LocalCoreStateStore::open_owned(temp.path().join("core")).unwrap();
+    let config = VolumeConfig::native(Lifecycle::Durable);
+    let stop = CancellationToken::new();
+    let source = NativeDemandSource::open(
+        Cow::Borrowed(&root),
+        config.profile,
+        config.limits,
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &stop,
+    )
+    .await
+    .unwrap()
+    .value;
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    let (main, _) = LazyWorkspace::attach(
+        &fs,
+        "main",
+        Arc::new(source),
+        store.clone(),
+        config,
+        OperationId::new(),
+        &mut work,
+    )
+    .await
+    .unwrap();
+    Ok((temp, root, fs, store, main))
+}
+
+#[tokio::test]
+async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()> {
+    let (_temp, root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    main.write(
+        "/file.txt",
+        bytes::Bytes::from_static(b"base\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+    )
+    .await?;
+    run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+    let head = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .id();
+    // Historical times make expiry deterministic, without sleeps or a clock override.
+    let lease = acyclic_fs::OperationWindowCoordinator::new(fs.operation_window_store())
+        .begin(repo, head, "expired-tool", 1, 2)
+        .await?;
+    for (checkout, tag) in [
+        (None, "mounted-expired"),
+        (
+            Some(acyclic_fs::NativeRootIdentity::from_bytes([1; 16])),
+            "checkout-expired",
+        ),
+    ] {
+        let error = git::run(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: &main,
+                root: &root,
+                repository: repo,
+                lease: Some(lease.clone()),
+                checkout,
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["tag".into(), tag.into()],
+        )
+        .await
+        .err()
+        .ok_or("expired lease created a tag")?;
+        assert!(
+            matches!(error, acyclic_harness::Error::Conflict(ref reason) if reason.contains("lease expired")),
+            "{error:?}"
+        );
+    }
+    let GitCommandOutput::Tags(tags) = run(&fs, &store, &main, repo, &["tag"]).await?.0 else {
+        return Err("tag listing returned another result".into());
+    };
+    assert!(tags.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    main.write(
+        "/.gitignore",
+        bytes::Bytes::from(vec![b'x'; 1024 * 1024 + 1]).into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    main.write(
+        "/.gitattributes",
+        bytes::Bytes::from_static(b"*.txt merge=text\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let error = run(&fs, &store, &main, main.workspace().id(), &["status"])
+        .await
+        .err()
+        .ok_or("oversized ignore rules unexpectedly loaded")?;
+    assert!(
+        matches!(
+            error.downcast_ref::<acyclic_harness::Error>(),
+            Some(acyclic_harness::Error::NativeSource { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::TooLarge)
+        ),
+        "{error:?}"
+    );
+    acyclic_harness::filesystem::workspace_publication_coordinator(
+        fs,
+        store,
+        Default::default(),
+        [(acyclic_fs::WorkspaceRootId::from_bytes([3; 16]), &main)],
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_identity_change_after_guard_preserves_conflict_code() -> Result<()> {
+    use acyclic_fs::{
+        MaterializeOptions, NativeMaterializationWork, NativeTreeMaterializationError,
+    };
+    let (_temp, root, _fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
+        .map_err(|(cause, _)| cause)?;
+    let generation = main.workspace().head(&work, &stop).await?;
+    let identity = work.root_identity(&root)?;
+    let publication = acyclic_harness::filesystem::CheckoutPublication::new(
+        &root,
+        identity,
+        OperationId::new(),
+        &work,
+    )?;
+    let options = MaterializeOptions {
+        destination: publication.directory().join("target"),
+        expected_root_identity: None,
+        maximum_directory_entries: 32,
+        maximum_extent_spans: 32,
+        transfer_bytes: 4096,
+    };
+    let mut guards = 0;
+    let error = publication
+        .publish(&generation, &generation, &store, &options, &work, || {
+            guards += 1;
+            let changed = std::fs::rename(&root, root.with_extension("original"))
+                .and_then(|()| std::fs::create_dir(&root));
+            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+        })
+        .await
+        .expect_err("the checkout identity changed after authorization");
+    assert_eq!(guards, 1);
+    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Conflict);
+    assert!(matches!(
+        error,
+        acyclic_harness::Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationChanged { expected, actual },
+            ..
+        } if expected == identity && actual != identity
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
+    use acyclic_fs::GitFilesystemResult;
+
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    main.write(
+        "/.volumes/project.txt",
+        bytes::Bytes::from_static(b"user-owned directory\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = run(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &["check-ignore", ".volumes/project.txt"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected check-ignore data".into());
+    };
+    assert_eq!(kind, "check-ignore");
+    assert_eq!(value["paths"], serde_json::json!([]));
+    run(&fs, &store, &main, repo, &["commit", "-m", "user files"]).await?;
+    let GitCommandOutput::Paths(paths) = run(&fs, &store, &main, repo, &["ls-files"]).await?.0
+    else {
+        return Err("expected tracked paths".into());
+    };
+    assert!(paths.iter().any(|path| path == ".volumes/project.txt"));
+
+    main.write(
+        "/.volumes/untracked.txt",
+        bytes::Bytes::from_static(b"untracked\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) =
+        run(&fs, &store, &main, repo, &["clean", "-n"]).await?.0
+    else {
+        return Err("expected clean preview".into());
+    };
+    assert_eq!(kind, "clean");
+    assert_eq!(
+        value["paths"],
+        serde_json::json!([".volumes/untracked.txt"])
+    );
+    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
+    assert!(matches!(
+        main.read("/.volumes/untracked.txt", 64, &mut work).await,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    assert_eq!(
+        main.read("/.volumes/project.txt", 64, &mut work)
+            .await?
+            .bytes
+            .as_ref(),
+        b"user-owned directory\n"
+    );
     Ok(())
 }

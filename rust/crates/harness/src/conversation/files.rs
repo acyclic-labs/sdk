@@ -227,7 +227,7 @@ impl FileRef {
     ) -> Result<String> {
         self.validate(work)?;
         content_label(
-            "file:read:",
+            acyclic_fs::access::FILE_READ_PREFIX,
             crate::executor::json::canonical_json_digest(
                 self,
                 crate::store::default_projection_read_limits().maximum_bytes,

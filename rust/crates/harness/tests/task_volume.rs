@@ -26,6 +26,8 @@ mod history_loss;
 mod properties;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
+#[path = "task_volume/source.rs"]
+mod source;
 
 #[derive(Deserialize)]
 struct Input {

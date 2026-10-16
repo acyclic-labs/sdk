@@ -5,7 +5,6 @@ use acyclic_harness::{
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
-    tool::files,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -74,7 +73,6 @@ async fn run(case: Case) -> Result<()> {
             provider.clone(),
         )
         .grant("model:generate")
-        .tool(files::write()?)?
         .grant("tool:call:write")
         .compaction(CompactionPolicy::Disabled)
         .build()?;

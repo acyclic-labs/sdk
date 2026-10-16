@@ -79,9 +79,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let reject = |code, reason| stock_boundary(io, code, reason);
         let read_granted = |volume: &VolumeRef| -> Result<bool> {
             let parent = match io {
-                Some(io) => {
-                    io.contains_capability(self.scope.capabilities(), volume, "volume:read:")?
-                }
+                Some(io) => io.contains_capability(
+                    self.scope.capabilities(),
+                    volume,
+                    acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                )?,
                 None => self
                     .scope
                     .capabilities()
@@ -93,7 +95,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             match task {
                 Some(task) => io
                     .ok_or_else(|| reject(Invalid, "task preparation lacks its IO ledger"))?
-                    .contains_capability(&task.origin().source_grants, volume, "volume:read:"),
+                    .contains_capability(
+                        &task.origin().source_grants,
+                        volume,
+                        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                    ),
                 None => Ok(true),
             }
         };

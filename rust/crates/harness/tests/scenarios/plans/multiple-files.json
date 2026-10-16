@@ -1,0 +1,10 @@
+{
+  "writes": [
+    {"path":"plans/release.md","text":"- [~] Ship\n"},
+    {"path":"plans/research.md","text":"# 調査\n- [ ] Inspect 🦀\n"}
+  ],
+  "expect": {
+    "plans/release.md": {"markdown":"- [~] Ship\n","tasks":[{"state":"[~]","text":"Ship"}]},
+    "plans/research.md": {"markdown":"# 調査\n- [ ] Inspect 🦀\n","tasks":[{"state":"[ ]","text":"Inspect 🦀"}]}
+  }
+}

@@ -1,11 +1,11 @@
 use super::*;
+use crate::sync::owned::{Arc as StateArc, Mutex, lock_owned};
 use crate::{
     conversation::ContentGrant,
     goal::{GoalContinuation, GoalView},
     resources::GenerationRef,
     runtime::TaskStateProvider,
 };
-use lock::{Arc as StateArc, Mutex, lock_owned};
 
 mod record;
 use record::Turn;

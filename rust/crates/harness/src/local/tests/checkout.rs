@@ -1,18 +1,7 @@
 //! Stock default commands execute against and publish the same checkout.
 use super::*;
 
-fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
-    ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(ModelEvent::ToolCall {
-            call_id: format!("checkout-{index}"),
-            name: name.into(),
-            arguments: json!({"command":command}),
-        }),
-        ScriptedEvent::Event(ModelEvent::Completed {
-            metadata: json!({}),
-        }),
-    ])
-}
+use super::checked_commands::call;
 
 const COMMANDS: [(&str, &str); 8] = [
     (

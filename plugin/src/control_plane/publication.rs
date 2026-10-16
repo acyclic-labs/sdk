@@ -5,7 +5,7 @@ use super::*;
 impl ControlPlane {
     pub(crate) async fn publication_coordinator(
         &self,
-    ) -> Result<LocalPublicationCoordinator, String> {
+    ) -> Result<acyclic_harness::filesystem::WorkspacePublicationCoordinator, String> {
         if self.roots.is_empty() {
             return Err("root workspace is unavailable".to_owned());
         }
@@ -29,7 +29,7 @@ impl ControlPlane {
                 }
                 Ok((
                     root_id,
-                    PhysicalRoot {
+                    acyclic_harness::filesystem::CheckoutRoot {
                         workspace_id: root.workspace_id,
                         path: root.source_path,
                         source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
@@ -39,27 +39,27 @@ impl ControlPlane {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
-        let mut publisher = MaterializingWorkspaceMultiRootPublisher::new(
-            (self.fs.clone(), WorkspaceGraph::new(self.store.clone())),
-            PluginRootMaterializer {
-                state: self.store.clone(),
-                physical_roots,
-            },
-        );
-        for binding in self.state.roots.values() {
-            let root_id = WorkspaceRootId::from_bytes(binding.root_id);
-            let workspace = self
-                .roots
-                .get(&root_key(root_id))
-                .ok_or_else(|| "root workspace is unavailable".to_owned())?;
-            publisher =
-                publisher.with_root_merge_drivers(root_id, merge_drivers_for(workspace).await?);
-        }
-        Ok(MultiRootPublicationCoordinator::new(
+        let views = self
+            .state
+            .roots
+            .values()
+            .map(|binding| {
+                let root = WorkspaceRootId::from_bytes(binding.root_id);
+                let workspace = self
+                    .roots
+                    .get(&root_key(root))
+                    .ok_or_else(|| "root workspace is unavailable".to_owned())?;
+                Ok((root, workspace))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        acyclic_harness::filesystem::workspace_publication_coordinator(
+            self.fs.clone(),
             self.store.clone(),
-            publisher,
-            LineageMultiRootPublicationAuthorizer::new(self.store.clone()),
-        ))
+            physical_roots,
+            views,
+        )
+        .await
+        .map_err(display)
     }
 
     pub(crate) async fn pending_conflict_for_parent(
@@ -139,108 +139,47 @@ impl ControlPlane {
             .state
             .routes
             .get(child_agent)
-            .cloned()
             .ok_or_else(|| "published child route is unavailable".to_owned())?;
-        for (root_id, root) in &publication.candidate.plan.roots {
-            let parent_repository_id =
-                self.parent_repository_id(parent_agent, *root_id, root.target_workspace_id)?;
-            let published_generation = publication
-                .published_generations
-                .get(root_id)
-                .copied()
-                .ok_or_else(|| "published root generation is unavailable".to_owned())?;
-            let workspace = acyclic_fs::WorkspaceResolver::resolve(
-                &(self.fs.clone(), WorkspaceGraph::new(self.store.clone())),
-                root.target_workspace_id,
-            )
-            .await
-            .map_err(display)?;
-            let published = workspace
-                .generation(
-                    published_generation,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(display)?;
-            let ignore_text = match published
-                .read(
-                    "/.gitignore",
-                    1024 * 1024,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-            {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                Err(WorkspaceError::NotFound) => String::new(),
-                Err(error) => return Err(display(error)),
-            };
-            let ignore =
-                GitIgnorePolicy::parse(&format!("{ignore_text}\n{}", reserved_ignore_rules()));
-            let repository = GitCompatRepository::new(parent_repository_id, self.store.clone());
-            let tracked = repository.tracked_paths().await.map_err(display)?;
-            let child_binding = child_route
-                .roots
-                .get(&root_key(*root_id))
-                .ok_or_else(|| "published child root is unavailable".to_owned())?;
-            let child_repository_id = repository_id(
-                root.source_workspace_id.into_bytes(),
-                child_binding.repository_workspace_id,
-            );
-            let source_head = GitCompatRepository::new(child_repository_id, self.store.clone())
-                .head()
-                .await
-                .map_err(display)?;
-            let mut capture_hasher = blake3::Hasher::new();
-            capture_hasher.update(b"acyclic-publication-capture-v1\0");
-            capture_hasher.update(&publication.candidate.plan.operation_id.into_bytes());
-            capture_hasher.update(&root_id.into_bytes());
-            let mut capture_id = [0_u8; 16];
-            capture_id.copy_from_slice(&capture_hasher.finalize().as_bytes()[..16]);
-            let captured = capture_git_compatible_generation_at(
-                &workspace,
-                published_generation,
-                &ignore,
-                &tracked,
-                OperationId::from_bytes(capture_id),
-            )
-            .await
-            .map_err(|error| format!("capturing published root {root_id:?}: {error}"))?;
-            let capture_proof = captured
-                .authenticated_proof(
-                    OperationId::from_bytes(capture_id),
-                    &WorkspaceGraph::new(self.store.clone()),
-                )
-                .await
-                .map_err(display)?;
-            repository
-                .record_publication(GitPublicationRecord {
-                    tree: GitTreeRef::exact(
-                        captured.generation.workspace_id(),
-                        captured.generation.id(),
+        let repositories = publication
+            .candidate
+            .plan
+            .roots
+            .iter()
+            .map(|(root_id, root)| {
+                let parent =
+                    self.parent_repository_id(parent_agent, *root_id, root.target_workspace_id)?;
+                let binding = child_route
+                    .roots
+                    .get(&root_key(*root_id))
+                    .ok_or_else(|| "published child root is unavailable".to_owned())?;
+                Ok((
+                    *root_id,
+                    (
+                        parent,
+                        repository_id(
+                            root.source_workspace_id.into_bytes(),
+                            binding.repository_workspace_id,
+                        ),
                     ),
-                    workspace_tree: GitTreeRef::exact(workspace.id(), published_generation),
-                    source_head,
-                    tracked_paths: captured.tracked_paths,
-                    capture_proof,
-                    message: format!("Merge agents/{child_agent}"),
-                    author: parent_agent.to_owned(),
-                    authored_at_seconds: i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
-                })
-                .await
-                .map_err(display)?;
-        }
-        Ok(())
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
+        acyclic_harness::filesystem::record_agent_publication(
+            &self.fs,
+            &self.store,
+            publication,
+            &repositories,
+            parent_agent,
+            child_agent,
+            i64::try_from(now_millis() / 1000).unwrap_or(i64::MAX),
+        )
+        .await
+        .map_err(display)
     }
 
     pub(crate) fn finalize_applied_publication<'a>(
         &'a mut self,
-        coordinator: &'a LocalPublicationCoordinator,
+        coordinator: &'a acyclic_harness::filesystem::WorkspacePublicationCoordinator,
         parent_agent: &str,
         child_agent: &str,
         publication: &'a MultiRootPublication,

@@ -206,7 +206,28 @@ impl<'a> AuthorityWork<'a> {
             .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
         let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        // Every SDK authority suffix fits here. Keep the full Stream bound
+        // available in a separate frame for longer provider-internal suffixes.
+        if length <= 128 {
+            self.path_buffer::<128>(authority, suffix, generation, length, writes)
+        } else {
+            self.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
+                authority, suffix, generation, length, writes,
+            )
+        }
+    }
+
+    #[inline(never)]
+    fn path_buffer<const N: usize>(
+        &mut self,
+        authority: AuthorityId,
+        suffix: &str,
+        generation: Option<GenerationId>,
+        length: usize,
+        writes: WorkCounters,
+    ) -> Result<StreamPath, AuthorityStoreError> {
+        const PREFIX: &[u8] = b"fs/authorities/";
+        let mut text = [0_u8; N];
         text.get_mut(..PREFIX.len())
             .ok_or(crate::WorkError::Overflow)?
             .copy_from_slice(PREFIX);
@@ -257,7 +278,7 @@ impl<'a> AuthorityWork<'a> {
         lease: crate::OperationLeaseId,
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; crate::operation_window::lease_path::MAX_ENCODED_BYTES];
         let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,
@@ -472,6 +493,9 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_path_tests.rs"]
+mod path_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "native_tests.rs"]
 mod tests;

@@ -1,17 +1,18 @@
 //! Default commands bound to the selected, identity-fenced checkout.
 use super::*;
+use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 use crate::{
     runtime::ToolContext,
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
-use lock::{Arc as StateArc, Mutex as AsyncMutex, OwnedMutexGuard, lock_owned};
 
 mod bash;
 mod capture;
 mod git;
-use super::lock;
+pub(super) mod publisher;
+pub(super) mod reconciliation;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -30,7 +31,7 @@ pub(super) struct CheckoutTools {
 
 struct State {
     active: Option<workspace::View>,
-    watcher: Option<NativeWatch>,
+    watcher: Option<capture::Cursor>,
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -53,12 +54,20 @@ fn guarded<T, R>(
 }
 
 impl CheckoutTools {
-    pub(super) fn new(
+    pub(super) async fn new(
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Self> {
+        let active = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
+        let view = active.as_ref().unwrap_or_else(|| workspace.view());
+        reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await?;
+        let watcher = if workspace.fresh {
+            Some(capture::Cursor::initial(&workspace, &capture_policy)?)
+        } else {
+            None
+        };
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
@@ -66,10 +75,7 @@ impl CheckoutTools {
             capture_policy,
             workspace,
             clock,
-            state: StateArc::new(AsyncMutex::new(State {
-                active: None,
-                watcher: None,
-            })),
+            state: StateArc::new(AsyncMutex::new(State { active, watcher })),
         })
     }
 }
@@ -133,31 +139,56 @@ impl ToolExecutor for CheckoutTools {
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            serialized(&self.state, async |mut state| {
-                let State { active, watcher } = &mut *state;
-                let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                self.capture(view, watcher, invocation.operation_id, 0)
-                    .await?;
+            let result = serialized(&self.state, async |mut state| {
+                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                    Error::Unauthorized("checkout command has no execution owner".into())
+                })?;
+                owner.verify_owner(None)?.await?;
+                let view = state
+                    .active
+                    .as_ref()
+                    .unwrap_or_else(|| self.workspace.view());
+                if reconciliation::recover(&self.workspace, view, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?
+                {
+                    state.watcher = None;
+                }
                 if invocation.name == "fs" {
-                    let view = state
-                        .active
-                        .as_ref()
-                        .unwrap_or_else(|| self.workspace.view());
-                    let (result, switched) = self.fs(view, &command).await?;
-                    if let Some(switched) = switched {
-                        state.active = Some(switched);
-                    }
-                    Ok(result)
+                    self.fs(&command, context, &mut state).await
                 } else {
+                    let State { active, watcher } = &mut *state;
+                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+                    self.capture(
+                        view,
+                        watcher,
+                        invocation.operation_id,
+                        0,
+                        PublicationPermit::Unrestricted,
+                    )
+                    .await?;
                     let (result, mut state) = self.bash(command, maximum, state).await?;
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    self.capture(view, watcher, invocation.operation_id, 1)
-                        .await?;
+                    self.capture(
+                        view,
+                        watcher,
+                        invocation.operation_id,
+                        1,
+                        PublicationPermit::Unrestricted,
+                    )
+                    .await?;
+                    owner.verify_owner(None)?.await?;
                     result
                 }
             })
-            .await
+            .await;
+            #[cfg(test)]
+            if let Err(error) = &result {
+                eprintln!("checkout command {}: {error:?}", invocation.name);
+            }
+            result
         })
     }
 

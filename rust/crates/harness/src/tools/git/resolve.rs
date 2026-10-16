@@ -1,7 +1,7 @@
 use super::*;
 
 impl WorkspaceGitExecutor<'_> {
-    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, GitError> {
+    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
                 .workspace(reference.workspace_id)
@@ -13,7 +13,7 @@ impl WorkspaceGitExecutor<'_> {
                 )
                 .await
                 .map(|receipt| receipt.value)
-                .map_err(|failure| display(failure.error).into()),
+                .map_err(|failure| Error::from(failure.error).into()),
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let lazy = self
@@ -23,7 +23,7 @@ impl WorkspaceGitExecutor<'_> {
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
                 let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
                 let mut identity = [0; 16];
@@ -33,10 +33,11 @@ impl WorkspaceGitExecutor<'_> {
                         &destination,
                         snapshot,
                         IdempotencyKey::from_bytes(identity),
+                        PublicationPermit::Unrestricted,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 WorkspaceGraph::new(self.store.clone())
                     .register_existing_child_at_generation(
                         lazy.workspace(),
@@ -45,7 +46,7 @@ impl WorkspaceGitExecutor<'_> {
                         initial.authored_generation,
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 child
                     .exactify(
                         "/",
@@ -53,19 +54,18 @@ impl WorkspaceGitExecutor<'_> {
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)
-                    .map_err(GitError)
+                    .map_err(Error::from)
             }
         }
     }
 
     /// Constructs a facade error.
-    pub fn error(message: impl Into<String>) -> GitError {
-        GitError(message.into())
+    pub(crate) fn error(message: impl Into<String>) -> Error {
+        Error::Conflict(message.into())
     }
 
     /// Takes the workspace selected by a branch switch.
-    pub fn switched_workspace(&self) -> Result<Option<LocalLazyWorkspace>, GitError> {
+    pub(crate) fn switched_workspace(&self) -> Result<Option<LocalLazyWorkspace>, Error> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))
@@ -73,10 +73,10 @@ impl WorkspaceGitExecutor<'_> {
     }
 
     /// Resolves a workspace through the repository lineage.
-    pub async fn workspace(
+    pub(crate) async fn workspace(
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
-    ) -> Result<LocalWorkspace, GitError> {
+    ) -> Result<LocalWorkspace, Error> {
         if workspace_id == self.current.id() {
             return Ok(self.current.clone());
         }
@@ -85,7 +85,6 @@ impl WorkspaceGitExecutor<'_> {
             workspace_id,
         )
         .await
-        .map_err(display)
-        .map_err(GitError)
+        .map_err(Error::from)
     }
 }

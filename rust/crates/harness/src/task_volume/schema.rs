@@ -1,4 +1,4 @@
-use super::{Error, Result};
+use super::{Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -173,13 +173,45 @@ impl TaskFile {
     }
 }
 
+/// Canonical logical input source path, fenced to commands/ or workspace/.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct InputPath(String);
+
+impl TryFrom<String> for InputPath {
+    type Error = Error;
+    fn try_from(path: String) -> Result<Self> {
+        let mut parts = path.split('/');
+        if path.len() > 4096
+            || !matches!(parts.next(), Some("commands" | "workspace" | "config"))
+            || !path.contains('/')
+            || parts.any(|p| {
+                p.is_empty()
+                    || p == "."
+                    || p == ".."
+                    || p.chars().any(|c| c.is_control() || matches!(c, '\\' | ':'))
+            })
+        {
+            return Err(Error::InvalidPath);
+        }
+        Ok(Self(path))
+    }
+}
+impl From<InputPath> for String {
+    fn from(path: InputPath) -> Self {
+        path.0
+    }
+}
+
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum FileKey {
     /// Ordinary goal Markdown with active/blocked/done frontmatter.
     Goal,
+    /// Editable command definitions and workspace files followed by UI queries.
+    Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
-    Plan(Component),
+    Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
     /// Protected task namespace.
@@ -262,11 +294,14 @@ impl FileKey {
             Ok(n)
         };
         match parts.as_slice() {
+            ["commands" | "workspace" | "config", ..] => {
+                return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
+            }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
-                return Ok(Self::Plan(id(name
-                    .strip_suffix(".md")
-                    .ok_or(Error::InvalidPath)?)?));
+                return Ok(Self::Plan(PlanName::new(
+                    name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
+                )?));
             }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
@@ -324,6 +359,7 @@ impl FileKey {
     /// Materializes a path only at a filesystem or wire boundary.
     pub fn path(&self) -> String {
         match self {
+            Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
@@ -334,7 +370,8 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
-            Self::Goal | Self::Plan(_) => Owner::Agent,
+            Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
+            Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -351,6 +388,7 @@ impl FileKey {
         matches!(
             self,
             Self::Goal
+                | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {
                     file: TaskFile::Status,
@@ -365,6 +403,10 @@ impl FileKey {
 pub enum Query {
     /// Entire private task volume.
     Root,
+    /// Command definitions and workspace files used by the input UI.
+    Inputs,
+    /// Declarative UI settings, keymap and theme files.
+    Config,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -417,7 +459,7 @@ pub enum Query {
 
 impl Query {
     pub(super) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
-        use std::ops::Bound::{Included, Unbounded};
+        use std::ops::Bound::{Excluded, Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
             let bound = |file| {
                 Included(FileKey::Task {
@@ -455,9 +497,17 @@ impl Query {
             )
         };
         vec![match self {
+            Self::Config => (
+                Included(FileKey::Input(InputPath("config/".into()))),
+                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
+            ),
+            Self::Inputs => (
+                Included(FileKey::Input(InputPath(String::new()))),
+                Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
+            ),
             Self::Plans => (
-                Included(FileKey::Plan(minimum)),
-                Included(FileKey::Plan(maximum)),
+                Included(FileKey::Plan(PlanName(Arc::from("")))),
+                Excluded(FileKey::Agent(minimum)),
             ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),
@@ -524,6 +574,11 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
+            (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
+            (Self::Config, FileKey::Input(path)) => matches!(
+                path.0.as_str(),
+                "config/settings.json" | "config/keymap.json" | "config/theme.json"
+            ),
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)
@@ -621,6 +676,7 @@ impl Query {
         Ok(match parts.as_slice() {
             [""] => Self::Root,
             ["plans"] => Self::Plans,
+            ["config"] => Self::Config,
             [".volumes", "agents"] => Self::Agents,
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),

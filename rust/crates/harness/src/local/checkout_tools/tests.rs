@@ -144,3 +144,6 @@ fn offloaded_cleanup(broken: bool) {
 fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
     checked_model(offloaded_cleanup, "cleanup escaped checkout ownership");
 }
+
+#[path = "tests/fencing.rs"]
+mod fencing;

@@ -9,7 +9,8 @@ opens a normal checkout lazily with `filesystem-local,native-execution`. Owner
 credentials and durable state live in the per-user local data directory under
 `acyclic/harness/<canonical-path-hash>`; nothing is created in the checkout.
 `LocalHarnessConfig::new(directory, (model, provider)).volume(volume)` selects an existing local project
-volume with `filesystem-local`. Both selections create an owner issuer, signed
+volume with `filesystem-local`; `native-execution` binds bash/fs to a persistent
+private checkout of that volume. Both selections create an owner issuer, signed
 tool grants, durable task host, execution journals and private scratch.
 
 `tool(tool)` and `tools(iter)` add custom tools; `without_default_tools()` disables

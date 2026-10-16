@@ -596,7 +596,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
             let _hold = io.guard_bytes(&encoded)?;
             encoded.as_ref() == bytes
         }
-        _ => crate::contract::canonical_json_bytes(&value)? == bytes,
+        _ => crate::contract::canonical_json_matches(&value, bytes)?,
     };
     let _ = maximum;
     if !canonical {

@@ -1,5 +1,6 @@
 use super::*;
 
+/// Parses one facade command without performing filesystem effects.
 #[allow(
     clippy::too_many_lines,
     reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
@@ -8,7 +9,7 @@ use super::*;
     clippy::cognitive_complexity,
     reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
 )]
-pub(super) fn parse_argv<E: std::error::Error + 'static>(
+pub fn parse_git_argv<E: std::error::Error + 'static>(
     argv: &[String],
     default_author: &str,
     now_seconds: i64,

@@ -62,7 +62,8 @@ async fn native_warm_operations_reject_substituted_modes_authority_and_policy()
         channel: Endpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?,
-        authorization: authorization("fixture")?,
+        authorization: Some(authorization("fixture")?),
+        credential: None,
         client_instance: [7; 16],
     }));
     let revision = [2; 32];
@@ -348,16 +349,20 @@ fn evaluation_contract_binds_native_output_to_exact_grader_observation() -> Resu
 async fn request_metadata_marks_the_ephemeral_bearer_copy_sensitive() -> Result<(), Error> {
     let client = Inference(Arc::new(Connection {
         channel: Endpoint::from_static("https://localhost").connect_lazy(),
-        authorization: authorization("secret")?,
+        authorization: Some(authorization("secret")?),
+        credential: None,
         client_instance: [1; 16],
     }));
-    let request = client.request(())?;
+    let request = client.request(()).await?;
     let bearer = request
         .metadata()
         .get("authorization")
         .ok_or(Error::Invalid("missing authorization"))?;
     assert!(bearer.is_sensitive());
-    assert_eq!(client.0.authorization.as_str(), "Bearer secret");
+    assert_eq!(
+        client.0.authorization.as_ref().map(|value| value.as_str()),
+        Some("Bearer secret")
+    );
     Ok(())
 }
 
@@ -404,7 +409,8 @@ async fn calls_emit_spans_with_status_codes_and_no_content() -> Result<(), Error
     std::thread::spawn(move || listener.incoming().for_each(drop));
     let client = Inference(Arc::new(Connection {
         channel: Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
-        authorization: authorization("secret")?,
+        authorization: Some(authorization("secret")?),
+        credential: None,
         client_instance: [1; 16],
     }));
     let mut creation = client.context("model");

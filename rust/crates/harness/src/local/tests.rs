@@ -718,7 +718,20 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     Ok(())
 }
 
-#[cfg(all(feature = "native-execution", unix))]
+#[cfg(feature = "native-execution")]
 mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
+
+#[cfg(feature = "native-execution")]
+#[path = "tests/checkout_reopen.rs"]
+mod checkout_reopen;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout_reconciliation;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod volume_tools;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod reconciliation_interruptions;

@@ -10,6 +10,12 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+uuid.workspace = true
+bytes = { workspace = true, features = ["serde"] }
+futures.workspace = true
+http.workspace = true
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
@@ -37,11 +43,17 @@ tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] 
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+allocation-counter = "=0.8.1"
+loom = "0.7"
+proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true
+
+[target.'cfg(acyclic_loom)'.dev-dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
 
 [build-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }

@@ -64,6 +64,9 @@ printf '%s\n' "$*" >>"$FAKE_SHA256_LOG"
 if [[ "$*" != '--check --status' ]]; then
   # Signature fixtures use a stub archive, not downloaded tool bytes.
   printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$1"
+else
+  # The real check consumes stdin; exiting early races the checksum producer.
+  cat >/dev/null
 fi
 EOF
 
@@ -78,7 +81,10 @@ cat >"$work/bin/cargo" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
 if [[ "$1" == rustc ]]; then
-  printf '{"reason":"compiler-artifact","target":{"name":"mcp-loom"},"profile":{"test":true},"executable":"%s"}\n' "$FAKE_MCP_LOOM_BINARY"
+  model=mcp-loom
+  [[ " $* " != *' --test timer_loom '* ]] || model=timer_loom
+  [[ " $* " != *' --test guest_loom '* ]] || model=guest_loom
+  printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
 fi
 EOF
 
@@ -184,9 +190,12 @@ chmod +x "$gate/bin/mcp_loom"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 2 ]]
+[[ "${#cargo_calls[@]}" -eq 4 ]]
 [[ "${cargo_calls[0]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features -- --cfg loom' ]]
-[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
+[[ "${cargo_calls[1]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
+[[ "${cargo_calls[2]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[3]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 for lane in docs generation; do
   : >"$gate/cargo.log"

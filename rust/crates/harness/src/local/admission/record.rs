@@ -25,7 +25,7 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
         fn turn_head_round_trips(operation in any::<[u8;16]>(), root in any::<[u8;16]>(), count in any::<u32>(), kind in ".{0,64}") {
-            let seed = include_bytes!("../../../fuzz/corpus/records/turn");
+            let seed = include_bytes!("../../../../harness-fuzz/corpus/records/turn");
             let mut turn = decode(seed).unwrap();
             turn.operation = OperationId::from_bytes(operation);
             turn.root = OperationId::from_bytes(root);

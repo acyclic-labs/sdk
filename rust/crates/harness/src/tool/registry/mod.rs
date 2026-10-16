@@ -46,6 +46,7 @@ const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     - std::mem::size_of::<ToolDefinition>()
     + 2 * std::mem::size_of::<usize>();
 
+mod lookup;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod registration;

@@ -11,19 +11,9 @@ pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
             length = length.checked_add(1)?;
         }
         let wide = std::slice::from_raw_parts(pointer.0, length);
-        let host_path = PathBuf::from(std::ffi::OsString::from_wide(wide));
-        let mut path = MountPath::root();
-        for component in host_path.components() {
-            let std::path::Component::Normal(component) = component else {
-                return None;
-            };
-            let bytes = component
-                .encode_wide()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>();
-            path = path.child(bytes);
-        }
-        Some(path)
+        Some(MountPath {
+            components: super::callback_path::components(wide)?,
+        })
     }
 }
 
@@ -68,16 +58,17 @@ pub(super) fn host_windows_metadata(
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let metadata = crate::native_host::with_wide_path(
-        &host_relative_path(path)?,
-        &mut &*work,
-        |path, work| {
-            if let Some(metadata) = query_metadata(root, path, work)? {
-                return Ok(metadata);
-            }
-            root.stat(path, work)
-        },
-    )?;
+    let query = |path: &[u16], work: &mut &crate::NativeMaterializationWork| {
+        if let Some(metadata) = query_metadata(root, path, work)? {
+            return Ok(metadata);
+        }
+        root.stat(path, work)
+    };
+    let metadata = if let Some(units) = super::callback_path::wide_components(path.components()) {
+        crate::native_host::with_wide_units(units, &mut &*work, query)?
+    } else {
+        crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, query)?
+    };
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
             device: u64::from(metadata.volume_serial_number),
@@ -465,3 +456,7 @@ pub(super) unsafe fn start_directory(
 #[cfg(test)]
 #[path = "tests/metadata_query.rs"]
 mod query_tests;
+
+#[cfg(test)]
+#[path = "tests/metadata_encoding.rs"]
+mod encoding_tests;

@@ -25,6 +25,22 @@ where
         Ok(self)
     }
 
+    #[cfg(feature = "native-execution")]
+    pub(crate) fn with_content_publisher(
+        mut self,
+        writer: Arc<dyn crate::conversation::ContentPublisher>,
+    ) -> Result<Self> {
+        if self._native_configuration_custody.is_some() {
+            return Err(Error::Unsupported(
+                "checkout content requires ordinary construction".into(),
+            ));
+        }
+        Arc::get_mut(&mut self.harness)
+            .ok_or_else(|| Error::Conflict("bind content before sharing the runtime".into()))?
+            .bind_output(writer, None)?;
+        Ok(self)
+    }
+
     /// Binds the trusted root's default output volume before sharing the runtime.
     /// Task scopes still require the volume's write grant; created children retain
     /// their independently authenticated output selection.

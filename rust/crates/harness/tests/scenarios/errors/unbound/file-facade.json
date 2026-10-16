@@ -1,0 +1,7 @@
+{
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"write","arguments":{"path":"route-sentinel.txt",
+    "text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"write",
+    "arguments":{"path":"route-sentinel.txt","text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}}},
+    {"kind":"model","event":{"kind":"completed"}}]}
+}
