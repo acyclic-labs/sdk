@@ -36,8 +36,8 @@ pub enum VerifyError {
     #[error("capability is sealed")]
     Sealed,
     /// The owner policy or capability intersection denied the request.
-    #[error("capability does not permit the request")]
-    Denied,
+    #[error(transparent)]
+    Denied(#[from] authority::Deny),
 }
 impl From<crate::Error> for VerifyError {
     fn from(error: crate::Error) -> Self {
@@ -200,7 +200,7 @@ impl VerifiedCapability {
     /// Authorize against fresh revocations/time and the owner's policy result.
     pub fn authorize(&self, trust: &impl Trust, request: &authority::Request<'_>, policy: authority::PolicyDecision) -> Result<(), VerifyError> {
         self.check(trust, request.now_unix_seconds)?;
-        if authority::permits(&self.blocks, request, policy) { Ok(()) } else { Err(VerifyError::Denied) }
+        authority::permits(&self.blocks, request, policy).map_err(VerifyError::Denied)
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
