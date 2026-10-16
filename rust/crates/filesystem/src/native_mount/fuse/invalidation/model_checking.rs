@@ -1,17 +1,23 @@
 use super::*;
-use crate::sync::{Mutex, mpsc};
+use crate::sync::mpsc;
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static OMIT_NOTIFY: Cell<bool> = Cell::new(false);
+    static DROP_TAIL: Cell<bool> = Cell::new(false);
     static INVALIDATOR_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
     static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
+    static PASS_FINISHED: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
 }
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
     OMIT_NOTIFY.with(Cell::get)
+}
+
+pub(super) fn drop_refused_tail() -> bool {
+    DROP_TAIL.with(Cell::get)
 }
 
 pub(in crate::native_mount::fuse) fn before_invalidator_wait() {
@@ -30,20 +36,29 @@ pub(in crate::native_mount::fuse) fn before_waiter_wait() {
     });
 }
 
+pub(super) fn after_invalidator_pass() {
+    PASS_FINISHED.with(|hook| {
+        if let Some(ready) = hook.borrow_mut().take() {
+            ready.send(()).unwrap();
+        }
+    });
+}
+
+#[derive(Default)]
 struct RefusesFirst {
-    sent: Arc<Mutex<Vec<(u64, bool)>>>,
-    first: Cell<bool>,
-    attempted: mpsc::Sender<()>,
-    release: mpsc::Receiver<()>,
+    sent: RefCell<Vec<(u64, bool)>>,
+    first_gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
 }
 
 impl KernelCacheNotifier for RefusesFirst {
     fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
-        let refused = self.first.replace(false);
-        self.sent.lock().unwrap().push((inode, !refused));
+        let refused = self.sent.borrow().is_empty();
+        self.sent.borrow_mut().push((inode, !refused));
         if refused {
-            self.attempted.send(()).unwrap();
-            self.release.recv().unwrap();
+            if let Some((attempted, release)) = &self.first_gate {
+                attempted.send(()).unwrap();
+                release.recv().unwrap();
+            }
             Err(std::io::Error::from_raw_os_error(libc::EIO))
         } else {
             Ok(())
@@ -56,7 +71,7 @@ impl KernelCacheNotifier for RefusesFirst {
 }
 
 #[test]
-fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
+fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         let checkout = super::super::tests::model_checking::seed();
@@ -65,43 +80,34 @@ fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
             // Failed controls leave sleepers behind. Keep accounting owners
             // alive rather than locking their meters during Loom teardown.
             let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
-            let sent = Arc::new(Mutex::new(Vec::new()));
             let (attempted, attempt) = mpsc::channel();
             let (release, released) = mpsc::channel();
             let (sleeping, asleep) = mpsc::channel();
             let invalidator = loom::thread::spawn({
-                let (core, sent) = (Arc::clone(&core), Arc::clone(&sent));
+                let core = Arc::clone(&core);
                 move || {
                     INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
-                    run_invalidator(
-                        &core,
-                        &RefusesFirst {
-                            sent,
-                            first: Cell::new(true),
-                            attempted,
-                            release: released,
-                        },
-                    );
+                    let notifier = RefusesFirst {
+                        first_gate: Some((attempted, released)),
+                        ..Default::default()
+                    };
+                    run_invalidator(&core, &notifier);
+                    notifier.sent.into_inner()
                 }
             });
             asleep.recv().unwrap();
-            // Taking the state after the checkpoint ensures the production
+            // Taking state after the checkpoint ensures the production
             // invalidator actually released it in Condvar::wait.
             let mut state = core.state().unwrap();
-            fuse_reserve(&mut state.invalidation.deferred, 2, &work).unwrap();
-            state
-                .invalidation
-                .deferred
-                .extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
+            fuse_reserve(&mut state.invalidation.deferred, 1, &work).unwrap();
+            state.invalidation.deferred.push(KernelCacheItem::Inode(10));
             OMIT_NOTIFY.with(|fault| fault.set(broken));
             drop(state);
             OMIT_NOTIFY.with(|fault| fault.set(false));
             // No waiter notification can rescue a missing producer wakeup.
             attempt.recv().unwrap();
-            assert!(core.state().unwrap().invalidation.in_flight);
-            // Release the refused notification while the real waiter still
-            // owns state, immediately before its atomic Condvar wait. The
-            // invalidator cannot publish the denial before that wait starts.
+            // The real waiter releases the refusal while holding state,
+            // immediately before its atomic Condvar wait.
             WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(release));
             assert!(matches!(
                 core.wait_for_invalidation(core.state().unwrap(), None, &work),
@@ -110,19 +116,13 @@ fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
             {
                 let state = core.state().unwrap();
                 assert!(state.invalidation.denied);
-                assert!(state.invalidation.is_pending(None));
                 assert_eq!(
                     state.invalidation.pending_tail.as_slice(),
-                    &[KernelCacheItem::Inode(10), KernelCacheItem::Inode(11),]
+                    &[KernelCacheItem::Inode(10)]
                 );
-                assert!(state.invalidation.deferred.is_empty());
             }
-            core.wait_for_invalidation(core.state().unwrap(), None, &work)
-                .unwrap();
-            assert!(!core.state().unwrap().invalidation.is_pending(None));
             core.stop();
-            invalidator.join().unwrap();
-            assert_eq!(*sent.lock().unwrap(), [(10, false), (10, true), (11, true)]);
+            assert_eq!(invalidator.join().unwrap(), [(10, false)]);
             drop(ManuallyDrop::into_inner(keeper));
         });
     };
@@ -133,4 +133,66 @@ fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
         .downcast_ref::<String>()
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
+}
+
+#[test]
+fn production_waiter_retries_refused_notifications_in_fifo_order() {
+    crate::initialize_test_native_io();
+    let exercise = |broken| {
+        let checkout = super::super::tests::model_checking::seed();
+        loom::model(move || {
+            let (core, work) = super::super::tests::model_checking::fixture(&checkout);
+            let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
+            {
+                let mut state = core.state().unwrap();
+                fuse_reserve(&mut state.invalidation.deferred, 2, &work).unwrap();
+                state
+                    .invalidation
+                    .deferred
+                    .extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
+            }
+            let (finished, finish) = mpsc::channel();
+            let invalidator = loom::thread::spawn({
+                let core = Arc::clone(&core);
+                move || {
+                    DROP_TAIL.with(|fault| fault.set(broken));
+                    PASS_FINISHED.with(|hook| *hook.borrow_mut() = Some(finished));
+                    let notifier = RefusesFirst::default();
+                    run_invalidator(&core, &notifier);
+                    notifier.sent.into_inner()
+                }
+            });
+            finish.recv().unwrap();
+            {
+                let state = core.state().unwrap();
+                assert!(state.invalidation.denied);
+                assert_eq!(
+                    state.invalidation.pending_tail.as_slice(),
+                    &[KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)],
+                    "refused notification tail was lost"
+                );
+                assert!(state.invalidation.is_pending(None));
+                assert!(state.invalidation.deferred.is_empty());
+            }
+            core.wait_for_invalidation(core.state().unwrap(), None, &work)
+                .unwrap();
+            assert!(!core.state().unwrap().invalidation.is_pending(None));
+            core.stop();
+            assert_eq!(
+                invalidator.join().unwrap(),
+                [(10, false), (10, true), (11, true)]
+            );
+            drop(ManuallyDrop::into_inner(keeper));
+        });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("discarding refused notifications must lose the original tail");
+    let message = error
+        .downcast_ref::<String>()
+        .expect("tail assertion message");
+    assert!(
+        message.contains("refused notification tail was lost"),
+        "{message}"
+    );
 }
