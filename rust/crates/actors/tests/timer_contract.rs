@@ -149,3 +149,14 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
     assert!(valid > 0 && invalid > 0);
     Ok(())
 }
+
+#[test]
+fn generated_timer_authoring_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../typescript/packages/actors/src/generated/timers.ts");
+    assert_eq!(
+        std::fs::read_to_string(path)?,
+        acyclic_actors::timers::typescript()
+    );
+    Ok(())
+}
