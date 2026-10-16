@@ -459,15 +459,22 @@ async fn a_stale_publisher_never_uses_old_catalog_or_settings() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn loading_missing_task_settings_cannot_publish_an_outdated_action() -> Result<()> {
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Loading absent settings must never move a previously resolved action to
+    // a newer catalog cut, for any selected task or command argument.
+    #[test]
+    fn loading_missing_task_settings_cannot_publish_an_outdated_action(
+        task_byte in 1u8..=254, arguments in "[a-zA-Z0-9 ]{1,40}"
+    ) {
+    futures::executor::block_on(async {
     let volume = volume().await?;
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
     client
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &json!({"selected_task":TaskId::from_bytes([3;16])}),
+            &json!({"selected_task":TaskId::from_bytes([task_byte;16])}),
         )
         .await?;
     let mut definitions: Vec<Value> =
@@ -482,21 +489,19 @@ async fn loading_missing_task_settings_cannot_publish_an_outdated_action() -> Re
         serde_json::to_vec(&definitions).unwrap(),
     )
     .await?;
-    assert!(matches!(
-        client.submit("/shell new action", &DeniedReader).await,
-        Err(Error::Conflict(_))
-    ));
-    assert!(
-        client.take_request().is_none(),
-        "stale action was published"
-    );
-    client.submit("/shell new action", &DeniedReader).await?;
+    let input = format!("/shell {arguments}");
+    prop_assert!(matches!(client.submit(&input, &DeniedReader).await,
+        Err(Error::Conflict(_))));
+    prop_assert!(client.take_request().is_none(), "stale action was published");
+    client.submit(&input, &DeniedReader).await?;
     let request = client.next_request().await?;
-    assert_eq!(
+    prop_assert_eq!(
         serde_json::from_slice::<Value>(&request.bytes).unwrap()["tool"],
         "web_search"
     );
     Ok(())
+    })?;
+    }
 }
 
 #[tokio::test]
