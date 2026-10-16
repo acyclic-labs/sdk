@@ -6,6 +6,7 @@ use std::{
 };
 
 #[cfg(test)]
+#[path = "context/tests.rs"]
 mod tests;
 
 #[derive(Clone)]
