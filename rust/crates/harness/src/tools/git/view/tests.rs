@@ -122,10 +122,10 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             acyclic_fs::GitPendingMutation::Join {
                 conflicts: Some(paths),
                 ..
-            } => paths,
+            } => paths.keys().cloned().collect::<BTreeSet<_>>(),
             _ => panic!("conflict paths"),
         },
-        &BTreeSet::from(["/note".into()])
+        BTreeSet::from(["/note".into()])
     );
     main.write_text("/note", ">>>>>>> unresolved\n").await?;
     let continuation = execute(
@@ -323,7 +323,10 @@ async fn continuation_checks_manual_paths_even_without_a_join_generation() -> Te
         return Err("pending merge".into());
     };
     compatibility
-        .record_merge_conflicts(transition.operation_id(), &BTreeSet::from(["/note".into()]))
+        .record_merge_conflicts(
+            transition.operation_id(),
+            &BTreeMap::from([("/note".into(), None)]),
+        )
         .await?;
     assert!(
         main.operation_generation(

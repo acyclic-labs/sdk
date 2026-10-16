@@ -151,7 +151,7 @@ pub enum GitPendingMutation {
         /// Source branch used in the generated commit message.
         source_branch: String,
         /// Actual paths requiring text or manual resolution before continuation.
-        conflicts: Option<BTreeSet<String>>,
+        conflicts: Option<BTreeMap<String, Option<crate::FileId>>>,
         /// Whether resulting ancestry is rebased rather than merged.
         rebase: bool,
     },

@@ -6,10 +6,18 @@ use super::*;
 /// Removing a conflicted path is a valid explicit deletion resolution.
 pub async fn git_merge_is_resolved<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     current: &Generation<A, O>,
-    paths: &BTreeSet<String>,
+    conflicts: &BTreeMap<String, Option<crate::FileId>>,
 ) -> Result<bool, GitCaptureError> {
     let cancellation = CancellationToken::new();
-    for path in paths {
+    let mut paths: BTreeSet<_> = conflicts.keys().cloned().collect();
+    for renamed in current
+        .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
+        .await?
+        .into_values()
+    {
+        paths.extend(renamed);
+    }
+    for path in &paths {
         let stat = match current
             .stat(path, WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -111,7 +119,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let paths = BTreeSet::from(["/note".into()]);
+            let paths = BTreeMap::from([("/note".into(), None)]);
             let head = workspace
                 .head(WorkBudget::UNBOUNDED, &stop)
                 .await
@@ -139,25 +147,34 @@ mod tests {
         // Only replacing the projected marker file resolves it. Unrelated
         // writes and a failed resolution leave the exact same entry unresolved.
         #[test]
-        fn continuation_checks_the_projected_file(mutation in 0u8..8, text in "[a-z ]{0,32}") {
+        fn continuation_checks_the_projected_file(mutation in 0u8..10, text in "[a-z ]{0,32}") {
             futures::executor::block_on(async {
                 let fs = crate::Fs::memory();
                 let stop = CancellationToken::new();
                 let workspace = fs.create_workspace("resolution", WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
                 workspace.write_text("/note", "base\n").await.unwrap();
                 workspace.write_text("/note", &format!("<<<<<<< ours\nours\n=======\n{text}\n>>>>>>> theirs\n")).await.unwrap();
+                let before = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let id = before.stat("/note", WorkBudget::UNBOUNDED, &stop).await.unwrap().value.file_id;
                 match mutation {
                     0 => {},
                     1 => { workspace.write_text("/note", &text).await.unwrap(); },
                     2 => { workspace.write_text("/unrelated", &text).await.unwrap(); },
                     3 => { workspace.remove("/note").await.unwrap(); },
+                    8 | 9 => {
+                        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                        transaction.rename("/note", "/renamed", false, WorkBudget::UNBOUNDED, &stop).await.unwrap();
+                        transaction.commit::<WorkspaceError, _, _>(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &stop,
+                            |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }).await.unwrap();
+                        if mutation == 9 { workspace.write_text("/renamed", &text).await.unwrap(); }
+                    },
                     value => {
                         let marker = ["<<<<<<< ours", "||||||| base", "=======", ">>>>>>> theirs"][usize::from(value - 4)];
                         workspace.write_text("/note", marker).await.unwrap();
                     },
                 }
                 let current = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
-                prop_assert_eq!(git_merge_is_resolved(&current, &BTreeSet::from(["/note".into()])).await.unwrap(), matches!(mutation, 1 | 3));
+                prop_assert_eq!(git_merge_is_resolved(&current, &BTreeMap::from([("/note".into(), Some(id))])).await.unwrap(), matches!(mutation, 1 | 3 | 9));
                 Ok(())
             })?;
         }

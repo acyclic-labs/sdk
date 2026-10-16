@@ -13,7 +13,7 @@ proptest! {
             let GitCommandOutput::Prepared { transition, .. } = repository.execute(
                 GitCommand::Merge { branch: "topic".into() }, GitTreeRef::exact(main, generation(1)),
             ).await.unwrap() else { panic!("pending join"); };
-            let paths = BTreeSet::from([format!("/{path}")]);
+            let paths = BTreeMap::from([(format!("/{path}"), Some(crate::FileId::from_bytes([3; 16])))]);
             let operation = if stale { OperationId::from_bytes([0; 16]) } else { transition.operation_id() };
             let result = repository.record_merge_conflicts(operation, &paths).await;
             prop_assert_eq!(result.is_ok(), !stale);

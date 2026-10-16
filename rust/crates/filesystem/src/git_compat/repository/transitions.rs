@@ -5,7 +5,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     pub async fn record_merge_conflicts(
         &self,
         operation: OperationId,
-        paths: &BTreeSet<String>,
+        paths: &BTreeMap<String, Option<crate::FileId>>,
     ) -> Result<(), GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;

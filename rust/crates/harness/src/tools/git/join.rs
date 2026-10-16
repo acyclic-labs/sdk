@@ -49,12 +49,23 @@ where
                     .conflicts
                     .iter()
                     .map(|conflict| {
-                        conflict
-                            .path
-                            .clone()
-                            .ok_or_else(|| Self::error("Git join conflict has no resolvable path"))
+                        let path = conflict.path.clone().ok_or_else(|| {
+                            Self::error("Git join conflict has no resolvable path")
+                        })?;
+                        use acyclic_fs::ConflictKey;
+                        let identity = match &conflict.key {
+                            ConflictKey::File(id)
+                            | ConflictKey::Metadata(id)
+                            | ConflictKey::HardLinks(id)
+                            | ConflictKey::Directory(id)
+                            | ConflictKey::SpecialPayload(id)
+                            | ConflictKey::ContentRange { file_id: id, .. }
+                            | ConflictKey::Rename { file_id: id, .. } => Some(*id),
+                            ConflictKey::Binding { .. } => None,
+                        };
+                        Ok((path, identity))
                     })
-                    .collect::<crate::Result<BTreeSet<_>>>()?;
+                    .collect::<crate::Result<BTreeMap<_, _>>>()?;
                 let candidate = super::materialize::prepared(
                 async {
                     let mut cache = self.merge_cache.lock().await;

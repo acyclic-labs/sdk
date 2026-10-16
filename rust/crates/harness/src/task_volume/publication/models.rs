@@ -24,26 +24,28 @@ fn scenario(broken: bool) {
         },
         b"stdout".to_vec(),
     );
-    let peer_volume = volume.clone();
-    let peer_goal = goal.clone();
+    let generation = loom::future::block_on(Box::pin(volume.head())).unwrap();
+    // Prepare the client's immutable record before the hand-off. The model
+    // explores its actual atomic provider append against the entire output
+    // retry path, without modeling unrelated client index reconstruction.
+    let (record, _) = segment::encode(&goal, None).unwrap();
+    let provider = volume.provider.clone();
+    let path = volume.path.clone();
     let peer = loom::thread::spawn(move || {
-        loom::future::block_on(Box::pin(publish(
-            &peer_volume,
-            loom::future::block_on(Box::pin(peer_volume.head())).unwrap(),
-            &peer_goal,
-            || std::future::ready(Ok((Vec::new(), None))),
-        )))
+        loom::future::block_on(Box::pin(provider.append(AppendRequest {
+            path,
+            records: vec![record],
+            if_tail: None,
+            idempotency_key: None,
+        })))
         .unwrap();
     });
     if broken {
         model_checking::set_fault(model_checking::Fault::StopAfterGenerationConflict);
     }
-    let result = loom::future::block_on(Box::pin(publish(
-        &volume,
-        loom::future::block_on(Box::pin(volume.head())).unwrap(),
-        &output,
-        || std::future::ready(Ok((Vec::new(), None))),
-    )));
+    let result = loom::future::block_on(Box::pin(publish(&volume, generation, &output, || {
+        std::future::ready(Ok((Vec::new(), None)))
+    })));
     assert!(
         result.is_ok(),
         "output stopped on unrelated generation conflict"
