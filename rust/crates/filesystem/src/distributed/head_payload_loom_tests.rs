@@ -38,12 +38,6 @@ fn ready<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn phase(name: &str) {
-    if std::env::var_os("ACYCLIC_FS_HEAD_MODEL_DIAGNOSTICS").is_some() {
-        eprintln!("head model: {name}");
-    }
-}
-
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -147,32 +141,52 @@ fn request(
 }
 
 fn model(change: Change, recheck: bool) {
-    loom::model(move || {
-        phase("seed");
-        let first = durable(1, Digest::ZERO, b"old");
-        let second = durable(2, first.digest, b"new");
-        let first_bytes = StreamsDurableRecord::encode(&first, STREAM_RECORD_LIMIT).unwrap();
-        let second_bytes = StreamsDurableRecord::encode(&second, STREAM_RECORD_LIMIT).unwrap();
-        let inner = MemoryStream::default();
-        let epoch = Epoch::GENESIS.get().to_le_bytes();
-        let mut initial = request(
-            "/records",
-            vec![[GENESIS_DOMAIN, &epoch].concat().into(), first_bytes.into()],
-            0,
+    // Immutable fixture bytes do not depend on any schedule. Build them once;
+    // every permutation still gets a fresh provider and cancellation state.
+    let first = durable(1, Digest::ZERO, b"old");
+    let second = durable(2, first.digest, b"new");
+    let first_bytes = StreamsDurableRecord::encode(&first, STREAM_RECORD_LIMIT).unwrap();
+    let second_bytes = StreamsDurableRecord::encode(&second, STREAM_RECORD_LIMIT).unwrap();
+    let epoch = Epoch::GENESIS.get().to_le_bytes();
+    let mut initial = request(
+        "/records",
+        vec![[GENESIS_DOMAIN, &epoch].concat().into(), first_bytes.into()],
+        0,
+        None,
+    );
+    initial.conditions.push(CommitCondition::Absent {
+        path: stream_path(ID, "/epochs").unwrap(),
+    });
+    initial.mutations.push(CommitMutation::Append {
+        path: stream_path(ID, "/epochs").unwrap(),
+        records: vec![[EPOCH_DOMAIN, &epoch].concat().into()],
+    });
+    let change_request = match change {
+        Change::Publish => Some(request("/records", vec![second_bytes.into()], 1, Some(2))),
+        Change::Fence => Some(request(
+            "/epochs",
+            vec![
+                [EPOCH_DOMAIN, &Epoch::new(2).unwrap().get().to_le_bytes()]
+                    .concat()
+                    .into(),
+            ],
+            2,
+            Some(1),
+        )),
+        Change::Retire => Some(request(
+            "/retirement",
+            vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED)],
+            3,
             None,
-        );
-        initial.conditions.push(CommitCondition::Absent {
-            path: stream_path(ID, "/epochs").unwrap(),
-        });
-        initial.mutations.push(CommitMutation::Append {
-            path: stream_path(ID, "/epochs").unwrap(),
-            records: vec![[EPOCH_DOMAIN, &epoch].concat().into()],
-        });
+        )),
+        Change::Cancel => None,
+    };
+    loom::model(move || {
+        let inner = MemoryStream::default();
         assert!(matches!(
-            ready(inner.commit(initial)).unwrap(),
+            ready(inner.commit(initial.clone())).unwrap(),
             CommitOutcome::Committed(_)
         ));
-        phase("seeded");
         let cancellation = CancellationToken::new();
         let provider = Arc::new(ModelStream(
             Mutex::new(State {
@@ -186,7 +200,6 @@ fn model(change: Change, recheck: bool) {
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let reader = loom::thread::spawn(move || {
-            phase("read");
             let store = StreamAuthorityStore::new(reader_provider);
             let mut work = AuthorityWork::new(BUDGET, &reader_cancel);
             let result = if recheck {
@@ -200,42 +213,19 @@ fn model(change: Change, recheck: bool) {
                 }))
             };
             work.spent().verify(BUDGET).unwrap();
-            phase("read done");
             result
         });
-        let writer_provider = provider.clone();
-        let writer = loom::thread::spawn(move || {
-            phase("change");
-            let request = match change {
-                Change::Publish => request("/records", vec![second_bytes.into()], 1, Some(2)),
-                Change::Fence => request(
-                    "/epochs",
-                    vec![
-                        [EPOCH_DOMAIN, &Epoch::new(2).unwrap().get().to_le_bytes()]
-                            .concat()
-                            .into(),
-                    ],
-                    2,
-                    Some(1),
-                ),
-                Change::Retire => request(
-                    "/retirement",
-                    vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED)],
-                    3,
-                    None,
-                ),
-                Change::Cancel => {
-                    cancellation.cancel();
-                    return;
-                }
-            };
+        // Two actors suffice: the reader and this writer. An idle third
+        // thread joining both adds schedules without adding a race.
+        if let Some(request) = &change_request {
             assert!(matches!(
-                ready(writer_provider.commit(request)).unwrap(),
+                ready(provider.commit(request.clone())).unwrap(),
                 CommitOutcome::Committed(_)
             ));
-        });
+        } else {
+            cancellation.cancel();
+        }
         let result = reader.join().unwrap();
-        writer.join().unwrap();
         match result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
@@ -269,15 +259,23 @@ fn model(change: Change, recheck: bool) {
 }
 
 #[test]
-fn real_head_payload_explores_publication_fence_retirement_and_cancellation() {
-    for change in [
-        Change::Publish,
-        Change::Fence,
-        Change::Retire,
-        Change::Cancel,
-    ] {
-        model(change, true);
-    }
+fn real_head_payload_explores_publication() {
+    model(Change::Publish, true);
+}
+
+#[test]
+fn real_head_payload_explores_fencing() {
+    model(Change::Fence, true);
+}
+
+#[test]
+fn real_head_payload_explores_retirement() {
+    model(Change::Retire, true);
+}
+
+#[test]
+fn real_head_payload_explores_cancellation() {
+    model(Change::Cancel, true);
 }
 
 #[test]
