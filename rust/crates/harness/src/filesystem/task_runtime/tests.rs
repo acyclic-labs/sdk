@@ -23,6 +23,7 @@ use std::{
 };
 
 mod headless;
+mod canonical_compaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_mail;
 
@@ -770,6 +771,7 @@ mod mail_tests;
 
 mod admission;
 mod future_sizes;
+mod manifest;
 mod model;
 mod settlement;
 mod worker;

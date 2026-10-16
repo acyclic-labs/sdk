@@ -155,7 +155,9 @@ pub(super) unsafe fn notification(
             notification,
             PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
         )
-        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path)
+        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path, |active, path| {
+            matches!(projfs_path_suffix(active, path), Some([]))
+        })
     {
         return HR_OK;
     }
@@ -288,32 +290,31 @@ pub(super) unsafe fn notification(
             if has_pending_capture(operation_failures.as_ref(), &path) {
                 return Ok(());
             }
-            let capture_path = path.clone();
             let Some(baseline) = baseline else {
-                defer_host_capture(operation_failures.as_ref(), capture_path);
+                defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             };
             let host =
-                probe_host_windows_metadata(metadata_root, &capture_path, metadata_probes, &work)?;
+                probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
             if baseline.identity != host.identity
                 || baseline.links != host.links
                 || baseline.size != host.size
             {
-                lock_recover(projection).remove(&capture_path);
-                defer_host_capture(operation_failures.as_ref(), capture_path);
+                lock_recover(projection).remove(&path);
+                defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             }
             let metadata_changed = metadata_changed_since_open(baseline, host);
             if metadata_changed {
-                *retry_path.borrow_mut() = Some(capture_path.clone());
+                *retry_path.borrow_mut() = Some(path.clone());
             }
-            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path)
             {
                 match crate::native_mount::cached_binding::cached_binding_matches(
                     projection,
                     |bindings| {
                         bindings
-                            .get(&capture_path)
+                            .get(&path)
                             .copied()
                             .filter(|binding| binding.host == host && host.links == Some(1))
                     },
@@ -325,7 +326,7 @@ pub(super) unsafe fn notification(
                     |binding| {
                         binding.basis.still_describes(
                             source.as_ref(),
-                            &capture_path,
+                            &path,
                             Some(binding.file_id),
                         )
                     },
@@ -345,16 +346,16 @@ pub(super) unsafe fn notification(
                 }
             }
             let basis = ReadBasis::sample(source.as_ref());
-            let lookup = source.lookup(&capture_path);
+            let lookup = source.lookup(&path);
             match lookup {
                 Ok(Some(_)) if metadata_changed => metadata_edits.with(&host.identity, || {
-                    let Some(lookup) = source.lookup(&capture_path)? else {
-                        defer_host_capture(operation_failures.as_ref(), capture_path);
+                    let Some(lookup) = source.lookup(&path)? else {
+                        defer_host_capture(operation_failures.as_ref(), path.clone());
                         return Ok(());
                     };
                     capture_changed_windows_metadata(
                         source.as_ref(),
-                        &capture_path,
+                        &path,
                         lookup.metadata,
                         baseline,
                         host,
@@ -363,7 +364,7 @@ pub(super) unsafe fn notification(
                 }),
                 Ok(Some(lookup)) => {
                     if let Some(basis) = basis
-                        && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                        && !has_pending_capture(operation_failures.as_ref(), &path)
                         && host.links == Some(1)
                     {
                         let mut bindings = lock_recover(projection);
@@ -371,7 +372,7 @@ pub(super) unsafe fn notification(
                             bindings.clear();
                         }
                         bindings.insert(
-                            capture_path,
+                            path.clone(),
                             ReadOnlyBinding {
                                 host,
                                 file_id: lookup.node.file_id,
@@ -382,8 +383,8 @@ pub(super) unsafe fn notification(
                     Ok(())
                 }
                 Ok(None) => {
-                    lock_recover(projection).remove(&capture_path);
-                    defer_host_capture(operation_failures.as_ref(), capture_path);
+                    lock_recover(projection).remove(&path);
+                    defer_host_capture(operation_failures.as_ref(), path.clone());
                     Ok(())
                 }
                 Err(error) => Err(error),

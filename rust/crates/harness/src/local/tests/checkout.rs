@@ -1,5 +1,6 @@
 //! Stock default commands execute against and publish the same checkout.
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 
 use super::checked_commands::call;
 
@@ -24,8 +25,97 @@ const COMMANDS: [(&str, &str); 8] = [
 ];
 
 #[tokio::test]
+async fn an_unmounted_scratch_directory_captures_edits_and_additions() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let scratch = directory.path().join(".volumes/scratch");
+    std::fs::create_dir_all(&scratch).map_err(super::super::storage)?;
+    std::fs::write(scratch.join("existing"), b"base").map_err(super::super::storage)?;
+    let provider = scripted([
+        call(0, "fs", "status"),
+        ScriptedTurn::Text("baseline".into()),
+        call(1, "fs", "status"),
+        ScriptedTurn::Text("captured".into()),
+    ]);
+    let fs = crate::tools::defaults()?
+        .get("fs", None, None)?
+        .unwrap()
+        .clone();
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path())
+            .without_default_tools()
+            .tool(fs),
+    )
+    .await?;
+    assert_eq!(harness.run("capture baseline").await?.text, "baseline");
+    std::fs::write(scratch.join("existing"), b"changed").map_err(super::super::storage)?;
+    std::fs::write(scratch.join("added"), b"new").map_err(super::super::storage)?;
+    assert_eq!(harness.run("capture edits").await?.text, "captured");
+    let head = harness
+        .workspace()
+        .unwrap()
+        .view()
+        .workspace()
+        .head(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    for (name, expected) in [("existing", b"changed".as_slice()), ("added", b"new")] {
+        let bytes = head
+            .read(
+                &format!("/.volumes/scratch/{name}"),
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        assert_eq!(bytes.as_ref(), expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::write(directory.path().join("note"), b"ordinary").map_err(super::super::storage)?;
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, text()))?
+            .state_directory(state.path())
+            .without_default_tools(),
+    )
+    .await?;
+    let workspace = harness.workspace().unwrap();
+    assert_eq!(workspace.mounts.mounts().count(), 1);
+    assert!(!directory.path().join(".volumes").exists());
+    assert_eq!(
+        workspace
+            .view()
+            .read(
+                "/note",
+                32,
+                &mut acyclic_fs::WorkBudget::UNBOUNDED
+                    .accounting(&acyclic_fs::CancellationToken::new())
+            )
+            .await
+            .map_err(super::super::storage)?
+            .bytes
+            .as_ref(),
+        b"ordinary"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = scripted(
         COMMANDS
@@ -34,10 +124,10 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
             .map(|(index, (name, command))| call(index, name, command))
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "edit and inspect the checkout")
@@ -59,8 +149,38 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
         );
     }
     assert_eq!(output?.text, "commands completed");
+    // The client-facing, owner-authorized query sees the same chunk files
+    // written by bash; there is no parallel output stream or task-file root.
+    let observation = harness
+        .task_files()
+        .observe(crate::task_volume::Query::Root, None, 128)
+        .await?;
+    let snapshot = observation.snapshot.expect("initial task-file snapshot");
+    let stdout: Vec<_> = snapshot
+        .files
+        .iter()
+        .filter(|file| {
+            matches!(
+                file.key,
+                crate::task_volume::FileKey::Task {
+                    file: crate::task_volume::TaskFile::Tool {
+                        file: crate::task_volume::ToolFile::Stdout(_),
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .flat_map(|file| file.bytes.iter().copied())
+        .collect();
+    assert_eq!(stdout, b"visible");
+
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
+    assert!(requests[0].messages.iter().any(|message| {
+        matches!(&message.content, crate::model::ModelContent::Text(text)
+            if text.contains(harness.workspace().unwrap().context_line()))
+    }));
     let results: std::collections::BTreeMap<_, _> = requests
         .iter()
         .flat_map(|request| &request.messages)
@@ -131,12 +251,13 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
 #[tokio::test]
 async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = text();
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =
@@ -168,6 +289,43 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
             .task_context(task, crate::scheduler::LeaseFence::from(&lease.reservation))
             .await?,
     );
+    {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "unmounted".into(),
+            name: "fs".into(),
+            arguments: json!({"command":"status --volume journal"}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        let tool = harness
+            .tools()
+            .get("fs", None, None)?
+            .ok_or_else(|| Error::NotFound("fs".into()))?;
+        let refused = tool
+            .executor
+            .execute(invocation.clone(), Some(context.clone()))
+            .await?;
+        assert!(
+            refused.value["error"]
+                .as_str()
+                .unwrap()
+                .contains("volume is not mounted")
+        );
+        // Current visibility cannot prove that a previously dispatched call
+        // had no effect. A recorded completion replays through the journal;
+        // otherwise reconciliation remains conservative.
+        assert!(
+            tool.executor
+                .reconcile(invocation, Some(context))
+                .await?
+                .is_none()
+        );
+    }
     // Property: arbitrary call identities are authorized exactly when both
     // identities and every required grant survive scope attenuation.
     {
@@ -299,5 +457,53 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
         b"final"
     );
     assert_eq!(provider.requests().len(), 0);
+    let workspace = harness.workspace.as_ref().unwrap();
+    let first = workspace
+        .executor(
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(harness.task_files()),
+        )
+        .await?;
+    let second = workspace
+        .executor(
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(harness.task_files()),
+        )
+        .await?;
+    for (executor, command) in [(first, "checkout -b shared-binding"), (second, "status")] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: if command == "status" {
+                "shared-status"
+            } else {
+                "shared-checkout"
+            }
+            .into(),
+            name: "fs".into(),
+            arguments: json!({"command":command}),
+        };
+        let context = ToolContext::new(
+            Arc::clone(&task_context),
+            invocation.operation_id,
+            &invocation.call_id,
+            None,
+        )?;
+        let result = executor.execute(invocation, Some(context)).await?;
+        if command == "status" {
+            let output: acyclic_fs::GitCommandOutput =
+                serde_json::from_value(result.value["result"].clone())
+                    .map_err(super::super::storage)?;
+            let acyclic_fs::GitCommandOutput::Status(status) = output else {
+                return Err(Error::Invalid("expected selected branch status".into()));
+            };
+            assert_eq!(status.branch, "shared-binding");
+            assert_eq!(
+                status.workspace.workspace_id(),
+                workspace.current().await.id()
+            );
+        }
+    }
     Ok(())
 }

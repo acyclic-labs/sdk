@@ -17,8 +17,10 @@ proptest! {
             let mut resumed = original.request().clone();
             resumed.messages[1].content = ModelContent::Text(dense.repeat(copies));
             let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None).unwrap();
-            let projected = projection::body(&provider, prepared.request()).unwrap();
-            let counted = wire::body(projected, &provider.model.name, adapter).unwrap();
+            let names = crate::tool_names::Names::new(prepared.request());
+            let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+            let projected = projection::body_named(&provider, prepared.request(), &names, &origin).unwrap();
+            let counted = wire::body(projected, &provider.model.name, adapter);
             let actual = serde_json::to_vec(&counted).unwrap().len() as u64 + 512;
             let first = futures::executor::block_on(provider.count_tokens(&prepared)).unwrap();
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));

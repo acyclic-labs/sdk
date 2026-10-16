@@ -6,6 +6,30 @@ use acyclic_fs::{
 };
 mod bootstrap;
 
+mod mounts;
+pub(super) mod volumes;
+#[cfg(test)]
+pub(super) use crate::sync::owned::lock_owned;
+pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
+
+pub(super) struct MountedVolume {
+    pub(super) workspace: crate::tools::git::OwnedView,
+    pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
+}
+
+impl Drop for MountedVolume {
+    fn drop(&mut self) {
+        if let Some(native) = &self.native {
+            // Provider retirement joins callbacks and releases the actual OS
+            // destination fence before the final workspace owner disappears.
+            if let Err(error) = native.abandon() {
+                tracing::error!(?error, "workspace mount retirement failed");
+            }
+        }
+    }
+}
+pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
+
 pub(super) type View = LazyWorkspace<
     LocalAuthorityBackend,
     LocalObjectBackend,
@@ -17,12 +41,32 @@ pub(super) type View = LazyWorkspace<
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
-    view: View,
+    pub(super) view: View,
+    pub(super) mount_directory: PathBuf,
+    pub(super) mounted: Option<
+        Arc<
+            acyclic_fs::native_mount::LazyMount<
+                LocalAuthorityBackend,
+                LocalObjectBackend,
+                NativeDemandSource,
+                LocalCoreStateStore,
+            >,
+        >,
+    >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
+    // Lock order: view state -> coordinator -> command-local cache or native
+    // completion, then task-file index -> provider visibility -> provider state.
+    // Callbacks never reacquire view state. All executor bindings share this
+    // owner; the real cfg shim and its negative controls model it.
+    pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
+    pub(super) mounts: Arc<Mounts>,
+    pub(super) context_line: String,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -35,6 +79,57 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
+        let primary = self.mounts.named(None)?.1;
+        let mut mounts = mounts::owner(
+            path,
+            &primary.view.volume,
+            None,
+            self.mounts
+                .mounts()
+                .filter(|(relative, _)| !relative.is_empty())
+                .map(|(_, mount)| {
+                    (
+                        mount.view.name.clone(),
+                        mount.view.volume.clone(),
+                        mount.view.source.clone(),
+                    )
+                }),
+        )?;
+        #[cfg(target_os = "linux")]
+        volumes::link(path, &mut mounts)?;
+        #[cfg(not(target_os = "linux"))]
+        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        Ok(Arc::new(mounts))
+    }
+    #[cfg(test)]
+    pub(super) async fn current(
+        &self,
+    ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {
+        let state = lock_owned(StateArc::clone(&self.state)).await;
+        state
+            .active
+            .as_ref()
+            .unwrap_or(&self.view)
+            .workspace()
+            .clone()
+    }
+    pub(super) fn context_line(&self) -> &str {
+        &self.context_line
+    }
+
+    /// Binds commands to this workspace's existing serialized view owner.
+    pub async fn executor(
+        self: &Arc<Self>,
+        project: &VolumeRef,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
+        Ok(Arc::new(
+            super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
+                .await?,
+        ))
+    }
     pub(super) async fn checkout_selection(
         &self,
     ) -> Result<(
@@ -99,11 +194,13 @@ impl LocalWorkspace {
 pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
+    scratch: &VolumeRef,
     path: &Path,
     directory: &Path,
     identity: Option<[u8; 16]>,
     operation: acyclic_fs::OperationId,
     existing: bool,
+    native_mounts: bool,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -150,6 +247,14 @@ pub(super) async fn open(
             "local checkout root was replaced during open".into(),
         ));
     }
+    let exclusions = if native_mounts {
+        volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
+    } else {
+        Vec::new()
+    };
+    let source = source
+        .exclude(exclusions, &&work, &cancellation)
+        .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     let source = Arc::new(source);
     let fresh = original.is_none();
     let view = match selected {
@@ -180,17 +285,39 @@ pub(super) async fn open(
         .register_root(view.workspace())
         .await
         .map_err(storage)?;
+    let mut mounts = mounts::owner(
+        &path,
+        volume,
+        None,
+        native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
+    )?;
+    if native_mounts {
+        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+    }
+    let context_line = mounts.context_line();
+    let mounts = Arc::new(mounts);
+    let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
+        view.workspace().id(),
+        Arc::clone(&mounts),
+    )));
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
         view,
+        mount_directory: directory.join("task-views"),
+        mounted: None,
         filesystem: filesystem.clone(),
         store,
         identity: acyclic_fs::NativeRootIdentity::from_bytes(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
+        state,
+        context_line,
+        mounts,
     })
 }
 
@@ -200,8 +327,10 @@ pub(super) async fn open(
 pub(super) async fn open_volume(
     filesystem: &acyclic_fs::LocalFs,
     volume: &VolumeRef,
+    scratch: &VolumeRef,
     directory: &Path,
     operation: acyclic_fs::OperationId,
+    native_mounts: bool,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -249,11 +378,13 @@ pub(super) async fn open_volume(
     open(
         filesystem,
         volume,
+        scratch,
         &path,
         directory,
         Some(identity),
         operation,
         true,
+        native_mounts,
     )
     .await
 }

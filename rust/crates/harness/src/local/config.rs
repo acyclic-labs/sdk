@@ -15,11 +15,11 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
-    /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
-    pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
+    pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
-    pub(super) context: ContextPipeline,
+    pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
     pub(super) limits: Limits,
@@ -27,11 +27,21 @@ pub struct LocalHarnessConfig {
     pub(super) session_limits: SessionLimits,
     pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+}
+
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+impl LocalProject {
+    pub(super) fn root(&self) -> &Path {
+        match self {
+            Self::Workspace(path) => path,
+            Self::Volume { directory, .. } => directory,
+        }
+    }
 }
 
 impl LocalHarnessConfig {
@@ -41,8 +51,9 @@ impl LocalHarnessConfig {
         Self {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
+            state_directory: None,
             model,
-            context: ContextPipeline::default(),
+            context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
             limits: Limits::default(),
@@ -55,7 +66,7 @@ impl LocalHarnessConfig {
             },
             concurrency: 1,
             compaction: None,
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: None,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_limits: crate::mcp::McpClientLimits::default(),
@@ -72,10 +83,16 @@ impl LocalHarnessConfig {
         self.project = LocalProject::Volume { directory, volume };
         self
     }
-    /// Selects the stock model's context pipeline.
+    /// Selects the caller-owned durable state directory, outside the checkout.
     #[must_use]
-    pub fn context(mut self, context: ContextPipeline) -> Self {
-        self.context = context;
+    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(directory.into());
+        self
+    }
+    /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
+    #[must_use]
+    pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
+        self.context_manifest = Some(reference);
         self
     }
     /// Disables the default set, retaining every custom tool.
@@ -114,6 +131,15 @@ impl LocalHarnessConfig {
         self.session_limits = limits;
         self
     }
+    /// Selects the finite goal admission policy; `None` disables automatic continuations.
+    #[must_use]
+    pub fn goal_continuations(
+        mut self,
+        policy: Option<crate::goal::GoalContinuationPolicy>,
+    ) -> Self {
+        self.goal_continuations = policy;
+        self
+    }
     /// Selects maximum concurrent local tasks.
     #[must_use]
     pub fn concurrency(mut self, concurrency: usize) -> Self {
@@ -127,7 +153,7 @@ impl LocalHarnessConfig {
         self
     }
     /// Selects native settings locations and explicit project trust using the shared loader.
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
     pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
         self.settings = Some(settings);

@@ -71,7 +71,7 @@ impl LocalStream {
             frames = Empty,
             bytes = Empty
         ));
-        let open = tokio::task::spawn_blocking(move || {
+        let open = spawn_blocking(move || {
             span.in_scope(|| Journal::open(&root, limits, &recovered, &span))
         });
         #[cfg(test)]
@@ -126,7 +126,7 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (changed, _) = watch::channel(Some(0_u64));
+        let (failed, _) = watch::channel(false);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
@@ -134,9 +134,10 @@ impl LocalStream {
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
-                changed,
+                failed,
+                revision: watch::channel(0).0,
                 #[cfg(acyclic_loom)]
-                omit_persist_wake: false,
+                omit_follow_wake: false,
                 durable_tails: Mutex::new(Default::default()),
             }),
             work: None,
@@ -144,7 +145,7 @@ impl LocalStream {
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.changed.borrow().is_none() {
+        if *self.inner.failed.borrow() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
@@ -233,10 +234,6 @@ impl LocalStream {
         if result.is_err() {
             return Err(self.inner.poison());
         }
-        #[cfg(acyclic_loom)]
-        if self.inner.omit_persist_wake {
-            return self.compact_if_due().await;
-        }
         self.inner.published();
         self.compact_if_due().await
     }
@@ -259,7 +256,7 @@ impl LocalStream {
             "acyclic.stream.compact",
             bytes = state.len()
         ));
-        tokio::task::spawn_blocking(move || {
+        spawn_blocking(move || {
             span.in_scope(|| {
                 let mut journal = inner
                     .journal
@@ -304,7 +301,7 @@ impl LocalStream {
                 Some((target, synced_before, journal_bytes, file, durability)) => {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
-                    tokio::task::spawn_blocking(move || {
+                    spawn_blocking(move || {
                         inner.flush_through(target, &file, durability, work.as_deref());
                     })
                     .await
@@ -369,23 +366,35 @@ impl LocalStream {
 
     /// Observes accepted publications without joining their durability wait.
     async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        self.check_available()?;
-        Ok(read.await)
-    }
-
-    /// Runs one read under shared visibility, then returns its result once
-    async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        self.check_available()?;
-        let (result, required) = {
+        let read = async {
+            self.check_available()?;
             let _visibility = self.inner.visibility.read().await;
             self.check_available()?;
-            let required = self.inner.required()?;
-            (read.await, required)
+            Ok(read.await)
         };
-        self.await_durable(required).await?;
-        Ok(result)
+        #[cfg(feature = "test-support")]
+        return acyclic_native_runtime::testing::observe_read(read).await;
+        #[cfg(not(feature = "test-support"))]
+        read.await
+    }
+
+    /// Runs one read under shared visibility, then joins its durable watermark.
+    async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+        let read = async {
+            self.check_available()?;
+            let (result, required) = {
+                let _visibility = self.inner.visibility.read().await;
+                self.check_available()?;
+                let required = self.inner.required()?;
+                (read.await, required)
+            };
+            self.await_durable(required).await?;
+            Ok(result)
+        };
+        #[cfg(feature = "test-support")]
+        return acyclic_native_runtime::testing::observe_read(read).await;
+        #[cfg(not(feature = "test-support"))]
+        read.await
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

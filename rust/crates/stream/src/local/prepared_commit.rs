@@ -5,6 +5,8 @@ impl LocalStream {
         maximum: usize,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
+        #[cfg(feature = "test-support")]
+        describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
@@ -57,7 +59,7 @@ impl LocalStream {
                     &work.meter,
                     std::mem::size_of_val(&worker),
                 ))?;
-                let task = tokio::spawn(async move {
+                let task = spawn(async move {
                     let _allocation = allocation;
                     worker.await
                 });

@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
-import { ProjectionStore, type ClientEvent } from "../src/client.js";
 import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Value = Readonly<{ count: number }>;
@@ -182,31 +181,6 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
     client.release("a");
     expect(client.residency()).toEqual([0, 0, 0, 0]);
   } finally { client.dispose(); }
-});
-
-test("ProjectionStore explicitly starts before delivery and retains updates across subscriber churn", () => {
-  const listeners = new Set<(event: ClientEvent<number>) => void>();
-  const client = { subscribe(listener: (event: ClientEvent<number>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
-  const store = new ProjectionStore(client, 0, (state, event) => state + event.event);
-  expect(listeners.size).toBe(0);
-  store.start(); store.start();
-  expect(listeners.size).toBe(1);
-  let calls = 0;
-  const stop = store.subscribe(() => calls++);
-  const emit = (event: number): void => {
-    for (const listener of listeners) listener({ authority: { kind: "conversation", id: "a" }, operationId: "op", revision: 1n, event } as ClientEvent<number>);
-  };
-  emit(0);
-  expect(calls).toBe(0);
-  emit(1);
-  expect(calls).toBe(1);
-  stop(); emit(2);
-  expect(store.getSnapshot()).toBe(3);
-  expect(calls).toBe(1);
-  store.dispose(); store.dispose(); emit(4);
-  expect(listeners.size).toBe(0);
-  expect(store.getSnapshot()).toBe(3);
-  expect(() => store.start()).toThrow();
 });
 
 test("bounded reordered/duplicate/partial outcomes preserve unrelated authoritative values", () => {

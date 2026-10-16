@@ -84,7 +84,7 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
 #[cfg(not(target_arch = "wasm32"))]
 fn canonical_component_peak(value: &impl Serialize) -> Result<u64> {
     let mut converted = None;
-    let allocation = allocation_counter::measure(|| {
+    let allocation = acyclic_test_support::measure(|| {
         converted = Some(serde_json::to_value(value).map(|mut value| {
             value.sort_all_objects();
             value
@@ -132,7 +132,7 @@ fn snapshot_digest_peak_is_bounded_by_one_canonical_component() -> Result<()> {
             peak = peak.max(canonical_component_peak(event)?);
         }
         let mut digest = None;
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             digest = Some(snapshot.digest_with_work(&mut None));
         });
         assert_eq!(digest.expect("digest ran")?, expected);

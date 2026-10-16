@@ -17,7 +17,7 @@ pub(super) async fn spawn_blocking<T>(
     Ok(work())
 }
 
-pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
+pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     let mut file = tempfile::tempfile()?;
     let header = encode_header(limits, 0)?;
@@ -54,8 +54,9 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
             synced: watch::channel(0).0,
-            changed: watch::channel(Some(0)).0,
-            omit_persist_wake,
+            failed: watch::channel(false).0,
+            revision: watch::channel(0).0,
+            omit_follow_wake,
             durable_tails: Mutex::new(Default::default()),
         }),
         work: None,

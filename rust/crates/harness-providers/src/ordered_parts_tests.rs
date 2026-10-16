@@ -5,8 +5,18 @@ use proptest::prelude::*;
 fn labels(adapter: Adapter, body: &Value) -> Vec<String> {
     let items = match adapter {
         Adapter::Responses => body["input"].as_array(),
-        Adapter::Anthropic => body["messages"][0]["content"].as_array(),
-        Adapter::Gemini => body["contents"][0]["parts"].as_array(),
+        Adapter::Anthropic => body["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .and_then(|message| message["content"].as_array()),
+        Adapter::Gemini => body["contents"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "model"))
+            .and_then(|message| message["parts"].as_array()),
         Adapter::Chat => unreachable!(),
     }
     .map(Vec::as_slice)
@@ -15,7 +25,7 @@ fn labels(adapter: Adapter, body: &Value) -> Vec<String> {
         .iter()
         .map(|item| {
             if adapter == Adapter::Responses && item["role"] == "assistant" {
-                item["content"].as_str().unwrap().into()
+                item["content"][0]["text"].as_str().unwrap().into()
             } else if let Some(text) = item["text"].as_str() {
                 text.into()
             } else if adapter == Adapter::Gemini {

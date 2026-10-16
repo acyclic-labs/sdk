@@ -26,11 +26,11 @@ proptest! {
         let expected_io = checked(crate::filesystem::PreparationIo::from_native_work(&expected_work))?;
 
         let mut actual = None;
-        let actual_allocations = allocation_counter::measure(|| {
+        let actual_allocations = acyclic_test_support::measure(|| {
             actual = Some(registry.definitions_for_grants(&grants, Some(&actual_io)));
         });
         let mut expected = None;
-        let expected_allocations = allocation_counter::measure(|| {
+        let expected_allocations = acyclic_test_support::measure(|| {
             expected = Some((|| {
                 let mut definitions = crate::model::vec_with_capacity(count, Some(&expected_io))?;
                 for name in &names {

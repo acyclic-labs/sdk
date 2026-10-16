@@ -5,6 +5,7 @@ use std::{io, rc::Rc};
 pub(super) struct Entry {
     pub kind: CompletionKind,
     pub item: Rc<Completion>,
+    pub theme: bool,
 }
 
 impl CompletionMenu {
@@ -26,6 +27,16 @@ impl CompletionMenu {
                 order
             });
         if let Some((_, old)) = self.files.remove(path) {
+            for entry in old.iter().filter(|entry| entry.theme) {
+                let name = entry.item.value.to_ascii_lowercase();
+                if let Some(count) = self.theme_commands.get_mut(&name) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.theme_commands.remove(&name);
+                        self.version = None;
+                    }
+                }
+            }
             for (index, entry) in old.iter().enumerate() {
                 if let Some(request) = &self.request {
                     if request.kind != entry.kind {
@@ -34,7 +45,10 @@ impl CompletionMenu {
                     self.work.candidates += 1;
                     let score = match request.kind {
                         CompletionKind::Command => {
-                            entry.item.value.starts_with(&request.query).then_some(0)
+                            super::prefix(&entry.item.value, &request.query).then_some(0)
+                        }
+                        CompletionKind::Theme => {
+                            super::theme_prefix(&entry.item.value, &request.query).then_some(0)
                         }
                         CompletionKind::Mention => {
                             super::fuzzy_score(&request.query, &entry.item.value)
@@ -47,6 +61,13 @@ impl CompletionMenu {
             }
         }
         for (index, entry) in entries.iter().enumerate() {
+            if entry.theme {
+                *self
+                    .theme_commands
+                    .entry(entry.item.value.to_ascii_lowercase())
+                    .or_default() += 1;
+                self.version = None;
+            }
             self.rank_entry(order, index, entry);
         }
         if bytes.is_some() {
@@ -59,6 +80,8 @@ impl CompletionMenu {
     /// Replace a lost query's disposable fold before applying its new snapshot.
     pub fn clear_files(&mut self) {
         self.files.clear();
+        self.theme_commands.clear();
+        self.version = None;
         self.next_file = 0;
         self.items.clear();
         self.selected = 0;
@@ -68,6 +91,7 @@ impl CompletionMenu {
 fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     let make = |kind, value: String, description, tool, append_space| Entry {
         kind,
+        theme: false,
         item: Rc::new(Completion {
             label: if kind == CompletionKind::Command {
                 format!("/{value}")
@@ -105,6 +129,24 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     if !path.ends_with(".json") {
         return Ok(vec![]);
     }
+    if path == "themes.json" {
+        let themes: Vec<String> = serde_json::from_slice(bytes)?;
+        return themes
+            .into_iter()
+            .map(|name| {
+                if name.trim() != name || name.is_empty() || name.chars().any(char::is_control) {
+                    return Err(io::Error::other("invalid theme name"));
+                }
+                Ok(make(
+                    CompletionKind::Theme,
+                    name,
+                    String::new(),
+                    false,
+                    false,
+                ))
+            })
+            .collect();
+    }
     let definitions: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
     definitions
         .into_iter()
@@ -120,21 +162,45 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let tool = definition
-                .get("tool")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let append = definition
-                .get("append_space")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            Ok(make(
-                CompletionKind::Command,
-                name.into(),
-                description.into(),
-                tool,
-                append,
-            ))
+            let action = definition.pointer("/action/kind").and_then(|v| v.as_str());
+            let tool = action == Some("tool")
+                || definition
+                    .get("tool")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            let append = tool
+                || action == Some("theme")
+                || definition
+                    .get("append_space")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+            let aliases: Vec<String> = definition
+                .get("aliases")
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            let mut names = vec![name.to_owned()];
+            names.extend(aliases);
+            names
+                .into_iter()
+                .map(|name| {
+                    if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control())
+                    {
+                        return Err(io::Error::other("invalid command alias"));
+                    }
+                    let mut entry = make(
+                        CompletionKind::Command,
+                        name,
+                        description.into(),
+                        tool,
+                        append,
+                    );
+                    entry.theme = action == Some("theme")
+                        || action.is_none() && entry.item.value.eq_ignore_ascii_case("theme");
+                    Ok(entry)
+                })
+                .collect::<io::Result<Vec<_>>>()
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()
+        .map(|groups| groups.into_iter().flatten().collect())
 }

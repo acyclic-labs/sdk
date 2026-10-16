@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, OperationId,
-    context::{CompactionPolicy, ContextPipeline},
+    context::{CompactionPolicy, ContextManifest},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{SchedulerPayloadStore, WorkPull, Worker},
@@ -172,189 +172,210 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             provider.transport = transport.clone();
             provider
         };
-        let model = provider.model().clone();
-        let stages = Arc::new(probe::Stages::default());
-        let provider = Arc::new(probe::Probe {
+        run_stock_turn(
             provider,
-            stages: stages.clone(),
-        });
-        let storage_provider =
-            ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &storage_provider, None)?;
-        let agent = AgentId::from_bytes([2; 16]);
-        let volume = VolumeRef::new(
-            storage_provider,
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        host.create_volume(&volume).await?;
-        let issuer = AuthorityIssuer::new(
-            "fixture",
-            [47; 32],
-            Authority {
-                kind: AggregateKind::Task,
-                id: "owner".into(),
-            },
-        );
-        let signed = issuer.issue(
-            "owner",
-            &Capabilities::new([
-                "operation:declare".into(),
-                "operation:observe".into(),
-                "operation:cancel".into(),
-                "task:spawn:model@1".into(),
-                "model:generate".into(),
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(agent),
-            None,
-            &mut None,
-        )?;
-        let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
-        let work = work(&CancellationToken::new())?;
-        let io = PreparationIo::from_native_work(&work)?;
-        let operation = OperationId::from_bytes([1; 16]);
-        let payloads = FilesystemContentPublisher::new(
-            host.clone(),
-            &volume,
-            &issuer.verifier(&mut None)?,
-            &signed,
-            65_536,
-            None,
-        )?;
-        let command = ModelTaskCommand {
-            input: ModelContent::Text("question".into()),
-            selected_context: None,
-            max_steps: 1,
-            max_output_tokens: None,
-            selected_output_volume: None,
-            mailbox_operation: None,
-        };
-        let payload = payloads
-            .stage(
-                operation,
-                "command",
-                &serde_json::to_vec(&command).expect("command fixture"),
-                None,
-            )?
-            .await?;
-        let machine = Arc::new(OneCommand {
-            identity: MachineIdentity {
-                name: "model".into(),
-                version: "1".into(),
-                digest: [48; 32],
-            },
-            schema: json!({"type":"boolean"}),
-            command: WorkflowCommand {
-                operation_id: OperationId::from_bytes([3; 16]),
-                kind: MODEL_TASK_COMMAND_KIND.into(),
-                payload,
-            },
-        });
-        let mut tasks = TaskRegistry::default();
-        tasks.register(
-            TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
-                machine.clone(),
-                json!({"type":"boolean"}),
-                json!({"type":"null"}),
-            )?
-            .publish(&work)?,
-        )?;
-        let mut machines = MachineRegistry::default();
-        machines.register(machine, &mut None)?;
-        let runtime = FilesystemTaskRuntime::open(
-            Arc::new(MemoryStream::default()),
-            host.clone(),
-            &volume,
-            &issuer.verifier(&mut None)?,
-            &signed,
-            &scope,
-            &tasks,
-            &machines,
-            &ToolRegistry::default(),
-            SessionLimits {
-                active_tasks: 1,
-                total_tasks: 1,
-                depth: 1,
-                model_steps: 1,
-            },
-            1,
-            65_536,
-            Arc::new(Clock),
-            None,
-            &[],
-            &ResumableToolRegistry::default(),
-            Some(&io),
+            adapter,
+            CompactionPolicy::Disabled,
+            acyclic_fs::Fs::memory(),
         )
         .await?;
-        let opened = work.receipt().items_examined;
-        let definition =
-            tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
-        assert!(matches!(
-            runtime
-                .harness()
-                .admit(operation, &definition, serde_json::Value::Bool(false), None)
-                .await?,
-            Admission::Accepted(_)
-        ));
-        let admitted = work.receipt().items_examined;
-        let mut history = HistoryWork::new(PreparationIo::from_native_work(&work)?);
-        history.retain_owned(
-            std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
-        )?;
-        let pulled = runtime
-            .task_host()
-            .pull_work(
-                &Worker {
-                    id: "fixture".into(),
-                    available: ResourceRequest::default(),
-                    labels: BTreeMap::new(),
-                },
-                Some(operation),
-                &mut Some(&mut history),
-            )
-            .await?;
-        let WorkPull::Claimed(lease) = pulled else {
-            panic!("native lease")
-        };
-        let recovery = history.into_custody()?;
-        let context = ContextPipeline::default();
-        let policy = CompactionPolicy::Disabled;
-        let commands =
-            runtime
-                .commands()
-                .with_model(&model, provider, &context, &policy, Some(&io))?;
-        let leased = work.receipt().items_examined;
-        let result = runtime
-            .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
-            .await;
-        eprintln!(
-            "{adapter:?} items: open={opened}, admission={}, lease={}, run={}, provider={stages:?}",
-            admitted - opened,
-            leased - admitted,
-            work.receipt().items_examined - leased
-        );
-        let (attempt, custody) = result?;
-        if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
-            return Err(error);
-        }
-        assert!(
-            matches!(
-                attempt,
-                TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { .. })
-            ),
-            "{adapter:?}"
-        );
-        assert!(custody.work().shares_allocation_context(&work));
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
-        eprintln!(
-            "{adapter:?} total_items={} remaining_items={}",
-            work.receipt().items_examined,
-            work.remaining()?.items_examined,
-        );
     }
+    Ok(())
+}
+
+pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
+    provider: crate::ResolvedModel,
+    adapter: Adapter,
+    policy: CompactionPolicy,
+    filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+) -> Result<()> {
+    let model = provider.model().clone();
+    let stages = Arc::new(probe::Stages::default());
+    let provider = Arc::new(probe::Probe {
+        provider,
+        stages: stages.clone(),
+    });
+    let storage_provider =
+        ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let host = FilesystemHost::new(filesystem, &storage_provider, None)?;
+    let agent = AgentId::from_bytes([2; 16]);
+    let volume = VolumeRef::new(
+        storage_provider,
+        "private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let issuer = AuthorityIssuer::new(
+        "fixture",
+        [47; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        },
+    );
+    let signed = issuer.issue(
+        "owner",
+        &Capabilities::new([
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
+            "task:spawn:model@1".into(),
+            "model:generate".into(),
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(agent),
+        None,
+        &mut None,
+    )?;
+    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let work = work(&CancellationToken::new())?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let operation = OperationId::from_bytes([1; 16]);
+    let payloads = FilesystemContentPublisher::new(
+        host.clone(),
+        &volume,
+        &issuer.verifier(&mut None)?,
+        &signed,
+        65_536,
+        None,
+    )?;
+    let command = ModelTaskCommand {
+        context_manifest: ContextManifest::default()
+            .publish(
+                payloads.as_ref(),
+                OperationId::from_bytes([10; 16]),
+                "manifest.json",
+                Limits::default(),
+            )
+            .await?,
+        input: ModelContent::Text("question".into()),
+        selected_context: None,
+        max_steps: 1,
+        max_output_tokens: None,
+        selected_output_volume: None,
+        mailbox_operation: None,
+    };
+    let payload = payloads
+        .stage(
+            operation,
+            "command",
+            &serde_json::to_vec(&command).expect("command fixture"),
+            None,
+        )?
+        .await?;
+    let machine = Arc::new(OneCommand {
+        identity: MachineIdentity {
+            name: "model".into(),
+            version: "1".into(),
+            digest: [48; 32],
+        },
+        schema: json!({"type":"boolean"}),
+        command: WorkflowCommand {
+            operation_id: OperationId::from_bytes([3; 16]),
+            kind: MODEL_TASK_COMMAND_KIND.into(),
+            payload,
+        },
+    });
+    let mut tasks = TaskRegistry::default();
+    tasks.register(
+        TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
+            machine.clone(),
+            json!({"type":"boolean"}),
+            json!({"type":"null"}),
+        )?
+        .publish(&work)?,
+    )?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine, &mut None)?;
+    let runtime = FilesystemTaskRuntime::open(
+        Arc::new(MemoryStream::default()),
+        host.clone(),
+        &volume,
+        &issuer.verifier(&mut None)?,
+        &signed,
+        &scope,
+        &tasks,
+        &machines,
+        &ToolRegistry::default(),
+        SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 1,
+            model_steps: 1,
+        },
+        1,
+        65_536,
+        Arc::new(Clock),
+        None,
+        &[],
+        &ResumableToolRegistry::default(),
+        Some(&io),
+    )
+    .await?;
+    let opened = work.receipt().items_examined;
+    let definition =
+        tasks.get_version::<serde_json::Value, serde_json::Value>("model", "1", None)?;
+    assert!(matches!(
+        runtime
+            .harness()
+            .admit(operation, &definition, serde_json::Value::Bool(false), None)
+            .await?,
+        Admission::Accepted(_)
+    ));
+    let admitted = work.receipt().items_examined;
+    let mut history = HistoryWork::new(PreparationIo::from_native_work(&work)?);
+    history.retain_owned(
+        std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
+    )?;
+    let pulled = runtime
+        .task_host()
+        .pull_work(
+            &Worker {
+                id: "fixture".into(),
+                available: ResourceRequest::default(),
+                labels: BTreeMap::new(),
+            },
+            Some(operation),
+            &mut Some(&mut history),
+        )
+        .await?;
+    let WorkPull::Claimed(lease) = pulled else {
+        panic!("native lease")
+    };
+    let recovery = history.into_custody()?;
+    let commands = runtime
+        .commands()
+        .with_model(&model, provider, &policy, Some(&io))?;
+    let leased = work.receipt().items_examined;
+    let result = runtime
+        .resume_task_with_native_work(lease, recovery, &commands, 2, &work)
+        .await;
+    eprintln!(
+        "{adapter:?} items: open={opened}, admission={}, lease={}, run={}, provider={stages:?}",
+        admitted - opened,
+        leased - admitted,
+        work.receipt().items_examined - leased
+    );
+    let (attempt, custody) = result?;
+    if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
+        return Err(error);
+    }
+    assert!(
+        matches!(
+            attempt,
+            TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { .. })
+        ),
+        "{adapter:?}"
+    );
+    assert!(custody.work().shares_allocation_context(&work));
+    eprintln!(
+        "{adapter:?} total_items={} remaining_items={}",
+        work.receipt().items_examined,
+        work.remaining()?.items_examined,
+    );
     Ok(())
 }

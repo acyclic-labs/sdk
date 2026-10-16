@@ -3,6 +3,32 @@
 use crate::{CommitId, RecordStream, StreamError, StreamPath, StreamProvider, wire};
 use prost::Message as _;
 
+/// Decodes a bounded physical session message; protocol validation remains in the pool.
+pub fn decode_frame(bytes: &[u8]) -> Result<wire::SessionFrame, StreamError> {
+    if bytes.len() > crate::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    wire::SessionFrame::decode(bytes).map_err(|_| StreamError::InvalidArgument)
+}
+
+/// Validates a logical Streams follow without creating transport state.
+pub fn validate_follow(
+    follow: &wire::SessionFollow,
+    resume: &wire::SessionCursor,
+) -> Result<(), StreamError> {
+    StreamPath::validate(&follow.path)?;
+    if !resume.opaque.is_empty()
+        || !matches!(
+            wire::SessionDelivery::try_from(follow.delivery),
+            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
+        )
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    preceding_follow(follow, resume)?;
+    Ok(())
+}
+
 /// Decodes the optional atomic history guard of a full-fidelity follow.
 pub fn preceding_follow(
     follow: &wire::SessionFollow,
@@ -80,6 +106,42 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     match record_anchor(cursor)? {
         Some(anchor) => provider.follow_checked(path, cursor.next, anchor).await,
         None => provider.follow(path, 0).await,
+    }
+}
+
+/// Validates a peer's ALL/LATEST data against the next received cursor.
+/// LATEST can skip conflated values; ALL must remain consecutive. The caller
+/// advances application progress only when this admitted delivery is consumed.
+pub fn follow_sequence(
+    delivery: i32,
+    next: u64,
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    use wire::{SessionDelivery, session_data::Item};
+    let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+    if !after.opaque.is_empty() || data.accepted < after.next || data.durable > data.accepted {
+        return Err(StreamError::Unavailable);
+    }
+    match (SessionDelivery::try_from(delivery), &data.item) {
+        (Ok(SessionDelivery::All), Some(Item::Record(record)))
+            if record.commit_id.len() == 32 && record.sequence == next =>
+        {
+            if after.next
+                != record
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(StreamError::OutOfRange)?
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(record.sequence)
+        }
+        (Ok(SessionDelivery::Latest), Some(Item::LatestValue(value)))
+            if !value.key.is_empty() && after.next > next =>
+        {
+            Ok(after.next - 1)
+        }
+        _ => Err(StreamError::Unavailable),
     }
 }
 

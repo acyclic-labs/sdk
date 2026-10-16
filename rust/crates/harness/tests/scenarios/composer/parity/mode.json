@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "cycle_mode"
+      }
+    },
+    "file_values": {
+      "task/settings.json": {
+        "agent_mode": "plan",
+        "retained": "task",
+        "agent_modes": [
+          "code",
+          "plan"
+        ]
+      }
+    }
+  },
+  "prompt": "/mode"
+}

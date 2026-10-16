@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ClientViews } from "@acyclic-labs/harness/client";
+import { ClientViews } from "@acyclic-labs/harness";
 import { clientReadable } from "@acyclic-labs/harness/svelte";
 import { receiveClientSnapshots } from "@acyclic-labs/harness/worker";
 

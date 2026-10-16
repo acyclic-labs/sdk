@@ -82,7 +82,7 @@ where
                 .await?,
             journal,
             true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
+            matches!(recovered_status, EffectStatus::Succeeded { .. }),
         )
         .await?;
     }
@@ -107,7 +107,7 @@ where
     if mcp {
         verify_mcp_calls(&seed.request, seed.applied)?;
     }
-    verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
+    verify_publication(&files, &seed.destination, seed.applied).await?;
     if receipt_fault.is_none() && !lost_response {
         println!(
             "approved {} execution, SDK publication and receipt-only recovery passed",

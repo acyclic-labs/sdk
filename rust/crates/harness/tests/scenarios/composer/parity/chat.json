@@ -1,0 +1,16 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "new"
+      }
+    },
+    "file_values": {
+      "session/requests/00000000-0000-0000-0000-000000000001.json": {
+        "kind": "new"
+      }
+    }
+  },
+  "prompt": "/chat"
+}

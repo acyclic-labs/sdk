@@ -1,6 +1,6 @@
 //! Actors v1 descriptor contract and adversarial mutation controls.
 //!
-//! Fixed standard descriptors come independently from vendored protoc and Buf.
+//! Complete descriptor closures are pinned to the retained public Buf baseline.
 //! Comparison removes source locations and canonicalizes top-level declaration
 //! order. All other descriptor contents, including unknown fields, compare exactly.
 
@@ -99,7 +99,16 @@ fn first_file(descriptor_set: &mut DynamicMessage) -> &mut DynamicMessage {
     let Value::List(files) = files else {
         panic!("FileDescriptorSet.file must be repeated");
     };
-    let Some(Value::Message(file)) = files.first_mut() else {
+    let root = files
+        .iter()
+        .position(|file| {
+            file.as_message().is_some_and(|file| {
+                file.get_field_by_name("name")
+                    .is_some_and(|name| name.as_str() == Some("actors/v1/actors.proto"))
+            })
+        })
+        .unwrap_or(0);
+    let Some(Value::Message(file)) = files.get_mut(root) else {
         panic!("descriptor set must contain one file");
     };
     file

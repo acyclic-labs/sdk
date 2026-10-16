@@ -90,9 +90,10 @@ where
             None
         };
         let (journal, operation) = if io.is_some() || reconciliation_only {
-            let (journal, operation) =
-                BoundedContentFuture::new(io, || self.command_journal(task, fence, turn, io))?
-                    .await?;
+            let (journal, operation) = BoundedContentFuture::new(io, || {
+                self.command_journal(task, fence, turn, &context, io)
+            })?
+            .await?;
             (Some(journal), operation)
         } else {
             (
@@ -135,6 +136,10 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        let (pipeline, tools) = BoundedContentFuture::new(io, || {
+            self.model_context(command.context_manifest, &context, io)
+        })?
+        .await?;
         let input = TurnInput {
             operation_id: operation,
             input: command.input,
@@ -163,7 +168,8 @@ where
                     &context,
                     &binding.model,
                     Arc::clone(&binding.provider),
-                    &binding.context,
+                    &pipeline,
+                    tools,
                     journal,
                     work,
                     &binding.compaction,
@@ -197,7 +203,8 @@ where
                     turn,
                     binding.model.clone(),
                     Arc::clone(&binding.provider),
-                    binding.context.clone(),
+                    pipeline,
+                    tools,
                     command.selected_output_volume.as_ref(),
                 )
                 .await?

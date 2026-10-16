@@ -24,7 +24,7 @@ pub struct PublicItemSignature {
 
 pub fn extract(
     json_path: &Path,
-    raw: &[u8],
+    raw: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Vec<PublicItemSignature>, Error> {
     if krate.format_version != FORMAT_VERSION {
@@ -46,21 +46,22 @@ pub fn extract(
 
 fn extract_uncached(
     json_path: &Path,
-    raw: &[u8],
+    raw: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Vec<PublicItemSignature>, Error> {
-    let value: Value = serde_json::from_slice(raw)?;
+    let value = (*crate::render_cache::json(raw)?).clone();
     let adapted = adapt(value, krate)?;
-    let mut temp = tempfile::NamedTempFile::new()?;
-    {
-        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
-        serde_json::to_writer(&mut writer, &adapted)?;
-        writer.flush()?;
-    }
-    let api = public_api::Builder::from_rustdoc_json(temp.path())
-        .include_function_parameter_names(true)
-        .build()
-        .map_err(|error| Error::Invalid(format!("public-api: {error}")))?;
+    let api = crate::render_cache::with_adapter(|temp| {
+        {
+            let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+            serde_json::to_writer(&mut writer, &adapted)?;
+            writer.flush()?;
+        }
+        public_api::Builder::from_rustdoc_json(temp.path())
+            .include_function_parameter_names(true)
+            .build()
+            .map_err(|error| Error::Invalid(format!("public-api: {error}")))
+    })?;
     api.items()
         .map(|item| {
             let item_id = Id(item.id().0);

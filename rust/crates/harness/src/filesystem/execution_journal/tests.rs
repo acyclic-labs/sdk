@@ -3,6 +3,8 @@ use super::*;
 use crate::filesystem::*;
 use crate::{AgentId, conversation::VolumeOwner, executor::ModelPurpose, resources::ProviderRef};
 
+mod staged_ref;
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

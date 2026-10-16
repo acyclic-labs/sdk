@@ -2,9 +2,16 @@ use super::*;
 
 impl LocalHarness {
     pub(super) fn goal_task_path(&self) -> Option<&'static str> {
-        // The current publisher resolves paths inside its one output volume.
-        // Composed mount routing replaces this lookup when #503 lands.
-        (self.runtime.harness().output_volume() == Some(&self.scratch)).then_some("GOAL.md")
+        ["GOAL.md", ".volumes/scratch/GOAL.md"]
+            .into_iter()
+            .find(|path| {
+                self.runtime
+                    .harness()
+                    .output_destination(path)
+                    .is_some_and(|(volume, relative)| {
+                        volume == &self.scratch && relative == "GOAL.md"
+                    })
+            })
     }
 
     pub(super) async fn block_goal(
@@ -12,7 +19,7 @@ impl LocalHarness {
         goal: &GoalView,
         settled: OperationId,
         contents: &str,
-    ) -> Result<()> {
+    ) -> Result<(crate::conversation::FileRef, OperationId)> {
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.signed,
@@ -21,7 +28,10 @@ impl LocalHarness {
             u64::MAX,
             &mut None,
         )?;
-        self.files
+        let key =
+            crate::IdempotencyKey::new(format!("goal-block:{settled}:{}", goal.source.version()))?;
+        let file = self
+            .files
             .put_content(
                 &self.scratch,
                 &grant,
@@ -30,14 +40,38 @@ impl LocalHarness {
                 "text/markdown",
                 "GOAL.md",
                 self.limits.file_bytes,
-                &crate::IdempotencyKey::new(format!(
-                    "goal-block:{settled}:{}",
-                    goal.source.version()
-                ))?,
+                &key,
                 Some(&self.files.file_generation(&goal.source, None)?),
                 None,
             )
             .await?;
-        Ok(())
+        Ok((
+            file,
+            OperationId::from_bytes(crate::filesystem::filesystem_key(&key).into_bytes()),
+        ))
+    }
+
+    pub(super) async fn record_goal_revision(
+        &self,
+        current: &Turn,
+        generation: &GenerationRef,
+        goal: &crate::conversation::FileRef,
+        publication: Option<OperationId>,
+    ) -> Result<()> {
+        if current.goal_revision == publication {
+            return Ok(());
+        }
+        let mut next = current.clone();
+        next.goal_revision = publication;
+        self.write_turn(
+            &next,
+            generation,
+            &crate::IdempotencyKey::new(format!(
+                "goal-observed:{}:{}",
+                current.operation,
+                goal.version()
+            ))?,
+        )
+        .await
     }
 }

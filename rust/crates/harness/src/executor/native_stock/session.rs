@@ -186,7 +186,9 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self)
+        let execution = StockExecution::ordinary(self);
+        execution.validate_turn_input(journal, input).await?;
+        execution
             .summarize(
                 journal,
                 Some(input),

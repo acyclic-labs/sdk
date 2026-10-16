@@ -275,7 +275,7 @@ impl HttpTransport for AliasFixture {
         Box::pin(async move {
             Ok(HttpResponse {
                 status: 200,
-                body: chunks(self.0.response, 1),
+                body: chunks(&self.0.response, 1),
             })
         })
     }

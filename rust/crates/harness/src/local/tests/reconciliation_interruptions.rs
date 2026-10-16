@@ -1,19 +1,40 @@
 //! Every durable reconciliation cut recovers before checkout capture.
 use super::super::checkout_tools::reconciliation;
 use super::*;
-use acyclic_fs::{CancellationToken, GitCompatStore, WorkBudget, facade::FsWork as _};
+use acyclic_fs::{CancellationToken, GitCompatStore, WorkBudget};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn open(path: &Path, expected: &str) -> Result<LocalHarness> {
-    let provider = scripted([
-        super::checked_commands::call(0, "bash", &format!("test $(cat upstream.txt) = {expected}")),
-        ScriptedTurn::Text("done".into()),
-    ]);
-    LocalHarness::open(crate::test_support::local_harness_config(
-        path,
-        (model()?, provider),
-    )?)
+async fn open(path: &Path, state: &Path) -> Result<LocalHarness> {
+    LocalHarness::open(super::checkout_config(path, (model()?, text()))?.state_directory(state))
+        .await
+}
+
+async fn capture(harness: &LocalHarness) -> Result<()> {
+    let workspace = harness.workspace().unwrap();
+    let tools = Box::pin(super::super::checkout_tools::CheckoutTools::new(
+        Arc::clone(workspace),
+        harness.project(),
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(harness.task_files()),
+    ))
+    .await?;
+    let mut state = super::super::workspace::lock_owned(super::super::workspace::StateArc::clone(
+        &workspace.state,
+    ))
+    .await;
+    let super::super::checkout_tools::State {
+        active, watcher, ..
+    } = &mut *state;
+    let view = active.as_ref().unwrap_or_else(|| workspace.view());
+    Box::pin(tools.capture(
+        (workspace, view),
+        watcher,
+        OperationId::new(),
+        0,
+        acyclic_fs::PublicationPermit::Unrestricted,
+        None,
+    ))
     .await
 }
 
@@ -33,7 +54,8 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
     let checkout = harness.workspace().unwrap();
     assert_eq!(
         std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
-        expected.as_bytes()
+        expected.as_bytes(),
+        "unpublished rebase"
     );
     let selected = checkout.selected_view().await?.0.unwrap();
     let head = generation(&selected).await?;
@@ -50,29 +72,68 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
         .as_ref(),
         expected.as_bytes()
     );
-    // This runs the stock bash binding, including its pre-command baseline
-    // capture. A stale disk must never replace the already rebased generation.
-    super::checkout_reopen::run(harness).await?;
+    // Use the real pre-command capture directly, without a model turn or
+    // process per cut. Native projection can change unassignable timestamps;
+    // file identity and the entire immutable payload must remain unchanged.
+    let before = head
+        .stat(
+            "/upstream.txt",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    capture(harness).await?;
+    let after = generation(&selected).await?;
     assert_eq!(
-        generation(&selected).await?.id(),
-        head.id(),
-        "capture changed the rebased generation"
+        after
+            .stat(
+                "/upstream.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .file_id,
+        before.file_id
+    );
+    assert_eq!(
+        after
+            .read_range_if_unchanged(
+                &head,
+                "/upstream.txt",
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: expected.len() as u64,
+                },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .bytes
+            .as_ref(),
+        expected.as_bytes()
     );
     Ok(())
 }
 
 async fn sweep(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let mut harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let mut harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     // Learn the finite native effect boundaries on the real publication path.
@@ -173,10 +234,32 @@ async fn sweep(text: &str) -> Result<()> {
                 result?;
             }
         }
-        drop(harness);
-        harness = open(directory.path(), &expected).await?;
+        // Reconstruct the exact production binding from durable selection and
+        // reconciliation records; retain unrelated scratch mounts and task I/O.
+        // No native projection or model needs restarting at these cuts.
+        {
+            let mut state = super::super::workspace::lock_owned(
+                super::super::workspace::StateArc::clone(&checkout.state),
+            )
+            .await;
+            state.active = None;
+            state.watcher = None;
+            state.initialized = false;
+        }
+        Box::pin(super::super::checkout_tools::CheckoutTools::new(
+            Arc::clone(checkout),
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(harness.task_files()),
+        ))
+        .await?;
         assert_published(&harness, &expected).await?;
         if cut == 5 + effects {
+            // One complete host reopen additionally checks binding and mount
+            // reconstruction after every durable interruption was recovered.
+            drop(harness);
+            harness = open(directory.path(), state_directory.path()).await?;
+            assert_published(&harness, &expected).await?;
             break;
         }
         cut += 1;
@@ -186,16 +269,17 @@ async fn sweep(text: &str) -> Result<()> {
 
 async fn negative_control(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
@@ -209,7 +293,7 @@ async fn negative_control(text: &str) -> Result<()> {
             from.id(),
             "negative-control",
             0,
-            1,
+            10,
         )
         .await
         .map_err(super::super::storage)?;
@@ -229,7 +313,7 @@ async fn negative_control(text: &str) -> Result<()> {
         },
     )
     .await?;
-    windows
+    let finished = windows
         .finish_workspace(
             selected.workspace(),
             &lease,
@@ -238,11 +322,41 @@ async fn negative_control(text: &str) -> Result<()> {
         )
         .await
         .map_err(super::super::storage)?;
+    assert!(matches!(
+        finished,
+        acyclic_fs::WorkspaceOperationFinish::Reconciled(
+            acyclic_fs::WorkspaceRebase::Rebased(_)
+                | acyclic_fs::WorkspaceRebase::AlreadyRebased(_)
+                | acyclic_fs::WorkspaceRebase::Current(_)
+        )
+    ));
+    // Establish the healthy pre-fault cut: the SDK head has rebased, while
+    // physical publication is still pending. The mutant below removes its fence.
+    assert_eq!(
+        generation(&selected)
+            .await?
+            .read(
+                "/upstream.txt",
+                128,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        expected.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
+        b"base"
+    );
     let root = checkout.view().workspace().id();
     let mut state = GitCompatStore::load(&checkout.store, root)
         .await
         .map_err(super::super::storage)?
         .unwrap();
+    assert!(state.checkout_reconciliation.is_some());
     let revision = state.revision;
     state.revision += 1;
     state.checkout_reconciliation = None; // deliberately broken: acknowledge before publishing
@@ -252,38 +366,23 @@ async fn negative_control(text: &str) -> Result<()> {
             .map_err(super::super::storage)?
     );
     drop(harness);
-    let harness = open(directory.path(), &expected).await?;
-    let bytes =
-        std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?;
-    let failure =
-        std::panic::catch_unwind(|| assert_eq!(bytes, expected.as_bytes(), "unpublished rebase"));
+    let harness = open(directory.path(), state_directory.path()).await?;
+    // Acknowledging before publication permits capture over the rebased SDK
+    // head. The same complete crash invariant used by the positive sweep must
+    // detect this deliberately broken variant; preservation cannot hold here.
+    let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(assert_published(
+        &harness, &expected,
+    )))
+    .await
+    .expect_err("the crash invariant missed premature acknowledgement");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
     assert!(
-        failure.is_err(),
-        "the crash invariant missed premature acknowledgement"
-    );
-    // No capture is allowed in this deliberately corrupted case.
-    assert_eq!(
-        generation(
-            &harness
-                .workspace()
-                .unwrap()
-                .selected_view()
-                .await?
-                .0
-                .unwrap()
-        )
-        .await?
-        .read(
-            "/upstream.txt",
-            128,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map_err(super::super::storage)?
-        .value
-        .as_ref(),
-        expected.as_bytes()
+        message.contains("unpublished rebase"),
+        "unexpected invariant failure: {message}"
     );
     Ok(())
 }
@@ -293,14 +392,34 @@ async fn premature_publication_acknowledgement_is_detected() -> Result<()> {
     negative_control("upstream").await
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(4))]
-    // For arbitrary authored bytes, exhaust every durable protocol boundary
-    // and every native publication guard, then reopen and capture through the
-    // actual LocalHarness. No sleep, scheduler continuation or mirror frame.
-    #[test]
-    fn reopen_never_captures_over_an_unpublished_rebase(text in "[a-z]{1,12}") {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(sweep(&text)).unwrap();
-    }
+#[test]
+fn reopen_never_captures_over_an_unpublished_rebase() {
+    // Preserve the same four generated/shrinkable byte cases and every cut;
+    // run independent cases concurrently instead of serial model/process turns.
+    std::thread::scope(|scope| {
+        let cases: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+                        source_file: Some(file!()),
+                        ..ProptestConfig::with_cases(1)
+                    });
+                    runner
+                        .run(&"[a-z]{1,12}", |text| {
+                            runtime
+                                .block_on(sweep(&text))
+                                .map_err(|error| TestCaseError::fail(error.to_string()))
+                        })
+                        .unwrap();
+                })
+            })
+            .collect();
+        for case in cases {
+            case.join().unwrap();
+        }
+    });
 }

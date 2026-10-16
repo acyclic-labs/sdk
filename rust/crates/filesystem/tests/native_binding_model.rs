@@ -6,6 +6,67 @@ mod cached_binding;
 #[path = "../src/sync.rs"]
 mod sync;
 
+#[cfg(acyclic_fs_loom)]
+#[path = "../src/native_mount/projfs/probe_guard.rs"]
+mod probe_guard;
+
+#[cfg(acyclic_fs_loom)]
+mod probe_registration {
+    use super::probe_guard::{ProbeGuard, with_guard};
+    use crate::sync::{Arc, Mutex};
+    use loom::thread;
+    use std::collections::HashMap;
+
+    #[test]
+    fn live_io_retains_its_registration_without_holding_the_map_lock() {
+        check(false);
+    }
+
+    #[test]
+    #[should_panic(expected = "metadata I/O lost its probe registration")]
+    fn dropping_the_registration_before_io_is_detected() {
+        check(true);
+    }
+
+    fn check(drop_early: bool) {
+        for same_path in [false, true] {
+            loom::model(move || {
+                let probes = Arc::new(Mutex::new(HashMap::new()));
+                let mut threads = Vec::new();
+                for index in 0_u8..2 {
+                    let probes = probes.clone();
+                    threads.push(thread::spawn(move || {
+                        let path = if same_path { 0 } else { index };
+                        with_guard(
+                            || {
+                                let guard = ProbeGuard::enter(&probes, &path);
+                                if drop_early {
+                                    drop(guard);
+                                    None
+                                } else {
+                                    Some(guard)
+                                }
+                            },
+                            || {
+                                assert!(
+                                    ProbeGuard::is_active(&probes, &path, u8::eq),
+                                    "metadata I/O lost its probe registration"
+                                );
+                                let active = probes.lock().unwrap();
+                                assert!((1..=2).contains(&active[&path]));
+                            },
+                        );
+                    }));
+                }
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+                assert!(probes.lock().unwrap().is_empty());
+            });
+        }
+    }
+}
+
 #[cfg(all(acyclic_fs_loom, not(kani)))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;

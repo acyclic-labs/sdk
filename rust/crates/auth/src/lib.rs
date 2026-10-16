@@ -3,19 +3,20 @@
 extern crate self as acyclic_auth;
 pub mod authority;
 pub mod contract;
-pub mod crypto;
-pub mod verify;
 pub mod credential;
+pub mod crypto;
 mod resource;
 pub mod socket;
 mod validation;
+pub mod verify;
 
 pub use resource::{
     FS_ACTIONS, decode_component, encode_component, objects_resource, valid_action, valid_resource,
 };
 
 /// Canonical shared auth descriptor, generated from the semantic declarations.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-auth-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-auth-v1.bin"));
 
 /// Ed25519 block transcript prefix. Follow with the zero-based block index as
 /// LE u64, format version as LE u32, previous revocation id (32 zero bytes at root), payload length as

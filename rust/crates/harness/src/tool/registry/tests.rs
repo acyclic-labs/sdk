@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
+mod binding;
 mod lookup;
 
 #[cfg(feature = "filesystem")]
@@ -23,7 +24,7 @@ proptest! {
             template.definition.revision = existing.to_string();
             tools.register((template.clone(), None), &mut None, None)?;
         }
-        tools.pin_model_definitions(&[])?;
+        tools.pin_model_definitions(&[], None)?;
         template.definition.name = "target".into();
         template.definition.revision = ((existing + offset) % 16).to_string();
         tools.register((template, None), &mut None, None)?;
@@ -50,7 +51,7 @@ proptest! {
         original.register((tool, None), &mut None, None)?;
         let before = original.definitions(None)?;
         let mut cloned = None;
-        let allocation = allocation_counter::measure(|| cloned = Some(original.clone()));
+        let allocation = acyclic_test_support::measure(|| cloned = Some(original.clone()));
         prop_assert_eq!(allocation.count_total, 0);
         let mut cloned = cloned.ok_or_else(|| TestCaseError::fail("missing clone"))?;
         if hide { cloned.remove_from_model(&name)?; }
@@ -82,7 +83,7 @@ fn denied_ambiguous_tools_are_filtered_before_resolution_or_copying() -> Result<
     }
     assert!(tools.definitions(None).is_err());
     let mut selected = None;
-    let allocation = allocation_counter::measure(|| {
+    let allocation = acyclic_test_support::measure(|| {
         selected = Some(tools.definitions_for_grants(&crate::Capabilities::default(), None));
     });
     assert_eq!(allocation.count_total, 0);
@@ -206,7 +207,7 @@ proptest::proptest! {
                 6 => {
                     let selected = registry.data.versions.get(&(name.clone(), revision.clone()))
                         .map(|tool| vec![tool.definition.clone()]).unwrap_or_default();
-                    checked(registry.pin_model_definitions(&selected))?;
+                    checked(registry.pin_model_definitions(&selected, None))?;
                     proptest::prop_assert_eq!(checked(registry.definitions(None))?, selected);
                 }
                 _ => {
@@ -215,10 +216,8 @@ proptest::proptest! {
                     tool.definition.name.clone_from(name);
                     tool.definition.revision.clone_from(revision);
                     checked(additional.register((tool, None), &mut None, None))?;
-                    let mut combined = registry.clone();
-                    let result = combined.extend(additional);
+                    let result = registry.extend(additional);
                     proptest::prop_assert_eq!(result.is_ok(), !existed);
-                    if result.is_ok() { registry = combined; }
                 }
             }
             proptest::prop_assert!(indexed_names(&registry));
@@ -281,7 +280,7 @@ fn hiding_requires_no_allocation_or_payload_copy() -> Result<()> {
                 for _ in 0..64 {
                     let mut result = None;
                     let started = std::time::Instant::now();
-                    let allocation = allocation_counter::measure(|| {
+                    let allocation = acyclic_test_support::measure(|| {
                         result = Some(registry.remove_from_model(&name));
                     });
                     times.push(started.elapsed());

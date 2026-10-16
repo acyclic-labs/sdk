@@ -28,35 +28,24 @@ pub(super) fn frontier_revisions(
         return Err("registry frontier needs immutable Git history anchors".into());
     }
     let git = frontier_git()?;
-    let shallow = command_output(
-        Command::new(&git)
+    let layout = command_output(
+        sdk_docs::command(&git)
             .arg("--no-replace-objects")
             .current_dir(repository)
-            .args(["rev-parse", "--is-shallow-repository"]),
+            .args([
+                "rev-parse",
+                "--is-shallow-repository",
+                "--git-path",
+                "info/grafts",
+            ]),
     )?;
-    if std::str::from_utf8(&shallow)
-        .map_err(|e| e.to_string())?
-        .trim()
-        != "false"
-    {
-        return Err("source frontier requires complete original Git ancestry".into());
-    }
-    let graft = command_output(Command::new(&git).current_dir(repository).args([
-        "rev-parse",
-        "--git-path",
-        "info/grafts",
-    ]))?;
-    let graft = repository.join(
-        std::str::from_utf8(&graft)
-            .map_err(|e| e.to_string())?
-            .trim(),
-    );
+    let graft = repository.join(super::probe::graft_path(&layout)?);
     if graft.try_exists().map_err(|e| e.to_string())?
-        || std::env::var_os("GIT_GRAFT_FILE").is_some()
+        || crate::command_var_os("GIT_GRAFT_FILE").is_some()
     {
         return Err("source frontier does not accept substituted Git ancestry".into());
     }
-    let mut command = Command::new(git);
+    let mut command = sdk_docs::command(git);
     command.arg("--no-replace-objects");
     command
         .current_dir(repository)
@@ -89,32 +78,35 @@ pub(super) fn decode_release_authority(bytes: &[u8]) -> Result<BTreeSet<String>,
     Ok(authority)
 }
 
-pub(super) fn original_frontier_authority(
+pub(super) fn original_sources(
     repository: &Path,
+    frontier_root: &Path,
     revisions: &BTreeSet<String>,
-) -> Result<BTreeSet<String>, String> {
+    capture: bool,
+) -> Result<(Vec<RegistryOwnerSource>, BTreeSet<String>), String> {
+    let metadata = fs::symlink_metadata(frontier_root).map_err(|error| error.to_string())?;
+    if is_linked(&metadata) || !metadata.is_dir() {
+        return Err("registry frontier root is linked or non-directory".into());
+    }
+    let frontier_root = frontier_root
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let mut sources = Vec::new();
     let mut authority = BTreeSet::new();
     for revision in revisions {
-        let present = command_output(
-            Command::new(frontier_git()?)
-                .arg("--no-replace-objects")
-                .current_dir(repository)
-                .args(["ls-tree", "-z", revision, "--", "release/cargo-crates.json"]),
-        )?;
-        if !present.is_empty() {
-            let bytes = command_output(
-                Command::new(frontier_git()?)
-                    .arg("--no-replace-objects")
-                    .current_dir(repository)
-                    .args(["show", &format!("{revision}:release/cargo-crates.json")]),
-            )?;
-            authority.extend(decode_release_authority(&bytes)?);
+        let root = frontier_root.join(revision);
+        validate_import_path(&frontier_root, &root)?;
+        if capture {
+            fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         }
+        let (source, original_authority) = registry_source(repository, &root, revision, capture)?;
+        sources.push(source);
+        authority.extend(original_authority);
     }
     if authority.is_empty() {
         return Err("declared frontier has no original release authority".into());
     }
-    Ok(authority)
+    Ok((sources, authority))
 }
 pub fn capture_registry_corpus(
     repository: &Path,
@@ -156,19 +148,15 @@ pub fn capture_registry_corpus(
         return Err("registry frontier root is linked".into());
     }
     let frontier_root = frontier_root.canonicalize().map_err(|e| e.to_string())?;
-    let mut frontier = Vec::new();
     let revisions = frontier_revisions(&repository, &anchors)?;
-    let original_release_authority = original_frontier_authority(&repository, &revisions)?;
-    for revision in revisions {
-        let root = frontier_root.join(&revision);
-        validate_import_path(&frontier_root, &root)?;
-        fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-        frontier.push(registry_owner_source_inner(
-            &repository,
-            &root,
-            &revision,
+    let (sources, original_release_authority) =
+        original_sources(&repository, &frontier_root, &revisions, true)?;
+    let mut frontier = Vec::new();
+    for source in sources {
+        frontier.push(discover_owner(
+            &frontier_root.join(&source.revision),
             cargo,
-            true,
+            source,
             Some(&original_release_authority),
         )?);
     }
@@ -321,32 +309,38 @@ pub fn verify_registry_corpus(
     }
     let repository = Path::new(&corpus.repository);
     let expected_revisions = frontier_revisions(repository, &corpus.anchors)?;
-    if original_frontier_authority(repository, &expected_revisions)?
-        != corpus.original_release_authority
-    {
-        return Err("original frontier release authority changed".into());
-    }
     let mut revisions = BTreeSet::new();
-    let mut owners = BTreeSet::new();
     for source in &corpus.frontier {
         if !revisions.insert(&source.revision) {
             return Err("duplicate source frontier revision".into());
         }
-        let current = registry_owner_source_inner(
-            repository,
+    }
+    if revisions.into_iter().cloned().collect::<BTreeSet<_>>() != expected_revisions {
+        return Err("registry corpus omits original release-authority history".into());
+    }
+    let (sources, authority) =
+        original_sources(repository, frontier_root, &expected_revisions, false)?;
+    if authority != corpus.original_release_authority {
+        return Err("original frontier release authority changed".into());
+    }
+    let mut sources = sources
+        .into_iter()
+        .map(|source| (source.revision.clone(), source))
+        .collect::<BTreeMap<_, _>>();
+    let mut owners = BTreeSet::new();
+    for source in &corpus.frontier {
+        let current = discover_owner(
             &frontier_root.join(&source.revision),
-            &source.revision,
             cargo,
-            false,
+            sources
+                .remove(&source.revision)
+                .ok_or("source frontier revision is absent")?,
             Some(&corpus.original_release_authority),
         )?;
         if current != *source {
             return Err("historical source frontier or discovery context changed".into());
         }
         owners.extend(source.owners.iter().cloned());
-    }
-    if revisions.into_iter().cloned().collect::<BTreeSet<_>>() != expected_revisions {
-        return Err("registry corpus omits original release-authority history".into());
     }
     let expected_paths = corpus
         .frontier

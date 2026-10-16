@@ -1,5 +1,7 @@
 use super::*;
 
+mod selection;
+
 #[tokio::test]
 async fn later_model_references_fail_preflight_before_earlier_content_reads() -> Result<()> {
     let journal = Journal::default();

@@ -1,0 +1,1 @@
+{"before":"λ\n","after":"λ\n雪\n","render":8192,"work":32768,"expect":{"kind":"modified","binary":false,"added":1,"removed":0,"hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":2}],"patch":"--- original\n+++ modified\n@@ -1 +1,2 @@\n λ\n+雪\n"}}

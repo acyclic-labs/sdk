@@ -7,8 +7,40 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;
 
+#[path = "support/follow_data.rs"]
+mod follow_data;
+
+#[test]
+#[should_panic(expected = "LATEST accepts a conflated cursor")]
+fn negative_control_treating_latest_as_consecutive_is_detected() {
+    follow_data::exercise(17, 2, b"status", true);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn follow_data_preserves_mode_anchor_cursor_and_watermarks(
+        next in any::<u64>(), gap in any::<u16>(), payload in prop::collection::vec(any::<u8>(), 0..512),
+    ) {
+        follow_data::exercise(next, gap, &payload, false);
+    }
+
+    // Every accepted untrusted frame round-trips through canonical protobuf.
+    #[test]
+    fn physical_frames_have_one_canonical_decode(bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
+        if let Ok(frame) = acyclic_stream::wire_codec::session::decode_frame(&bytes) {
+            let canonical = frame.encode_to_vec();
+            prop_assert_eq!(acyclic_stream::wire_codec::session::decode_frame(&canonical).unwrap(), frame);
+        }
+    }
+
+    // Generated valid frames cannot pass by rejecting everything.
+    #[test]
+    fn physical_frames_accept_generated_windows(bytes in any::<u64>(), frames in any::<u32>()) {
+        let frame = wire::SessionFrame { body: Some(wire::session_frame::Body::Window(wire::SessionWindow { bytes, frames })), ..Default::default() };
+        prop_assert_eq!(acyclic_stream::wire_codec::session::decode_frame(&frame.encode_to_vec()).unwrap(), frame);
+    }
 
     // Property: additive grants either update both balances exactly or leave
     // both unchanged on overflow, across the complete u64/u32 input domains.

@@ -74,7 +74,7 @@ where
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
-    pub(in crate::filesystem) fn with_turn(
+    pub(crate) fn with_turn(
         mut self,
         operation: OperationId,
         turn: OperationId,

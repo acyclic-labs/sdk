@@ -1,18 +1,26 @@
 use super::*;
+use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
+use tonic::Request;
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 mod admissions;
+mod allocations;
 mod checked;
+mod checked_recovery;
+mod connections;
 mod context;
 mod credentials;
+mod data;
 mod isolation;
+mod latest;
 mod lifecycle;
 mod outbound;
+mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 mod fixture {

@@ -21,9 +21,10 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
- "allocation-counter",
  "async-trait",
  "bytes",
  "futures",
@@ -47,7 +48,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "ts-rs",
@@ -87,7 +87,8 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
- "allocation-counter",
+ "acyclic-proto-build",
+ "acyclic-test-support",
  "ed25519-dalek",
  "futures",
  "proptest",
@@ -166,6 +167,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-proto-build",
  "acyclic-stream",
  "allocation-counter",
  "async-trait",
@@ -199,7 +201,6 @@ dependencies = [
  "proptest",
  "prost",
  "prost-reflect",
- "prost-types",
  "rcgen",
  "rustix 1.1.5",
  "rustls",
@@ -218,7 +219,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -307,13 +307,14 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-providers",
  "acyclic-harness-tui",
  "acyclic-machines",
  "acyclic-markdown",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
- "allocation-counter",
+ "acyclic-test-support",
  "arrayvec",
  "async-trait",
  "base64 0.22.1",
@@ -392,7 +393,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-stream",
- "allocation-counter",
+ "acyclic-test-support",
  "blake3",
  "bytes",
  "diffy",
@@ -419,8 +420,10 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-objects",
  "acyclic-stream",
  "async-stream",
+ "base64 0.22.1",
  "blake3",
  "bytes",
  "futures",
@@ -432,6 +435,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "url",
  "wasm-bindgen",
@@ -445,8 +449,8 @@ name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-test-support",
  "alacritty_terminal",
- "allocation-counter",
  "arrayvec",
  "caseless",
  "crossterm",
@@ -471,9 +475,9 @@ name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-proto-build",
  "proptest",
  "prost",
- "prost-build",
  "prost-reflect",
  "prost-types",
  "serde_json",
@@ -483,7 +487,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -508,6 +511,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
+ "acyclic-proto-build",
  "async-trait",
  "futures",
  "hex",
@@ -611,10 +615,12 @@ dependencies = [
  "compio-driver",
  "futures-core",
  "libc",
+ "loom",
  "pin-project-lite",
  "proptest",
  "rustix 1.1.5",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.2",
@@ -627,6 +633,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -710,17 +717,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-proto-build"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "protoc-bin-vendored",
+ "tempfile",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "acyclic-sdk-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-proto-build",
  "libfuzzer-sys",
- "prettyplease 0.2.37",
  "prost",
- "sdk-proto-codegen",
  "serde_json",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -730,7 +748,11 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
+ "acyclic-test-support",
+ "acyclic-tonic-web-wasm-client",
  "async-trait",
+ "axum",
  "base64 0.23.1",
  "bytes",
  "fs2",
@@ -745,7 +767,6 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "prost",
- "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
@@ -761,8 +782,9 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
+ "tonic-web",
  "tower",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "tsify",
@@ -792,6 +814,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
+]
+
+[[package]]
+name = "acyclic-test-support"
+version = "0.2.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -899,12 +928,6 @@ dependencies = [
  "vte",
  "windows-sys 0.59.0",
 ]
-
-[[package]]
-name = "allocation-counter"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beb9e990c0a33699f1984d85a6abead615ccc72dd8130bf3e15dcabe2ca149c9"
 
 [[package]]
 name = "allocator-api2"
@@ -1218,6 +1241,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -1236,8 +1260,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1 0.10.7",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4703,38 +4729,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
-name = "protoc-gen-prost"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4018e7b5e3a213d241d79a0ef43a442a17dc23dcdd5b81b0c42b2549197897fd"
-dependencies = [
- "once_cell",
- "prost",
- "prost-build",
- "prost-types",
- "regex",
-]
-
-[[package]]
-name = "protoc-gen-tonic"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa40faad46fb55e5c4a3257461c43f6ed0f87b320d11d98b4ea397f6f45896be"
-dependencies = [
- "heck",
- "prettyplease 0.2.37",
- "proc-macro2",
- "prost",
- "prost-build",
- "prost-types",
- "protoc-gen-prost",
- "quote",
- "regex",
- "syn 2.0.119",
- "tonic-build",
-]
-
-[[package]]
 name = "pulldown-cmark"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5616,17 +5610,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
+ "acyclic-proto-build",
  "cargo_metadata",
- "prettyplease 0.2.37",
  "proptest",
  "prost",
  "prost-reflect",
- "protoc-gen-prost",
- "protoc-gen-tonic",
- "quote",
  "serde",
  "serde_json",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -5747,7 +5737,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
 dependencies = [
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.23.1",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -6260,7 +6250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
@@ -6439,6 +6429,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6573,6 +6575,24 @@ dependencies = [
  "syn 2.0.119",
  "tempfile",
  "tonic-build",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6a1b6319ca4b61a4c0f0c94d439c8f3ed344cca56fe0df40e1fe4be11380b"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -6758,6 +6778,22 @@ dependencies = [
  "quote",
  "serde_derive_internals 0.29.1",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.5",
+ "sha1 0.10.7",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

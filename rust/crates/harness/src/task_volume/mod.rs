@@ -1,12 +1,17 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+pub(crate) mod command_query;
 mod durability;
 mod files;
 mod follow;
 mod heads;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod page;
 mod plan_name;
+mod publication;
+mod recent;
+pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;
@@ -30,7 +35,10 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use uuid::Uuid;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type NativeWork<'a> = Option<&'a ()>;
@@ -101,10 +109,13 @@ impl From<StreamError> for Error {
 
 /// Exact publication fence. A scheduler must retain its own execution lease too.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Generation {
     /// Volume identity, including its provider path.
     pub volume: [u8; 32],
     /// Durable history incarnation.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Next append-only segment position.
     pub position: u64,
@@ -119,6 +130,9 @@ pub struct FileValue {
     pub key: FileKey,
     /// Assistant channel discriminator, required only for assistant chunks.
     pub channel: Option<Channel>,
+    /// Original filesystem write operation, when supplied by a file query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<crate::OperationId>,
     /// Zero-copy segment view, retaining original allocation custody.
     pub bytes: OwnedBytes,
 }
@@ -147,6 +161,7 @@ impl FileValue {
         Self {
             key,
             channel: None,
+            publication: None,
             bytes: bytes.into(),
         }
     }
@@ -194,6 +209,11 @@ struct Index {
     next: u64,
     commit: CommitId,
     files: FileIndex,
+    executions: BTreeMap<(Option<Component>, u64), FileKey>,
+    pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
+    view_order: BTreeMap<(Component, u8, u64), FileKey>,
+    view_revisions: BTreeMap<FileKey, (u8, u64)>,
+    overviews: BTreeMap<Component, FileKey>,
 }
 
 /// A disposable index over one durable private task volume.
@@ -338,14 +358,44 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self,
         expected: Generation,
         write: &Write,
+        conditions: Vec<CommitCondition>,
+        deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
+    ) -> Result<Generation> {
+        self.publish(
+            expected,
+            write,
+            conditions,
+            deadline_unix_millis,
+            false,
+            work,
+        )
+        .await
+    }
+
+    /// Creates one file only if absent at the exact query generation. Unlike an
+    /// idempotent append, an existing identical file is still a failed creation.
+    pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
+        self.publish(expected, write, Vec::new(), None, true, None)
+            .await
+    }
+
+    async fn publish(
+        &self,
+        expected: Generation,
+        write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
+        create_only: bool,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
         self.refresh().await?;
         let index = self.index.lock().await;
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
+        }
+        if create_only && index.files.contains_key(&write.key) {
+            return Err(Error::ImmutableConflict(write.key.clone()));
         }
         validate_file(&index, write)?;
         if index
@@ -459,7 +509,40 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {
+    recent::record(index, &file, position);
+    let owner = command_query::owner(&file.key);
+    if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
+        index
+            .executions
+            .insert((owner.clone(), position), file.key.clone());
+        if let Some(pending) = index.pending_commands.get_mut(&owner) {
+            for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
+                if let Some(key) = command_query::related(&file.key, make) {
+                    pending.remove(&key);
+                }
+            }
+            if pending.is_empty() {
+                index.pending_commands.remove(&owner);
+            }
+        }
+    } else if let Some(result) = command_query::related(&file.key, TaskFile::ExecutionResult) {
+        if !index.files.contains_key(&result) {
+            index
+                .pending_commands
+                .entry(owner)
+                .or_default()
+                .insert(file.key.clone());
+        }
+    }
     index
         .files
         .insert(file.key.clone(), StoredFile { file, position });
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl<P: StreamProvider + 'static> TaskVolume<P> {
+    pub(crate) async fn reopen_erased(&self) -> Result<TaskVolume<dyn StreamProvider>> {
+        let provider: Arc<dyn StreamProvider> = self.provider.clone();
+        TaskVolume::open(provider, self.path.clone()).await
+    }
 }

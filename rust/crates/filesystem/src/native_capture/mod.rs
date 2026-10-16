@@ -24,6 +24,8 @@ mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
+#[cfg(any(windows, test))]
+mod sparse_scan;
 #[cfg(windows)]
 mod sparse;
 #[cfg(windows)]
@@ -50,6 +52,8 @@ mod stage;
 use stage::*;
 mod metadata;
 use metadata::*;
+#[cfg(all(test, feature = "memory"))]
+mod empty_stage_tests;
 #[cfg(test)]
 mod host_file_race_tests;
 #[cfg(test)]

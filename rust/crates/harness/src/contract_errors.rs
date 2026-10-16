@@ -22,6 +22,9 @@ pub enum InteractionRejection {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Logical task-file storage or publication failure.
+    #[error(transparent)]
+    TaskFiles(Box<crate::task_volume::Error>),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -42,6 +45,12 @@ pub enum Error {
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
+    /// A tool requires a native view whose host device or driver is missing.
+    #[error("native mount unavailable: {device}")]
+    MountUnavailable {
+        /// Missing host mount device or driver.
+        device: &'static str,
+    },
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
@@ -344,9 +353,25 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
+            Self::TaskFiles(error) => match error.as_ref() {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error.code(),
+                crate::task_volume::Error::FenceConflict
+                | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
+                crate::task_volume::Error::Conflict(_)
+                | crate::task_volume::Error::ImmutableConflict(_)
+                | crate::task_volume::Error::SequenceConflict(_)
+                | crate::task_volume::Error::ResetRequired => ErrorCode::Conflict,
+                crate::task_volume::Error::InvalidPath
+                | crate::task_volume::Error::InvalidSegment
+                | crate::task_volume::Error::LimitExceeded => ErrorCode::Invalid,
+                crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
+            },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
+                ErrorCode::Unsupported
+            }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
@@ -404,7 +429,8 @@ impl Error {
     pub(crate) fn is_native_failure(&self) -> bool {
         !matches!(
             self,
-            Self::NotFound(_)
+            Self::TaskFiles(_)
+                | Self::NotFound(_)
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
@@ -417,6 +443,12 @@ impl Error {
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
         )
+    }
+}
+
+impl From<crate::task_volume::Error> for Error {
+    fn from(error: crate::task_volume::Error) -> Self {
+        Self::TaskFiles(Box::new(error))
     }
 }
 

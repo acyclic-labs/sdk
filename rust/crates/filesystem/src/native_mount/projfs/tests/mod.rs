@@ -7,7 +7,7 @@ mod common;
 use common::*;
 mod metadata;
 mod metadata_errors;
-mod read_bindings;
+pub(super) mod read_bindings;
 mod mutations;
 mod names;
 mod empty_callbacks;

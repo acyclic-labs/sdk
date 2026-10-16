@@ -46,7 +46,7 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
 mod inputs;
 pub use inputs::{EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput};
 mod executor;
-pub(super) use executor::FileTool;
+pub(crate) use executor::FileTool;
 mod assembly;
 mod authorization;
 mod projection;

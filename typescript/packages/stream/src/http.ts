@@ -1,3 +1,4 @@
+import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
@@ -43,6 +44,12 @@ export class HttpStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
+  async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
+    const authored = structuredClone(follow);
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path: authored.path, from });
+    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
+  }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     await validateWireRequest({ kind: "follow", path, from: options.from });
     yield* this.#sessions.follow(path, options);

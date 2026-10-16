@@ -561,3 +561,22 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
     }
     Ok(())
 }
+
+proptest::proptest! {
+    #[test]
+    fn canonical_status_round_trip_preserves_every_stream_error(
+        index in 0usize..StreamError::ALL.len(),
+        context in ".{0,64}",
+    ) {
+        let error = &StreamError::ALL[index];
+        let wire = error_status(error);
+        proptest::prop_assert_eq!(status(&wire), error.clone());
+        // Only the contract's discriminating messages carry extra meaning.
+        // Diagnostics for unambiguous status classes cannot change their code.
+        if matches!(wire.code(), Code::NotFound | Code::AlreadyExists | Code::OutOfRange
+            | Code::PermissionDenied | Code::ResourceExhausted | Code::Unavailable) {
+            let annotated = Status::new(wire.code(), context);
+            proptest::prop_assert_eq!(status(&annotated), error.clone());
+        }
+    }
+}

@@ -242,6 +242,45 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
+fn spare_read_returns_initialized_prefix_without_moving_storage() -> io::Result<()> {
+    let (_directory, file) = prepared_read_fixture()?;
+    for (offset, maximum, expected, exact) in [(0, 8, 3, false), (3, 8, 0, false), (0, 8, 3, true)]
+    {
+        let meter = Arc::new(ReadBudgetMeter::new(8, 16));
+        let observer: Arc<dyn NativeReadMeter> = meter.clone();
+        let data = Vec::with_capacity(8);
+        let identity = data.as_ptr();
+        let guard = ReadAllocation::new(&observer, data.capacity())?;
+        let result = {
+            let _inline = InlineBlocking::enter();
+            complete(file.read_spare_bounded_async(
+                offset,
+                (data, guard),
+                maximum,
+                exact,
+                observer,
+            )?)
+        };
+        if exact {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        } else {
+            let ((data, guard), filled) = result?;
+            assert_eq!(filled, expected);
+            assert_eq!(data.as_ptr(), identity);
+            assert_eq!(
+                data,
+                b"abc".get(..expected).ok_or(io::ErrorKind::InvalidData)?
+            );
+            drop((data, guard));
+        }
+        assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
 fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Result<()> {
     let (_directory, file) = prepared_read_fixture()?;
     let file = Arc::new(file);

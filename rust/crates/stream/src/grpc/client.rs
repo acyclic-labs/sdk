@@ -17,6 +17,21 @@ impl Client {
             )
         })
     }
+    /// Receives canonical ALL/LATEST data through this client's shared session pool.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
+        StreamError,
+    > {
+        Ok(self
+            .session()?
+            .follow_data_with_ack(follow, from, self.acknowledge_deliveries)
+            .await?
+            .boxed())
+    }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
     pub fn without_delivery_acknowledgements(mut self) -> Self {
@@ -415,27 +430,4 @@ impl RecordCursor {
 }
 
 /// Decodes one frame, which must be contiguous, not skip ahead, and respect the read limit.
-fn read_response(
-    value: wire::ReadResponse,
-    next: u64,
-    remaining: Option<u32>,
-) -> Result<std::vec::IntoIter<Record>, StreamError> {
-    let records: Vec<Record> = read_response_records(value)?
-        .into_iter()
-        .map(record)
-        .collect::<Result<_, _>>()?;
-    let first = records.first().map_or(next, |record| record.sequence);
-    let contiguous = records
-        .iter()
-        .enumerate()
-        .all(|(offset, record)| Some(record.sequence) == first.checked_add(offset as u64));
-    let fresh = records
-        .iter()
-        .filter(|record| record.sequence >= next)
-        .count();
-    if first > next || !contiguous || remaining.is_some_and(|remaining| fresh > remaining as usize)
-    {
-        return Err(StreamError::Unavailable);
-    }
-    Ok(records.into_iter())
-}
+use crate::wire_codec::read_response_at as read_response;

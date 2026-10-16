@@ -1,6 +1,8 @@
 use super::*;
 use crate::kernel::allocation::KernelOwnedAllocation;
-use acyclic_stream::PreparedOwnedBytes;
+use acyclic_native_runtime::ReadAllocationReservation;
+
+type NativeSourceStorage = (Vec<u8>, (KernelOwnedAllocation, ReadAllocationReservation));
 
 pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &Checkout<A, O>,
@@ -40,6 +42,18 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         &mut meter.clone(),
     )
     .map_err(capture_demand_error)?;
+    let skip_import = ranges.is_empty();
+    #[cfg(all(test, feature = "memory"))]
+    let skip_import = super::empty_stage_tests::after_ranges(skip_import);
+    if skip_import {
+        let staged = capture_vec(0, meter)?;
+        finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
+        let bytes = vector_bytes(&ranges);
+        drop(ranges);
+        drop(file);
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        return Ok(staged);
+    }
     let positional = native_positional_file(file, meter)?;
     let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
     capture_allocate(meter, native_bytes)?;
@@ -74,16 +88,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             .ok_or(CaptureError::from(WorkError::Overflow))?;
         staged.push((*range, content));
     }
-    meter.cancellation().check()?;
-    let after = source_root
-        .stat_file(native.as_file(), &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &after)?;
-    let current = source_root
-        .stat(host_path, &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &current)?;
-    meter.clone().check().map_err(capture_demand_error)?;
+    finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
     let bytes = vector_bytes(&ranges)
         .checked_add(native_bytes)
         .ok_or(WorkError::Overflow)?;
@@ -91,6 +96,29 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
     Ok(staged)
+}
+
+pub(super) fn finish_regular_capture(
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    file: &std::fs::File,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    #[cfg(all(test, feature = "memory"))]
+    if super::empty_stage_tests::omit_finish() {
+        return Ok(());
+    }
+    meter.cancellation().check()?;
+    let after = source_root
+        .stat_file(file, &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &after)?;
+    let current = source_root
+        .stat(host_path, &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &current)?;
+    meter.clone().check().map_err(capture_demand_error)
 }
 
 #[allow(
@@ -144,7 +172,7 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
             )));
         }
         let storage = native_source_storage(maximum, original, cancellation)?;
-        self.read_prepared(storage, maximum, original.runtime_meter(), true, |result| {
+        self.read_spare(storage, maximum, original.runtime_meter(), true, |result| {
             accept_native_source_chunk(result, maximum, original, cancellation)
         })
         .await
@@ -209,32 +237,19 @@ pub(super) fn native_source_storage(
     maximum: usize,
     original: &NativeMaterializationWork,
     cancellation: &CancellationToken,
-) -> Result<PreparedOwnedBytes<KernelOwnedAllocation>, crate::FsError> {
+) -> Result<NativeSourceStorage, crate::FsError> {
     original.admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(maximum as u64))?;
     let mut accounting = crate::kernel::KernelAccounting::native(original, cancellation);
-    let mut storage = crate::kernel::Owned::<Vec<u8>>::allocate(maximum, &mut accounting)?;
-    let zeroed =
-        crate::materializer::NativeResourceCredit::Copy.delta(storage.value.capacity() as u64);
-    let copying = original.reserve_work(zeroed)?;
-    storage.value.resize(storage.value.capacity(), 0);
-    copying.record_completed(zeroed)?;
-    acyclic_stream::PreparedOwnedBytes::new(
-        storage.value,
-        storage.allocation,
+    let storage = crate::kernel::Owned::<Vec<u8>>::allocate(maximum, &mut accounting)?;
+    let reserved = acyclic_stream::OwnedBytes::reserve_vec_guard::<KernelOwnedAllocation>(
         &original.runtime_meter(),
     )
-    .map_err(|failure| match failure.into_error() {
-        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            original.runtime_error(error).into()
-        }
-        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-            crate::NativeTreeMaterializationError::InvalidLayout.into()
-        }
-    })
+    .map_err(|error| crate::FsError::from(original.runtime_error(error)))?;
+    Ok((storage.value, (storage.allocation, reserved)))
 }
 
 pub(super) fn accept_native_source_chunk(
-    result: std::io::Result<(PreparedOwnedBytes<KernelOwnedAllocation>, usize)>,
+    result: std::io::Result<(NativeSourceStorage, usize)>,
     maximum: usize,
     original: &NativeMaterializationWork,
     cancellation: &CancellationToken,
@@ -243,10 +258,22 @@ pub(super) fn accept_native_source_chunk(
     if filled != maximum {
         return Err(crate::FsError::SourceSnapshotStale);
     }
-    let capacity = storage.maximum_len();
-    let bytes = storage.freeze(filled).map_err(|failed| {
-        drop(failed);
-        crate::FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
+    if storage.0.len() != filled {
+        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+    }
+    let capacity = storage.0.capacity();
+    cancellation.check()?;
+    let bytes = acyclic_stream::OwnedBytes::from_vec_with_reserved_guard(
+        (storage.0, storage.1.0),
+        storage.1.1,
+    )
+    .map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            crate::FsError::from(original.runtime_error(error))
+        }
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+            crate::NativeTreeMaterializationError::InvalidLayout.into()
+        }
     })?;
     cancellation.check()?;
     original.admit(WorkCounters::UNCHARGED)?;

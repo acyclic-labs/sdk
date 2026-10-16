@@ -1,1 +1,1 @@
-{"prompt":"/","maximum_bytes":1,"expect":{"error":"unknown command"}}
+{"prompt":"/","maximum_bytes":1,"expect":{"error":"Unknown command"}}

@@ -1,5 +1,6 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+pub(crate) mod admission_work;
 mod scripted;
 mod search;
 mod task_volume_work;
@@ -21,10 +22,10 @@ pub fn local_harness_config(
     ),
 ) -> crate::Result<crate::LocalHarnessConfig> {
     let workspace = workspace.into();
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     let config = crate::LocalHarnessConfig::new(workspace, model);
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(settings);
     Ok(config)
 }
@@ -36,3 +37,6 @@ pub fn local_task_stream(
 ) -> std::sync::Arc<acyclic_stream::LocalStream> {
     harness.task_stream()
 }
+
+pub(crate) mod model_view_work;
+pub use model_view_work::measure as measure_model_view_work;

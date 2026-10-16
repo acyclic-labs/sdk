@@ -29,7 +29,7 @@ mod digest_properties {
         fn flat_arrays_reserve_once(entries in prop::collection::vec(any::<i64>(), 0..512)) {
             let value = Value::Array(entries.iter().copied().map(Value::from).collect());
             let mut charged = 0;
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
                     charged += match event {
                         JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
@@ -44,7 +44,7 @@ mod digest_properties {
             prop_assert_eq!(charged, 1 + u64::from(!entries.is_empty()));
             prop_assert_eq!(measured.count_total, charged);
             prop_assert_eq!(measured.bytes_current, 0);
-            let legacy = allocation_counter::measure(|| {
+            let legacy = acyclic_test_support::measure(|| {
                 let mut values = Vec::new();
                 for entry in &entries {
                     if values.len() == values.capacity() {
@@ -69,7 +69,7 @@ mod digest_properties {
             let value = Value::Object(entries.into_iter().map(|(key, value)| (key, Value::from(value))).collect());
             let mut operations = 0;
             let mut copied = None;
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 copied = Some(json_value_bounded(&value, BOUNDS, None, &mut |event| {
                     operations += match event {
                         JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
@@ -120,7 +120,7 @@ mod digest_properties {
             let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native).unwrap());
             let expected = crate::contract::canonical_json_bytes(&value).unwrap();
             let mut digest = Ok([0; 32]);
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 digest = canonical_json_digest(&value, 65_536, &mut Some(&mut work));
             });
             prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
@@ -192,7 +192,7 @@ mod digest_properties {
                 crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
             );
             let mut succeeded = false;
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 let result = json_value_bounded(
                     value,
                     BOUNDS,
@@ -265,7 +265,7 @@ mod digest_properties {
         exhausted_serialization(raw.as_ref(), 0);
         // Negative control: reproducing the old visitor's diagnostic after a
         // denied charge allocates despite no admitted operation.
-        let diagnostic = allocation_counter::measure(|| {
+        let diagnostic = acyclic_test_support::measure(|| {
             let error: serde_json::Error = serde::de::Error::custom("JSON admission interrupted");
             drop(error);
         });
@@ -357,7 +357,7 @@ fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
     assert!(bytes.len() > 8 * 4096);
     let expected = *blake3::hash(&bytes).as_bytes();
     let mut converted = Ok(Value::Null);
-    let conversion = allocation_counter::measure(|| {
+    let conversion = acyclic_test_support::measure(|| {
         converted = serde_json::to_value(value);
         if let Ok(value) = &mut converted {
             value.sort_all_objects();
@@ -367,7 +367,7 @@ fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
         converted.map_err(|error| Error::Invalid(error.to_string()))?,
     ));
     let mut digest = Ok([0; 32]);
-    let encoding = allocation_counter::measure(|| {
+    let encoding = acyclic_test_support::measure(|| {
         digest = canonical_json_digest(value, u64::MAX, &mut None);
     });
     assert_eq!(digest?, expected);

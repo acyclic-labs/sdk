@@ -11,6 +11,8 @@ impl LocalStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
+        #[cfg(feature = "test-support")]
+        describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
@@ -31,7 +33,7 @@ impl LocalStream {
             let worker = async move {
                 let _input = input;
                 let result = loop {
-                    let revision = *stream.inner.changed.borrow();
+                    let revision = *stream.inner.revision.borrow();
                     let replay = match provider.has_replay(&request.idempotency_key).await {
                         Ok(replay) => replay,
                         Err(error) => {
@@ -47,7 +49,7 @@ impl LocalStream {
                         drop(stream.inner.visibility.write().await);
                         continue;
                     };
-                    if revision != *stream.inner.changed.borrow() {
+                    if revision != *stream.inner.revision.borrow() {
                         drop(visibility);
                         continue;
                     }
@@ -87,7 +89,7 @@ impl LocalStream {
                 &original,
                 std::mem::size_of_val(&worker),
             )?;
-            let task = tokio::spawn(async move {
+            let task = spawn(async move {
                 let _allocation = allocation;
                 worker.await
             });
@@ -100,6 +102,13 @@ impl LocalStream {
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!(
+                "native append {} {:?}",
+                request.path, request.idempotency_key
+            )
+        });
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&original, async move {

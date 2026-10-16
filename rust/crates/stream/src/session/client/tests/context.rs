@@ -31,9 +31,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        fixture
-            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1),
+        )
+        .await?;
         if observed_first {
             assert_eq!(first.closed("first.request"), 1, "{CLOSE}");
         }
@@ -45,9 +47,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        fixture
-            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2)
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2),
+        )
+        .await?;
         assert_eq!(second.closed("second.request"), 1);
         assert_eq!(
             first.spans("stream.session").len(),
@@ -292,6 +296,8 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             b_origin.in_scope(|| Observation::channel(3).operation.clone());
         // The real Cursor drop sets cancellation before its queued removal runs.
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),

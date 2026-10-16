@@ -21,6 +21,8 @@ mod goal_sources;
 mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
+#[path = "file_query/replacements.rs"]
+mod replacements;
 use objects::CountingObjects;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
@@ -209,6 +211,14 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
         filesystem: Fs<MemoryAuthorityBackend, O>,
         reads: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Result<Self> {
+        Self::with_class(filesystem, reads, VolumeClass::AgentPrivate).await
+    }
+
+    async fn with_class(
+        filesystem: Fs<MemoryAuthorityBackend, O>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+        class: VolumeClass,
+    ) -> Result<Self> {
         let provider =
             ProviderRef::new("query".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
@@ -216,8 +226,12 @@ impl<O: AsyncObjectStore + 'static> Fixture<O> {
         let volume = VolumeRef::new(
             provider,
             "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
+            class,
+            if class == VolumeClass::Project {
+                VolumeOwner::Project("query".into())
+            } else {
+                VolumeOwner::Agent(agent)
+            },
             &mut None,
         )?;
         let issuer = AuthorityIssuer::new(
@@ -674,4 +688,39 @@ async fn ordinary_file_queries_keep_authority_work_and_selection_bounds() -> Res
     let tiny = reader.file_query(&fixture.volume, acyclic_fs::performance::work_budget(0, 0))?;
     assert!(tiny.observe_files(Query::Plans, None, 2, 64).await.is_err());
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Ordinary project queries preserve their exact file bytes and require the
+    // signed read grant just like agent-private queries; class is no authority.
+    #[test]
+    fn project_and_agent_queries_preserve_signed_authority(
+        project in proptest::bool::ANY,
+        authorized in proptest::bool::ANY,
+        text in ".{0,32}",
+    ) {
+        futures::executor::block_on(async {
+            let fixture = Fixture::with_class(Fs::memory(), Arc::default(),
+                if project { VolumeClass::Project } else { VolumeClass::AgentPrivate }).await?;
+            fixture.write(&[("plans/a.md", Some(&text))]).await?;
+            let capabilities = if authorized {
+                Capabilities::new([fixture.volume.capability(VolumeOperation::Read, &mut None)?])
+            } else { Capabilities::default() };
+            let scope = fixture.issuer.issue("reader", &capabilities, Some(fixture.agent), None, &mut None)?;
+            let reader = FilesystemContentVerifier::new(fixture.host.clone(),
+                &fixture.issuer.verifier(&mut None)?, &scope, 65_536, None)?;
+            let result = reader.file_query(&fixture.volume, BOUNDARY_BUDGET)?
+                .observe_files(Query::Plans, None, 1, 4096).await;
+            if authorized {
+                let snapshot = result?.snapshot.unwrap();
+                assert_eq!(snapshot.files.len(), 1);
+                assert_eq!(snapshot.files[0].bytes.as_ref(), text.as_bytes());
+            } else {
+                assert!(matches!(result, Err(acyclic_harness::task_volume::Error::FileRead(
+                    acyclic_harness::Error::Unauthorized(_)))));
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).unwrap();
+    }
 }

@@ -10,7 +10,7 @@ fn unchanged_work(count: usize, repeats: usize, broken: bool) {
     }
     menu.refresh(&editor);
     let before = menu.work;
-    let allocations = allocation_counter::measure(|| {
+    let allocations = acyclic_test_support::measure(|| {
         for _ in 0..repeats {
             if broken {
                 menu.version = None;
@@ -133,7 +133,7 @@ fn full_scan_oracle_detects_a_cursor_before_the_cached_token() {
     let start = completion_request(&editor).unwrap().range.start;
     editor.insert("/", 0);
     editor.set_cursor(4, false);
-    let broken = request_from(&editor, start, &mut 0);
+    let broken = request_from(&editor, start, &mut 0, None);
     assert_eq!(
         broken,
         completion_request(&editor),

@@ -105,7 +105,11 @@ fn round_trip(provider: &ResolvedModel, request: ModelRequest, answer: &str, sig
         let body = projection::body(&target, restored.request()).unwrap();
         assert_eq!(
             visible(&body, adapter),
-            answer,
+            if adapter == Adapter::Anthropic && answer.trim().is_empty() {
+                ""
+            } else {
+                answer
+            },
             "{adapter:?} repeated or lost visible text"
         );
     }
@@ -115,6 +119,7 @@ fn round_trip(provider: &ResolvedModel, request: ModelRequest, answer: &str, sig
             provider,
             restored.request(),
             &crate::tool_names::Names::new(restored.request()),
+            &provider.reasoning_origin(provider.key.as_deref(), None),
         )
         .unwrap(),
     )

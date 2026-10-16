@@ -79,7 +79,7 @@ mod tests;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
-    include!("../generated/acyclic.objects.v1.rs");
+    include!(concat!(env!("OUT_DIR"), "/acyclic.objects.v1.rs"));
 }
 
 /// Largest caller-supplied PEM CA, client certificate, or private key.
@@ -89,7 +89,8 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Canonical Objects v1 descriptor, including streaming service definitions.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../generated/acyclic-objects-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-objects-v1.bin"));
 
 /// Canonical semantic failure; infrastructure diagnostics remain operator-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

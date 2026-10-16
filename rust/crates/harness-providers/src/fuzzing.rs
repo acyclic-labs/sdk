@@ -11,6 +11,29 @@ fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>
     parse_at(adapter, input, width, [1; 16])
 }
 
+/// Accepted alloy manifests preserve policy and deterministic selection through JSON.
+pub fn assert_alloy_invariants(input: &[u8]) {
+    if let Ok(spec) = serde_json::from_slice::<crate::AlloySpec>(input) {
+        let encoded = serde_json::to_vec(&spec).unwrap();
+        let replay: crate::AlloySpec = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(spec, replay);
+        assert_eq!(spec.validate().is_ok(), replay.validate().is_ok());
+        if spec.validate().is_ok() {
+            for ordinal in [0, 1, u64::MAX] {
+                for role in ["", "worker", "reviewer"] {
+                    let turn = crate::AlloyTurn {
+                        operation_id: OperationId::from_bytes([1; 16]),
+                        ordinal,
+                        role,
+                    };
+                    assert!(spec.index(turn) < spec.models.len());
+                    assert_eq!(spec.index(turn), replay.index(turn));
+                }
+            }
+        }
+    }
+}
+
 fn parse_at(
     adapter: Adapter,
     input: &[u8],
@@ -37,6 +60,40 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'T' {
+        if let Ok(fragments) = serde_json::from_slice::<Vec<String>>(input) {
+            crate::projection::text::assert_normalization(&fragments);
+        }
+        return;
+    }
+    if kind == b'V' {
+        let Some((&kind, input)) = input.split_first() else {
+            return;
+        };
+        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) {
+            let adapter = [
+                Adapter::Anthropic,
+                Adapter::Responses,
+                Adapter::Chat,
+                Adapter::Gemini,
+            ][usize::from(kind) % 4];
+            let before = crate::validate_input(adapter, &body);
+            let encoded = serde_json::to_vec(&body).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(before, crate::validate_input(adapter, &replay));
+        }
+        return;
+    }
+    if kind == b'L' {
+        assert_alloy_invariants(input);
+        return;
+    }
+    if kind == b'P' {
+        if let Ok(value) = crate::projection::arguments::literal(input) {
+            crate::projection::arguments::assert_normalization(&value);
+        }
+        return;
+    }
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
         for field in [
@@ -74,6 +131,17 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 if let Some(raw) =
                     crate::projection::native_reasoning::validated(adapter, &block.continuity)
                 {
+                    // Independent bounded literal decoder: native admission must
+                    // reject invalid strings, including inside skipped fields.
+                    let bounds = acyclic_harness::JsonBounds {
+                        maximum_bytes: block.continuity.len() as u64,
+                        maximum_items: block.continuity.len() as u64,
+                        maximum_depth: 128,
+                    };
+                    assert!(
+                        acyclic_harness::json_value_bounded(raw, bounds, None, &mut |_| Ok(()),)
+                            .is_ok()
+                    );
                     assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
                 }
             }
@@ -106,6 +174,19 @@ pub fn assert_stream_invariants(input: &[u8]) {
             let replay = serde_json::from_slice(&encoded).unwrap();
             crate::tool_names::Names::assert_round_trip(&replay);
             crate::call_ids::CallIds::assert_round_trip(&replay);
+        }
+        return;
+    }
+    if kind == b'A' {
+        if let Ok(auth) = crate::codex::decode_auth(input) {
+            let refresh = crate::codex::needs_refresh(&auth, time::OffsetDateTime::UNIX_EPOCH);
+            let canonical = serde_json::to_vec(&auth).unwrap();
+            let restored = crate::codex::decode_auth(&canonical).unwrap();
+            assert_eq!(
+                crate::codex::needs_refresh(&restored, time::OffsetDateTime::UNIX_EPOCH),
+                refresh
+            );
+            assert_eq!(restored, auth);
         }
         return;
     }
@@ -228,6 +309,24 @@ mod properties {
             let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
             let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
             prop_assert_eq!(frames, vec![lines.join("\n")]);
+        }
+    }
+
+    #[test]
+    fn checked_in_shape_regressions_obey_the_parser_oracles() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/native-summary-surrogate.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-missing-text.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-output-wrong-position.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-numeric-call-content.json")
+                .as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-file-without-source.json")
+                .as_slice(),
+        ] {
+            assert_stream_invariants(seed);
         }
     }
 

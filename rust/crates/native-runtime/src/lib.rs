@@ -30,7 +30,9 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
-pub use process_tree::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessTree};
+pub use process_tree::{
+    CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput, ProcessTree,
+};
 
 mod file;
 #[cfg(windows)]
@@ -70,6 +72,8 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub(crate) use blocking::{
     BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,

@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
 edition.workspace = true
@@ -8,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 description = "Public Actors v1 contract and validation"
 readme = "README.md"
+
 
 [dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -44,7 +46,7 @@ url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 async-trait.workspace = true
-allocation-counter = "=0.8.1"
+acyclic-test-support = { path = "../test-support" }
 loom = "0.7"
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
@@ -57,13 +59,9 @@ tracing-subscriber.workspace = true
 loom = { version = "0.7.2", features = ["futures"] }
 
 [build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-prost = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"
-tonic-prost-build = "=0.14.6"
-ts-rs = "=12.0.1"
-thiserror.workspace = true
 
 [lints]
 workspace = true

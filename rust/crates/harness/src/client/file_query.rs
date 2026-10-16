@@ -5,7 +5,14 @@ use crate::{
     goal::GoalState,
     task_volume::{Change, Cursor, FileKey, FileValue, Query, SCHEMA, Snapshot},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
+    file.and_then(|file| file.publication)
+}
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod goal_lines_tests;
@@ -42,13 +49,21 @@ impl GoalFileView {
     }
 }
 
+#[cfg(feature = "test-support")]
+type ViewIndex<V> = crate::test_support::TaskVolumeFiles<V>;
+#[cfg(not(feature = "test-support"))]
+type ViewIndex<V> = BTreeMap<FileKey, V>;
+
 /// Bounded, shared file slices from one accepted volume query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileQueryView {
     query: Query,
-    files: BTreeMap<FileKey, FileValue>,
+    files: ViewIndex<FileValue>,
     rows: BTreeMap<FileKey, Arc<[String]>>,
+    models: ViewIndex<super::ModelFileView>,
+    rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
+    goal_revision: Option<crate::OperationId>,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
@@ -87,28 +102,51 @@ impl FileQueryView {
         {
             return Err(invalid());
         }
-        let mut files = BTreeMap::new();
+        let mut files = ViewIndex::default();
+        let mut rejected_models = BTreeSet::new();
         let mut bytes = 0usize;
         for file in snapshot.files {
+            if !query.matches(&file.key)
+                || files.contains_key(&file.key)
+                || rejected_models.contains(&file.key)
+            {
+                return Err(invalid());
+            }
+            if rejected_model(&file, maximum_bytes) {
+                rejected_models.insert(file.key);
+                continue;
+            }
             bytes = bytes
                 .checked_add(file.bytes.len())
                 .filter(|size| *size <= maximum_bytes)
                 .ok_or_else(invalid)?;
-            if !query.matches(&file.key) || files.insert(file.key.clone(), file).is_some() {
-                return Err(invalid());
-            }
+            files.insert(file.key.clone(), file);
         }
         let rows = files
             .iter()
             .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
             .map(|(key, file)| (key.clone(), plan_rows(file)))
             .collect();
+        let models = files
+            .iter()
+            .filter(|(key, _)| super::model_view::turn_request(key).is_some())
+            .map(|(key, file)| (key.clone(), super::ModelFileView::from_file(file)))
+            .chain(
+                rejected_models
+                    .iter()
+                    .map(|key| (key.clone(), super::ModelFileView::Invalid)),
+            )
+            .collect();
         let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
+        let goal_revision = goal_revision(files.get(&FileKey::Goal));
         let goal_line_starts = goal_line_starts(&goal);
         Ok(Self {
             query,
             rows,
+            models,
+            rejected_models,
             goal,
+            goal_revision,
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
@@ -129,9 +167,30 @@ impl FileQueryView {
         &self.cursor
     }
 
-    /// Current file slices, sharing their immutable query payloads.
+    /// Admitted file slices, sharing immutable query payloads. Oversized model
+    /// requests have an Invalid model row and retain no payload in this cache.
     pub fn files(&self) -> &BTreeMap<FileKey, FileValue> {
-        &self.files
+        #[cfg(feature = "test-support")]
+        {
+            self.files.as_map()
+        }
+        #[cfg(not(feature = "test-support"))]
+        {
+            &self.files
+        }
+    }
+
+    /// Borrows model identities; rendering never reparses request bytes.
+    pub fn models(&self) -> impl Iterator<Item = super::ModelQueryView<'_>> {
+        self.models.iter().filter_map(|(key, model)| {
+            let (task, turn) = super::model_view::turn_request(key)?;
+            Some(super::ModelQueryView {
+                cursor: &self.cursor,
+                task,
+                turn,
+                model,
+            })
+        })
     }
 
     /// Borrows parsed goal state; rendering never reparses the file.
@@ -147,6 +206,10 @@ impl FileQueryView {
         self.progress.as_ref()
     }
 
+    pub(super) fn goal_revision(&self) -> Option<crate::OperationId> {
+        self.goal_revision
+    }
+
     /// Borrows cached rows; iteration and clipping never parse or format a file.
     pub fn plan_rows(&self) -> impl Iterator<Item = &str> {
         self.rows
@@ -159,6 +222,16 @@ impl FileQueryView {
         self.plan_rows().map(str::to_owned).collect()
     }
 
+    fn matches_file(&self, file: &FileValue) -> bool {
+        if self.rejected_models.contains(&file.key) {
+            // Rejected payloads have no observable content in this bounded view.
+            // The exact publication cursor still identifies the source revision.
+            rejected_model(file, self.maximum_bytes)
+        } else {
+            self.files.get(&file.key) == Some(file)
+        }
+    }
+
     /// Folds the next accepted record atomically. Gaps require a new snapshot.
     pub fn apply(&mut self, change: Change) -> Result<bool> {
         let invalid = || Error::Conflict("file query follow requires reset".into());
@@ -168,7 +241,12 @@ impl FileQueryView {
             .checked_add(change.files.len())
             .and_then(|count| count.checked_add(change.removed.len()))
             .ok_or_else(invalid)?;
-        if changed_files > self.maximum_files.saturating_add(self.files.len()) {
+        if changed_files
+            > self
+                .maximum_files
+                .saturating_add(self.files.len())
+                .saturating_add(self.rejected_models.len())
+        {
             return Err(invalid());
         }
         let mut keys = std::collections::BTreeSet::new();
@@ -178,13 +256,11 @@ impl FileQueryView {
             }
         }
         if *cursor == self.cursor {
-            return if files
-                .clone()
-                .all(|file| self.files.get(&file.key) == Some(file))
+            return if files.clone().all(|file| self.matches_file(file))
                 && change
                     .removed
                     .iter()
-                    .all(|key| !self.files.contains_key(key))
+                    .all(|key| !self.files.contains_key(key) && !self.rejected_models.contains(key))
             {
                 Ok(false)
             } else {
@@ -204,10 +280,15 @@ impl FileQueryView {
             return Err(invalid());
         }
         let mut bytes = self.bytes;
-        let mut count = self.files.len();
+        let mut count = self.files.len() + self.rejected_models.len();
         for key in &change.removed {
-            let old = self.files.get(key).ok_or_else(invalid)?;
-            bytes = bytes.checked_sub(old.bytes.len()).ok_or_else(invalid)?;
+            let old = self.files.get(key);
+            if old.is_none() && !self.rejected_models.contains(key) {
+                return Err(invalid());
+            }
+            bytes = bytes
+                .checked_sub(old.map_or(0, |file| file.bytes.len()))
+                .ok_or_else(invalid)?;
             count -= 1;
         }
         let mut changed = !change.removed.is_empty();
@@ -217,12 +298,16 @@ impl FileQueryView {
                 .checked_sub(old.map_or(0, |file| file.bytes.len()))
                 .ok_or_else(invalid)?;
             count = count
-                .checked_add(usize::from(old.is_none()))
+                .checked_add(usize::from(
+                    old.is_none() && !self.rejected_models.contains(&file.key),
+                ))
                 .ok_or_else(invalid)?;
-            changed |= old != Some(file);
+            changed |= !self.matches_file(file);
         }
         for file in files {
-            bytes = bytes.checked_add(file.bytes.len()).ok_or_else(invalid)?;
+            if !rejected_model(file, self.maximum_bytes) {
+                bytes = bytes.checked_add(file.bytes.len()).ok_or_else(invalid)?;
+            }
         }
         if bytes > self.maximum_bytes || count > self.maximum_files {
             return Err(invalid());
@@ -230,6 +315,7 @@ impl FileQueryView {
         for key in change.removed {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
+                self.goal_revision = None;
                 self.goal_line_starts = Arc::default();
             }
             if key == FileKey::RequestHead {
@@ -237,17 +323,34 @@ impl FileQueryView {
             }
             self.files.remove(&key);
             self.rows.remove(&key);
+            self.models.remove(&key);
+            self.rejected_models.remove(&key);
         }
         for file in change.file.into_iter().chain(change.files) {
+            if rejected_model(&file, self.maximum_bytes) {
+                self.files.remove(&file.key);
+                self.models
+                    .insert(file.key.clone(), super::ModelFileView::Invalid);
+                self.rejected_models.insert(file.key);
+                continue;
+            }
+            self.rejected_models.remove(&file.key);
             if file.key == FileKey::RequestHead && self.files.get(&file.key) != Some(&file) {
                 self.progress = super::GoalProgress::from_file(Some(&file));
             }
             if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
+                self.goal_revision = goal_revision(Some(&file));
                 self.goal_line_starts = goal_line_starts(&self.goal);
             }
             if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
+            }
+            if super::model_view::turn_request(&file.key).is_some()
+                && self.files.get(&file.key) != Some(&file)
+            {
+                self.models
+                    .insert(file.key.clone(), super::ModelFileView::from_file(&file));
             }
             self.files.insert(file.key.clone(), file);
         }
@@ -255,6 +358,10 @@ impl FileQueryView {
         self.cursor = change.cursor;
         Ok(changed)
     }
+}
+
+fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {
+    file.bytes.len() > maximum_bytes && super::model_view::turn_request(&file.key).is_some()
 }
 
 pub(super) fn goal_line_starts(goal: &GoalFileView) -> Arc<[usize]> {

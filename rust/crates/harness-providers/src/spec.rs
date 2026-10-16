@@ -1,5 +1,4 @@
 use crate::Adapter;
-use acyclic_harness::context::ModelContextCapacity;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -9,6 +8,8 @@ use std::collections::BTreeMap;
 pub enum Authentication {
     /// A provider API key is required.
     ApiKey,
+    /// Prefer an API key, otherwise reuse native Codex CLI credentials on the built-in Responses route.
+    ApiKeyOrCodexLogin,
     /// The endpoint accepts anonymous requests; use an API key when configured.
     Optional,
 }
@@ -25,7 +26,7 @@ pub struct ProviderSpec {
     pub base_url: String,
     /// Exact model capacities, including local server configurations.
     #[serde(default)]
-    pub models: BTreeMap<String, ModelContextCapacity>,
+    pub models: BTreeMap<String, crate::ModelSpec>,
     /// Verified admission counter. Required for automatic compaction; generic
     /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]

@@ -33,7 +33,7 @@ fn no_rebuild(broken: bool) {
             removed: vec![],
             cursor: cursor(position),
         };
-        let work = allocation_counter::measure(|| {
+        let work = acyclic_test_support::measure(|| {
             files
                 .apply_change(Scope::User, Some(Ok(change)), &mut input, &profile)
                 .unwrap();

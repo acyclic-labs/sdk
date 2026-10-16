@@ -224,7 +224,7 @@ async fn completed_turn_retains_provider_metadata_in_next_conversation_and_repla
                     },
                     executor: echo.clone(),
                     projection: echo.clone(),
-                })?
+                })
                 .grant("model:generate")
                 .grant("tool:call:echo")
                 .build()

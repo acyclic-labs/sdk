@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "prefix_properties.rs"]
+mod prefix_properties;
+
 #[test]
 fn checkpoint_suffix_preserves_logical_head_digest_and_next_turn() -> Result<()> {
     let agent = AgentId::new();

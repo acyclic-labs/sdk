@@ -1,5 +1,15 @@
 {
-  "prompt": "/plan",
   "complete": "/m",
-  "expect": {"completions":["mcp","model"],"result":{"kind":"select","query":"plan"}}
+  "expect": {
+    "completions": [
+      "mcp",
+      "mode",
+      "model"
+    ],
+    "result": {
+      "kind": "select",
+      "query": "plan"
+    }
+  },
+  "prompt": "/plan"
 }

@@ -31,7 +31,7 @@ tempfile = { version = "3.27", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 
 [dev-dependencies]
-allocation-counter = "=0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 alacritty_terminal = "0.26"
 serde = { workspace = true, features = ["derive"] }

@@ -130,7 +130,7 @@ fn event_decode_cost(tracing: bool, accounted: bool) -> Result<()> {
         let mut work: Option<&mut dyn HistoryIo> = accounted.then_some(&mut io);
         let mut result = None;
         let started = std::time::Instant::now();
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = Some(decode_event(std::hint::black_box(&bytes), &mut work));
         });
         times.push(started.elapsed());

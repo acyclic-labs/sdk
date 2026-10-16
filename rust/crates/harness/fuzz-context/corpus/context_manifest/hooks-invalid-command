@@ -1,0 +1,1 @@
+[{"on":"Stop","matcher":"*","hooks":[{"run":{"kind":"executable","executable":"\u0000","argv":[]},"timeout_ms":0,"failure":"report"}]}]
