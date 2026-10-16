@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", features, run);
+  return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
 }
 
 export function qualifyTimerLoom(run = spawnSync) {
@@ -16,6 +18,12 @@ export function qualifyTimerLoom(run = spawnSync) {
 
 export function qualifyGuestLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+}
+
+export function qualifyFsBindingLoom(features = [], run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
+    targetCfg: ["--", "--cfg", "acyclic_fs_loom"],
+  });
 }
 
 function qualifyLoom(crate, target, features, run, options = {}) {
@@ -47,5 +55,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const features = process.argv.slice(2);
   if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
 }

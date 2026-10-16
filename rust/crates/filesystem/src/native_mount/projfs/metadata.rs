@@ -58,16 +58,17 @@ pub(super) fn host_windows_metadata(
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let metadata = crate::native_host::with_wide_path(
-        &host_relative_path(path)?,
-        &mut &*work,
-        |path, work| {
-            if let Some(metadata) = query_metadata(root, path, work)? {
-                return Ok(metadata);
-            }
-            root.stat(path, work)
-        },
-    )?;
+    let query = |path: &[u16], work: &mut &crate::NativeMaterializationWork| {
+        if let Some(metadata) = query_metadata(root, path, work)? {
+            return Ok(metadata);
+        }
+        root.stat(path, work)
+    };
+    let metadata = if let Some(units) = super::callback_path::wide_components(path.components()) {
+        crate::native_host::with_wide_units(units, &mut &*work, query)?
+    } else {
+        crate::native_host::with_wide_path(&host_relative_path(path)?, &mut &*work, query)?
+    };
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
             device: u64::from(metadata.volume_serial_number),
@@ -455,3 +456,7 @@ pub(super) unsafe fn start_directory(
 #[cfg(test)]
 #[path = "tests/metadata_query.rs"]
 mod query_tests;
+
+#[cfg(test)]
+#[path = "tests/metadata_encoding.rs"]
+mod encoding_tests;

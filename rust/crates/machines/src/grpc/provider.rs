@@ -10,7 +10,7 @@ macro_rules! machine_mutations {
         async fn $method(&self, machine: MachineId, key: IdempotencyKey)
             -> Result<MutationOutcome, ProviderError> {
             obs::finish(async {
-                let value = self.client.clone().$method(wire::MachineMutationRequest {
+                let value = self.client().await?.$method(wire::MachineMutationRequest {
                     protocol: Some(protocol()),
                     idempotency_key: Some(encode_key(key)),
                     machine: Some(encode_machine(machine)),
@@ -48,6 +48,7 @@ machine_mutations! {
     ) -> Result<ExecStream, ProviderError> {
         obs::finish(
             async {
+                let mut client = self.client().await?;
                 let timeout =
                     Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
                 let deadline = tokio::time::Instant::now() + timeout;
@@ -58,9 +59,7 @@ machine_mutations! {
                     timeout_ms: command.timeout_ms,
                 });
                 request.set_timeout(timeout);
-                let output = self
-                    .client.clone()
-                    .exec(request)
+                let output = client.exec(request)
                     .await
                     .map_err(|error| command_error(machine, &error))?
                     .into_inner();
@@ -107,8 +106,7 @@ machine_mutations! {
                 if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
                     return Err(ProviderError::Invalid("invalid console read limit".into()));
                 }
-                let value = self
-                    .client.clone()
+                let value = self.client().await?
                     .read_output(wire::ReadOutputRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -132,7 +130,7 @@ machine_mutations! {
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         obs::finish(
             async {
-                let response = self.client.clone()
+                let response = self.client().await?
                     .qualify_image(wire::QualifyImageRequest {
                         protocol: Some(protocol()),
                         image: Some(encode_image(&image)?),
@@ -155,7 +153,7 @@ machine_mutations! {
         obs::finish(
             async {
                 let key = request.idempotency_key;
-                let response = self.client.clone()
+                let response = self.client().await?
                     .create(wire::CreateMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -195,7 +193,7 @@ machine_mutations! {
     ) -> Result<MachineObservation, ProviderError> {
         obs::finish(
             async {
-                self.client.clone()
+                self.client().await?
                     .inspect_machine(wire::InspectMachineRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -225,7 +223,7 @@ machine_mutations! {
                         "machine page limit must be 1..=256".into(),
                     ));
                 }
-                let page = self.client.clone()
+                let page = self.client().await?
                     .list_machines(wire::ListMachinesRequest {
                         protocol: Some(protocol()),
                         after: after.map(encode_machine),
@@ -278,7 +276,7 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self.client.clone()
+                let value = self.client().await?
                     .checkpoint(wire::CheckpointMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -314,7 +312,7 @@ machine_mutations! {
     ) -> Result<CheckpointObservation, ProviderError> {
         obs::finish(
             async {
-                self.client.clone()
+                self.client().await?
                     .inspect_checkpoint(wire::InspectCheckpointRequest {
                         protocol: Some(protocol()),
                         checkpoint: Some(encode_checkpoint(checkpoint)),
@@ -345,7 +343,7 @@ machine_mutations! {
                 if count.get() > MAX_FORK_CHILDREN {
                     return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
                 }
-                let value = self.client.clone()
+                let value = self.client().await?
                     .fork(wire::ForkCheckpointRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -390,7 +388,7 @@ machine_mutations! {
                 if count.get() > MAX_FORK_CHILDREN {
                     return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
                 }
-                let value = self.client.clone()
+                let value = self.client().await?
                     .fork_machine(wire::ForkMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -432,7 +430,7 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self.client.clone()
+                let value = self.client().await?
                     .set_suspension_policy(wire::SetSuspensionPolicyRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -468,7 +466,7 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                let value = self.client.clone()
+                let value = self.client().await?
                     .destroy_checkpoint(wire::CheckpointMutationRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
@@ -507,7 +505,7 @@ machine_mutations! {
                         "event page limit must be 1..=1024".into(),
                     ));
                 }
-                let value = self.client.clone()
+                let value = self.client().await?
                     .events(wire::EventsRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -564,7 +562,7 @@ machine_mutations! {
                         "usage interval must be non-empty".into(),
                     ));
                 }
-                let value = self.client.clone()
+                let value = self.client().await?
                     .usage(wire::UsageRequest {
                         protocol: Some(protocol()),
                         machine: Some(encode_machine(machine)),
@@ -620,7 +618,7 @@ machine_mutations! {
     ) -> Result<OperationObservation, ProviderError> {
         obs::finish(
             async {
-                self.client.clone()
+                self.client().await?
                     .inspect_operation(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))
@@ -639,7 +637,7 @@ machine_mutations! {
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
         obs::finish(
             async {
-                self.client.clone()
+                self.client().await?
                     .cancel(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))
@@ -661,7 +659,7 @@ machine_mutations! {
     ) -> Result<OperationStream, ProviderError> {
         obs::finish(
             async {
-                let stream = self.client.clone()
+                let stream = self.client().await?
                     .watch_operation(operation_request(operation))
                     .await
                     .map_err(|error| read_error(&error))?

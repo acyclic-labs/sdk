@@ -13,6 +13,9 @@ use std::collections::BTreeSet;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextManifest {
+    /// Declarative conventions pinned in this manifest file, before discovered instructions.
+    #[serde(default)]
+    pub conventions: Vec<String>,
     /// Instructions are ordered from broad to specific scope; later entries take precedence.
     pub discovery: DiscoveredContext,
     /// Names in invocation order, resolving only through this manifest's pinned skill catalog.
@@ -29,6 +32,8 @@ impl ContextManifest {
         tools: &ToolRegistry,
     ) -> Result<Self> {
         Ok(Self {
+            conventions: serde_json::from_str(include_str!("instructions.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             discovery,
             selected_skills,
             tools: tools.definitions(None)?,
@@ -73,7 +78,8 @@ impl ContextManifest {
             .discovery
             .instructions
             .len()
-            .checked_add(usize::from(!self.discovery.skills.is_empty()))
+            .checked_add(self.conventions.len())
+            .and_then(|count| count.checked_add(usize::from(!self.discovery.skills.is_empty())))
             .and_then(|count| count.checked_add(self.selected_skills.len()))
             .ok_or_else(|| Error::Invalid("manifest message count overflows".into()))?;
         if count > limits.context_messages {
@@ -174,7 +180,15 @@ impl ContextManifest {
         reader: &dyn ContentResidencyVerifier,
         limits: Limits,
     ) -> Result<Context> {
-        let mut messages = self.discovery.messages(limits, None)?;
+        let mut messages: Vec<_> = self
+            .conventions
+            .iter()
+            .map(|text| ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(text.clone()),
+            })
+            .collect();
+        messages.extend(self.discovery.messages(limits, None)?);
         let mut remaining = limits
             .render_bytes
             .checked_sub(crate::executor::json::json_byte_length(

@@ -39,6 +39,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "credential"
+path = "fuzz_targets/credential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "holder_snapshot"
 path = "fuzz_targets/holder_snapshot.rs"
 test = false

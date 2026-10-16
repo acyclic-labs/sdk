@@ -8,7 +8,9 @@ import { SessionNode, checkpoint } from "./session-node.js";
 // fires the real helper callback, without wall time or a second implementation.
 const peer = new SessionNode();
 const fault = process.env.STREAM_SESSION_FAULT;
-const scenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
+const requestedScenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
+const children = requestedScenario.endsWith("-children");
+const scenario = requestedScenario.replace(/-children$/, "");
 plugin({ name: "raw-follow-deadline-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
@@ -27,7 +29,7 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
     if (fault === "deadline") {
       const forwarding = "const timeoutMs = callOptions?.timeoutMs;";
       if (fault !== "deadline" || !source.includes(forwarding)) throw new Error("deadline negative control no longer matches");
-      source = source.replace(forwarding, "const timeoutMs = undefined;");
+      source = source.replaceAll(forwarding, "const timeoutMs = undefined;");
     }
     return { contents: source, loader: "ts" };
   });
@@ -39,7 +41,7 @@ let writesReleased = false;
 const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, async send(input, writeSignal) {
-    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events");
+    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events" || value.kind.case === "children" && value.kind.value.parent === "events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
       blocked = true;
@@ -91,7 +93,8 @@ const sibling = (async () => {
 })();
 // Establish the healthy channel before parking the other channel's write.
 await peer.until(() => peer.active === 1);
-const records = client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal })[Symbol.asyncIterator]();
+const records = (children ? client.children({ parent: "events", limit: 1 }, { timeoutMs: duration, signal: cancel.signal })
+  : client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal }))[Symbol.asyncIterator]();
 const follow = (async () => {
   try {
     for await (const _ of { [Symbol.asyncIterator]: () => records }) seen += 1;
@@ -104,7 +107,7 @@ let connecting = false;
 async function command(action: string): Promise<unknown> {
   switch (action) {
     case "ready":
-      if (scenario === "deadline-ack") peer.append("events");
+      if (scenario === "deadline-ack") peer.append(children ? "events/child" : "events");
       if (scenario.startsWith("deadline-")) {
         await checkpoint();
         if (!blocked) throw new Error("model did not park the actual channel write");
@@ -112,7 +115,7 @@ async function command(action: string): Promise<unknown> {
       break;
     case "releaseWrite": writesReleased = true; releaseWrite?.(); break;
     case "return": void records.return?.().then(() => { returned = true; }); break;
-    case "deliver": peer.append("events"); break;
+    case "deliver": peer.append(children ? "events/child" : "events"); break;
     case "expire":
       expired = true;
       stoppedAt ??= seen;

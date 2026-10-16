@@ -278,7 +278,7 @@ impl<'a> AuthorityWork<'a> {
         lease: crate::OperationLeaseId,
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; crate::operation_window::lease_path::MAX_ENCODED_BYTES];
         let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,

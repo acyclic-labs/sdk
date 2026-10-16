@@ -429,6 +429,29 @@ impl NativeActorsClient {
 
 #[napi]
 impl NativeActorsClient {
+    /// Execute one operation with a request-local credential on the existing connection.
+    #[napi(js_name = "callWithCredentialResult")]
+    pub async fn call_with_credential_result(
+        &self,
+        method: String,
+        request: Buffer,
+        token: String,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
+        let result = cancellable(
+            self.inner.call_with_credential(&method, &request, &token),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match result {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(value.into()),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult::failure(error),
+        })
+    }
+
     #[napi(js_name = "createActorResult")]
     /// Execute `CreateActor` and return encoded bytes or structured error.
     pub async fn create_actor_result(
