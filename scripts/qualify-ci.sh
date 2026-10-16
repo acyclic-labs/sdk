@@ -284,15 +284,6 @@ case "$lane" in
     node scripts/build-wasm-groups.mjs
     bun run test
     bun scripts/check-typescript-tarballs.mjs
-    # WASM builds are path-independent but not host-independent: panic
-    # locations keep the host's path separators and private wasm-bindgen
-    # closure names carry host-derived crate hashes. Verify the fresh WASM
-    # against the committed package API and runtime, then stage the committed
-    # release bytes. The checker reads HEAD for tracked WASM surfaces and
-    # validates fresh runtimes; this restore controls release staging.
-    git restore --worktree -- \
-      typescript/packages/filesystem/generated/wasm \
-      typescript/packages/stream/generated/wasm
     background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     generated_status=0
     bun run check:baselines || generated_status=$?

@@ -1,4 +1,4 @@
-import type { CanonicalCompatible, ReadonlyBytes, ReadonlyInputSemantic, ReadonlySemantic } from "./readonly.js";
+import type { CanonicalCompatible, ReadonlyBytes, ReadonlyInputSemantic, ReadonlySemantic } from "../src/generated/readonly.js";
 
 declare const brand: unique symbol;
 type Identifier = string & { readonly [brand]: "Identifier" };

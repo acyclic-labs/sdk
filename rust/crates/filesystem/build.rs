@@ -1,4 +1,4 @@
-//! Generates transport from the committed descriptor and builds the Darwin bridge.
+//! Generates transport from the packaged protocol and builds the Darwin bridge.
 
 #[path = "build/case_fold.rs"]
 mod case_fold;

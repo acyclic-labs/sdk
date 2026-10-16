@@ -681,12 +681,13 @@ pub(super) fn collect_source_files_inner(
             let relative_string = path_string(relative);
             let descriptor_input = matches!(
                 relative_string.as_str(),
-                "rust/crates/actors/src/generated/acyclic-actors-v1.bin"
-                    | "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin"
-                    | "rust/crates/inference/inference_descriptor.bin"
-                    | "rust/crates/machines/src/generated/acyclic-machines-v1.bin"
-                    | "rust/crates/objects/src/generated/acyclic-objects-v2.bin"
-                    | "rust/crates/stream/proto/stream/v2/stream_descriptor.bin"
+                "compatibility/descriptors/actors-v1.bin"
+                    | "compatibility/descriptors/auth-v1.bin"
+                    | "compatibility/descriptors/filesystem-v2.bin"
+                    | "compatibility/descriptors/inference-v1.bin"
+                    | "compatibility/descriptors/machines-v1.bin"
+                    | "compatibility/descriptors/objects-v1.bin"
+                    | "compatibility/descriptors/stream-v1.bin"
             );
             let plugin_install_asset = matches!(
                 relative_string.as_str(),

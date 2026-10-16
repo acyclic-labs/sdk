@@ -124,7 +124,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"{\"suite\":true}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v1".as_slice(),
         ),
         (
@@ -157,7 +157,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         "proto/demo.proto",
         "rust/crates/stream/proto/stream/v2/stream.proto",
         "rust/crates/stream/conformance/stream.json",
-        "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+        "compatibility/descriptors/stream-v1.bin",
         "plugin/bin/install.js",
         "plugin/scripts/package.mjs",
         "plugin/package.json",
@@ -185,7 +185,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"syntax = \"proto3\"; message Changed {}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v2".as_slice(),
         ),
         (

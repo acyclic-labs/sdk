@@ -115,7 +115,11 @@ fn packaged_options_are_identical() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let canonical = std::fs::read(root.join("rust/crates/contract-derive/proto/validation/v1/options.proto")).unwrap();
     for copy in [
-        "rust/crates/contract-derive/proto/validation/v1/options.proto",
+        "rust/crates/actors/proto/validation/v1/options.proto",
+        "rust/crates/filesystem/proto/validation/v1/options.proto",
+        "rust/crates/inference/proto/validation/v1/options.proto",
+        "rust/crates/machines/proto/validation/v1/options.proto",
+        "rust/crates/objects/proto/validation/v1/options.proto",
         "rust/crates/stream/proto/validation/v1/options.proto",
     ] {
         assert_eq!(canonical, std::fs::read(root.join(copy)).unwrap());
