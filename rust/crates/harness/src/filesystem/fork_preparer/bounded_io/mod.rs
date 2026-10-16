@@ -1,8 +1,10 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
+use crate::sync::SyncMutex;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 mod codec;
 mod history;
@@ -29,9 +31,10 @@ pub enum PreparationIo {
     Owned {
         /// Limits for this attempt.
         budget: WorkBudget,
-        /// Spent work and live owned bytes.
+        /// Spent work and live owned bytes. This ledger is acquired alone;
+        /// callbacks must not acquire another preparation ledger or reenter it.
         work: Box<
-            Mutex<(
+            SyncMutex<(
                 WorkCounters,
                 std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
             )>,
@@ -105,7 +108,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget,
-            work: Box::new(Mutex::new((
+            work: Box::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
@@ -118,7 +121,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Box::new(Mutex::new((
+            work: Box::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),

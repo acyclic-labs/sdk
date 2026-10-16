@@ -5,14 +5,14 @@ use proptest::prelude::*;
 #[path = "retention_profile.rs"]
 mod production;
 
-fn fixture(count: u32) -> Result<MemoryStore> {
+pub(super) fn fixture(count: u32) -> Result<MemoryStore> {
     let mut store = super::super::tests::store(1, u64::from(count) + 1)?;
     for index in 0..count {
         store.stage(&format!("files/{index:08}"), b"x", "text/plain", "x", true)?;
     }
     Ok(store)
 }
-fn budget(items: u64, bytes: u64) -> WorkBudget {
+pub(super) fn budget(items: u64, bytes: u64) -> WorkBudget {
     WorkBudget {
         items_examined: items,
         source_bytes_read: bytes,
@@ -83,7 +83,7 @@ fn cancellation_prevents_the_next_charge_but_empty_namespaces_still_succeed() ->
 }
 
 // Original production loop, used only as a paired accounting benchmark.
-fn scan(store: &MemoryStore, path: &str, io: &PreparationIo) -> Result<()> {
+pub(super) fn scan(store: &MemoryStore, path: &str, io: &PreparationIo) -> Result<()> {
     for existing in store.paths.keys() {
         let examine = WorkCounters {
             items_examined: 1,

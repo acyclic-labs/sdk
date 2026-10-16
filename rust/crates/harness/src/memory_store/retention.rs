@@ -257,6 +257,28 @@ impl MemoryStore {
                 Ok(())
             };
         }
+        #[cfg(feature = "filesystem")]
+        if let Some(PreparationIo::Owned {
+            budget,
+            work,
+            cancellation,
+        }) = io
+        {
+            return if owned_scan::conflict(
+                &self.paths,
+                path,
+                *budget,
+                work,
+                cancellation,
+                paths_conflict,
+            )? {
+                Err(Error::Invalid(
+                    "file path conflicts with an existing directory".into(),
+                ))
+            } else {
+                Ok(())
+            };
+        }
         for existing in self.paths.keys() {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
@@ -277,6 +299,14 @@ impl MemoryStore {
         Ok(())
     }
 }
+
+#[cfg(feature = "filesystem")]
+#[path = "retention_scan.rs"]
+mod owned_scan;
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "retention_accounting_tests.rs"]
+mod accounting_tests;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_cache_custody(
