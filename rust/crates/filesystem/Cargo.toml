@@ -79,6 +79,16 @@ name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
 
+[[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
 [[test]]
 name = "native_source_watch_custody"
 path = "tests/native_source_watch_custody.rs"

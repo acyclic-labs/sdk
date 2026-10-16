@@ -12,6 +12,10 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::lock_order::{
+    Condvar as RankedCondvar, FILE, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION,
+    VIEW,
+};
 use crate::materializer::NativeResourceCredit::{Copy, Items};
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,

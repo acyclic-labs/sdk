@@ -1,6 +1,6 @@
 use super::*;
 use crate::sync::{
-    Mutex, MutexGuard,
+    Mutex,
     atomic::{AtomicU64, Ordering},
 };
 use std::sync::Arc;
@@ -18,13 +18,17 @@ impl NativeDemandReadMeter {
     pub(crate) fn new(work: DemandWork) -> Self {
         Self(Mutex::new(work))
     }
-    pub(crate) fn lock(&self) -> MutexGuard<'_, DemandWork> {
-        self.0.lock().unwrap_or_else(|poisoned| {
-            let mut state = poisoned.into_inner();
-            state.poison_native_original_work();
-            state
-        })
+    #[track_caller]
+    pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+        crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
+            |poisoned| {
+                let mut state = poisoned.into_inner();
+                state.poison_native_original_work();
+                state
+            },
+        )
     }
+    #[track_caller]
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }
