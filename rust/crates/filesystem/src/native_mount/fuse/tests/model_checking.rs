@@ -1,85 +1,37 @@
 use super::*;
 
-type Volume = crate::facade::Volume<
-    crate::facade::MemoryAuthorityBackend,
-    crate::facade::MemoryObjectBackend,
->;
-
-// Immutable backend input is seeded before the schedules. Source and core
-// synchronization are constructed afresh inside each Loom execution.
-pub(in crate::native_mount::fuse) fn volume() -> (Volume, crate::GenerationId) {
-    let fs = crate::Fs::memory();
-    let cancellation = crate::CancellationToken::new();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let volume = runtime
-        .block_on(Box::pin(fs.create_volume(
+// The immutable checkout is input, not a participant in invalidation. Every
+// schedule creates a fresh private candidate, source, native meter and core.
+pub(in crate::native_mount::fuse) fn seed() -> Box<MemoryCheckout> {
+    Box::new(
+        memory_checkout(
             posix_config(),
-            crate::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )))
+            crate::model::CheckoutMode::read_only_pinned(),
+            1,
+        )
         .unwrap()
-        .value;
-    let creation = runtime
-        .block_on(Box::pin(fs.read_creation_record(
-            volume.id(),
-            crate::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )))
-        .unwrap()
-        .value
-        .0;
-    (
-        volume,
-        crate::GenerationId::new(creation.initial_generation_root.digest),
+        .pop()
+        .unwrap(),
     )
 }
 
 pub(in crate::native_mount::fuse) fn fixture(
-    (volume, generation): &(Volume, crate::GenerationId),
+    checkout: &MemoryCheckout,
 ) -> (Arc<ProjectionCore>, crate::NativeMaterializationWork) {
-    let checkout = checkout(volume, *generation);
-    let source = source(checkout);
-    core(source)
+    core(source(checkout))
 }
 
 #[inline(never)]
-fn boxed<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
-    Box::pin(make())
-}
-
-#[inline(never)]
-fn checkout(volume: &Volume, generation: crate::GenerationId) -> Box<MemoryCheckout> {
+fn source(checkout: &MemoryCheckout) -> Arc<dyn MountFilesystem> {
     let cancellation = crate::CancellationToken::new();
-    let future = boxed(|| {
-        volume.checkout(
-            crate::model::GenerationSelector::Exact(generation),
-            crate::model::CheckoutMode::read_only_pinned(),
-            crate::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-    });
-    static REPORTED: std::sync::Once = std::sync::Once::new();
-    REPORTED.call_once(|| {
-        eprintln!(
-            "modeled checkout future: {} bytes backing, {}-byte boxed handle",
-            std::mem::size_of_val(future.as_ref().get_ref()),
-            std::mem::size_of_val(&future),
-        )
-    });
-    // Box the output before the executor carries it through its own frames.
-    let future = Box::pin(async move { future.await.map(|receipt| Box::new(receipt.value)) });
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap()
-        .block_on(future)
-        .unwrap()
-}
-
-#[inline(never)]
-fn source(checkout: Box<MemoryCheckout>) -> Arc<dyn MountFilesystem> {
-    let shared = Arc::new(crate::native_mount::SharedCheckout::new(*checkout));
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
+    let checkout = checkout
+        .private_candidate(&mut accounting, &cancellation)
+        .unwrap();
+    let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
     Arc::new(MemorySource::new(shared, posix_config()).unwrap())
 }
 

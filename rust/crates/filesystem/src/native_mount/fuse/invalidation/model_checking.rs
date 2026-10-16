@@ -59,9 +59,9 @@ impl KernelCacheNotifier for RefusesFirst {
 fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
     crate::initialize_test_native_io();
     let exercise = |broken| {
-        let volume = super::super::tests::model_checking::volume();
+        let checkout = super::super::tests::model_checking::seed();
         loom::model(move || {
-            let (core, work) = super::super::tests::model_checking::fixture(&volume);
+            let (core, work) = super::super::tests::model_checking::fixture(&checkout);
             // Failed controls leave sleepers behind. Keep accounting owners
             // alive rather than locking their meters during Loom teardown.
             let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
