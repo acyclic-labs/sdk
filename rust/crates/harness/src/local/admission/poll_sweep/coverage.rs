@@ -2,10 +2,69 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(super) fn permute<T>(pairs: &mut [T], seed: u64) {
+    let mut random = blake3::Hasher::new_derive_key("acyclic.harness.test.cut-order.v1");
+    random.update(&seed.to_le_bytes());
+    let mut random = random.finalize_xof();
+    for upper in (1..pairs.len()).rev() {
+        let mut draw = [0; 8];
+        random.fill(&mut draw);
+        pairs.swap(
+            upper,
+            (u64::from_le_bytes(draw) % (upper as u64 + 1)) as usize,
+        );
+    }
+}
+
+pub(super) fn check_interleaved(order: impl IntoIterator<Item = Scenario>) -> Result<()> {
+    let mut runs = BTreeMap::new();
+    let mut previous = None;
+    for scenario in order {
+        if previous != Some(scenario) {
+            *runs.entry(scenario as u8).or_insert(0) += 1;
+            previous = Some(scenario);
+        }
+    }
+    if runs.len() != 3 || runs.values().any(|runs| *runs < 2) {
+        return Err(Error::Storage(
+            "the matrix still groups cuts by scenario".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_pairs() -> Vec<(Scenario, usize)> {
+    [
+        Scenario::Text,
+        Scenario::EffectAndContinuation,
+        Scenario::Compaction,
+    ]
+    .into_iter()
+    .flat_map(|scenario| {
+        let total: usize = expected(scenario)
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.as_str() != "stream:read:ready")
+            .map(|(_, count)| *count)
+            .sum();
+        (1..=total).map(move |cut| (scenario, cut))
+    })
+    .collect()
+}
+
+#[test]
+fn seed_711_interleaves_the_actual_manifest_and_rejects_the_grouped_control() -> Result<()> {
+    let mut pairs = manifest_pairs();
+    assert!(check_interleaved(pairs.iter().map(|(scenario, _)| *scenario)).is_err());
+    permute(&mut pairs, 711);
+    check_interleaved(pairs.into_iter().map(|(scenario, _)| scenario))
+}
+
 fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
     let name = match scenario {
         Scenario::Text => "text",
         Scenario::EffectAndContinuation => "effect_goal",
+        Scenario::Compaction => "compaction",
     };
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "src/local/admission/poll_sweep/coverage/{name}.json"
@@ -57,12 +116,24 @@ pub(super) fn check_cuts(
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
-    fn broken_real_sweep_cannot_drop_a_cut(which in proptest::bool::ANY, omitted in 0usize..4096) {
-        let scenario = if which { Scenario::Text } else { Scenario::EffectAndContinuation };
+    fn broken_real_sweep_cannot_drop_a_cut(which in 0u8..3, omitted in 0usize..4096) {
+        let scenario = match which { 0 => Scenario::Text, 1 => Scenario::EffectAndContinuation, _ => Scenario::Compaction };
         let total = expected(scenario).unwrap().iter().filter(|(name, _)| name.as_str() != "stream:read:ready").map(|(_, count)| *count).sum::<usize>();
         let omitted = 1 + omitted % total;
         // This is the actual replay planner, deliberately missing a real cut.
         proptest::prop_assert!(check_cuts(scenario, total, (1..=total).filter(|cut| *cut != omitted)).is_err());
+    }
+
+    #[test]
+    fn seeded_permutation_preserves_every_manifest_pair(seed in proptest::prelude::any::<u64>()) {
+        let expected = manifest_pairs();
+        let mut first = expected.clone();
+        let mut replay = expected.clone();
+        permute(&mut first, seed);
+        permute(&mut replay, seed);
+        proptest::prop_assert_eq!(&first, &replay);
+        first.sort_unstable_by_key(|(scenario, cut)| (*scenario as u8, *cut));
+        proptest::prop_assert_eq!(first, expected);
     }
 }
 

@@ -58,6 +58,12 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
     else {
         panic!("prompt rejected")
     };
+    let original_grants = harness
+        .runtime
+        .task_host()
+        .observe_admission(task_id)
+        .await?
+        .grants;
     assert_eq!(harness.resume(task_id).await?.text, "done");
     let requests = provider.requests();
     assert_eq!(requests.len(), 4);
@@ -65,7 +71,7 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         .messages
         .iter()
         .flat_map(|message| message.content.file_refs())
-        .find(|file| file.path().starts_with(".system/execution/"))
+        .find(|file| file.path().starts_with("summaries/"))
         .expect("compaction summary missing");
     let admission = harness
         .runtime
@@ -73,12 +79,14 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         .observe_admission(task_id)
         .await?;
     assert!(
-        !crate::runtime::read_granted(&admission.grants, summary)?,
-        "model projection widened task tool authority"
+        crate::runtime::read_granted(&admission.grants, summary)?,
+        "the summary must use the task's existing private read authority"
     );
-    // Run the exact model preflight on the summary captured from the real
-    // automatic compaction. Removing the summary exception recreates main's
-    // Unauthorized failure, before attempting any content read.
+    assert_eq!(admission.grants, original_grants);
+    assert_ne!(summary.volume(), &harness.journal);
+    // The actual model request already passed production content preflight.
+    // Removing its private read grant must reject that same summary; journal
+    // provenance cannot confer authority over a different private volume.
     let journal = crate::filesystem::FilesystemExecutionJournal::new(
         harness.task_stream(),
         harness.files.clone(),
@@ -91,21 +99,13 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
             io: None,
         },
     )?;
-    let scope = crate::runtime::RuntimeScope::new(admission.grants, admission.limits)?;
+    let scope =
+        crate::runtime::RuntimeScope::new(crate::Capabilities::default(), admission.limits)?;
     let content = crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
         file: summary.clone(),
         policy: crate::model::FileProjectionPolicy::BoundedFull,
     });
-    crate::executor::verify_model_contents_with_summary_authorization::<true, true>(
-        &journal,
-        std::iter::once(&content),
-        harness.limits,
-        Some(&scope),
-        None,
-        None,
-    )
-    .await?;
-    let main = crate::executor::verify_model_contents_with_summary_authorization::<false, true>(
+    let denied = crate::executor::verify_model_contents_with_summary_authorization::<true, true>(
         &journal,
         std::iter::once(&content),
         harness.limits,
@@ -114,8 +114,8 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         None,
     )
     .await
-    .expect_err("main's missing authorization must reject the actual compacted summary");
-    assert_eq!(main.code(), crate::wire::ErrorCode::Unauthorized);
+    .expect_err("a scope without private read authority must reject the compacted summary");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     assert_eq!(harness.resume(task_id).await?.text, "done");
     assert_eq!(
         provider.requests().len(),

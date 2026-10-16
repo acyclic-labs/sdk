@@ -22,7 +22,10 @@ mod tests;
 const HEAD: &str = "inputs/current.json";
 
 // The same serialization boundary and predicate are exercised by the Loom model.
-async fn serialized<T>(gate: &StateArc<Mutex<()>>, action: impl AsyncFnOnce() -> T) -> T {
+pub(super) async fn serialized<T>(
+    gate: &StateArc<Mutex<()>>,
+    action: impl AsyncFnOnce() -> T,
+) -> T {
     let _guard = lock_owned(StateArc::clone(gate)).await;
     action().await
 }
@@ -112,6 +115,8 @@ impl LocalHarness {
         &self,
         turn: &Turn,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        self.prepare_inheritance(crate::runtime::task_id_for_admission(turn.operation), None)
+            .await?;
         let definition = self
             .runtime
             .harness()

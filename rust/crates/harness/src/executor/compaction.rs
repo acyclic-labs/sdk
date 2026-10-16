@@ -117,7 +117,7 @@ impl StockExecution<'_> {
                 projection.canonical.as_ref(),
                 &context,
                 &compacted,
-                &compaction,
+                (&compaction, &reference),
             )
             .await?;
         let compacted = if checkpoint.is_some() {
@@ -148,11 +148,12 @@ impl StockExecution<'_> {
         source: Option<&FileRef>,
         context: &crate::context::Context,
         compacted: &crate::context::Context,
-        compaction: &FileRef,
+        compaction: (&FileRef, &crate::context::CompactionReference),
     ) -> Result<Option<FileRef>> {
         let Some(source) = source else {
             return Ok(None);
         };
+        let (compaction, proof) = compaction;
         let selection = stock_selection_copy(
             &input
                 .selected_context
@@ -182,10 +183,9 @@ impl StockExecution<'_> {
             retained,
             compaction: crate::model::clone_file(compaction, self.io)?,
         };
-        let proof = retain_preparation(
-            load_json::<crate::context::CompactionReference>(journal, compaction, self.io).await?,
-        )?;
-        envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io)?;
+        // stage_json authenticated these exact proof bytes before returning its
+        // reference; validate the held value without loading a second copy.
+        envelope.validate_projection(context, compacted, proof, self.stock.limits, self.io)?;
         Ok(Some(
             stage_json(
                 journal,

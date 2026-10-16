@@ -211,10 +211,6 @@ impl TaskContext {
         }))
     }
 
-    /// Complete owner-attested ancestry for inherited subtree controls.
-    pub(crate) async fn lineage(&self, task: TaskId) -> Result<Vec<TaskId>> {
-        futures::TryStreamExt::try_collect(self.ancestors(task)?).await
-    }
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {

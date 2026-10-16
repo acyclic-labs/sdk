@@ -1,7 +1,7 @@
 //! Replay the real run state machine over in-process filesystem/stream providers.
 use super::*;
 use crate::{
-    context::CompactionPolicy,
+    context::{CompactionPolicy, ThresholdCompaction},
     resources::ProviderRef,
     test_support::ScriptedTurn,
     tool::{JsonToolProjection, ToolDefinition},
@@ -18,8 +18,10 @@ use schedule::{Exit, Schedule, check_cut, drive};
 mod coverage;
 mod invariants;
 mod read_contention;
+mod read_profile;
 mod requests;
 mod seed;
+mod selected_history;
 use seed::Seed;
 
 type Harness = LocalHarness;
@@ -29,6 +31,7 @@ const PROMPT: &str = "recover the original run input";
 enum Scenario {
     Text,
     EffectAndContinuation,
+    Compaction,
 }
 
 struct Clock;
@@ -48,6 +51,7 @@ struct Fixture {
     provider: Arc<ModelEffects>,
     effect: Arc<Effect>,
     scenario: Scenario,
+    history: RefCell<Option<crate::projection::SelectedModelContext>>,
 }
 
 impl Fixture {
@@ -72,14 +76,20 @@ impl Fixture {
             )
         };
         let volumes = [
-            volume("project".into())?,
+            VolumeRef::new(
+                reference.clone(),
+                "project".into(),
+                VolumeClass::Project,
+                VolumeOwner::Project("project".into()),
+                &mut None,
+            )?,
             volume("scratch".into())?,
             volume("journal".into())?,
             volume("tasks".into())?,
         ];
         let root = directory.path().join("filesystem");
         if let Some(seed) = seed {
-            seed.restore(&root)?;
+            seed.restore(scenario, directory.path())?;
         } else {
             let fs = Fs::local(LocalOptions::new(root)).await.map_err(storage)?;
             let files = FilesystemHost::new(fs, &reference, None)?;
@@ -94,6 +104,10 @@ impl Fixture {
                 ScriptedTurn::Text("root".into()),
                 ScriptedTurn::Text("done".into()),
             ],
+            Scenario::Compaction => vec![
+                ScriptedTurn::Text("summary".into()),
+                ScriptedTurn::Text("done".into()),
+            ],
         };
         Ok(Self {
             directory,
@@ -103,17 +117,26 @@ impl Fixture {
                 "acyclic.local",
                 [7; 32],
                 Authority {
-                    kind: AggregateKind::Task,
+                    kind: if matches!(scenario, Scenario::Compaction) {
+                        AggregateKind::Conversation
+                    } else {
+                        AggregateKind::Task
+                    },
                     id: TaskId::from_bytes([2; 16]).to_string(),
                 },
             ),
             volumes,
-            provider: Arc::new(ModelEffects::new(turns, schedule.clone())),
+            provider: Arc::new(ModelEffects::new(
+                turns,
+                schedule.clone(),
+                matches!(scenario, Scenario::Compaction),
+            )),
             effect: Arc::new(Effect {
                 schedule,
                 calls: Default::default(),
             }),
             scenario,
+            history: RefCell::new(seed.and_then(|seed| seed.history.clone())),
         })
     }
 
@@ -190,33 +213,17 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
-        let publisher = FilesystemContentPublisher::new(
-            files.clone(),
-            &self.volumes[2],
-            &verifier,
-            &signed,
-            Limits::default().file_bytes,
-            None,
-        )?;
-        let bytes = crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?
-            .encode(Limits::default())?;
-        let digest = blake3::hash(&bytes);
-        let context_manifest = publisher
-            .stage_once(
-                OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
-                &format!("inputs/context/{digest}.json"),
-                &bytes,
-                "application/json",
-                "context-manifest.json",
-                None,
-            )?
-            .await?
-            .0;
+        let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
             runtime,
-            project: self.volumes[0].clone(),
+            project: self.volumes[if matches!(self.scenario, Scenario::EffectAndContinuation) {
+                1
+            } else {
+                0
+            }]
+            .clone(),
             scratch: self.volumes[1].clone(),
             journal: self.volumes[2].clone(),
             verifier,
@@ -228,12 +235,20 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context_manifest: Some(context_manifest),
+            context_manifest: None,
             context_read_observer: None,
             #[cfg(feature = "hooks")]
             hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
-            compaction: CompactionPolicy::Disabled,
+            compaction: if compact {
+                CompactionPolicy::Threshold(ThresholdCompaction {
+                    response_reserve_tokens: 64,
+                    recent_tokens: 16,
+                    retention: Default::default(),
+                })
+            } else {
+                CompactionPolicy::Disabled
+            },
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: vec![],
             goal_continuations: matches!(self.scenario, Scenario::EffectAndContinuation).then_some(
@@ -250,6 +265,10 @@ impl Fixture {
     }
 
     async fn initialize(&self, harness: &Harness) -> Result<()> {
+        if matches!(self.scenario, Scenario::Compaction) {
+            self.history
+                .replace(Some(selected_history::initialize(harness).await?));
+        }
         if matches!(self.scenario, Scenario::EffectAndContinuation) {
             FilesystemContentPublisher::new(
                 harness.files.clone(),
@@ -272,10 +291,19 @@ impl Fixture {
         Ok(())
     }
 
+    async fn run(&self, harness: &Harness) -> Result<crate::executor::TurnOutput> {
+        let history = self.history.borrow().clone();
+        match history {
+            Some(history) => selected_history::run(harness, history).await,
+            None => harness.run(PROMPT).await,
+        }
+    }
+
     fn assert_effects(&self) {
         let (models, tools) = match self.scenario {
             Scenario::Text => (1, 0),
             Scenario::EffectAndContinuation => (3, 1),
+            Scenario::Compaction => (2, 0),
         };
         assert_eq!(
             self.provider.accepted(),
@@ -305,14 +333,25 @@ async fn case(
     baseline: &[&'static str],
     seed: Option<&Seed>,
 ) -> Result<Coverage> {
+    // Every caller uses a current-thread runtime. Outside the controlled run,
+    // execute physical host I/O on that same replay worker rather than handing
+    // each metadata read to the shared blocking pool. The scoped test adapter
+    // intercepts submissions first, so all cancellation barriers remain intact.
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let owned_seed = if seed.is_none() {
+        Some(Seed::new(scenario).await?)
+    } else {
+        None
+    };
+    let seed = seed.or(owned_seed.as_ref());
     let fixture = Fixture::new(scenario, seed).await?;
+    let _reads = read_profile::install(&fixture.schedule);
     let result: Result<Coverage> = Box::pin(async {
         let harness = fixture.open().await?;
-        fixture.initialize(&harness).await?;
         let schedule = &fixture.schedule;
         schedule.start();
         let (exit, hit) = drive(
-            harness.run(PROMPT),
+            fixture.run(&harness),
             cut,
             schedule,
             &mut fixture.events.borrow_mut(),
@@ -374,7 +413,7 @@ async fn case(
             let root = crate::runtime::task_id_for_admission(current.root);
             (root, reopened.resume(root).await?)
         } else {
-            let output = reopened.run(PROMPT).await?;
+            let output = fixture.run(&reopened).await?;
             (
                 crate::runtime::task_id_for_admission(
                     reopened.current_turn().await?.0.unwrap().root,
@@ -392,6 +431,36 @@ async fn case(
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
+        if matches!(scenario, Scenario::Compaction) {
+            let admission = reopened.runtime.task_host().observe_admission(root).await?;
+            assert!(
+                !admission.grants.contains(
+                    &reopened
+                        .journal
+                        .capability(VolumeOperation::Read, &mut None)?
+                ),
+                "compaction must not widen the task's host-journal authority"
+            );
+            let summaries = fixture.provider.summary_files();
+            assert_eq!(
+                summaries.len(),
+                1,
+                "compacted request must contain one summary"
+            );
+            let summary = &summaries[0];
+            assert_eq!(summary.volume(), &reopened.scratch);
+            assert_ne!(summary.volume(), &reopened.project);
+            assert_ne!(summary.volume(), &reopened.journal);
+            let reader = crate::filesystem::FilesystemContentVerifier::new(
+                reopened.files.clone(),
+                &reopened.verifier,
+                &reopened.signed,
+                reopened.limits.file_bytes,
+                None,
+            )?;
+            use crate::conversation::ContentResidencyVerifier;
+            assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
+        }
         let observations = invariants::observe(&reopened, &fixture, root).await?;
         requests::check(&reopened, &fixture).await?;
         observations
@@ -433,9 +502,9 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         .enable_all()
         .build()
         .map_err(storage)?;
-    let seed = runtime.block_on(Seed::new())?;
     let mut schedules = Vec::new();
     for &scenario in scenarios {
+        let seed = runtime.block_on(Seed::new(scenario))?;
         let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
         let baseline = observed.points;
         coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
@@ -444,23 +513,25 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             "{scenario:?}: {} deterministic cancellation points",
             baseline.len()
         );
-        schedules.push((scenario, baseline));
+        schedules.push((scenario, baseline, seed));
     }
     // Replays own independent filesystems. Each bounded worker polls its driver
     // and owned completions together, without cross-thread barrier handoffs.
-    let cuts: Vec<_> = schedules
+    let mut cuts: Vec<_> = schedules
         .iter()
-        .flat_map(|(scenario, baseline)| {
-            (1..=baseline.len()).map(move |cut| (*scenario, baseline, cut))
+        .flat_map(|(scenario, baseline, seed)| {
+            (1..=baseline.len()).map(move |cut| (*scenario, baseline, seed, cut))
         })
         .collect();
-    for (scenario, baseline) in &schedules {
+    coverage::permute(&mut cuts, 711);
+    coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _)| *scenario))?;
+    for (scenario, baseline, _) in &schedules {
         coverage::check_cuts(
             *scenario,
             baseline.len(),
             cuts.iter()
-                .filter(|(candidate, _, _)| candidate == scenario)
-                .map(|(_, _, cut)| *cut),
+                .filter(|(candidate, _, _, _)| candidate == scenario)
+                .map(|(_, _, _, cut)| *cut),
         )?;
     }
     let next = AtomicUsize::new(0);
@@ -484,7 +555,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                             return Ok(());
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(scenario, baseline, cut)) = cuts.get(index) else {
+                        let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
                             return Ok(());
                         };
                         let coverage = runtime
@@ -524,7 +595,11 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
 
 #[test]
 fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
-    sweep(&[Scenario::Text, Scenario::EffectAndContinuation])
+    sweep(&[
+        Scenario::Text,
+        Scenario::EffectAndContinuation,
+        Scenario::Compaction,
+    ])
 }
 
 #[test]
@@ -560,5 +635,21 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         recovered.admission_committed,
         "submitted admission did not commit while draining"
     );
+    Ok(())
+}
+
+#[test]
+fn compaction_summary_is_readable_before_any_cancellation() -> Result<()> {
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .finish();
+    let _tracing = tracing::subscriber::set_default(subscriber);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(storage)?;
+    let observed = runtime.block_on(case(Scenario::Compaction, None, &[], None))?;
+    coverage::check_boundaries(Scenario::Compaction, &observed.points, observed.ready_reads)?;
     Ok(())
 }

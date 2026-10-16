@@ -95,9 +95,10 @@ where
             None
         };
         let (journal, operation) = if io.is_some() || reconciliation_only {
-            let (journal, operation) =
-                BoundedContentFuture::new(io, || self.command_journal(task, fence, turn, io))?
-                    .await?;
+            let (journal, operation) = BoundedContentFuture::new(io, || {
+                self.command_journal(task, fence, turn, &context, io)
+            })?
+            .await?;
             (Some(journal), operation)
         } else {
             (

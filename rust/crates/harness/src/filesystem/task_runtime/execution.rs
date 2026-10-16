@@ -84,7 +84,8 @@ where
         let operation_id = execution_operation(task, turn, None)?;
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
-            .await?;
+            .await?
+            .with_input_verifier(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?

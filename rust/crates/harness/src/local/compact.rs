@@ -22,8 +22,14 @@ impl LocalHarness {
             None => self.stage_summary(operation, target, instructions).await?,
         };
         let source = model.payload.clone();
+        let task = crate::runtime::task_id_for_admission(operation);
         let task = commands::accepted(
-            self.admit_turn(operation, None, receive, model).await?,
+            inheritance::admit_prepared(
+                &self.admission,
+                Box::pin(self.prepare_inheritance(task, None)),
+                Box::pin(self.admit_turn(operation, None, receive, model)),
+            )
+            .await?,
             operation,
         )?;
         let summary = self.resume(task).await?.text;
@@ -117,13 +123,11 @@ impl LocalHarness {
                 (file, manifest, context)
             }
         };
-        let model = self
-            .command_model(self.command_lineage(Some(target)).await?)
-            .await?;
+        let model = self.command_model(Some(target)).await?;
         self.retain_settings(operation, &json!({"model":model.name}))
             .await?;
         let model = self
-            .command_model(vec![crate::runtime::task_id_for_admission(operation)])
+            .command_model(Some(crate::runtime::task_id_for_admission(operation)))
             .await?;
         let capacity = self.provider.context_capacity(&model)?;
         let ceiling =
