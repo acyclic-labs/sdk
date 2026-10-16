@@ -66,8 +66,9 @@ pub struct LocalHarness {
     #[cfg(feature = "hooks")]
     hooks: crate::hooks::Hooks,
     #[cfg(test)]
-    context_read_observer:
-        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
+    context_read_observer: Option<
+        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    >,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

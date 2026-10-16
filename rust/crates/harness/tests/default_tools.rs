@@ -21,6 +21,8 @@ mod command;
 mod ranges;
 #[path = "default_tools/registry.rs"]
 mod registry;
+#[path = "default_tools/catalog.rs"]
+mod catalog;
 
 struct DelegatingLoop;
 impl AgentLoop for DelegatingLoop {
