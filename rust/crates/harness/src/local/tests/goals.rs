@@ -60,7 +60,33 @@ async fn run(case: Case) -> Result<()> {
         };
         Ok(config)
     };
-    let harness = LocalHarness::open(config()?).await?;
+    let mut harness = LocalHarness::open(config()?).await?;
+    // This family exercises private GOAL.md files; ordinary coding turns target the project.
+    harness.runtime = Arc::new(
+        Arc::try_unwrap(harness.runtime)
+            .unwrap_or_else(|_| panic!("fresh goal runtime is shared"))
+            .with_output_volume(&harness.scratch, None)?,
+    );
+    // A project goal must not shadow the agent's private goal.
+    use crate::conversation::ContentPublisher as _;
+    let project_goal = b"---\nstatus: done\n---\nProject sentinel";
+    crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        harness.project(),
+        &harness.verifier,
+        &harness.signed,
+        Limits::default().file_bytes,
+        None,
+    )?
+    .stage_once(
+        OperationId::new(),
+        "GOAL.md",
+        project_goal,
+        "text/markdown",
+        "GOAL.md",
+        None,
+    )?
+    .await?;
     let stream = crate::test_support::local_task_stream(&harness);
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
@@ -144,6 +170,24 @@ async fn run(case: Case) -> Result<()> {
         Some(expected) => assert_eq!(read?.1.as_ref(), expected.as_bytes(), "{}", case.name),
         None => assert!(matches!(read, Err(Error::NotFound(_)))),
     }
+    let project = harness
+        .files
+        .read_private_path(
+            harness.project(),
+            &ContentGrant::verify_directory_read(
+                &harness.verifier,
+                &harness.signed,
+                harness.project(),
+                "",
+                &mut None,
+            )?,
+            "GOAL.md",
+            None,
+            Limits::default().file_bytes,
+            None,
+        )
+        .await?;
+    assert_eq!(project.1.as_ref(), project_goal, "{}", case.name);
     // Reopen/replay never reissues model work or resets the finite allowance.
     drop(followed);
     drop(stream);

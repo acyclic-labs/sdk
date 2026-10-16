@@ -134,11 +134,15 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
                 }
                 _ => {
                     assert_eq!(request["method"], "tools/call");
+                    assert!(
+                        body_bytes > 1024,
+                        "tool input must exceed the catalog bound"
+                    );
                     assert_eq!(
                         request["params"],
-                        json!({"name":"read","arguments":{"query":"needle".repeat(512)}})
+                        json!({"name":"read","arguments":{"query":"needle".repeat(256)}})
                     );
-                    json!({"content":[{"type":"text","text":"found".repeat(512)}]})
+                    json!({"content":[{"type":"text","text":"found".repeat(256)}]})
                 }
             };
             let result = json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string();
@@ -147,6 +151,12 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             } else {
                 ("application/json", result)
             };
+            if step == 4 {
+                assert!(
+                    body.len() > 1024,
+                    "tool output must exceed the catalog bound"
+                );
+            }
             let session = if step == 0 {
                 "Mcp-Session-Id: configured-session\r\n"
             } else {
@@ -176,7 +186,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             ScriptedEvent::Event(ModelEvent::ToolCall {
                 call_id: "configured-call".into(),
                 name: "mcp.configured.read".into(),
-                arguments: json!({"query":"needle".repeat(512)}),
+                arguments: json!({"query":"needle".repeat(256)}),
             }),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
@@ -210,6 +220,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
     );
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(provider.remaining(), 0);
     assert!(requests.iter().all(|request| {
         request
             .tools
@@ -217,7 +228,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             .any(|tool| tool.name == "mcp.configured.read")
     }));
     let rendered = serde_json::to_string(&requests[1].messages).map_err(super::super::storage)?;
-    assert!(rendered.contains(&"found".repeat(512)));
+    assert!(rendered.contains(&"found".repeat(256)));
     assert_eq!(
         service
             .await

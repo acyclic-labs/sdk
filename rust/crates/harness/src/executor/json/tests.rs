@@ -542,3 +542,51 @@ fn ordinary_record_bytes_and_raw_value_identity_remain_exact() -> Result<()> {
     );
     Ok(())
 }
+
+mod object_work {
+    use super::*;
+    use proptest::prelude::*;
+    mod oracle {
+        use crate as acyclic_harness;
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/bounded_json.rs"
+        ));
+    }
+    proptest! {
+        // Object work depends on structural nodes, never on descendant string bytes.
+        #[test]
+        fn object_construction_visits_each_node_once(depth in 1usize..8, text in "[a-z]{64,128}") {
+            let mut value = Value::String(text);
+            for _ in 0..depth { value = serde_json::json!({"child": value}); }
+            let mut items = 0;
+            let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                items += match event {
+                    JsonCodecCharge::Inspect { items } | JsonCodecCharge::Work { items, .. } => items,
+                    _ => 0,
+                };
+                Ok(())
+            }).unwrap();
+            prop_assert_eq!(&copied, &value);
+            let bound = (2 * depth + 1) as u64;
+            prop_assert_eq!(items, bound);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            oracle::check(&bytes);
+            // Negative control: even one of the former descendant scans violates the bound.
+            let mut full_scan = items;
+            for _ in &bytes { full_scan += 1; }
+            prop_assert!(full_scan > bound);
+        }
+    }
+    #[test]
+    fn checked_codec_fuzz_corpus() {
+        for bytes in [
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/empty").as_slice(),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/nested"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/duplicates"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wide"),
+        ] {
+            oracle::check(bytes);
+        }
+    }
+}
