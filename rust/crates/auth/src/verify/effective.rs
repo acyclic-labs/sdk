@@ -6,6 +6,17 @@ pub struct ScopedFilter<'a> {
     pub declaring_block: usize,
     /// Ranges/attributes, conjunctive with every other returned filter.
     pub filter: &'a Filter,
+    capability: &'a VerifiedCapability,
+}
+impl<'a> ScopedFilter<'a> {
+    /// Issuer and delegation ancestors visible when this filter was declared.
+    pub fn lineage(&self) -> impl DoubleEndedIterator<Item = &'a str> {
+        let principal = &self.capability.blocks[0].certificates.as_ref().expect("verified certificate chain").keys.last().expect("verified leaf").key.principal;
+        std::iter::once(principal.id.as_str()).chain(principal.lineage.iter().map(String::as_str))
+            .chain(self.capability.blocks[..=self.declaring_block].iter().flat_map(|block| &block.caveats).flat_map(|caveat| match &caveat.kind { CaveatKind::LineageAppend(lineage) => lineage.ids.as_slice(), _ => &[] }).map(String::as_str))
+    }
+    /// Acting identity frozen at the declaring block, unaffected by later appends.
+    pub fn subject_id(&self) -> &'a str { self.lineage().next_back().expect("verified subject") }
 }
 
 /// Borrowed effective authority. Grant sets and filters remain conjunctive;
@@ -21,7 +32,7 @@ impl<'a> Effective<'a> {
     }
     /// Every returned filter must hold, using its declaring-block identity.
     pub fn filters(&self) -> impl Iterator<Item=ScopedFilter<'a>> {
-        self.capability.blocks.iter().enumerate().flat_map(|(index, block)| block.caveats.iter().filter_map(move |caveat| match &caveat.kind { CaveatKind::Filter(filter) => Some(ScopedFilter { declaring_block:index, filter }), _ => None }))
+        self.capability.blocks.iter().enumerate().flat_map(|(index, block)| block.caveats.iter().filter_map(move |caveat| match &caveat.kind { CaveatKind::Filter(filter) => Some(ScopedFilter { declaring_block:index, filter, capability: self.capability }), _ => None }))
     }
     /// Per-dimension minimum; metering remains at the root's owning ledger.
     pub fn limits(&self) -> &'a Limits { &self.capability.limits }

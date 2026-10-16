@@ -17,6 +17,10 @@ fn caveat() -> impl Strategy<Value = Caveat> {
         any::<bool>().prop_map(|allow| CaveatKind::Grants(GrantSet { grants: if allow { vec![Grant { kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: "fs:/public".into(), prefix: true }, actions: vec!["fs/read".into()] }) }] } else { vec![] } })),
         "[a-z]{1,5}".prop_map(|account| CaveatKind::Holder(Holder { account: Some(account) })),
         "[a-z]{1,5}".prop_map(|id| CaveatKind::LineageAppend(LineageAppend { ids: vec![id] })),
+        "[a-z]{1,5}".prop_map(|value| CaveatKind::Pin(Pin { name: "author".into(), value: PinValue::Literal(value.into_bytes()) })),
+        any::<bool>().prop_map(|empty| CaveatKind::Filter(Filter { keys: vec![], attributes: if empty { vec![] } else { vec![AttributeMatch { name: "author".into(), any_of: vec![b"issuer".to_vec()], subjects: vec![] }] } })),
+        (2..8u32).prop_map(CaveatKind::MaxDepth),
+        "[a-z]{0,5}".prop_map(CaveatKind::Label),
     ].prop_map(|kind| Caveat { kind })
 }
 proptest! {
@@ -41,7 +45,8 @@ proptest! {
         let encoded = child.encode();
         match verify(&encoded, &trust, NOW) {
             Ok(decoded) => {
-                prop_assert_eq!(decoded.encode().as_slice(), encoded.as_slice());
+                let reencoded = decoded.encode();
+                prop_assert_eq!(reencoded.as_slice(), encoded.as_slice());
                 prop_assert_eq!(decoded.authorize(&trust, &request, PolicyDecision::Allow).is_ok(), child_allows);
             }
             Err(VerifyError::Time) => prop_assert!(!child_allows),
@@ -126,6 +131,39 @@ proptest! {
         let broken = allocation_counter::measure(|| { std::hint::black_box(acyclic_auth::decode_component("public").unwrap()); });
         prop_assert!(broken.count_total > 0);
     }
+    #[test]
+    fn effective_limits_are_dimensionwise_minima_and_lineage_is_append_only(
+        parent_limit in prop::option::of(any::<u64>()),
+        child_limit in prop::option::of(any::<u64>()),
+        ids in prop::collection::vec("[a-z]{1,8}",1..6),
+    ) {
+        let trust = Snapshot::default();
+        let parent = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(vec![Caveat { kind: CaveatKind::Limits(limits(parent_limit)) }], &[5;32]).unwrap();
+        let child = parent.attenuate(vec![Caveat { kind: CaveatKind::Limits(limits(child_limit)) }, Caveat { kind: CaveatKind::LineageAppend(LineageAppend { ids: ids.clone() }) }], &[6;32]).unwrap();
+        let minimum = match (parent_limit, child_limit) { (Some(a),Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
+        prop_assert_eq!(child.effective().limits(), &limits(minimum));
+        prop_assert_eq!(&child.effective().principal().lineage, &ids);
+        prop_assert_eq!(&child.effective().principal().groups, &parent.effective().principal().groups);
+        prop_assert_eq!(&child.effective().principal().roles, &parent.effective().principal().roles);
+        prop_assert_eq!(&child.effective().principal().attributes, &parent.effective().principal().attributes);
+    }
+}
+
+#[test]
+fn effective_filters_keep_the_declaring_subject() {
+    let trust = Snapshot::default();
+    let bytes = root(|block| block.caveats.push(Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![AttributeMatch { name: "author".into(), any_of: vec![], subjects: vec![SubjectReference { kind: SubjectReferenceKind::Id(SubjectId {}) }] }] }) }));
+    let parent = verify(&bytes, &trust, NOW).unwrap();
+    let child = parent.attenuate(vec![Caveat { kind: CaveatKind::LineageAppend(LineageAppend { ids: vec!["child".into()] }) }, Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![] }) }], &[5;32]).unwrap();
+    let effective = child.effective();
+    let filters = effective.filters().collect::<Vec<_>>();
+    assert_eq!(filters[0].subject_id(), "issuer");
+    assert_eq!(filters[0].lineage().collect::<Vec<_>>(), ["issuer"]);
+    assert_eq!(filters[1].subject_id(), "child");
+    assert_eq!(filters[1].lineage().collect::<Vec<_>>(), ["issuer", "child"]);
+    let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
+    let usage = limits(None);
+    child.authorize(&trust, &request("fs:/public", &attributes, &usage), PolicyDecision::Allow).unwrap();
 }
 
 #[test]
