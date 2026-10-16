@@ -189,16 +189,25 @@ async fn failed_admission_blocks_later_requests_across_reopen() {
     assert_eq!(client.flush().await.unwrap(), 0);
 }
 
-async fn indeterminate_enqueue_preserves_capacity(id: u8, mode: u8) {
+fn single_request_limit(byte_quota: bool) -> FileClientLimits {
+    FileClientLimits {
+        commands: if byte_quota { 2 } else { 1 },
+        bytes: if byte_quota { 1 } else { 2 },
+        ..LIMITS
+    }
+}
+
+async fn indeterminate_enqueue_preserves_capacity(
+    id: u8,
+    mode: u8,
+    byte_quota: bool,
+    omit_reconciliation: bool,
+) -> bool {
     let local = Arc::new(Provider::default());
     let outbox = volume(local.clone(), "client/files").await;
     let target = volume(Arc::new(Provider::default()), "agent/files").await;
     let cut = target.cut(&Query::Tasks).await.unwrap();
-    let limits = FileClientLimits {
-        commands: 1,
-        bytes: 1,
-        ..LIMITS
-    };
+    let limits = single_request_limit(byte_quota);
     let mut client = FileClient::open(outbox.clone(), target.clone(), limits)
         .await
         .unwrap();
@@ -214,28 +223,75 @@ async fn indeterminate_enqueue_preserves_capacity(id: u8, mode: u8) {
         assert!(client.enqueue(request(id)).await.is_err());
     }
     if mode == 2 {
-        // The abandoned request lands after B's reconciliation, during B's
-        // append refresh. B must retain the old quota-check fence and conflict.
+        // The abandoned request lands after B's reconciliation, during its
+        // identity read-back. B must retain the reconciled fence and conflict.
         local.release_after_watermarks.store(2, Ordering::SeqCst);
     }
     let later = id.wrapping_add(1);
-    let error = client.enqueue(request(later)).await.unwrap_err();
+    let result = if omit_reconciliation {
+        // Deliberately broken admission: retain the pre-failure empty cache,
+        // skip reconciliation, and replace its fence with the latest head.
+        // Real volume writes let the same checker detect quota over-admission.
+        let existing = outbox
+            .snapshot(&Query::File(request(later).key), 1)
+            .await
+            .unwrap();
+        assert!(existing.files.is_empty());
+        let head = outbox.head().await.unwrap();
+        outbox
+            .append(head, &request(later))
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                FileClientError::Harness(acyclic_harness::Error::Storage(error.to_string()))
+            })
+    } else {
+        client.enqueue(request(later)).await
+    };
+    let files = outbox.snapshot(&Query::Tasks, 2).await.unwrap().files;
+    if files.len() != 1 || files[0].bytes.as_ref() != &[id] || client.pending() != 1 {
+        return false;
+    }
+    let Err(error) = result else { return false };
     if mode == 2 {
         assert!(matches!(error, FileClientError::Harness(_)));
+    } else if byte_quota {
+        assert!(matches!(error, FileClientError::ByteQuota { limit: 1 }));
     } else {
         assert!(matches!(error, FileClientError::CommandQuota { limit: 1 }));
     }
-    assert_eq!(client.pending(), 1);
-    let files = outbox.snapshot(&Query::Tasks, 2).await.unwrap().files;
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0].bytes.as_ref(), &[id]);
     drop(client);
-    let mut client = FileClient::open(outbox, target.clone(), limits)
+    let mut client = FileClient::open(outbox.clone(), target.clone(), limits)
         .await
         .unwrap();
     assert_eq!(client.pending(), 1);
     assert_eq!(client.flush().await.unwrap(), 1);
     client.enqueue(request(later)).await.unwrap();
+
+    // A is acknowledged and no longer pending; B fills the quota. A's immutable
+    // identity must still succeed without reserving capacity, including reopen.
+    for reopen in [false, true] {
+        if reopen {
+            drop(client);
+            client = FileClient::open(outbox.clone(), target.clone(), limits)
+                .await
+                .unwrap();
+        }
+        let before = outbox.head().await.unwrap();
+        let acknowledged = client.cursor().clone();
+        client.enqueue(request(id)).await.unwrap();
+        assert_eq!(client.pending(), 1);
+        assert_eq!(client.cursor(), &acknowledged);
+        assert_eq!(outbox.head().await.unwrap(), before);
+        let conflict = Write::new(request(id).key, vec![later]);
+        assert!(matches!(
+            client.enqueue(conflict).await,
+            Err(FileClientError::Harness(acyclic_harness::Error::Conflict(
+                _
+            )))
+        ));
+        assert_eq!(outbox.head().await.unwrap(), before);
+    }
     assert_eq!(client.flush().await.unwrap(), 1);
     let mut changes = target.follow(Query::Tasks, cut).await.unwrap();
     for value in [id, later] {
@@ -252,12 +308,30 @@ async fn indeterminate_enqueue_preserves_capacity(id: u8, mode: u8) {
             &[value]
         );
     }
+    assert!(changes.next().now_or_never().is_none());
+    drop(client);
+    let mut client = FileClient::open(outbox, target, limits).await.unwrap();
+    client.enqueue(request(id)).await.unwrap();
+    assert_eq!(client.pending(), 0);
+    assert_eq!(client.flush().await.unwrap(), 0);
+    true
 }
 
 #[tokio::test]
-async fn lost_acknowledgement_and_cancellation_cannot_overfill_the_outbox() {
+async fn lost_ack_recovery_and_acknowledged_retries_respect_each_quota() {
     for mode in 0..3 {
-        indeterminate_enqueue_preserves_capacity(7, mode).await;
+        for byte_quota in [false, true] {
+            assert!(indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, false).await);
+        }
+    }
+}
+
+#[tokio::test]
+async fn negative_control_omitting_reconciliation_and_fencing_is_detected() {
+    for mode in 0..3 {
+        for byte_quota in [false, true] {
+            assert!(!indeterminate_enqueue_preserves_capacity(7, mode, byte_quota, true).await);
+        }
     }
 }
 
@@ -649,8 +723,11 @@ async fn negative_control_acknowledging_before_target_publication_is_detected() 
 
 proptest::proptest! {
     #[test]
-    fn indeterminate_publication_never_bypasses_reconciled_quotas(id in proptest::num::u8::ANY, mode in 0u8..3) {
-        futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode));
+    fn indeterminate_publication_never_bypasses_reconciled_quotas(
+        id in proptest::num::u8::ANY, mode in 0u8..3, byte_quota in proptest::bool::ANY,
+    ) {
+        assert!(futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, false)));
+        assert!(!futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode, byte_quota, true)));
     }
     #[test]
     fn restoration_requires_its_own_checkpoint_durability(id in proptest::num::u8::ANY) {

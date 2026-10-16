@@ -238,13 +238,19 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 Error::Invalid("submit requires an immutable task request file".into()).into(),
             );
         }
-        if !self.keys.contains(&write.key) {
-            self.capacity(write.bytes.len() as u64)?;
-        } else if write.bytes.len() as u64 > self.limits.bytes {
-            return Err(FileClientError::ByteQuota {
-                limit: self.limits.bytes,
-            });
+        let existing = self
+            .outbox
+            .snapshot(&Query::File(write.key.clone()), 1)
+            .await
+            .map_err(query_error)?;
+        if let Some(file) = existing.files.first() {
+            return if file == &write {
+                Ok(())
+            } else {
+                Err(Error::Conflict("outbox request identity conflict".into()).into())
+            };
         }
+        self.capacity(write.bytes.len() as u64)?;
         // Admission is fenced at the exact reconciled cut. An earlier cancelled
         // append that lands after catch-up must conflict, never bypass quotas.
         let head = Generation {
