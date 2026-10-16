@@ -173,7 +173,9 @@ impl SwarmClient {
         Ok(Self { root, limits })
     }
 
-    /// Runs one config-volume query and one multiplexed Streams session. `files`
+    /// Runs one config-volume query and one multiplexed Streams session. `streams`
+    /// enumerates the complete hierarchy cut; the session retains live discovery.
+    /// `files`
     /// holds workspace/{layout,open-views}.json in the user's config volume. The platform
     /// session sink accepts canonical interest diffs; incoming data is already
     /// credit-admitted/fenced by that same platform session, never a harness socket.

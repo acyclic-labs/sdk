@@ -2,7 +2,7 @@
 
 use super::path;
 use acyclic_harness::{
-    Error, Result,
+    Error,
     client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
