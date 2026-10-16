@@ -3,7 +3,7 @@ import { httpRoutes, validateMaximumResponseBytes, validateTransportOptions, Was
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import type {
   CheckpointOut, EventsOut, MachinesHttpRequest, MachinesHttpResponse, MachinesHttpRoute,
-  MachinesHttpRoutes, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
+  MachinesHttpRoutes, MachinesHttpResponseUnion, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { operationId } from "./index.js";
 import { asPublic, u64Number, usageOut } from "./simulator.js";
@@ -79,7 +79,9 @@ export class HttpMachinesProvider implements MachinesProvider {
       // Rust uses null-prototype objects while projecting untrusted JSON.
       // Clone once at the transport boundary to retain the historical plain
       // object API without rebuilding the generated DTO graph in TypeScript.
-      return structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload));
+      return asPublic<MachinesHttpResponseUnion, MachinesHttpResponse<Route>>(
+        structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload)),
+      );
     } catch (error) {
       throw new MachinesTransportError(`invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status);
     }
