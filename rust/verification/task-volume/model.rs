@@ -453,8 +453,14 @@ fn fenced_publication(expiry: bool, broken: bool) {
                 })
             }
         });
-        let lost_at_entry = lost.load(Ordering::SeqCst);
-        if broken {
+        let lost_at_entry = if expiry {
+            clock.now.load(Ordering::SeqCst) >= 2
+        } else {
+            lost.load(Ordering::SeqCst)
+        };
+        // The expiry control retains admission-time rejection. It must expose
+        // a missing recheck after preparation, not merely an already-expired call.
+        if broken && (!expiry || !lost_at_entry) {
             set_fault(if expiry {
                 Fault::IgnoreDeadline
             } else {
