@@ -378,6 +378,10 @@ impl PreparationIo {
             Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),
             Charge::Release { bytes } => return self.release(bytes).map_err(Into::into),
             Charge::AllocationOperation { bytes } => return self.allocation_attempt(bytes),
+            Charge::AllocationOperations { operations } => WorkCounters {
+                allocation_operations: operations,
+                ..Default::default()
+            },
             Charge::CopyAdmission { bytes } => {
                 return self
                     .preflight(WorkCounters {

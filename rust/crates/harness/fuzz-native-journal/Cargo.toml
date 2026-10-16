@@ -10,7 +10,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
-acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "hooks", "mcp-http", "mcp-stdio", "mcp-oauth", "objects", "machines", "grpc", "terminal", "test-support", "model-checking"] }
+acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "hooks", "mcp-http", "mcp-stdio", "mcp-oauth", "objects", "machines", "grpc", "terminal", "tui", "test-support", "model-checking"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory", "local", "native-mount"] }
 allocation-counter = "=0.8.1"
 libfuzzer-sys = "0.4"
@@ -20,6 +20,25 @@ serde_json = "1"
 [[bin]]
 name = "native_intent"
 path = "fuzz_targets/native_intent.rs"
+test = false
+doc = false
+bench = false
+
+# Match the canonical native debug build instead of recompiling dependencies
+# with this standalone workspace's default optimization profile.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[[bin]]
+name = "bounded_json"
+path = "fuzz_targets/bounded_json.rs"
 test = false
 doc = false
 bench = false

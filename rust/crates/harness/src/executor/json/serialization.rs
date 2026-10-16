@@ -1,8 +1,5 @@
 use super::*;
-use serde::{
-    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
-    ser::Serialize,
-};
+use serde::ser::Serialize;
 use serde_json::ser::{CompactFormatter, Formatter};
 use std::{cell::RefCell, io::Write};
 
@@ -36,13 +33,13 @@ impl Scope<'_> {
         }
         Ok(())
     }
-    fn retain(&mut self, bytes: u64) -> Result<()> {
+    pub(super) fn retain(&mut self, bytes: u64) -> Result<()> {
         let retained = checked(self.retained.checked_add(bytes), "JSON retention overflow")?;
         self.event(JsonCodecCharge::Retain { bytes })?;
         self.retained = retained;
         Ok(())
     }
-    fn release(&mut self, bytes: u64) -> Result<()> {
+    pub(super) fn release(&mut self, bytes: u64) -> Result<()> {
         let retained = checked(
             self.retained.checked_sub(bytes),
             "JSON retention accounting differs",
@@ -326,100 +323,8 @@ fn output<T: Serialize + ?Sized>(
     }
     Ok(bytes)
 }
-// Preserve literal maps containing serde's private RawValue key, as to_value does.
-struct Plain<'a, 'b, 'c>(&'a State<'b, 'c>);
-impl<'de> DeserializeSeed<'de> for Plain<'_, '_, '_> {
-    type Value = Value;
-    fn deserialize<D: de::Deserializer<'de>>(
-        self,
-        decoder: D,
-    ) -> std::result::Result<Value, D::Error> {
-        decoder.deserialize_any(self)
-    }
-}
-impl<'de> Visitor<'de> for Plain<'_, '_, '_> {
-    type Value = Value;
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("JSON value")
-    }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<Value, E> {
-        Ok(Value::Null)
-    }
-    fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<Value, E> {
-        Ok(Value::Bool(value))
-    }
-    fn visit_i64<E: de::Error>(self, value: i64) -> std::result::Result<Value, E> {
-        Ok(Value::from(value))
-    }
-    fn visit_u64<E: de::Error>(self, value: u64) -> std::result::Result<Value, E> {
-        Ok(Value::from(value))
-    }
-    fn visit_f64<E: de::Error>(self, value: f64) -> std::result::Result<Value, E> {
-        Ok(Value::from(value))
-    }
-    fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Value, E> {
-        let mut scope = self.0.borrow_mut();
-        let result = (|| {
-            let bytes = value.len() as u64;
-            scope.event(JsonCodecCharge::CopyAdmission { bytes })?;
-            if bytes != 0 {
-                scope.event(JsonCodecCharge::AllocationOperation { bytes })?;
-            }
-            let mut text = String::new();
-            text.try_reserve_exact(value.len())
-                .map_err(Error::Allocation)?;
-            text.push_str(value);
-            scope.event(JsonCodecCharge::Copy { bytes })?;
-            Ok(Value::String(text))
-        })();
-        result.map_err(|error| {
-            scope.stop(error);
-            E::custom("JSON admission interrupted")
-        })
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<Value, A::Error> {
-        let mut values = Vec::new();
-        while let Some(value) = sequence.next_element_seed(Plain(self.0))? {
-            if values.len() == values.capacity() {
-                let mut scope = self.0.borrow_mut();
-                let result = (|| {
-                    let bytes = checked(
-                        (values.len() as u64 + 1).checked_mul(std::mem::size_of::<Value>() as u64),
-                        "JSON capacity overflow",
-                    )?;
-                    scope.event(JsonCodecCharge::AllocationOperation { bytes })?;
-                    values.try_reserve_exact(1).map_err(Error::Allocation)
-                })();
-                result.map_err(|error| {
-                    scope.stop(error);
-                    de::Error::custom("JSON admission interrupted")
-                })?;
-            }
-            values.push(value);
-        }
-        Ok(Value::Array(values))
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Value, A::Error> {
-        let mut values = serde_json::Map::new();
-        while let Some(key) = map.next_key_seed(Plain(self.0))? {
-            let Value::String(key) = key else {
-                return Err(de::Error::custom("key must be a string"));
-            };
-            let value = map.next_value_seed(Plain(self.0))?;
-            if !values.contains_key(&key) {
-                let mut scope = self.0.borrow_mut();
-                scope.map_nodes(values.len()).map_err(|error| {
-                    scope.stop(error);
-                    de::Error::custom("JSON admission interrupted")
-                })?;
-            }
-            values.insert(key, value);
-        }
-        Ok(Value::Object(values))
-    }
-}
 fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Value> {
-    let bytes = output(value, scope, true)?;
+    let mut bytes = output(value, scope, true)?;
     let shape = JsonValueShape {
         input_bytes: bytes.len() as u64,
         lexical_items: scope.lexical.items,
@@ -432,15 +337,7 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
     };
     let owned = json_value_decode_owned_bytes(shape)?;
     scope.retain(owned)?;
-    let state = RefCell::new(&mut *scope);
-    let mut decoder = serde_json::Deserializer::from_slice(&bytes);
-    decoder.disable_recursion_limit();
-    let result = Plain(&state).deserialize(&mut decoder).and_then(|value| {
-        decoder.end()?;
-        Ok(value)
-    });
-
-    let mut value = result.map_err(|error| scope.error(error))?;
+    let mut value = super::decode::value(&mut bytes, scope)?;
     let actual = records::json_value_retained_owned_bytes(&value)?;
     let released = checked(
         owned

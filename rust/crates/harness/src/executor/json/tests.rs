@@ -25,8 +25,8 @@ mod digest_properties {
     proptest! {
         // Every B-tree split/root allocation must be admitted before insertion.
         #[test]
-        fn plain_maps_charge_at_least_the_physical_allocations(
-            entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..128),
+        fn plain_maps_charge_exactly_the_physical_allocations(
+            entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..512),
         ) {
             let legacy_operations = 1 + entries.keys().filter(|key| !key.is_empty()).count() as u64;
             let value = Value::Object(entries.into_iter().map(|(key, value)| (key, Value::from(value))).collect());
@@ -34,17 +34,30 @@ mod digest_properties {
             let mut copied = None;
             let measured = allocation_counter::measure(|| {
                 copied = Some(json_value_bounded(&value, BOUNDS, None, &mut |event| {
-                    if let JsonCodecCharge::AllocationOperation { bytes } = event {
-                        operations += u64::from(bytes != 0);
-                    }
+                    operations += match event {
+                        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+                        JsonCodecCharge::AllocationOperations { operations } => operations,
+                        _ => 0,
+                    };
                     Ok(())
                 }));
             });
             prop_assert_eq!(copied.unwrap().unwrap(), value);
-            prop_assert!(operations >= measured.count_total);
+            prop_assert_eq!(operations, measured.count_total);
             // Negative control: the previous buffer/string-only charges omit
             // at least the root node for every generated nonempty map.
             prop_assert!(legacy_operations < measured.count_total);
+        }
+
+        // Every prefix must either build the same value or return the original
+        // typed denial, with exactly the physical allocation count in its receipt.
+        #[test]
+        fn bounded_value_exhausted_prefixes(value in prop_oneof![
+            values(),
+            any::<u64>().prop_map(Value::from),
+            any::<f64>().prop_filter_map("finite JSON number", |number| serde_json::Number::from_f64(number).map(Value::Number)),
+        ]) {
+            exhausted_prefixes(&value);
         }
 
         // Property: canonical identity and hash charges stay exact, while the
@@ -73,6 +86,99 @@ mod digest_properties {
             prop_assert_eq!(&encoded, &expected);
             prop_assert_eq!(legacy.receipt().bytes_copied, work.receipt().bytes_copied + encoded.len() as u64);
         }
+    }
+
+    fn exhausted_prefixes(value: &Value) {
+        let encoded = serde_json::to_vec(value).unwrap();
+        let expected: Value = serde_json::from_slice(&encoded).unwrap();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+        let reference = acyclic_fs::NativeMaterializationWork::new(
+            budget,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        let construction = reference.receipt().allocation_operations;
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&reference).unwrap(),
+        );
+        let result = json_value_bounded(
+            value,
+            BOUNDS,
+            Some(crate::wire::ErrorCode::Invalid),
+            &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
+        )
+        .unwrap();
+        assert_eq!(result, expected);
+        drop(result);
+        let operations = reference.receipt().allocation_operations - construction;
+        for prefix in 0..=operations {
+            let mut budget = budget;
+            budget.allocation_operations = construction + prefix;
+            let native = acyclic_fs::NativeMaterializationWork::new(
+                budget,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .unwrap();
+            let baseline = native.live_allocation_bytes();
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
+            );
+            let mut succeeded = false;
+            let measured = allocation_counter::measure(|| {
+                let result = json_value_bounded(
+                    value,
+                    BOUNDS,
+                    Some(crate::wire::ErrorCode::Invalid),
+                    &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
+                );
+                succeeded = result.is_ok();
+                if let Err(error) = &result {
+                    assert!(matches!(error, Error::NativeWork { .. }));
+                }
+                drop(result);
+            });
+            assert_eq!(
+                succeeded,
+                prefix == operations,
+                "prefix {prefix}/{operations}"
+            );
+            assert_eq!(
+                measured.count_total,
+                native.receipt().allocation_operations - construction,
+                "prefix {prefix}/{operations}: {value:?}"
+            );
+            assert_eq!(measured.bytes_current, 0);
+            assert!(measured.bytes_max as u64 <= native.receipt().peak_allocation_bytes);
+            if !succeeded {
+                assert_eq!(native.live_allocation_bytes(), baseline);
+            }
+            // Successful decoding transfers its retained bytes to the caller.
+            drop(work);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
+    }
+
+    #[test]
+    fn exhausted_prefixes_cover_escapes_and_node_splits() {
+        exhausted_prefixes(&serde_json::json!({"": null}));
+        exhausted_prefixes(
+            &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
+        );
+        for size in [11, 12, 18, 78] {
+            let value = Value::Object(
+                (0..size)
+                    .map(|i| (format!("{i:04}"), Value::Null))
+                    .collect(),
+            );
+            exhausted_prefixes(&value);
+        }
+        // Negative control: reproducing the old visitor's diagnostic after a
+        // denied charge allocates despite no admitted operation.
+        let diagnostic = allocation_counter::measure(|| {
+            let error: serde_json::Error = serde::de::Error::custom("JSON admission interrupted");
+            drop(error);
+        });
+        assert!(diagnostic.count_total > 0);
     }
 }
 

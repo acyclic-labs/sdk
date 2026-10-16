@@ -16,6 +16,7 @@ pub use diagnostics::{
 };
 pub(crate) use serialization::count_json_bytes_trusted;
 mod copy;
+mod decode;
 mod schema;
 mod serialization;
 #[cfg(feature = "filesystem")]
@@ -119,6 +120,11 @@ pub enum JsonCodecCharge {
     AllocationOperation {
         /// Full requested capacity.
         bytes: u64,
+    },
+    /// Atomic admission for the nodes allocated by one B-tree insertion.
+    AllocationOperations {
+        /// Number of physical node allocations.
+        operations: u64,
     },
     /// Copy into an admitted buffer.
     Copy {
