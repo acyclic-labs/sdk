@@ -24,10 +24,7 @@ impl ConsoleIo {
         )
     }
     fn restore(&mut self) -> io::Result<()> {
-        let result = self.apply(self.original);
-        #[cfg(test)]
-        tests::observe_restored_console(self);
-        result
+        self.apply(self.original)
     }
     fn reapply(&mut self) -> io::Result<()> {
         let mut raw = self.original;
@@ -49,13 +46,13 @@ impl Write for ConsoleIo {
 
 static CONSOLE: OnceLock<Arc<Owner<ConsoleIo>>> = OnceLock::new();
 fn console_control(event: u32) -> bool {
-    #[cfg(test)]
-    tests::EVENT.store(event, std::sync::atomic::Ordering::SeqCst);
     if matches!(event, 0 | 1 | 2 | 5 | 6)
         && let Some(owner) = CONSOLE.get()
     {
         let _ = owner.close(ConsoleIo::restore);
     }
+    #[cfg(test)]
+    tests::observe_restored_console(event);
     false
 }
 
@@ -203,18 +200,20 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    pub(super) static EVENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
     static REPORT: OnceLock<PathBuf> = OnceLock::new();
+    static BASELINE: OnceLock<ffi::ConsoleState> = OnceLock::new();
 
-    pub(super) fn observe_restored_console(io: &ConsoleIo) {
-        if let Some(path) = REPORT.get() {
+    pub(super) fn observe_restored_console(event: u32) {
+        if let (Some(path), Some(old)) = (REPORT.get(), BASELINE.get()) {
+            let input = OpenOptions::new().read(true).write(true).open("CONIN$");
+            let output = OpenOptions::new().read(true).write(true).open("CONOUT$");
+            let (Ok(input), Ok(output)) = (input, output) else {
+                return;
+            };
             if let Ok(actual) = ffi::console_state(
-                io.input.as_raw_handle() as usize,
-                io.output.as_raw_handle() as usize,
+                input.as_raw_handle() as usize,
+                output.as_raw_handle() as usize,
             ) {
-                let old = io.original;
-                let event = EVENT.load(std::sync::atomic::Ordering::SeqCst);
                 let contents = format!(
                     "{event} {} {} {} {} {} {} {} {}",
                     old.input_mode,
@@ -253,6 +252,7 @@ mod tests {
             output.as_raw_handle() as usize,
             baseline,
         )?;
+        assert!(BASELINE.set(baseline).is_ok());
         let mut tty = Tty::open()?;
         assert!(
             matches!(tty.send(b"EXPIRED", Instant::now()), Err(error) if error.kind() == io::ErrorKind::TimedOut)
@@ -295,6 +295,7 @@ mod tests {
         let blocked = std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("blocked");
         let payload = vec![b'B'; 1024 * 1024];
         let mut setup_wait = None;
+        let mut close_wait = None;
         if blocked {
             // The host leaves ConPTY output unread through the whole send.
             // The production-worker loom model checks that these waits do
@@ -322,6 +323,17 @@ mod tests {
             assert!(start.elapsed() < Duration::from_millis(50));
             std::fs::write(path.with_extension("short-send"), b"bounded")?;
             setup_wait = Some(setup);
+            let closing = Arc::clone(&tty.owner);
+            close_wait = Some(std::thread::spawn(move || {
+                closing.close(ConsoleIo::restore)
+            }));
+            let start = Instant::now();
+            let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));
+            assert!(
+                result.is_ok()
+                    || matches!(result, Err(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::NotConnected))
+            );
+            assert!(start.elapsed() < Duration::from_millis(50));
         }
         std::fs::write(path.with_extension("ready"), b"ready")?;
         if blocked {
@@ -335,6 +347,11 @@ mod tests {
                 setup
                     .join()
                     .map_err(|_| io::Error::other("setup worker panicked"))?;
+            }
+            if let Some(closing) = close_wait {
+                let _ = closing
+                    .join()
+                    .map_err(|_| io::Error::other("restoration worker panicked"))?;
             }
             ffi::console_break()?;
         }
