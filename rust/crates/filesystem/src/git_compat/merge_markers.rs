@@ -1,7 +1,7 @@
 //! A partial generated marker block is still an unresolved merge.
 pub(super) fn contains(text: &str) -> bool {
     text.lines().any(|line| {
-        matches!(line, "=======" | "=======\r")
+        line.trim_end_matches('\r') == "======="
             || [
                 "<<<<<<< ",
                 "<<<<<<<\t",
@@ -32,6 +32,16 @@ mod tests {
             let crlf = lines.join("\r\n");
             prop_assert_eq!(contains(&lf), contains(&crlf));
             prop_assert_eq!(contains(&lf), contains(&crlf.replace("\r\n", "\n")));
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn separator_suffix_survives_repeated_normalization(carriages in 0usize..64) {
+            let text = format!("======={}\n", "\r".repeat(carriages));
+            prop_assert!(contains(&text));
+            prop_assert!(contains(&text.replace("\r\n", "\n")));
         }
     }
 
