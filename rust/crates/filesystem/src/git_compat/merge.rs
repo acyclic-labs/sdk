@@ -58,7 +58,7 @@ pub async fn git_merge_is_resolved<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => continue,
             Err(failure) => return Err(failure.error.into()),
         };
-        if crate::text_merge::has_conflict_markers(&String::from_utf8_lossy(&bytes)) {
+        if merge_markers::contains(&String::from_utf8_lossy(&bytes)) {
             return Ok(false);
         }
     }
@@ -75,7 +75,7 @@ mod tests {
         // Only replacing the projected marker file resolves it. Unrelated
         // writes and a failed resolution leave the exact same entry unresolved.
         #[test]
-        fn continuation_checks_the_projected_file(mutation in 0u8..4, text in "[a-z ]{0,32}") {
+        fn continuation_checks_the_projected_file(mutation in 0u8..8, text in "[a-z ]{0,32}") {
             futures::executor::block_on(async {
                 let fs = crate::Fs::memory();
                 let stop = CancellationToken::new();
@@ -88,7 +88,11 @@ mod tests {
                     0 => {},
                     1 => { workspace.write_text("/note", &text).await.unwrap(); },
                     2 => { workspace.write_text("/unrelated", &text).await.unwrap(); },
-                    _ => { workspace.remove("/note").await.unwrap(); },
+                    3 => { workspace.remove("/note").await.unwrap(); },
+                    value => {
+                        let marker = ["<<<<<<< ours", "||||||| base", "=======", ">>>>>>> theirs"][usize::from(value - 4)];
+                        workspace.write_text("/note", marker).await.unwrap();
+                    },
                 }
                 let current = workspace.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
                 prop_assert_eq!(git_merge_is_resolved(&before, &applied, &current).await.unwrap(), matches!(mutation, 1 | 3));
