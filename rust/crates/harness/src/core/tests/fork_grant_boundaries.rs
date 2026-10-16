@@ -155,6 +155,7 @@ enum ManifestFault {
     RejectValid,
     AcceptInvalid,
     DropMember,
+    RequireWrite,
 }
 
 fn check_manifest(
@@ -166,13 +167,14 @@ fn check_manifest(
     case: ManifestCase,
     fault: ManifestFault,
 ) -> TestCaseResult {
+    let shared_mask = 1 | (operations[reader * 2] & 2);
     let mut operations = operations;
     // Other readers have write-only access to this manifest volume.
     for index in 0..3 {
         operations[index * 2] = 2;
     }
     if matches!(access, Access::SharedRead) && !matches!(case, ManifestCase::NoAccess) {
-        operations[reader * 2] = 3;
+        operations[reader * 2] = shared_mask;
     }
     let matrix = Matrix::new(operations, references, inherit);
     let mut seed = matrix.seed.clone();
@@ -275,6 +277,17 @@ fn check_manifest(
                     .remove(&member.read_capability(&mut None).unwrap());
             }
         }
+        ManifestFault::RequireWrite => {
+            if matches!(access, Access::SharedRead)
+                && !seed.shared_grants.iter().any(|grant| {
+                    grant.volume == *manifest.volume()
+                        && grant.child_agent == matrix.readers[target]
+                        && grant.operations.contains(&VolumeOperation::Write)
+                })
+            {
+                actual = (false, std::array::from_fn(|_| [None, None, None]));
+            }
+        }
         ManifestFault::None => {}
     }
     prop_assert_eq!(
@@ -306,9 +319,16 @@ proptest! {
     fn manifest_backed_grants_require_reader_access(
         operations in proptest::array::uniform6(0..4_u8), references in 0..64_u8, inherit in any::<bool>(), reader in 0..3_usize,
     ) {
-        for access in ACCESS { for case in MANIFEST_CASES {
-            check_manifest(operations, references, inherit, reader, access, case, ManifestFault::None)?;
-        } }
+        for access in ACCESS {
+            let masks: &[u8] = if matches!(access, Access::SharedRead) { &[1, 3] } else { &[1] };
+            for &mask in masks {
+                let mut operations = operations;
+                operations[reader * 2] = mask;
+                for case in MANIFEST_CASES {
+                    check_manifest(operations, references, inherit, reader, access, case, ManifestFault::None)?;
+                }
+            }
+        }
     }
 }
 
@@ -370,6 +390,40 @@ fn negative_controls_detect_manifest_grant_faults() {
                         "manifest grant boundary mismatch",
                     );
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn negative_control_requires_write_to_read_a_shared_manifest() {
+    for reader in 0..3 {
+        for mask in [1, 3] {
+            let mut operations = [3; 6];
+            operations[reader * 2] = mask;
+            check_manifest(
+                operations,
+                63,
+                true,
+                reader,
+                Access::SharedRead,
+                ManifestCase::Valid,
+                ManifestFault::None,
+            )
+            .unwrap();
+            let result = check_manifest(
+                operations,
+                63,
+                true,
+                reader,
+                Access::SharedRead,
+                ManifestCase::Valid,
+                ManifestFault::RequireWrite,
+            );
+            if mask == 1 {
+                expect_fault(result, "manifest grant boundary mismatch");
+            } else {
+                result.unwrap();
             }
         }
     }
