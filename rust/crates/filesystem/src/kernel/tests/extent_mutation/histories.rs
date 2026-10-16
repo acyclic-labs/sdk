@@ -373,9 +373,9 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     assert_eq!(original.receipt().page_writes, 1);
     assert_eq!(original.receipt().backend_write_operations, 1);
     drop(read);
-    let cloned = (super::super::regular_mutation::clone_extent_range_with_accounting(
+    let cloned = (crate::kernel::regular_mutation::clone_extent_range_with_accounting(
         &store,
-        super::super::ExtentCloneRequest {
+        crate::kernel::ExtentCloneRequest {
             source_root: receipt.root,
             source_logical_bytes: 16,
             source_range: crate::ByteRange {
@@ -422,29 +422,4 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
         crate::NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
-}
-
-fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
-    match accounting {
-        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-        _ => unreachable!("standalone fixture"),
-    }
-}
-
-fn defensive_context<'a, 'b>(
-    store: &'a MemoryObjectStore,
-    accounting: &'a mut KernelAccounting<'b>,
-    cancellation: &'a CancellationToken,
-) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
-    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
-    let patches = Owned::allocate(0, accounting)?;
-    Ok(Context {
-        store,
-        limits: DecodeLimits::default(),
-        accounting,
-        visited,
-        patches,
-        maximum_seen_height: 0,
-        cancellation,
-    })
 }

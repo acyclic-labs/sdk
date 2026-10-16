@@ -926,5 +926,30 @@ async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
     Ok(())
 }
 
+fn standalone_live(accounting: &KernelAccounting<'_>) -> u64 {
+    match accounting {
+        KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+        _ => unreachable!("standalone fixture"),
+    }
+}
+
+fn defensive_context<'a, 'b>(
+    store: &'a MemoryObjectStore,
+    accounting: &'a mut KernelAccounting<'b>,
+    cancellation: &'a CancellationToken,
+) -> Result<Context<'a, 'b, MemoryObjectStore>, FsError> {
+    let visited = VisitedObjectSet::new_with_accounting(8, accounting)?;
+    let patches = Owned::allocate(0, accounting)?;
+    Ok(Context {
+        store,
+        limits: DecodeLimits::default(),
+        accounting,
+        visited,
+        patches,
+        maximum_seen_height: 0,
+        cancellation,
+    })
+}
+
 #[path = "extent_mutation/histories.rs"]
 mod histories;

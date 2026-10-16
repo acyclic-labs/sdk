@@ -379,7 +379,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             page_reads: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        let (read, retained) = super::file_read::read_object_with_accounting(
+        let (read, retained) = crate::kernel::file_read::read_object_with_accounting(
             self.store,
             page,
             self.limits.maximum_page_object_bytes(),
@@ -395,8 +395,11 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { .. } => None,
         };
-        let decoded =
-            super::extent::decode_extent_page_with_accounting(&read, self.limits, self.accounting);
+        let decoded = crate::kernel::extent::decode_extent_page_with_accounting(
+            &read,
+            self.limits,
+            self.accounting,
+        );
         if decoded.is_err()
             && let Some(before) = before
         {
@@ -418,7 +421,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                 .map_err(extent_allocation_error)?;
         }
         drop(read);
-        super::file_read::release_standalone_read_bytes(retained, self.accounting)?;
+        crate::kernel::file_read::release_standalone_read_bytes(retained, self.accounting)?;
         let (page, bytes, allocation) = decoded?;
         Ok(Owned::new(page, allocation, bytes))
     }
