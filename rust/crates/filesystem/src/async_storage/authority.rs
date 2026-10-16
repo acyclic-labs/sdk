@@ -234,7 +234,7 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         _authority: AuthorityId,
         _operation: OperationId,
         _work: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<Option<bytes::Bytes>, crate::AuthorityStoreError>>
+    ) -> impl Future<Output = Result<Option<crate::DurableCommit>, crate::AuthorityStoreError>>
     + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))
     }
