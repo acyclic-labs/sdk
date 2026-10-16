@@ -213,11 +213,7 @@ fn validate(
     accounting.check()?;
     cancellation.check()?;
     let depth = PortablePath::validate(path, limits).map_err(NamespacePathError::Path)?;
-    let encoding = match profile {
-        FilesystemProfile::Portable | FilesystemProfile::Browser => NameEncoding::Utf8,
-        FilesystemProfile::Posix => NameEncoding::PosixBytes,
-        FilesystemProfile::Windows => NameEncoding::WindowsUtf16Le,
-    };
+    let encoding = NameEncoding::native_for_profile(profile);
     let mut encoded = 1_u32;
     for part in components(path) {
         cancellation.check()?;

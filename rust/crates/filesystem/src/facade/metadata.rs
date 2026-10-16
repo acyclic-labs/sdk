@@ -165,7 +165,7 @@ pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) async fn stage_metadata_with_accounting(
+    pub(crate) async fn stage_metadata_with_accounting(
         &self,
         metadata: FileMetadata,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,

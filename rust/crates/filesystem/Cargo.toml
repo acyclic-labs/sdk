@@ -32,6 +32,10 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "access"
+path = "tests/access.rs"
+
+[[test]]
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]
@@ -48,6 +52,11 @@ required-features = ["native-watch"]
 [[test]]
 name = "projfs_names"
 path = "tests/projfs_names.rs"
+required-features = ["native-mount"]
+
+[[test]]
+name = "projfs_paths"
+path = "tests/projfs_paths.rs"
 required-features = ["native-mount"]
 
 [[test]]
@@ -70,6 +79,11 @@ name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
 
+[[test]]
+name = "native_source_watch_custody"
+path = "tests/native_source_watch_custody.rs"
+required-features = ["local", "native-mount"]
+
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
@@ -87,8 +101,8 @@ napi = { workspace = true, optional = true }
 napi-derive = { workspace = true, optional = true }
 prost.workspace = true
 unicode-normalization.workspace = true
-icu_properties.workspace = true
-icu_properties_data.workspace = true
+icu_casemap.workspace = true
+writeable.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", optional = true, default-features = false }
@@ -97,6 +111,7 @@ base64 = { version = "0.23.1", optional = true }
 crc-fast = { version = "1.10.0", optional = true }
 
 [dev-dependencies]
+divan.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
@@ -104,6 +119,7 @@ proptest.workspace = true
 loom = "=0.7.2"
 
 [build-dependencies]
+icu_casemap.workspace = true
 cc = "1.2.56"
 prost.workspace = true
 prost-types.workspace = true
@@ -111,6 +127,7 @@ tonic-prost-build.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
+loom = { version = "0.7.2", optional = true }
 tempfile = { version = "3.27.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -206,3 +223,9 @@ required-features = ["local"]
 [[example]]
 name = "record_cloud_contract"
 required-features = ["memory"]
+
+[[bench]]
+name = "projfs_paths"
+path = "benches/projfs_paths.rs"
+harness = false
+required-features = ["native-mount"]

@@ -1,3 +1,5 @@
+import { StreamSessions } from "./session.js";
+import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { validateAppend } from "./client.js";
 import { toBinary } from "@bufbuild/protobuf";
 import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
@@ -9,7 +11,7 @@ import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
-export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
+export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory }
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
@@ -18,6 +20,7 @@ export class HttpStreamProvider implements StreamProvider {
     const input = toBinary(AcknowledgeDeliveryRequestSchema, { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest", deliveryToken: deliveryToken.slice() });
     await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
   }
+  readonly #sessions: StreamSessions;
   readonly #endpoint: string;
   readonly #token: string;
   readonly #fetcher: typeof fetch;
@@ -29,6 +32,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
+    this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, options.token, options.webSocketFactory));
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
@@ -40,21 +44,10 @@ export class HttpStreamProvider implements StreamProvider {
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    const { from, signal } = options;
-    await validateWireRequest({ kind: "follow", path, from });
-    if (signal?.aborted) return;
-    const tail = await this.#tail(path, signal);
-    if (from > tail) throw new StreamError("out_of_range", "follow cursor is beyond the stream tail");
-    // Poll from 25 ms after activity to 1 s while idle.
-    let next = from;
-    let idle = 25;
-    while (!signal?.aborted) {
-      const records = await this.#read(path, { from: next, limit: 256 }, signal, false);
-      for (const item of records) { yield item; next = item.sequence + 1n; }
-      if (records.length) idle = 25;
-      else { await delay(idle, signal); idle = Math.min(idle * 2, 1000); }
-    }
+    await validateWireRequest({ kind: "follow", path, from: options.from });
+    yield* this.#sessions.follow(path, options);
   }
+
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
     if (request.parent !== undefined) validatePathValue(request.parent);
@@ -191,7 +184,6 @@ async function boundedText(response: Response, maximum: number, sizes?: Operatio
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return decoder.decode(bytes);
 }
-async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>(resolve => { const finish = () => { clearTimeout(timeout); signal?.removeEventListener("abort", finish); resolve(); }; const timeout = setTimeout(finish, milliseconds); signal?.addEventListener("abort", finish, { once: true }); }); }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 
 /** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */

@@ -344,11 +344,13 @@ impl Reducer {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let hash = blake3::Hash::from_bytes(digest(volume, maximum_bytes, work)?).to_hex();
-        let prefix = match operation {
-            VolumeOperation::Read => "volume:read:",
-            VolumeOperation::Write => "volume:write:",
+        let prefix = operation.capability_prefix();
+        const MAXIMUM_PREFIX_BYTES: usize = {
+            let read = VolumeOperation::Read.capability_prefix().len();
+            let write = VolumeOperation::Write.capability_prefix().len();
+            if read > write { read } else { write }
         };
-        let mut label = [0_u8; 77];
+        let mut label = [0_u8; MAXIMUM_PREFIX_BYTES + 64];
         for (slot, byte) in label.iter_mut().zip(prefix.bytes().chain(hash.bytes())) {
             *slot = byte;
         }
