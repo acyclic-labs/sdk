@@ -5,7 +5,7 @@ use crate::conversation::MAX_PRIVATE_DIRECTORY_PAGE;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 mod page;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-pub(crate) use page::MemoryStorePage;
+pub(crate) use page::{DirectoryIndex, MemoryStorePage};
 #[cfg(test)]
 pub(crate) use page::{MemoryStoreEntry, MemoryStoreEntryKind};
 
@@ -39,19 +39,9 @@ impl MemoryStore {
                 "directory cursor must name one entry".into(),
             ));
         }
-        Ok(page::page(
-            &self.paths,
-            path,
-            generation,
-            after,
-            maximum,
-            |history| {
-                history
-                    .revisions
-                    .first()
-                    .map(|revision| revision.generation)
-            },
-        ))
+        Ok(self
+            .directory_index
+            .page(path, generation, after, maximum, || {}))
     }
 
     pub(crate) fn read_path(&self, path: &str, generation: Option<u64>) -> Result<FileRef> {
@@ -170,6 +160,8 @@ impl MemoryStore {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 _custody: custody,
             });
+            #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+            self.directory_index.publish(path, generation);
         }
         Ok(())
     }

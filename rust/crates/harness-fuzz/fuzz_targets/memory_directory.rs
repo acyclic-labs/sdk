@@ -26,14 +26,19 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let maximum = case.maximum as usize;
-    let paths = case.paths.into_iter().collect();
-    let actual = page::page(
-        &paths,
+    let paths: std::collections::BTreeMap<_, _> = case.paths.into_iter().collect();
+    let mut ordered: Vec<_> = paths.iter().collect();
+    ordered.sort_by_key(|(_, generation)| generation.unwrap_or(0));
+    let mut index = page::DirectoryIndex::default();
+    for (path, generation) in ordered {
+        index.publish(path, generation.unwrap_or(0));
+    }
+    let actual = index.page(
         &case.path,
         case.generation,
         case.after.as_deref(),
         maximum,
-        |created| *created,
+        || {},
     );
     let encoded = serde_json::to_vec(&actual).expect("serialize generated page");
     let decoded: page::MemoryStorePage =

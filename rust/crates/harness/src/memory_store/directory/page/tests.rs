@@ -1,10 +1,25 @@
 use super::*;
 use proptest::prelude::*;
+use std::collections::BTreeMap;
 #[path = "reference.rs"]
 mod reference;
 
-fn fixture(count: usize, nested: bool) -> BTreeMap<String, Option<u64>> {
-    (0..count)
+type Paths = BTreeMap<String, Option<u64>>;
+struct Fixture {
+    paths: Paths,
+    index: DirectoryIndex,
+}
+fn indexed(paths: &Paths) -> DirectoryIndex {
+    let mut ordered: Vec<_> = paths.iter().collect();
+    ordered.sort_by_key(|(_, generation)| generation.unwrap_or(0));
+    let mut index = DirectoryIndex::default();
+    for (path, generation) in ordered {
+        index.publish(path, generation.unwrap_or(0));
+    }
+    index
+}
+fn fixture(count: usize, nested: bool) -> Fixture {
+    let paths = (0..count)
         .map(|index| {
             let name = if nested {
                 format!("files/one/{index:08}")
@@ -13,24 +28,19 @@ fn fixture(count: usize, nested: bool) -> BTreeMap<String, Option<u64>> {
             };
             (name, Some(1))
         })
-        .collect()
+        .collect();
+    let index = indexed(&paths);
+    Fixture { paths, index }
 }
-
-fn selected(
-    paths: &BTreeMap<String, Option<u64>>,
-    path: &str,
-    maximum: usize,
-    legacy: bool,
-) -> MemoryStorePage {
+fn selected(fixture: &Fixture, path: &str, maximum: usize, legacy: bool) -> MemoryStorePage {
     if legacy {
-        reference::expected(paths, path, 1, None, maximum, |created| *created)
+        reference::expected(&fixture.paths, path, 1, None, maximum, |created| *created)
     } else {
-        page(paths, path, 1, None, maximum, |created| *created)
+        fixture.index.page(path, 1, None, maximum, || {})
     }
 }
-
 fn measured(
-    paths: &BTreeMap<String, Option<u64>>,
+    fixture: &Fixture,
     path: &str,
     maximum: usize,
     legacy: bool,
@@ -41,37 +51,41 @@ fn measured(
         has_more: false,
     };
     let allocations = allocation_counter::measure(|| {
-        result = selected(paths, path, maximum, legacy);
+        result = selected(fixture, path, maximum, legacy);
     });
     (allocations, result)
 }
-
 #[test]
 fn page_storage_is_independent_of_retained_children() {
-    assert!(storage_is_bounded(false));
-    assert!(
-        !storage_is_bounded(true),
-        "the original implementation must fail the same storage bound"
-    );
-}
-
-fn storage_is_bounded(legacy: bool) -> bool {
-    let mut bounded = true;
     for nested in [false, true] {
         let small = fixture(4, nested);
         let large = fixture(4096, nested);
-        let (first, expected) = measured(&small, "files", 1, legacy);
-        let (last, actual) = measured(&large, "files", 1, legacy);
+        let (first, expected) = measured(&small, "files", 1, false);
+        let (last, actual) = measured(&large, "files", 1, false);
         assert_eq!(actual, expected);
-        bounded &= (last.count_total, last.bytes_total, last.bytes_max)
-            == (first.count_total, first.bytes_total, first.bytes_max);
+        assert_eq!(
+            (last.count_total, last.bytes_total, last.bytes_max),
+            (first.count_total, first.bytes_total, first.bytes_max)
+        );
+        assert_eq!(
+            last.count_total, 2,
+            "only the result vector and returned name allocate"
+        );
+        let (legacy_first, _) = measured(&small, "files", 1, true);
+        let (legacy_last, _) = measured(&large, "files", 1, true);
+        assert!(
+            legacy_last.bytes_total > legacy_first.bytes_total,
+            "the old scan must fail the same storage property"
+        );
     }
-    bounded
 }
-
 #[test]
 fn empty_root_allocates_nothing() {
-    let (allocation, page) = measured(&BTreeMap::new(), "", 1, false);
+    let fixture = Fixture {
+        paths: BTreeMap::new(),
+        index: DirectoryIndex::default(),
+    };
+    let (allocation, page) = measured(&fixture, "", 1, false);
     assert!(page.entries.is_empty());
     assert!(!page.has_more);
     assert_eq!(
@@ -83,36 +97,6 @@ fn empty_root_allocates_nothing() {
         (0, 0, 0)
     );
 }
-
-struct CountedKey {
-    name: String,
-    reads: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-impl std::borrow::Borrow<str> for CountedKey {
-    fn borrow(&self) -> &str {
-        self.reads.set(self.reads.get() + 1);
-        &self.name
-    }
-}
-
-impl PartialEq for CountedKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-impl Eq for CountedKey {}
-impl PartialOrd for CountedKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for CountedKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name.cmp(&other.name)
-    }
-}
-
 #[test]
 fn bounded_pages_seek_past_retained_subtrees_and_stop_after_lookahead() {
     for (nested, path, after) in [
@@ -121,77 +105,129 @@ fn bounded_pages_seek_past_retained_subtrees_and_stop_after_lookahead() {
         (false, "files", Some("00002047")),
         (false, "missing", None),
     ] {
-        let source = fixture(4096, nested);
-        let expected = reference::expected(&source, path, 1, after, 1, |created| *created);
-        let reads = std::rc::Rc::new(std::cell::Cell::new(0));
-        let paths = source
-            .into_iter()
-            .map(|(name, generation)| {
-                (
-                    CountedKey {
-                        name,
-                        reads: reads.clone(),
-                    },
-                    generation,
-                )
-            })
-            .collect();
-        let actual = page(&paths, path, 1, after, 1, |created| *created);
-        assert_eq!(actual, expected);
+        let fixture = fixture(4096, nested);
+        let mut reads = 0;
+        let actual = fixture.index.page(path, 1, after, 1, || {
+            reads += 1;
+        });
+        assert_eq!(
+            actual,
+            reference::expected(&fixture.paths, path, 1, after, 1, |created| *created)
+        );
         assert!(
-            reads.get() <= 128,
-            "nested={nested} path={path} after={after:?} reads={}",
-            reads.get()
+            reads <= 128,
+            "nested={nested} path={path} after={after:?} probes={reads}"
         );
-        reads.set(0);
+        let legacy_reads = std::cell::Cell::new(0);
+        reference::expected(&fixture.paths, path, 1, after, 1, |created| {
+            legacy_reads.set(legacy_reads.get() + 1);
+            *created
+        });
         assert_eq!(
-            reference::expected(&paths, path, 1, after, 1, |created| *created),
-            expected
-        );
-        assert_eq!(
-            reads.get(),
+            legacy_reads.get(),
             4096,
-            "negative control must detect the original full scan"
+            "negative control detects the full scan"
         );
+    }
+}
+#[test]
+fn listing_reads_no_generation_values_outside_its_directory_and_cursor() {
+    let flat = fixture(4096, false);
+    let mut probes = 0;
+    let actual = flat.index.page("missing", 1, None, 1, || {
+        probes += 1;
+    });
+    assert!(actual.entries.is_empty());
+    assert_eq!(probes, 0);
+    let mut probes = 0;
+    let actual = flat.index.page("files", 1, Some("00002047"), 1, || {
+        probes += 1;
+    });
+    assert_eq!(actual.entries[0].name, "00002048");
+    assert!(probes <= 128);
+    let mut probes = 0;
+    let actual = flat.index.page("", 1, Some("files"), 1, || {
+        probes += 1;
+    });
+    assert!(actual.entries.is_empty());
+    assert!(probes <= 2);
+    let nested = fixture(4096, true);
+    let mut probes = 0;
+    let actual = nested.index.page("files", 1, None, 1, || {
+        probes += 1;
+    });
+    assert_eq!(actual.entries[0].name, "one");
+    assert!(probes <= 4);
+}
+#[test]
+fn retained_index_storage_is_linear_and_rewrites_allocate_nothing() {
+    for count in [256, 4096] {
+        let paths: Vec<_> = (0..count).map(|item| format!("files/{item:08}")).collect();
+        let mut index = DirectoryIndex::default();
+        let allocation = allocation_counter::measure(|| {
+            for (generation, path) in paths.iter().enumerate() {
+                index.publish(path, 1 + generation as u64);
+            }
+        });
+        index.assert_linear_storage();
+        eprintln!(
+            "index entries={count} allocations={} bytes={} retained={} peak={}",
+            allocation.count_total,
+            allocation.bytes_total,
+            allocation.bytes_current,
+            allocation.bytes_max
+        );
+        let rewrites = allocation_counter::measure(|| {
+            for (generation, path) in paths.iter().enumerate() {
+                index.publish(path, 1 + count as u64 + generation as u64);
+            }
+        });
+        assert_eq!(
+            (
+                rewrites.count_total,
+                rewrites.bytes_total,
+                rewrites.bytes_max
+            ),
+            (0, 0, 0)
+        );
+        index.assert_linear_storage();
     }
 }
 
 #[test]
-fn listing_reads_no_generation_values_outside_its_directory_and_cursor() {
-    let paths = fixture(4096, false);
-    for (path, after, expected_reads) in [
-        ("missing", None, 0),
-        ("files", Some("00002047"), 2),
-        ("", Some("files"), 0),
-    ] {
-        let reads = std::cell::Cell::new(0);
-        let actual = page(&paths, path, 1, after, 1, |created| {
-            reads.set(reads.get() + 1);
+fn future_publications_cannot_turn_a_pinned_page_into_a_scan() {
+    let mut index = DirectoryIndex::default();
+    let mut paths = Paths::new();
+    for path in ["files/z-first", "files/z-last"] {
+        index.publish(path, 1);
+        paths.insert(path.into(), Some(1));
+    }
+    let first = index.page("files", 1, None, 1, || {});
+    for future in 0..65_536 {
+        let path = format!("files/a-{future:08}");
+        let generation = 2 + future;
+        index.publish(&path, generation);
+        paths.insert(path, Some(generation));
+    }
+    for after in [None, Some(first.entries[0].name.as_str())] {
+        let mut probes = 0;
+        let actual = index.page("files", 1, after, 1, || {
+            probes += 1;
+        });
+        let legacy_reads = std::cell::Cell::new(0);
+        let expected = reference::expected(&paths, "files", 1, after, 1, |created| {
+            legacy_reads.set(legacy_reads.get() + 1);
             *created
         });
-        assert_eq!(
-            actual,
-            reference::expected(&paths, path, 1, after, 1, |created| *created)
+        assert_eq!(actual, expected);
+        assert!(probes <= 64, "pinned page used {probes} index probes");
+        assert!(
+            legacy_reads.get() > 65_536,
+            "negative control must fail the identical 64-probe bound"
         );
-        assert_eq!(reads.get(), expected_reads, "path={path} after={after:?}");
     }
-    let reads = std::cell::Cell::new(0);
-    let nested = fixture(4096, true);
-    let actual = page(&nested, "files", 1, None, 1, |created| {
-        reads.set(reads.get() + 1);
-        *created
-    });
-    assert_eq!(
-        actual,
-        reference::expected(&nested, "files", 1, None, 1, |created| *created)
-    );
-    assert_eq!(
-        reads.get(),
-        1,
-        "a known directory needs no more visibility reads"
-    );
+    index.assert_linear_storage();
 }
-
 #[test]
 fn punctuation_generation_and_cursor_boundaries() {
     let paths = [
@@ -212,13 +248,13 @@ fn punctuation_generation_and_cursor_boundaries() {
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value))
     .collect();
+    let index = indexed(&paths);
     for path in ["", "foo", "foo/é", "absent", "foo/"] {
         for generation in [0, 1, 2, 4, u64::MAX] {
-            for maximum in [1, 2, 4, usize::MAX] {
+            for maximum in [0, 1, 2, 4, usize::MAX] {
                 for after in [None, Some(""), Some("foo"), Some("foo-.txt"), Some("é")] {
-                    let actual = page(&paths, path, generation, after, maximum, |created| *created);
                     assert_eq!(
-                        actual,
+                        index.page(path, generation, after, maximum, || {}),
                         reference::expected(&paths, path, generation, after, maximum, |created| {
                             *created
                         })
@@ -228,11 +264,10 @@ fn punctuation_generation_and_cursor_boundaries() {
         }
     }
 }
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
-    // Property: page content, sort order, visibility, cursor and lookahead equal
-    // the original full-map selection for arbitrary path state, and round-trip.
+    // Every historical root has exactly the original visible, sorted children;
+    // paging survives publications between requests and JSON round-trips.
     #[test]
     fn selection_matches_reference_and_roundtrips(
         rows in prop::collection::vec((prop_oneof!["[a-zA-Z0-9._#/é-]{0,20}", prop::collection::vec(any::<char>(), 0..20).prop_map(|chars| chars.into_iter().collect::<String>())], prop::option::of(0..8_u64)), 0..96),
@@ -241,18 +276,28 @@ proptest! {
         generation in prop_oneof![0..8_u64, Just(u64::MAX)],
         maximum in prop_oneof![1..32_usize, Just(usize::MAX)],
     ) {
-        let mut paths: BTreeMap<_, _> = rows.iter().cloned().collect();
-        for (name, created) in &rows {
-            paths.insert(format!("foo/{name}"), *created);
-        }
-        let actual = page(&paths, &path, generation, after.as_deref(), maximum, |created| *created);
+        let mut paths: Paths = rows.iter().cloned().collect();
+        for (name, created) in &rows { paths.insert(format!("foo/{name}"), *created); }
+        let mut index = indexed(&paths);
+        index.assert_invariants();
+        let actual = index.page(&path,generation,after.as_deref(),maximum,||{});
         let encoded = serde_json::to_vec(&actual)?;
         let decoded: MemoryStorePage = serde_json::from_slice(&encoded)?;
-        prop_assert_eq!(&decoded, &actual);
-        prop_assert_eq!(actual, reference::expected(&paths, &path, generation, after.as_deref(), maximum, |created| *created));
+        prop_assert_eq!(&decoded,&actual);
+        prop_assert_eq!(&actual,&reference::expected(&paths,&path,generation,after.as_deref(),maximum,|created|*created));
+        if generation != u64::MAX {
+            let cursor = actual.entries.last().map(|entry| entry.name.as_str());
+            let expected = reference::expected(&paths,&path,generation,cursor,maximum,|created|*created);
+            for (offset, (name, _)) in rows.iter().enumerate() { index.publish(&format!("foo/future/{name}"), 8 + offset as u64); }
+            let mut probes = 0;
+            let next = index.page(&path,generation,cursor,maximum,||{probes += 1;});
+            prop_assert_eq!(next,expected);
+            let log = usize::BITS - (paths.len().max(1)).leading_zeros();
+            prop_assert!(probes <= 8 * (maximum.min(paths.len()) + log as usize + 1));
+            index.assert_invariants();
+        }
     }
 }
-
 #[test]
 fn listing_without_subscriber() {
     profile(false);
@@ -261,7 +306,6 @@ fn listing_without_subscriber() {
 fn listing_with_tracing() {
     profile(true);
 }
-
 fn profile(tracing: bool) {
     let dispatch = if tracing {
         tracing::Dispatch::new(tracing_subscriber::registry())
@@ -281,7 +325,7 @@ fn profile(tracing: bool) {
         ("nested", true, "files"),
         ("absent", false, "missing"),
     ] {
-        let paths = fixture(4096, nested);
+        let fixture = fixture(4096, nested);
         for &legacy in implementations {
             let mut times = Vec::with_capacity(32);
             for _ in 0..32 {
@@ -289,7 +333,7 @@ fn profile(tracing: bool) {
                     eprintln!("DIRECTORY_BEGIN");
                 }
                 let started = std::time::Instant::now();
-                let page = selected(&paths, path, 1, legacy);
+                let page = selected(&fixture, path, 1, legacy);
                 let elapsed = started.elapsed();
                 if syscalls {
                     eprintln!("DIRECTORY_END");
@@ -298,7 +342,7 @@ fn profile(tracing: bool) {
                 std::hint::black_box(page);
             }
             times.sort_unstable();
-            let (allocation, _) = measured(&paths, path, 1, legacy);
+            let (allocation, _) = measured(&fixture, path, 1, legacy);
             eprintln!(
                 "listing tracing={tracing} legacy={legacy} case={label} median={:?} allocations={} bytes={} peak={}",
                 times.get(16),
