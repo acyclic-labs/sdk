@@ -12,6 +12,8 @@ fn checked_in_fuzz_corpus() {
         ("malformed", None),
         ("fenced", Some(1)),
         ("unicode", Some(3)),
+        ("indented", None),
+        ("mixed", Some(5)),
     ] {
         let text = std::fs::read_to_string(directory.join(name)).unwrap();
         assert_eq!(

@@ -264,7 +264,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending.iter().filter_map(Option::as_ref)
     }
 
-    /// State shared by every renderer.
+    /// Replaces a disposable file view at the query's atomic snapshot cut.
     pub fn query_snapshot(
         &mut self,
         query: crate::task_volume::Query,

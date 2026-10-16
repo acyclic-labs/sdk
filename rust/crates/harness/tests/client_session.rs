@@ -30,6 +30,139 @@ fn session() -> ClientSession<MemoryClientState> {
         .unwrap();
     session
 }
+
+#[tokio::test]
+async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically() {
+    use acyclic_harness::{
+        client::{CommandCatalog, CommandQuery, CommandResolution, FileQueryView},
+        conversation::CompositeContentVerifier,
+        task_volume::{Change, FileKey, Query, TaskVolume, Write},
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    use futures::StreamExt as _;
+
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("private").unwrap(),
+    )
+    .await
+    .unwrap();
+    let initial = volume.snapshot(&Query::Plans, 2).await.unwrap();
+    let identity = (initial.cursor.volume, initial.cursor.query);
+    let mut generation = initial.generation;
+    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
+        .await
+        .unwrap();
+    let reader = CompositeContentVerifier::new(Vec::new(), None).unwrap();
+    let CommandResolution::Select { query } = CommandCatalog::builtins()
+        .unwrap()
+        .resolve("/plan", &reader, 128)
+        .await
+        .unwrap()
+    else {
+        panic!("plan did not select a view")
+    };
+    assert_eq!(query, CommandQuery::Plan);
+    let mut follow = client
+        .select_file_view(query, &volume, 2, 128)
+        .await
+        .unwrap();
+    for text in ["- [ ] Build", "* [~] Build", "1. [x] Build"] {
+        generation = volume
+            .append(
+                generation,
+                &Write::new(FileKey::parse("plans/release.md").unwrap(), text.as_bytes()),
+            )
+            .await
+            .unwrap();
+        let change = follow.next().await.unwrap().unwrap();
+        let file = change.file.as_ref().unwrap().clone();
+        let cursor = change.cursor.clone();
+        let payload = file.bytes.as_ptr();
+        assert!(client.query_change(change).unwrap());
+        let view = &client.session().views().queries[&identity];
+        assert_eq!(view.files()[&file.key].bytes.as_ptr(), payload);
+        assert_eq!(
+            view.plan_lines(),
+            ["plans/release.md", &text[text.find('[').unwrap()..]]
+        );
+        assert!(
+            !client
+                .query_change(Change {
+                    file: Some(file.clone()),
+                    cursor: cursor.clone()
+                })
+                .unwrap()
+        );
+        let before = client.session().views().clone();
+        for mutation in [
+            "gap",
+            "epoch",
+            "query",
+            "volume",
+            "schema",
+            "watermark",
+            "bytes",
+            "selection",
+            "duplicate",
+        ] {
+            let mut invalid = Change {
+                file: Some(file.clone()),
+                cursor: cursor.clone(),
+            };
+            if mutation != "duplicate" {
+                invalid.cursor.position += 1;
+                invalid.cursor.accepted += 1;
+            }
+            match mutation {
+                "gap" => invalid.cursor.position += 1,
+                "epoch" => invalid.cursor.epoch = uuid::Uuid::new_v4(),
+                "query" => invalid.cursor.query[0] ^= 1,
+                "volume" => invalid.cursor.volume[0] ^= 1,
+                "schema" => invalid.cursor.schema += 1,
+                "watermark" => invalid.cursor.durable = invalid.cursor.accepted + 1,
+                "bytes" => invalid.file.as_mut().unwrap().bytes = vec![b'x'; 129].into(),
+                "selection" => invalid.file.as_mut().unwrap().key = FileKey::Goal,
+                "duplicate" => invalid.file.as_mut().unwrap().bytes = b"wrong".as_slice().into(),
+                _ => unreachable!(),
+            }
+            assert!(client.query_change(invalid).is_err(), "{mutation}");
+            assert_eq!(client.session().views(), &before, "{mutation}");
+        }
+    }
+    let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
+    assert!(FileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
+    let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
+    assert!(FileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
+    // The normal streaming input path also publishes file queries to shared views.
+    for path in ["plans/second.md", "plans/third.md"] {
+        generation = volume
+            .append(
+                generation,
+                &Write::new(FileKey::parse(path).unwrap(), "- [x] Ship"),
+            )
+            .await
+            .unwrap();
+        let change = follow.next().await.unwrap().unwrap();
+        let mut updates =
+            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
+        let before = client.session().views().clone();
+        let result = client.next_update(&mut updates).await;
+        if path == "plans/second.md" {
+            assert!(result.unwrap());
+            assert_eq!(client.session().views().queries[&identity].files().len(), 2);
+        } else {
+            assert!(result.is_err());
+            assert_eq!(client.session().views(), &before);
+        }
+    }
+    assert!(
+        client
+            .select_file_view(CommandQuery::Model, &volume, 2, 128)
+            .await
+            .is_err()
+    );
+}
 fn delivery(from: u64, to: LifecycleState) -> wire::Delivery {
     let payload = EventPayload::LifecycleTransitioned {
         from: LifecycleState::Active,

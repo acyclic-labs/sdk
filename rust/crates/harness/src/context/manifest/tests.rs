@@ -61,6 +61,7 @@ proptest! {
             },
             selected_skills: if selected { vec!["inspect".into()] } else { Vec::new() },
             tools: Vec::new(),
+            ..Default::default()
         };
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;

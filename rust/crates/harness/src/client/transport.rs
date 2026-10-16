@@ -298,6 +298,9 @@ impl<S: ClientStateStore> HarnessClient<S> {
             return Ok(false);
         };
         match update {
+            super::ViewUpdate::File(change) => {
+                self.query_change(change)?;
+            }
             super::ViewUpdate::Model {
                 authority,
                 turn,

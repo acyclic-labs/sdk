@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 /// One decoded record from a platform follow, addressed to its tracked authority.
 /// These are in-process client inputs, not another wire schema.
 pub enum ViewUpdate {
+    /// A shared file slice or cursor checkpoint from the volume query follow.
+    File(crate::task_volume::Change),
     /// One provider-neutral model event.
     Model {
         /// Conversation owning the event.
