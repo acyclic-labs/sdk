@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::Mutex;
+use crate::sync::SyncMutex as Mutex;
 
 /// In-process workflow journal for local authoring.
 #[derive(Default)]
