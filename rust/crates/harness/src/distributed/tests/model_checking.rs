@@ -46,6 +46,14 @@ fn coordinator_future_sizes() {
         );
         let mut coordinator = block_on(Box::pin(open(&client))).unwrap();
         report("refresh", coordinator.refresh(&mut None));
+        report(
+            "orchestrate",
+            coordinator.orchestrate(
+                OperationId::from_bytes([41; 16]),
+                IdempotencyKey::new("orchestrate").unwrap(),
+                None,
+            ),
+        );
         let worker = worker("worker");
         report("pull", coordinator.pull(&worker));
         report("fixture start", start(&mut coordinator, &worker, "start"));

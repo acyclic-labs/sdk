@@ -10,12 +10,14 @@ use crate::{
 use acyclic_stream::StreamPath;
 use loom::sync::atomic::AtomicU8;
 
+const JOIN: &[u8] = br#"[{"slot":"a","value":11},{"slot":"b","value":22}]"#;
+
 struct Contents(Vec<(FileRef, OwnedBytes)>);
 
 impl Contents {
     fn new() -> Self {
         Self(
-            [b"null".as_slice(), b"11", b"22", b"[11,22]"]
+            [b"null".as_slice(), b"11", b"22", JOIN]
                 .into_iter()
                 .enumerate()
                 .map(|(index, bytes)| {
@@ -210,7 +212,7 @@ fn settlement_model(join: bool, broken: bool) {
         assert_eq!(
             parent.outcome,
             Some(Outcome::Succeeded(contents.reference(if join {
-                b"[11,22]"
+                JOIN
             } else {
                 b"11"
             })))
