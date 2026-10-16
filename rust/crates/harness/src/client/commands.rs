@@ -17,8 +17,6 @@ mod presentation;
 pub use presentation::*;
 mod control;
 mod files;
-#[cfg(all(test, acyclic_loom))]
-mod query_model;
 pub use control::CommandControl;
 mod name_index;
 mod session;

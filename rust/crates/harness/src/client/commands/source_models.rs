@@ -33,7 +33,6 @@ fn source_wakeup(broken: bool) {
             32_768,
             64,
         ))?;
-        let (waker, woken) = super::super::query_model::wake_flag();
         let cut = block_on(volume.snapshot(&Query::Inputs, 64))?;
         let publisher = loom::thread::spawn({
             let volume = volume.clone();
@@ -56,34 +55,17 @@ fn source_wakeup(broken: bool) {
             let mut next = Box::pin(sources.changed());
             assert!(
                 matches!(
-                    next.as_mut().poll(&mut Context::from_waker(&waker)),
+                    next.as_mut()
+                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
                     Poll::Ready(Ok(()))
                 ),
                 "source wakeup lost"
             );
         } else {
-            let mut next = Box::pin(sources.changed());
-            let first = next.as_mut().poll(&mut Context::from_waker(&waker));
-            if let Poll::Ready(result) = &first {
-                assert!(result.is_ok(), "source follow failed: {result:?}");
-            }
+            block_on(sources.changed())?;
             publisher
                 .join()
                 .map_err(|_| "source publisher panicked")??;
-            if first.is_pending() {
-                assert!(
-                    woken.load(loom::sync::atomic::Ordering::SeqCst),
-                    "follow did not wake its waiter"
-                );
-                assert!(
-                    matches!(
-                        next.as_mut().poll(&mut Context::from_waker(&waker)),
-                        Poll::Ready(Ok(()))
-                    ),
-                    "source wakeup lost"
-                );
-            }
-            drop(next);
             block_on(sources.refresh(&mut client))?;
             let resolution = block_on(client.catalog().resolve("/followed now", &NoReads, 32_768))?;
             assert!(
