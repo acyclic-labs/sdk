@@ -19,6 +19,6 @@ pub(super) struct Expectations {
     pub text: String,
     pub wire: Vec<Value>,
     pub frames: Vec<Value>,
-    pub files: BTreeMap<String, String>,
+    pub files: BTreeMap<String, Option<String>>,
     pub diffs: BTreeMap<String, Value>,
 }

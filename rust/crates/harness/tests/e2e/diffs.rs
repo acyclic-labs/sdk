@@ -88,6 +88,7 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     let mut wire = Vec::new();
     let mut seen = initial.cursor.position;
     let mut paths = std::collections::BTreeSet::new();
+    let mut removed = std::collections::BTreeSet::new();
     while seen != target.cursor.position {
         let change = observation
             .changes
@@ -103,17 +104,34 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
                 .expect
                 .files
                 .get(&file.key.path())
-                .map(String::as_bytes)
+                .and_then(Option::as_deref)
+                .map(str::as_bytes)
                 != Some(file.bytes.as_ref())
             {
                 return Err("publication file bytes differ".into());
             }
+        }
+        for key in &change.removed {
+            let path = key.path();
+            if case.expect.files.get(&path) != Some(&None) {
+                return Err(format!("unexpected removal publication: {path}").into());
+            }
+            removed.insert(path);
         }
         paths.extend(change.files.iter().map(|file| file.key.path()));
         paths.extend(change.removed.iter().map(|key| key.path()));
         wire.push(serde_json::to_value(&change)?);
     }
     matchers::ordered(&case.expect.wire, &wire, "file publication wire")?;
+    for (path, expected) in &case.expect.files {
+        if expected.is_none()
+            && (!removed.contains(path) || target.files.iter().any(|file| file.key.path() == *path))
+        {
+            return Err(
+                format!("missing removal publication or deleted file remains: {path}").into(),
+            );
+        }
+    }
     if !drop_publication {
         let changes = paths
             .into_iter()
@@ -174,11 +192,15 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
     let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
     for (path, expected) in &case.expect.files {
-        let bytes = cold
+        let read = cold
             .read(&workspace, None, &format!("/{path}"), 65_536, None)
-            .await?;
-        if bytes.as_ref() != expected.as_bytes() {
-            return Err(format!("persisted file differs: {path}").into());
+            .await;
+        match (expected, read) {
+            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (_, actual) => {
+                return Err(format!("persisted file differs: {path}: {actual:?}").into());
+            }
         }
     }
     if rendered != case.expect.diffs {
@@ -189,8 +211,12 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
         .into());
     }
     let requests = provider.requests();
-    if requests.len() != 2 || !requests[0].tools.iter().any(|tool| tool.name == "write") {
-        return Err("diff scenario did not use the production default write tool".into());
+    if requests.len() != 2
+        || ["write", "bash"]
+            .iter()
+            .any(|name| !requests[0].tools.iter().any(|tool| tool.name == *name))
+    {
+        return Err("diff scenario did not use the production default toolset".into());
     }
     let prompt = ModelContent::Text(case.prompt);
     if !requests[0]

@@ -135,7 +135,7 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
-required-features = ["filesystem-local", "test-support"]
+required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[test]]
 name = "search-http-codec"
