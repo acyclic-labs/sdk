@@ -129,7 +129,6 @@ async fn run_swarm<P: StreamProvider>(
                 provider
                     .follow(path, 1)
                     .await?
-                    .take(2)
                     .map(move |record| (id, record))
                     .boxed(),
             )
@@ -159,7 +158,11 @@ async fn run_swarm<P: StreamProvider>(
         let mut offsets = vec![1; AGENTS];
         let mut senders = vec![[false; 2]; AGENTS];
         let mut latencies = Vec::with_capacity(2 * AGENTS);
-        while let Some((id, record)) = followers.next().await {
+        for _ in 0..2 * AGENTS {
+            let (id, record) = followers
+                .next()
+                .await
+                .ok_or("follow ended before the expected prefix")?;
             let record = record?;
             assert_eq!(record.sequence, offsets[id]);
             offsets[id] += 1;
@@ -189,6 +192,16 @@ async fn run_swarm<P: StreamProvider>(
     let (produced, consumed) = tokio::join!(tokio::spawn(produce), consume);
     produced??;
     consumed?;
+    assert_eq!(followers.len(), AGENTS);
+    // Consume completes before the producer's last checkpoint. Keep every
+    // stream open until both tasks finish, then poll each stream directly so a
+    // ready extra cannot hide behind SelectAll's cooperative polling budget.
+    let mut followers = followers.into_iter().collect::<Vec<_>>();
+    assert!(
+        bounded_quiet(&mut followers).await,
+        "follow yielded extra data, an error or EOF after the expected prefix"
+    );
+    drop(followers);
     Ok(())
 }
 
@@ -323,5 +336,40 @@ async fn redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget() 
     assert_eq!(next(&mut follow).await?.sequence, 1);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(node_work(&fixture.counts, 1), Err("bytes per follow"));
+    Ok(())
+}
+
+async fn bounded_quiet<S: futures::Stream + Unpin>(followers: &mut [S]) -> bool {
+    for _ in 0..2 {
+        for follower in followers.iter_mut() {
+            if !futures::poll!(follower.next()).is_pending() {
+                return false;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+    true
+}
+
+#[tokio::test]
+async fn bounded_polls_reject_extra_deliveries_and_truncated_follow_controls() -> TestResult {
+    for (extra, truncate) in [(false, false), (true, false), (false, true), (true, true)] {
+        let memory = MemoryStream::default();
+        append(&memory, "probe", if extra { 3 } else { 2 }).await?;
+        let follow = memory.follow(StreamPath::new("probe")?, 0).await?;
+        let mut follow = if truncate {
+            follow.take(2).boxed()
+        } else {
+            follow
+        };
+        for sequence in 0..2 {
+            assert_eq!(next(&mut follow).await?.sequence, sequence);
+        }
+        assert_eq!(
+            bounded_quiet(&mut [follow]).await,
+            !extra && !truncate,
+            "extra delivery or a take(2) EOF must fail the same bounded probe"
+        );
+    }
     Ok(())
 }

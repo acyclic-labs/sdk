@@ -409,7 +409,22 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     append(&provider, "stay", 1).await?;
     assert_eq!(next(&mut staying).await?.sequence, 1);
     release.send(()).map_err(|_| "dial gate dropped")?;
-    tokio::time::timeout(Duration::from_secs(1), new.counts.changed.notified()).await?;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let changed = new.counts.changed.notified();
+            if new
+                .counts
+                .resumes
+                .lock()
+                .map_err(|_| "resumes poisoned")?
+                .contains(&(1, 2, 2))
+            {
+                return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+            }
+            changed.await;
+        }
+    })
+    .await??;
     assert_eq!(
         new.counts
             .resumes
