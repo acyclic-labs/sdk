@@ -2,8 +2,11 @@
 use acyclic_harness::client::InterestDocument;
 use acyclic_stream::StreamPath;
 use libfuzzer_sys::fuzz_target;
+#[path = "../../harness/tests/support/client_resume.rs"]
+mod resume;
 
 fuzz_target!(|bytes: &[u8]| {
+    resume::exercise(bytes);
     // Arbitrary untrusted bytes exercise both rejection and successful parsing.
     if let Ok(document) = InterestDocument::decode(bytes, 4096) {
         let encoded = serde_json::to_vec(&document).unwrap();

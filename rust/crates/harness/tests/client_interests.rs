@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 
 #[path = "client_interest_discovery.rs"]
 mod discovery;
+#[path = "client_interest_continuity.rs"]
+mod continuity;
 #[path = "client_interest_session.rs"]
 mod session;
 

@@ -5,7 +5,10 @@ use crate::{
     Error, Result,
     task_volume::{HeadSnapshot, TaskVolume},
 };
-use acyclic_stream::{ChildrenPageRequest, StreamPath, StreamProvider, wire};
+use acyclic_stream::{
+    ChildrenPageRequest, CommitId, StreamError, StreamPath, StreamProvider, wire,
+    wire_codec::session::record_cursor,
+};
 use futures::{FutureExt as _, Sink, SinkExt as _, Stream, StreamExt as _};
 use std::{collections::BTreeMap, future::Future};
 
@@ -43,6 +46,15 @@ pub enum SwarmUpdate {
         overview: bool,
         /// The exact platform data, including cursor and durability watermarks.
         data: wire::SessionData,
+    },
+    /// Standalone durability progress, even when no later content arrives.
+    Watermark {
+        /// Source agent.
+        agent: StreamPath,
+        /// Whether the source is the always-on status follow.
+        overview: bool,
+        /// Exact pushed provider watermarks; this does not consume another record.
+        watermark: wire::SessionWatermark,
     },
 }
 
@@ -123,7 +135,7 @@ impl Interests {
             &path,
             "status",
             wire::SessionDelivery::Latest,
-            0,
+            wire::SessionCursor::default(),
         ));
         self.routes.insert(channel, (path.clone(), true));
         self.agents.insert(path, Agent { content: None });
@@ -136,17 +148,14 @@ fn follow(
     agent: &StreamPath,
     suffix: &str,
     delivery: wire::SessionDelivery,
-    next: u64,
+    resume: wire::SessionCursor,
 ) -> wire::SessionSubscription {
     wire::SessionSubscription {
         channel: Some(wire::SessionChannel {
             channel_id,
             generation: 1,
         }),
-        resume: Some(wire::SessionCursor {
-            next,
-            ..Default::default()
-        }),
+        resume: Some(resume),
         kind: Some(wire::session_subscription::Kind::Follow(
             wire::SessionFollow {
                 path: format!("{}/{suffix}", agent.as_str()),
@@ -229,16 +238,43 @@ impl SwarmClient {
         // children from the subscription and snapshot share the same fold.
         let mut after = None;
         let mut hierarchy_version = None;
+        // At most two complete admitted traversals, counting failed requests too.
+        // Restarts deduplicate routes and cannot turn global hierarchy churn into
+        // quadratic work or an unbounded retry loop.
+        let mut remaining = self
+            .limits
+            .agents
+            .checked_mul(2)
+            .ok_or_else(|| Error::Invalid("swarm discovery bound overflow".into()))?;
         loop {
-            let page = streams
+            if remaining == 0 {
+                return Err(Error::Storage(
+                    "swarm discovery work bound reached; reobserve".into(),
+                ));
+            }
+            let page = match streams
                 .children_page(ChildrenPageRequest {
                     parent: Some(self.root.clone()),
                     after,
                     hierarchy_version,
-                    limit: acyclic_stream::MAX_ITEMS as u32,
+                    limit: remaining.min(acyclic_stream::MAX_ITEMS) as u32,
                 })
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
+            {
+                Ok(page) => page,
+                Err(StreamError::HierarchyChanged) => {
+                    remaining -= 1;
+                    after = None;
+                    hierarchy_version = None;
+                    continue;
+                }
+                Err(error) => return Err(Error::Storage(error.to_string())),
+            };
+            remaining = remaining
+                .checked_sub(page.children.len().max(1))
+                .ok_or_else(|| {
+                    Error::Storage("swarm discovery exceeded requested page bound".into())
+                })?;
             let mut update = state.update()?;
             for child in page.children {
                 state.discover(child.path, self.limits.agents, &mut update)?;
@@ -278,10 +314,11 @@ impl SwarmClient {
                         state.discover(path.clone(), self.limits.agents, &mut update)?;
                         let snapshot = heads(path.clone(), self.limits.snapshot_files).await
                             .map_err(|error| Error::Storage(error.to_string()))?;
-                        let next = snapshot.cursor.position;
+                        let resume = record_cursor(snapshot.cursor.position, CommitId::from_bytes(snapshot.cursor.commit))
+                            .map_err(|error| Error::Storage(error.to_string()))?;
                         publish(SwarmUpdate::Snapshot { agent: path.clone(), snapshot }).await?;
                         let channel = state.channel()?;
-                        update.upsert.push(follow(channel, &path, "files", wire::SessionDelivery::All, next));
+                        update.upsert.push(follow(channel, &path, "files", wire::SessionDelivery::All, resume));
                         state.agents.get_mut(&path).expect("discovered agent").content = Some(channel);
                         state.routes.insert(channel, (path, false));
                     }
@@ -297,6 +334,11 @@ impl SwarmClient {
                     if let Some(wire::session_frame::Body::Closed(closed)) = &frame.body {
                         if frame.channel_id == 0 || frame.channel_id == 1 || state.routes.contains_key(&frame.channel_id) {
                             return Err(Error::Storage(format!("platform subscription {} closed: {}: {}", frame.channel_id, closed.code, closed.message)));
+                        }
+                    }
+                    if let Some(wire::session_frame::Body::Watermark(watermark)) = &frame.body {
+                        if let Some((agent, overview)) = state.routes.get(&frame.channel_id) {
+                            publish(SwarmUpdate::Watermark { agent: agent.clone(), overview: *overview, watermark: *watermark }).await?;
                         }
                     }
                     if let Some(wire::session_frame::Body::Data(data)) = frame.body {

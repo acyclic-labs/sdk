@@ -119,6 +119,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
                         Ok(())
                     });
                 }
+                SwarmUpdate::Watermark { .. } => panic!("unexpected watermark"),
             }
             futures::future::Either::Right(futures::future::ready(Ok(())))
         },
@@ -181,6 +182,10 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         let snapshot_cut = snapshots.borrow()[0].cursor.position;
         assert_eq!(content.resume.as_ref().unwrap().next, snapshot_cut);
         assert_eq!(
+            content.resume.as_ref().unwrap().opaque.as_ref(),
+            snapshots.borrow()[0].cursor.commit
+        );
+        assert_eq!(
             snapshots.borrow()[0].files[0].segments[0].as_ref(),
             b"before"
         );
@@ -188,10 +193,16 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             rendered.next().await.unwrap().tier(&path("swarm/a")),
             Some(InterestTier::Prefetch)
         );
-        let mut tail = provider
-            .follow(path("swarm/a/files"), snapshot_cut)
-            .await
-            .unwrap();
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &content.kind else {
+            panic!("follow")
+        };
+        let mut tail = acyclic_stream::wire_codec::session::follow_records(
+            provider.as_ref(),
+            follow,
+            content.resume.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
         let record = tail.next().await.unwrap().unwrap();
         assert_eq!(record.sequence, snapshot_cut);
         frames

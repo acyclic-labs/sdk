@@ -1,7 +1,52 @@
 //! Session receive-credit accounting shared by transport adapters.
 
-use crate::{StreamError, wire};
+use crate::{CommitId, RecordStream, StreamError, StreamPath, StreamProvider, wire};
 use prost::Message as _;
+
+/// Complete record continuation at a nonzero cut, including its immutable anchor.
+pub fn record_cursor(next: u64, preceding: CommitId) -> Result<wire::SessionCursor, StreamError> {
+    if next == 0 {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(wire::SessionCursor {
+        next,
+        opaque: preceding.as_bytes().to_vec().into(),
+    })
+}
+
+/// Validates the canonical ALL-record cursor without normalizing malformed input.
+pub fn record_anchor(cursor: &wire::SessionCursor) -> Result<Option<CommitId>, StreamError> {
+    if cursor.next == 0 {
+        return if cursor.opaque.is_empty() {
+            Ok(None)
+        } else {
+            Err(StreamError::InvalidArgument)
+        };
+    }
+    let anchor = cursor
+        .opaque
+        .as_ref()
+        .try_into()
+        .map_err(|_| StreamError::InvalidArgument)?;
+    Ok(Some(CommitId::from_bytes(anchor)))
+}
+
+/// Opens the platform's ALL-record session route. Anchor checking and subscription
+/// are one provider operation, so accepted-history replacement cannot splice cuts.
+pub async fn follow_records<P: StreamProvider + ?Sized>(
+    provider: &P,
+    follow: &wire::SessionFollow,
+    cursor: &wire::SessionCursor,
+) -> Result<RecordStream, StreamError> {
+    if follow.delivery != wire::SessionDelivery::All as i32 {
+        return Err(StreamError::InvalidArgument);
+    }
+    let path = StreamPath::new(&follow.path)?;
+    match record_anchor(cursor)? {
+        Some(anchor) => provider.follow_checked(path, cursor.next, anchor).await,
+        None => provider.follow(path, 0).await,
+    }
+}
 
 /// Adds a receive-credit grant without partially applying an overflowing grant.
 pub fn grant_credit(

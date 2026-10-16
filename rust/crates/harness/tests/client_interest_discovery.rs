@@ -51,6 +51,13 @@ fn check_statuses(updates: &[wire::SessionInterest], count: usize) -> bool {
 }
 
 async fn discover(count: usize) -> Vec<wire::SessionInterest> {
+    discover_with_creation(count, None).await
+}
+
+async fn discover_with_creation(
+    count: usize,
+    new_child: Option<usize>,
+) -> Vec<wire::SessionInterest> {
     let provider = Arc::new(MemoryStream::default());
     let config = TaskVolume::open(provider.clone(), path("config/files"))
         .await
@@ -68,13 +75,42 @@ async fn discover(count: usize) -> Vec<wire::SessionInterest> {
     }
     let updates = Rc::new(RefCell::new(Vec::new()));
     let sink = Box::pin(futures::sink::unfold(
-        updates.clone(),
-        |updates, update| async move {
+        (updates.clone(), false, provider.clone()),
+        |(updates, mut created, provider), update: wire::SessionInterest| async move {
+            // Actual hierarchy publication between the first and second page.
+            // No injected HierarchyChanged error and no timing/polling assumptions.
+            if !created
+                && update.upsert.iter().any(|sub| {
+                    matches!(sub.kind, Some(wire::session_subscription::Kind::Follow(_)))
+                })
+            {
+                if let Some(id) = new_child {
+                    let name = if id == usize::MAX {
+                        "other/created".to_owned()
+                    } else {
+                        format!("swarm/a{id:05}/status")
+                    };
+                    provider
+                        .append(AppendRequest {
+                            path: path(&name),
+                            records: vec![b"created".to_vec().into()],
+                            if_tail: Some(0),
+                            idempotency_key: None,
+                        })
+                        .await
+                        .unwrap();
+                    created = true;
+                }
+            }
             updates.borrow_mut().push(update);
-            Ok::<_, Error>(updates)
+            Ok::<_, Error>((updates, created, provider))
         },
     ));
-    let client = SwarmClient::new(path("swarm"), limits(count.max(1))).unwrap();
+    let client = SwarmClient::new(
+        path("swarm"),
+        limits((count + usize::from(new_child.is_some_and(|id| id != usize::MAX))).max(1)),
+    )
+    .unwrap();
     let result = client
         .follow(
             provider.as_ref(),
@@ -93,6 +129,24 @@ async fn discover(count: usize) -> Vec<wire::SessionInterest> {
     assert!(matches!(result, Err(Error::Unsupported(_))));
     let result = updates.borrow().clone();
     result
+}
+
+#[test]
+fn hierarchy_creation_between_pages_restarts_without_duplicate_status_follows() {
+    for new_child in [usize::MAX, acyclic_stream::MAX_ITEMS + 1] {
+        let count = acyclic_stream::MAX_ITEMS + 1;
+        let updates = futures::executor::block_on(discover_with_creation(count, Some(new_child)));
+        assert!(check_statuses(
+            &updates,
+            count + usize::from(new_child != usize::MAX)
+        ));
+        assert!(
+            updates
+                .iter()
+                .enumerate()
+                .all(|(index, update)| update.revision == index as u64 + 1)
+        );
+    }
 }
 
 #[test]
