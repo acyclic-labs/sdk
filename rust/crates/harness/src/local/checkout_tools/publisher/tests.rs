@@ -84,12 +84,11 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             None,
         )?
         .await?;
-    let grant = crate::conversation::ContentGrant::verify(
+    let grant = crate::conversation::ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
         &harness.journal,
-        VolumeOperation::Read,
-        harness.limits.file_bytes,
+        "",
         &mut None,
     )?;
     let (selected, bytes) = harness
