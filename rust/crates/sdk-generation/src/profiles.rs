@@ -709,7 +709,7 @@ pub(super) fn retain_profile_generated_sources(
     Ok(())
 }
 
-fn profile_generated_sources(
+pub(super) fn profile_generated_sources(
     sources: &[GeneratedSource],
     receipt: &Path,
 ) -> Result<Vec<GeneratedSource>, CliError> {

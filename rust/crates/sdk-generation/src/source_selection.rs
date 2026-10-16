@@ -91,11 +91,11 @@ mod tests {
             let decoded: BTreeSet<String> = serde_json::from_slice(&encoded).unwrap();
             prop_assert_eq!(referenced(&sources, &filenames, windows), referenced(&sources, &decoded, windows));
             let posix = vec![source(format!(r"/checkout/{leaf}\{other}.rs"), 0, 0), source(format!("/checkout/{leaf}/{other}.rs"), 1, 1)];
-            prop_assert_eq!(referenced(&posix, &BTreeSet::from([format!(r"src/{leaf}\{other}.rs")]), false), posix[..1]);
-            prop_assert_eq!(referenced(&sources, &filenames, windows), sources[..2]);
+            prop_assert_eq!(referenced(&posix, &BTreeSet::from([format!(r"src/{leaf}\{other}.rs")]), false), posix[..1].to_vec());
+            prop_assert_eq!(referenced(&sources, &filenames, windows), sources[..2].to_vec());
             if windows {
                 for spelling in [format!(r"C:\SRC\{}.RS", leaf.to_ascii_uppercase()), format!(r"\\?\C:\src\{leaf}.rs")] {
-                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling]), true), sources[..2]);
+                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling]), true), sources[..2].to_vec());
                 }
                 for spelling in ["C:/src/SHORT~1.RS", "C:/src/é.rs", "C:/src/file.rs.", "C:/src/file.rs ", "C:/src/file.rs:stream"] {
                     prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling.to_owned()]), true), sources.clone());
@@ -103,7 +103,7 @@ mod tests {
             }
             prop_assert!(referenced(&sources, &BTreeSet::new(), windows).is_empty());
             // A first-match-only selector would retain one alias and fail this oracle.
-            prop_assert_ne!(referenced(&sources, &filenames, windows), sources[..1]);
+            prop_assert_ne!(referenced(&sources, &filenames, windows), sources[..1].to_vec());
         }
 
         #[test]
