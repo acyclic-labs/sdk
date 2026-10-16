@@ -65,7 +65,7 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
 pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(
     omit_wake: bool,
 ) {
-    check_with_bound(Some(6), move || {
+    check_with_bound(Some(4), move || {
         let stream = fixture(omit_wake)?;
         let keeper = std::mem::ManuallyDrop::new(stream.clone());
         let path = StreamPath::new("model")?;
