@@ -200,8 +200,11 @@ impl MemoryStream {
         state: &'a State,
         destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
     ) -> Result<(Vec<(StreamPath, PathState)>, Allocation), StreamError> {
-        let (mut paths, allocation) =
-            self.vector(missing_paths(state, destinations.clone()).count())?;
+        let count = missing_paths(state, destinations.clone()).count();
+        let (mut paths, allocation) = self.vector(count)?;
+        if count == 0 {
+            return Ok((paths, allocation));
+        }
         for (destination, end) in missing_paths(state, destinations) {
             let claim = self.adopt(std::mem::size_of::<(StreamPath, PathState)>())?;
             let (changed, _) = watch::channel(0);

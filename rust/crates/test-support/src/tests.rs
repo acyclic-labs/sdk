@@ -177,9 +177,36 @@ fn nested_scopes_accumulate_and_restore_the_parent() {
     assert_eq!(parent.bytes_total, 31);
     assert_eq!(parent.count_current, 0);
     assert_eq!(parent.bytes_current, 0);
-    assert_eq!(parent.count_max, 2);
-    assert_eq!(parent.bytes_max, 18);
+    assert_eq!(parent.count_max, 1);
+    assert_eq!(parent.bytes_max, 13);
     assert_eq!(COUNTER.get(), None);
+}
+
+#[test]
+fn summing_nonoverlapping_peaks_fails_the_lifetime_oracle() {
+    use std::hint::black_box;
+    let broken = measure(|| {
+        drop(black_box(Box::new([0u8; 7])));
+        let previous = COUNTER.replace(Some(AllocationInfo::default()));
+        drop(black_box(Box::new([0u8; 11])));
+        let child = COUNTER.replace(previous).unwrap();
+        // The former Scope::drop: add peaks, despite no overlapping lifetimes.
+        let mut parent = COUNTER.get().unwrap();
+        parent += child;
+        COUNTER.set(Some(parent));
+        drop(black_box(Box::new([0u8; 13])));
+    });
+    assert_eq!((broken.count_max, broken.bytes_max), (2, 18));
+    let matches_lifetimes = |info: AllocationInfo| (info.count_max, info.bytes_max) == (1, 13);
+    assert!(!matches_lifetimes(broken));
+}
+
+fn nested(depth: u8, run: &mut dyn FnMut()) {
+    if depth == 0 {
+        run();
+    } else {
+        measure(|| nested(depth - 1, run));
+    }
 }
 
 proptest! {
@@ -187,41 +214,43 @@ proptest! {
     // net storage and peaks equal sums and prefix maxima of the lifetime log.
     #[test]
     fn accounting_matches_complete_allocation_lifetimes(
-        commands in proptest::collection::vec((0u8..4, 0usize..8, 1usize..257), 0..33),
+        commands in proptest::collection::vec((0u8..4, 0usize..8, 1usize..257, 0u8..4), 0..33),
     ) {
         let allocator = CountingAllocator(System);
         let mut slots = [(std::ptr::null_mut::<u8>(), 0usize); 8];
         let mut log = Vec::with_capacity(commands.len() * 2);
         let measured = measure(|| {
-            for &(kind, slot, size) in &commands {
-                let (pointer, previous) = slots[slot];
-                let layout = Layout::from_size_align(previous.max(1), 8).unwrap();
-                // SAFETY: occupied slots contain a live System allocation with
-                // the recorded layout; each replacement retains its new size.
-                unsafe {
-                    match kind {
-                        0 | 1 if pointer.is_null() => {
-                            let layout = Layout::from_size_align(size, 8).unwrap();
-                            let pointer = if kind == 0 { allocator.alloc(layout) } else { allocator.alloc_zeroed(layout) };
-                            assert!(!pointer.is_null());
-                            slots[slot] = (pointer, size);
-                            log.push((1i64, size as i64));
+            for &(kind, slot, size, depth) in &commands {
+                nested(depth, &mut || {
+                    let (pointer, previous) = slots[slot];
+                    let layout = Layout::from_size_align(previous.max(1), 8).unwrap();
+                    // SAFETY: occupied slots contain a live System allocation with
+                    // the recorded layout; each replacement retains its new size.
+                    unsafe {
+                        match kind {
+                            0 | 1 if pointer.is_null() => {
+                                let layout = Layout::from_size_align(size, 8).unwrap();
+                                let pointer = if kind == 0 { allocator.alloc(layout) } else { allocator.alloc_zeroed(layout) };
+                                assert!(!pointer.is_null());
+                                slots[slot] = (pointer, size);
+                                log.push((1i64, size as i64));
+                            }
+                            2 if !pointer.is_null() => {
+                                let next = allocator.realloc(pointer, layout, size);
+                                assert!(!next.is_null());
+                                slots[slot] = (next, size);
+                                log.push((1, size as i64));
+                                log.push((-1, -(previous as i64)));
+                            }
+                            3 if !pointer.is_null() => {
+                                allocator.dealloc(pointer, layout);
+                                slots[slot] = (std::ptr::null_mut(), 0);
+                                log.push((-1, -(previous as i64)));
+                            }
+                            _ => {}
                         }
-                        2 if !pointer.is_null() => {
-                            let next = allocator.realloc(pointer, layout, size);
-                            assert!(!next.is_null());
-                            slots[slot] = (next, size);
-                            log.push((1, size as i64));
-                            log.push((-1, -(previous as i64)));
-                        }
-                        3 if !pointer.is_null() => {
-                            allocator.dealloc(pointer, layout);
-                            slots[slot] = (std::ptr::null_mut(), 0);
-                            log.push((-1, -(previous as i64)));
-                        }
-                        _ => {}
                     }
-                }
+                });
             }
         });
         // Release survivors outside the measurement, including after a failing

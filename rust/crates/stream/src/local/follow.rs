@@ -13,12 +13,12 @@ impl LocalStream {
             error.kind = Empty
         ));
         span.scope(async {
-            let changed = self.inner.changed.subscribe();
+            let failed = self.inner.failed.subscribe();
             let prepared = self
                 .accepted(self.inner.provider.prepare_follow(&path, from, anchor))
                 .await
                 .and_then(std::convert::identity);
-            let (_, cursor) = prepared.inspect_err(|error| {
+            let (changed, cursor) = prepared.inspect_err(|error| {
                 span.record("terminal", "error");
                 obs::failed(&span, error.code());
             })?;
@@ -28,6 +28,7 @@ impl LocalStream {
                 cursor,
                 anchor,
                 changed,
+                failed,
                 done: false,
                 span: span.clone(),
             };
@@ -46,13 +47,7 @@ impl LocalStream {
                             {
                                 return Ok(record);
                             }
-                            state.changed.changed().await.map_err(|_| {
-                                if state.anchor.is_some() {
-                                    StreamError::PrefixNotRetained
-                                } else {
-                                    StreamError::Unavailable
-                                }
-                            })?;
+                            state.wait().await?;
                         }
                     }
                     .await;

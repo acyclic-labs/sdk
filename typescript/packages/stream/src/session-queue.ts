@@ -2,17 +2,20 @@ import { StreamError } from "./types.js";
 
 /** Bounded asynchronous storage; wakeups come only from producers/consumers. */
 export class SessionQueue<T> implements AsyncIterable<T> {
-  readonly #values: T[] = [];
+  #values: (T | undefined)[] = [];
+  #head = 0;
+  #length = 0;
   readonly #capacity: number;
   readonly #readers = new Set<() => void>();
   readonly #writers = new Set<() => void>();
   #ended = false;
   #error: unknown;
   constructor(capacity: number) { this.#capacity = capacity; }
-  get available(): number { return this.#capacity - this.#values.length; }
+  get available(): number { return this.#capacity - this.#length; }
   push(value: T): void {
     if (this.#ended || this.available === 0) throw new StreamError("capacity", "session queue capacity exceeded");
-    this.#values.push(value);
+    this.#values[(this.#head + this.#length) % this.#capacity] = value;
+    this.#length += 1;
     this.#wake(this.#readers);
   }
   async send(value: T, signal?: AbortSignal): Promise<void> {
@@ -47,22 +50,34 @@ export class SessionQueue<T> implements AsyncIterable<T> {
     this.#wakeWriters();
   }
   discard(dispose: (value: T) => void): void {
-    const discarded = this.#values.splice(0);
+    const discarded = this.#values;
+    const head = this.#head;
+    const length = this.#length;
+    this.#values = [];
+    this.#head = 0;
+    this.#length = 0;
     this.#wakeWriters();
-    for (const value of discarded) dispose(value);
+    for (let index = 0; index < length; index += 1) dispose(discarded[(head + index) % this.#capacity] as T);
   }
   #wake(waiters: Set<() => void>): void {
     for (const wake of waiters) wake();
     waiters.clear();
   }
+  #take(): T {
+    const value = this.#values[this.#head] as T;
+    this.#values[this.#head] = undefined;
+    this.#head = (this.#head + 1) % this.#capacity;
+    this.#length -= 1;
+    return value;
+  }
   async *[Symbol.asyncIterator](): AsyncGenerator<T> {
     while (true) {
-      while (this.#values.length === 0 && !this.#ended) await new Promise<void>(resolve => this.#readers.add(resolve));
-      if (this.#values.length === 0) {
+      while (this.#length === 0 && !this.#ended) await new Promise<void>(resolve => this.#readers.add(resolve));
+      if (this.#length === 0) {
         if (this.#error !== undefined) throw this.#error;
         return;
       }
-      const value = this.#values.shift()!;
+      const value = this.#take();
       this.#wakeWriters();
       yield value;
     }

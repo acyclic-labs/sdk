@@ -126,10 +126,7 @@ impl LogicalName {
         cancellation.check()?;
         let maximum_bytes = u32::try_from(self.bytes.len())
             .map_err(|_| NamespacePathError::Name(TreePageError::NameTooLarge))?;
-        owned.admit(WorkCounters {
-            bytes_copied: self.bytes.len() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        owned.observe(ReadAllocationStep::CheckCopy(self.bytes.len() as u64))?;
         let result = self.try_clone(maximum_bytes, &mut |step| owned.observe(step));
         finish_owned(owned, result)
     }

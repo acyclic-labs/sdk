@@ -44,6 +44,7 @@ impl<'a> ProofMeter<'a> {
         })
     }
 
+    #[inline]
     pub(super) fn with_accounting<T>(
         &self,
         operation: impl FnOnce(

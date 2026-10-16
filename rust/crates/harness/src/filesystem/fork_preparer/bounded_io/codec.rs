@@ -415,7 +415,13 @@ impl PreparationIo {
                 ..Default::default()
             },
         };
-        self.charged(next)
+        // Charging admits under the same ledger guard before changing counters.
+        // Keep native denials typed, including at an exhausted allocation limit.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = self.original_native_work() {
+            return native.charge(next).map_err(Into::into);
+        }
+        self.charge(next).map_err(Into::into)
     }
 }
 

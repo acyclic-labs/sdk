@@ -6,6 +6,8 @@ use std::path::Path;
 #[path = "../fuzz/driver.rs"]
 mod driver;
 
+#[path = "queue.rs"]
+mod queue;
 #[path = "schedules.rs"]
 mod schedules;
 use schedules::traces;

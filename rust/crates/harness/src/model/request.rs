@@ -45,7 +45,7 @@ impl ModelRequest {
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
             let bytes = (self.tools.len() as u64)
-                .checked_mul(size_of::<(&String, &crate::tool::ToolDefinition)>() as u64)
+                .checked_mul(size_of::<(&str, &crate::tool::ToolDefinition)>() as u64)
                 .and_then(|tools| {
                     calls
                         .checked_mul(size_of::<(&String, &String)>() as u64)
@@ -60,7 +60,7 @@ impl ModelRequest {
         for tool in &self.tools {
             charge_items(io, 1)?;
             with_history_io(io, |work| tool.validate(work))?;
-            if tools.insert(&tool.name, tool).is_some() {
+            if tools.insert(tool.name.as_str(), tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
         }
@@ -118,10 +118,22 @@ impl ModelRequest {
         }
         Ok(())
     }
+    fn bound_tool<'a>(
+        name: &str,
+        tools: &BTreeMap<&str, &'a crate::tool::ToolDefinition>,
+    ) -> Option<&'a crate::tool::ToolDefinition> {
+        match name.rsplit_once('@') {
+            Some((name, revision)) => tools
+                .get(name)
+                .copied()
+                .filter(|tool| tool.revision == revision),
+            None => tools.get(name).copied(),
+        }
+    }
     fn validate_part<'a>(
         role: ModelRole,
         part: &'a ModelContentPart,
-        tools: &BTreeMap<&String, &crate::tool::ToolDefinition>,
+        tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
         pending: &mut BTreeMap<&'a String, &'a String>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -139,8 +151,7 @@ impl ModelRequest {
                         "model tool call role or identity is invalid".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::bound_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
                 crate::executor::with_history_io(io, |work| {
                     crate::executor::validate_json_schema_value(
@@ -164,8 +175,7 @@ impl ModelRequest {
                         "model tool result has no matching call".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::bound_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
                 Self::validate_tool_result(tool, content, io)?;
             }
