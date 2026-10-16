@@ -195,7 +195,8 @@ test("synchronous provider cancellation always consumes its rejection", () => {
     assert.equal(connects, 0);
     await setImmediate();
   `;
-  fc.assert(fc.property(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), fc.constantFrom("return", "throw", "reject"), (value, mode) => {
+  fc.assert(fc.property(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), value => {
+    for (const mode of ["return", "throw", "reject"]) {
     const run = (variant: string) => spawnSync("node", ["--unhandled-rejections=strict", "--input-type=module", "-e", fixture, variant, mode, value], {
       encoding: "utf8", timeout: 1000, windowsHide: true,
     });
@@ -207,5 +208,6 @@ test("synchronous provider cancellation always consumes its rejection", () => {
     expect(broken.error).toBeUndefined();
     expect(broken.status).toBe(1);
     expect(broken.stderr).toMatch(/AbortError|late credential failure/);
-  }), { numRuns: 8 });
+    }
+  }), { numRuns: 4 });
 }, 8000);
