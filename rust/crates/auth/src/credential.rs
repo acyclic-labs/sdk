@@ -23,8 +23,7 @@ pub enum CredentialError {
 
 /// One native renewal invocation, cancelled by dropping its future.
 #[cfg(not(target_arch = "wasm32"))]
-pub type CredentialFuture =
-    Pin<Box<dyn Future<Output = Result<String, CredentialError>> + Send>>;
+pub type CredentialFuture = Pin<Box<dyn Future<Output = Result<String, CredentialError>> + Send>>;
 /// One browser renewal invocation, cancelled by dropping its future.
 #[cfg(target_arch = "wasm32")]
 pub type CredentialFuture = Pin<Box<dyn Future<Output = Result<String, CredentialError>>>>;
@@ -53,7 +52,9 @@ impl CredentialProvider {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<String, CredentialError>> + Send + 'static,
     {
-        Self(Shared::new(move || -> CredentialFuture { Box::pin(callback()) }))
+        Self(Shared::new(move || -> CredentialFuture {
+            Box::pin(callback())
+        }))
     }
 
     /// Capture a browser provider without requiring JavaScript futures to be Send.
@@ -63,7 +64,9 @@ impl CredentialProvider {
         F: Fn() -> Fut + 'static,
         Fut: Future<Output = Result<String, CredentialError>> + 'static,
     {
-        Self(Shared::new(move || -> CredentialFuture { Box::pin(callback()) }))
+        Self(Shared::new(move || -> CredentialFuture {
+            Box::pin(callback())
+        }))
     }
 
     /// Resolve and validate before sending. Errors propagate without fallback;

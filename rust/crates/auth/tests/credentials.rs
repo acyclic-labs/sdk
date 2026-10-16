@@ -1,7 +1,11 @@
+//! Fresh opaque credentials obey bounded admission without caching or fallback.
 use acyclic_auth::credential::*;
 use futures::{executor::block_on, future};
 use proptest::prelude::*;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -35,12 +39,24 @@ proptest! {
 
 #[test]
 fn byte_limits_delimiters_and_provider_failure_fail_closed() {
-    for (value, valid) in [("a".repeat(12288), true), ("a".repeat(12289), false),
-        ("é".repeat(6144), true), ("é".repeat(6145), false),
-        ("a\0b".into(), false), ("a\rb".into(), false), ("a\nb".into(), false)] {
+    for (value, valid) in [
+        ("a".repeat(12288), true),
+        ("a".repeat(12289), false),
+        ("é".repeat(6144), true),
+        ("é".repeat(6145), false),
+        ("a\0b".into(), false),
+        ("a\rb".into(), false),
+        ("a\nb".into(), false),
+    ] {
         assert_eq!(valid_credential(&value), valid);
     }
-    let provider = CredentialProvider::new(|| future::ready(Err(CredentialError::Provider(
-        Box::new(std::io::Error::other("renewal unavailable"))))));
-    assert!(matches!(block_on(provider.resolve()), Err(CredentialError::Provider(_))));
+    let provider = CredentialProvider::new(|| {
+        future::ready(Err(CredentialError::Provider(Box::new(
+            std::io::Error::other("renewal unavailable"),
+        ))))
+    });
+    assert!(matches!(
+        block_on(provider.resolve()),
+        Err(CredentialError::Provider(_))
+    ));
 }

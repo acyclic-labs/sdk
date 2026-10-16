@@ -159,11 +159,18 @@ impl Client {
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token)?;
-        Ok(Self::from_channel(Self::connect_channel(endpoint, certificate_pem).await?, authorization))
+        Ok(Self::from_channel(
+            Self::connect_channel(endpoint, certificate_pem).await?,
+            authorization,
+        ))
     }
 
-    async fn connect_channel(endpoint: &str, certificate_pem: Option<&[u8]>) -> Result<Channel, ConnectError> {
-        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES) {
+    async fn connect_channel(
+        endpoint: &str,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Channel, ConnectError> {
+        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES)
+        {
             return Err(ConnectError::InvalidCaCertificate);
         }
         let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
@@ -198,14 +205,20 @@ impl Client {
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
         let authorization = if let Some(provider) = &self.credential {
-            let token = provider.resolve().await
+            let token = provider
+                .resolve()
+                .await
                 .map_err(|_| Status::unauthenticated("credential provider failed"))?;
             authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?
         } else {
-            self.authorization.clone().ok_or_else(|| Status::unauthenticated("missing credential"))?
+            self.authorization
+                .clone()
+                .ok_or_else(|| Status::unauthenticated("missing credential"))?
         };
         let mut request = Request::new(body);
-        request.metadata_mut().insert("authorization", authorization);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
         Ok(request)
     }
 
@@ -239,10 +252,9 @@ impl Client {
             let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
             let result = completion
                 .span
-                .scope(tokio::time::timeout_at(
-                    attempt_deadline,
-                    async { call(self.service(), self.request(body.clone()).await?).await },
-                ))
+                .scope(tokio::time::timeout_at(attempt_deadline, async {
+                    call(self.service(), self.request(body.clone()).await?).await
+                }))
                 .await;
             let error = match result {
                 Ok(Ok(response)) => return Ok((response.into_inner(), completion)),

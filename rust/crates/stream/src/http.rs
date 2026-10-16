@@ -115,7 +115,10 @@ impl HttpStream {
     }
     async fn authorization(&self) -> Result<HeaderValue, StreamError> {
         if let Some(provider) = &self.credential {
-            let token = provider.resolve().await.map_err(|_| StreamError::AccessDenied)?;
+            let token = provider
+                .resolve()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
             credential_header(&token).map_err(|_| StreamError::AccessDenied)
         } else {
             self.authorization.clone().ok_or(StreamError::AccessDenied)
@@ -621,7 +624,7 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::{HttpStream, wire, StreamError};
+    use super::{HttpStream, StreamError, wire};
     use prost::Message;
 
     #[test]
@@ -629,25 +632,51 @@ mod tests {
         use acyclic_auth::credential::{CredentialError, CredentialProvider};
         use futures::{executor::block_on, future};
         use proptest::prelude::*;
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
         proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
-            .run(&prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 2..8), |values| {
-                let expected = values.clone();
-                let index = Arc::new(AtomicUsize::new(0));
-                let calls = index.clone();
-                let provider = HttpStream::with_credential_provider("https://fixture.invalid", CredentialProvider::new(move || {
-                    future::ready(values.get(calls.fetch_add(1, Ordering::Relaxed)).cloned().ok_or(CredentialError::Invalid))
-                }), 1024, None).unwrap();
-                for value in &expected {
-                    let header = block_on(provider.authorization()).unwrap();
-                    prop_assert!(header.is_sensitive());
-                    prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
-                }
-                prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
-                let result = block_on(provider.request("tail", wire::TailRequest { path: "valid/path".into() }.encode_to_vec()));
-                prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
-                Ok(())
-            }).unwrap();
+            .run(
+                &prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 2..8),
+                |values| {
+                    let expected = values.clone();
+                    let index = Arc::new(AtomicUsize::new(0));
+                    let calls = index.clone();
+                    let provider = HttpStream::with_credential_provider(
+                        "https://fixture.invalid",
+                        CredentialProvider::new(move || {
+                            future::ready(
+                                values
+                                    .get(calls.fetch_add(1, Ordering::Relaxed))
+                                    .cloned()
+                                    .ok_or(CredentialError::Invalid),
+                            )
+                        }),
+                        1024,
+                        None,
+                    )
+                    .unwrap();
+                    for value in &expected {
+                        let header = block_on(provider.authorization()).unwrap();
+                        prop_assert!(header.is_sensitive());
+                        prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
+                    }
+                    prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
+                    let result = block_on(
+                        provider.request(
+                            "tail",
+                            wire::TailRequest {
+                                path: "valid/path".into(),
+                            }
+                            .encode_to_vec(),
+                        ),
+                    );
+                    prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
+                    Ok(())
+                },
+            )
+            .unwrap();
     }
 
     #[test]
