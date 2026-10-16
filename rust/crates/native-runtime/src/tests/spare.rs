@@ -109,6 +109,9 @@ fn spare_reads_miri_initialized_prefixes() -> io::Result<()> {
         meter.cancel_after_read = after_read;
         let result =
             crate::file::read_bounded_spare(&file, offset, &mut data, maximum, exact, &meter);
+        if result.is_ok() {
+            assert_eq!(data.len(), expected);
+        }
         assert!(data.len() <= expected);
         assert_eq!(
             data,
