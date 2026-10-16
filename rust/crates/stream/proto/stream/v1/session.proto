@@ -72,10 +72,7 @@ message SessionFollow {
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
-  // Provider-owned cursor for children/fs. For an ALL record follow at next > 0,
-  // exactly the 32-byte commit ID of record next-1; registration MUST use
-  // follow_checked. At next == 0 it must be empty. Never discard on resume/move.
-  bytes opaque = 2;
+  bytes opaque = 2; // provider-owned cursor for children/fs
 }
 message SessionOpened {
   SessionCursor resume = 1;

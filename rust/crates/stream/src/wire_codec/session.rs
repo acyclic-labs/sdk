@@ -4,6 +4,9 @@ use crate::{CommitId, RecordStream, StreamError, StreamPath, StreamProvider, wir
 use prost::Message as _;
 
 /// Complete record continuation at a nonzero cut, including its immutable anchor.
+/// The provider-owned `opaque` field carries the 32-byte commit ID of `next - 1`.
+/// ALL-record route adapters resume this token through [`follow_records`], and
+/// retain it unchanged on placement moves. No new frame or cursor schema is used.
 pub fn record_cursor(next: u64, preceding: CommitId) -> Result<wire::SessionCursor, StreamError> {
     if next == 0 {
         return Err(StreamError::InvalidArgument);
