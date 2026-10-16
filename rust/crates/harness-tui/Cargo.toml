@@ -9,9 +9,10 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
 default = []
-tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless"]
 
 [dependencies]
+caseless = { version = "0.2.2", optional = true }
 arrayvec = { version = "0.7", optional = true }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
