@@ -37,10 +37,7 @@ fn callback_paths_keep_windows_component_rules() {
         ("a\\b/./c/", Some(vec![units("a"), units("b"), units("c")])),
         ("a//b\\\\c", Some(vec![units("a"), units("b"), units("c")])),
         ("1:a", Some(vec![units("1:a")])),
-        (
-            "ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©:a",
-            Some(vec![units("ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©:a")]),
-        ),
+        ("é:a", Some(vec![units("é:a")])),
         ("a/.:", Some(vec![units("a"), units(".:")])),
         (".", None),
         (".\\a", None),
