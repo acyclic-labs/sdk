@@ -151,6 +151,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 changed.await;
             }
             let channels = capture.spans("stream.session.channel");
+            assert_physical_sessions(&capture.spans("stream.session"));
             assert_eq!(
                 channels[0].fields.get("error.kind").map(String::as_str),
                 Some("deadline_elapsed")
@@ -183,4 +184,57 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
         }
         .with_subscriber(subscriber),
     )
+}
+
+fn assert_physical_sessions(sessions: &[acyclic_grpc_observability::tests::CapturedSpan]) {
+    let outcomes = sessions
+        .iter()
+        .map(|session| {
+            (
+                session.fields.get("outcome").map(String::as_str),
+                session.fields.get("error.kind").map(String::as_str),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes,
+        [
+            (Some("err"), Some("unavailable")),
+            (Some("err"), Some("access_denied")),
+            (Some("closed"), None),
+        ],
+        "physical session outcomes must distinguish failure from closure"
+    );
+}
+
+#[test]
+fn negative_control_reports_physical_failures_as_normal_closure() -> TestResult {
+    use crate::grpc::tests::retry_capture;
+    use acyclic_grpc_observability::tests::Capture;
+    let test = format!(
+        "{}::negative_control_reports_physical_failures_as_normal_closure",
+        module_path!()
+    );
+    if retry_capture::isolate(&test)? {
+        return Ok(());
+    }
+    let capture = Capture::default();
+    let (_registration, subscriber) = retry_capture::dispatch(capture.clone());
+    tracing::dispatcher::with_default(&subscriber, || {
+        for attempt in 0..3 {
+            let mut observation = Observation::session(attempt);
+            // Deliberately omit the reconnect/terminal errors through the real
+            // formatter. All three spans still exist and retire normally.
+            observation.finish(None);
+        }
+    });
+    let sessions = capture.spans("stream.session");
+    assert_eq!(sessions.len(), 3);
+    let rejected = std::panic::catch_unwind(|| assert_physical_sessions(&sessions));
+    let failure = rejected.expect_err("the trace negative control passed");
+    let message = failure
+        .downcast_ref::<String>()
+        .ok_or("unexpected trace failure")?;
+    assert!(message.contains("physical session outcomes must distinguish failure from closure"));
+    Ok(())
 }
