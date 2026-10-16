@@ -13,6 +13,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "tui-config"
+path = "tests/tui_config.rs"
+required-features = ["tui"]
+
+[[test]]
 name = "tui-completion"
 path = "tests/tui_completion.rs"
 required-features = ["tui"]
@@ -27,8 +32,18 @@ path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
 
 [[test]]
+name = "default_tools"
+path = "tests/default_tools.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
+
+[[test]]
+name = "file-query"
+path = "tests/file_query.rs"
+required-features = ["filesystem"]
 
 [[test]]
 name = "mcp-loom"
@@ -91,6 +106,14 @@ name = "client-notifications"
 path = "tests/client_notifications.rs"
 
 [[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown.rs"
+
+[[test]]
+name = "client-interests"
+path = "tests/client_interests.rs"
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
@@ -132,7 +155,7 @@ terminal = ["dep:hex"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
@@ -146,6 +169,8 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
@@ -190,6 +215,8 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }

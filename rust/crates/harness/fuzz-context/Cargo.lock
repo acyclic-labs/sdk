@@ -79,6 +79,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protoc-bin-vendored",
+ "pulldown-cmark",
  "regex-lite",
  "reqwest",
  "rmcp",

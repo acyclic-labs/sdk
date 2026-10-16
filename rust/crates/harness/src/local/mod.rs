@@ -1,0 +1,285 @@
+//! Durable native defaults over the public filesystem and task runtime.
+
+use crate::{
+    Admission, AgentId, Capabilities, Error, OperationId, Result, TaskId,
+    context::ContextPipeline,
+    conversation::{
+        ContentPublisher, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    },
+    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
+    filesystem::{
+        FilesystemContentPublisher, FilesystemHost, FilesystemResourceCreationProvider,
+        FilesystemTaskRuntime, ForkPreparationMachine, StockTurnMachine,
+    },
+    model::{Model, ModelContent, ModelProvider},
+    runtime::{RuntimeScope, RuntimeTask, TaskRegistry, TaskRunLimits},
+    scheduler::SessionLimits,
+    tool::{Tool, ToolRegistry},
+    workflow::{MachineRegistry, WorkflowCommand},
+};
+use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_stream::LocalStream;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+mod admission;
+#[cfg(feature = "native-execution")]
+mod checkout_tools;
+mod compaction;
+mod config;
+mod owner;
+mod owner_record;
+mod runtime;
+#[cfg(test)]
+mod tests;
+mod turn;
+#[cfg(feature = "native-execution")]
+mod workspace;
+pub use config::LocalHarnessConfig;
+use config::LocalProject;
+#[cfg(feature = "native-execution")]
+pub use workspace::LocalWorkspace;
+
+/// Local durable filesystem host.
+pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+/// Local durable task host and its execution journals.
+pub(crate) type LocalTaskRuntime =
+    FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+
+/// A checkout or volume, durable authority, journals and stock executor.
+pub struct LocalHarness {
+    files: Arc<LocalFilesystem>,
+    runtime: Arc<LocalTaskRuntime>,
+    project: VolumeRef,
+    scratch: VolumeRef,
+    journal: VolumeRef,
+    verifier: AuthorityVerifier,
+    signed: Scope,
+    model: Model,
+    provider: Arc<dyn ModelProvider>,
+    context: ContextPipeline,
+    limits: Limits,
+    compaction: crate::context::CompactionPolicy,
+    goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    // Outermost lock: admission -> filesystem/provider locks. Never held during
+    // model/tool execution, and provider callbacks never acquire admission.
+    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
+    #[cfg(feature = "native-execution")]
+    workspace: Option<Arc<workspace::LocalWorkspace>>,
+}
+
+impl LocalHarness {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
+        self.runtime.task_host().workflow_stream()
+    }
+
+    /// Opens durable local state and assembles the stock host before admitting work.
+    pub fn open(config: LocalHarnessConfig) -> impl Future<Output = Result<Self>> {
+        Box::pin(async move {
+            config.limits.validate(&mut None)?;
+            config.session_limits.validate(&mut None)?;
+            if config.concurrency == 0 {
+                return Err(Error::Invalid("local concurrency is zero".into()));
+            }
+            let (model, provider) = config.model;
+            model.validate()?;
+            let mut tools = if config.default_tools {
+                crate::tools::defaults()?
+            } else {
+                ToolRegistry::default()
+            };
+            for tool in config.tools {
+                tools.register((tool, None), &mut None, None)?;
+            }
+            let compaction = compaction::select(
+                config.compaction,
+                &model,
+                provider.as_ref(),
+                &tools,
+                config.limits,
+            )?;
+            acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+            #[cfg(feature = "native-execution")]
+            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            #[cfg(not(feature = "native-execution"))]
+            if matches!(config.project, LocalProject::Workspace(_)) {
+                return Err(Error::Unsupported(
+                    "checkout workspaces require native-execution".into(),
+                ));
+            }
+            if let LocalProject::Workspace(path) = &config.project {
+                if !path.is_dir() {
+                    return Err(Error::Invalid("local workspace is not a directory".into()));
+                }
+            }
+            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+            let owner = owner::Owner::open(&directory, &config.project)?;
+            let filesystem =
+                acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
+                    LocalProject::Workspace(_) => directory.join("filesystem"),
+                    LocalProject::Volume { directory, .. } => directory.clone(),
+                }))
+                .await
+                .map_err(storage)?;
+            let provider_ref = owner.project.provider();
+            #[cfg(feature = "native-execution")]
+            let workspace = match &config.project {
+                LocalProject::Workspace(path) => Some(Arc::new(
+                    workspace::open(
+                        &filesystem,
+                        &owner.project,
+                        path,
+                        &directory,
+                        owner.workspace_identity,
+                        workspace::attach_operation(owner.task),
+                        false,
+                    )
+                    .await?,
+                )),
+                LocalProject::Volume { .. } => Some(Arc::new(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                )),
+            };
+            let files = FilesystemHost::new(filesystem, provider_ref, None)?;
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
+            // A configured project is opened, never silently replaced by an empty volume.
+            files
+                .resolve(
+                    &crate::filesystem::workspace_ref(
+                        provider_ref.clone(),
+                        &owner.project.storage_name(&mut None)?,
+                    )?,
+                    None,
+                )
+                .await?;
+            let scratch = VolumeRef::new(
+                provider_ref.clone(),
+                format!("scratch-{}", owner.agent),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(owner.agent),
+                &mut None,
+            )?;
+            let journal = VolumeRef::new(
+                provider_ref.clone(),
+                format!("journal-{}", owner.agent),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(owner.agent),
+                &mut None,
+            )?;
+            files.create_volume(&scratch).await?;
+            files.create_volume(&journal).await?;
+            let stream = Arc::new(
+                LocalStream::open(directory.join("stream"), Default::default())
+                    .await
+                    .map_err(storage)?,
+            );
+            let issuer = AuthorityIssuer::new(
+                "acyclic.local",
+                owner.key,
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: owner.task.to_string(),
+                },
+            );
+            let verifier = issuer.verifier(&mut None)?;
+            let (runtime, signed) = runtime::open(runtime::Configuration {
+                files: files.clone(),
+                #[cfg(feature = "native-execution")]
+                workspace: workspace.as_ref().map(Arc::clone),
+                stream,
+                issuer: &issuer,
+                verifier: &verifier,
+                agent: owner.agent,
+                project: &owner.project,
+                scratch: &scratch,
+                journal: &journal,
+                tools: &tools,
+                limits: config.limits,
+                run_limits: config.run_limits,
+                session_limits: config.session_limits,
+                concurrency: config.concurrency,
+                clock: config.clock,
+            })
+            .await?;
+            Ok(Self {
+                files,
+                runtime,
+                project: owner.project.clone(),
+                scratch,
+                journal,
+                verifier,
+                signed,
+                model,
+                provider,
+                context: config.context,
+                limits: config.limits,
+                compaction,
+                goal_continuations: config.goal_continuations,
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
+                #[cfg(feature = "native-execution")]
+                workspace,
+            })
+        })
+    }
+
+    /// Durable content and project host.
+    #[must_use]
+    pub const fn filesystem(&self) -> &Arc<LocalFilesystem> {
+        &self.files
+    }
+    /// Selected project view.
+    #[must_use]
+    pub const fn project(&self) -> &VolumeRef {
+        &self.project
+    }
+    /// Agent-owned scratch content, distinct from host journal storage.
+    #[must_use]
+    pub const fn scratch(&self) -> &VolumeRef {
+        &self.scratch
+    }
+    /// Host-only journal storage.
+    #[must_use]
+    pub const fn journal_volume(&self) -> &VolumeRef {
+        &self.journal
+    }
+    /// Complete enabled tool registry.
+    #[must_use]
+    pub fn tools(&self) -> &ToolRegistry {
+        self.runtime.tool_registry()
+    }
+
+    /// Canonical checkout path, absent for a configured volume.
+    #[cfg(feature = "native-execution")]
+    #[must_use]
+    pub fn workspace_path(&self) -> Option<&Path> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.path.as_path())
+    }
+    /// Source-backed checkout view, absent for configured volumes.
+    #[cfg(feature = "native-execution")]
+    #[must_use]
+    pub fn workspace(&self) -> Option<&LocalWorkspace> {
+        self.workspace.as_deref()
+    }
+}
+
+fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}

@@ -161,14 +161,18 @@ impl GoalView {
         if self.status != GoalStatus::Active {
             return None;
         }
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.goal.continue/v2\0");
-        hash.update(&task.into_bytes());
-        hash.update(&settled_turn.into_bytes());
-        let mut id = [0; 16];
-        id.copy_from_slice(hash.finalize().as_bytes().get(..16)?);
-        Some(OperationId::from_bytes(id))
+        Some(continuation_operation(task, settled_turn))
     }
+}
+
+pub(crate) fn continuation_operation(task: TaskId, settled_turn: OperationId) -> OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.goal.continue/v2\0");
+    hash.update(&task.into_bytes());
+    hash.update(&settled_turn.into_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(id)
 }
 
 fn encoded_reason(reason: Option<&str>) -> Result<Option<String>> {

@@ -96,6 +96,12 @@ impl CapturePolicy {
         })
     }
 
+    /// Borrows the canonical exclusions for native watcher registration.
+    #[must_use]
+    pub fn excluded_prefixes(&self) -> &[NamespacePath] {
+        &self.excluded_prefixes
+    }
+
     /// Returns whether a path is excluded by an exact prefix.
     #[must_use]
     pub fn excludes(&self, path: &NamespacePath) -> bool {
