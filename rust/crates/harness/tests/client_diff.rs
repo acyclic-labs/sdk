@@ -1,4 +1,4 @@
-//! Golden patches and incremental pinned-file query projection.
+//! Incremental pinned-file query projection and bounded diff properties.
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "client_diff_model.rs"]
@@ -10,7 +10,7 @@ mod properties;
 use acyclic_fs::Fs;
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
-    client::{DiffHunk, DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
+    client::{DiffLimits, DiffPath, DiffPublication, DiffView, FileDiff},
     context::{ContextRoot, PinnedContextPath},
     conversation::{
         ContentGrant, ContentResidencyVerifier, VolumeClass, VolumeOperation, VolumeOwner,
@@ -20,66 +20,10 @@ use acyclic_harness::{
     filesystem::{FilesystemContentVerifier, FilesystemHost},
     resources::ProviderRef,
 };
-use serde::Deserialize;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-
-#[derive(Deserialize)]
-struct Golden {
-    before: Option<String>,
-    after: Option<String>,
-    kind: String,
-    added: u64,
-    removed: u64,
-    patch: String,
-    hunks: Vec<DiffHunk>,
-}
-
-#[test]
-fn golden_file_diffs() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let cases: Vec<Golden> = serde_json::from_str(include_str!("client_diff_cases.json"))?;
-    for case in cases {
-        let diff = FileDiff::between(
-            case.before.as_deref().map(str::as_bytes),
-            case.after.as_deref().map(str::as_bytes),
-            case.patch.len(),
-            32_768,
-        )?
-        .ok_or("expected changed file")?;
-        assert!(
-            FileDiff::between(
-                case.before.as_deref().map(str::as_bytes),
-                case.after.as_deref().map(str::as_bytes),
-                case.patch.len() - 1,
-                32_768,
-            )
-            .is_err()
-        );
-        assert_eq!(diff.patch, case.patch);
-        assert_eq!(diff.added, case.added);
-        assert_eq!(diff.removed, case.removed);
-        assert_eq!(serde_json::to_value(diff.kind)?, case.kind);
-        assert!(!diff.binary);
-        assert_eq!(diff.hunks, case.hunks);
-    }
-    for (before, after, exists, binary) in [
-        (None, None, false, false),
-        (Some(&b"same\n"[..]), Some(&b"same\n"[..]), false, false),
-        (None, Some(&b""[..]), true, false),
-        (Some(&b""[..]), None, true, false),
-        (None, Some(&b"\0"[..]), true, true),
-        (Some(&b"\xff"[..]), Some(&b"\xfe"[..]), true, true),
-    ] {
-        let diff = FileDiff::between(before, after, 8192, 32_768)?;
-        assert_eq!(diff.is_some(), exists);
-        if let Some(diff) = diff {
-            assert_eq!(diff.binary, binary);
-        }
-    }
-    Ok(())
-}
 
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,

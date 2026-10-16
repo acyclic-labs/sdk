@@ -1,0 +1,5 @@
+{
+  "driver":"diff",
+  "render":8192,
+  "work":32768
+}

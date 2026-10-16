@@ -1,0 +1,6 @@
+{
+  "before":"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve\n",
+  "after":"ONE\nEXTRA\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\nTWELVE\nEND\n",
+  "render":134,
+  "expect":{"added":4,"removed":2,"patch":"--- original\n+++ modified\n@@ -1,4 +1,5 @@\n-one\n+ONE\n+EXTRA\n two\n three\n four\n@@ -9,4 +10,5 @@\n nine\n ten\n eleven\n-twelve\n+TWELVE\n+END\n","hunks":[{"old_start":1,"old_lines":4,"new_start":1,"new_lines":5},{"old_start":9,"old_lines":4,"new_start":10,"new_lines":5}]}
+}

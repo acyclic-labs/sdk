@@ -1,5 +1,8 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
+mod diff_case;
+mod diff_tests;
+mod diffs;
 mod discovery;
 mod drivers;
 mod execution;
