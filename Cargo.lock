@@ -393,6 +393,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
  "which",
 ]
 
