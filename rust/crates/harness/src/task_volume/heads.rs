@@ -7,7 +7,7 @@ use futures::StreamExt as _;
 use std::collections::BTreeMap;
 
 /// A logical materialized file whose content is a sequence of shared segment slices.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HeadFile {
     /// Status, tool, plan, or derived `turns/<n>/{text,reasoning}.md` location.
     pub key: FileKey,
