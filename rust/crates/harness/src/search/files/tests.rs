@@ -4,7 +4,7 @@ use crate::{
     test_support::{ScriptedSearch, ScriptedSearchProvider},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::{FutureExt as _, StreamExt as _};
+use futures::FutureExt as _;
 use serde_json::json;
 use std::cell::Cell;
 
