@@ -36,13 +36,10 @@ export function cachedRunner(cache) {
     .find(path => existsSync(path));
 }
 
-export function runNodeWasmTests(args, runner = process.env.ACYCLIC_WASM_TEST_RUNNER ?? "wasm-bindgen-test-runner") {
-  return run(args, runner);
-}
-
-async function run(args, runner) {
+/** @param {(command: string, args: string[], options: import("node:child_process").SpawnSyncOptions) => import("node:child_process").SpawnSyncReturns<unknown>} [execute] */
+export async function runNodeWasmTests(args, runner = process.env.ACYCLIC_WASM_TEST_RUNNER ?? "wasm-bindgen-test-runner", execute = spawnSync) {
   if (process.env.LLVM_PROFILE_FILE || args.includes("--bench")) {
-    const result = spawnSync(runner, args, {stdio:"inherit",windowsHide:true});
+    const result = execute(runner, args, {stdio:"inherit",windowsHide:true});
     if (result.error) throw result.error;
     return result.status ?? 1;
   }
@@ -56,7 +53,7 @@ async function run(args, runner) {
   // The upstream runner owns generation and the test harness. Reuse its exact JS.
   const command = cached ? "node" : identity.executable;
   const commandArgs = cached ? ["--expose-gc", ...(process.env.NODE_ARGS ?? "").split(",").filter(Boolean), cached] : args;
-  const result = spawnSync(command, commandArgs, {
+  const result = execute(command, commandArgs, {
     stdio:"inherit", windowsHide:true,
     env:{...process.env, TMPDIR:cache, TMP:cache, TEMP:cache, WASM_BINDGEN_KEEP_TEST_BUILD:"1", ...(cached ? {NODE_PATH:[process.env.NODE_PATH,process.cwd(),dirname(cached)].filter(Boolean).join(delimiter)} : {})},
   });

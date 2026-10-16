@@ -45,7 +45,12 @@ ${result}
 `, {mode:0o700});
       return path;
     });
-    const versions = wrappers.map(path => spawnSync(path, ["--version"], {encoding:"utf8"}).stdout);
+    // Launch script fixtures through the interpreter on every OS, including
+    // Windows where CreateProcess does not interpret executable shebangs.
+    const execute = (command, args, options) => wrappers.includes(command)
+      ? spawnSync(process.execPath, [command, ...args], options)
+      : spawnSync(command, args, options);
+    const versions = wrappers.map(path => execute(path, ["--version"], {encoding:"utf8"}).stdout);
     expect(versions[0]).toBe("wasm-bindgen-test-runner 0.2.117\n");
     expect(versions[1]).toBe(versions[0]);
     const identities = await Promise.all(wrappers.map(runnerIdentity));
@@ -56,8 +61,8 @@ ${result}
     assertIsolated(identities);
     expect(() => assertIsolated(versions)).toThrow();
     for (const wrapper of wrappers) {
-      expect(await runNodeWasmTests([module], wrapper)).toBe(0);
-      expect(await runNodeWasmTests([module], wrapper)).toBe(0);
+      expect(await runNodeWasmTests([module], wrapper, execute)).toBe(0);
+      expect(await runNodeWasmTests([module], wrapper, execute)).toBe(0);
     }
     expect(readFileSync(generated, "utf8")).toBe("first\nsecond\n");
     expect(readFileSync(executed, "utf8")).toBe("first\nfirst\nsecond\nsecond\n");
