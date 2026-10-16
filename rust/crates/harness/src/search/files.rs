@@ -381,7 +381,7 @@ where
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {
-    'snapshot: loop {
+    loop {
         let snapshot = volume
             .snapshot(&Query::File(key.clone()), 1)
             .await
@@ -389,35 +389,27 @@ where
         if !snapshot.files.is_empty() {
             return Ok(());
         }
-        let mut conditions = authorize(true).await?;
-        loop {
-            match volume
-                .append_if(
-                    snapshot.generation,
-                    &FileValue::new(key.clone(), bytes.clone()),
-                    conditions.clone(),
-                    None,
+        match volume
+            .append_if(
+                snapshot.generation,
+                &FileValue::new(key.clone(), bytes.clone()),
+                authorize(true).await?,
+                None,
+                work,
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(
+                crate::task_volume::Error::Conflict(_) | crate::task_volume::Error::FenceConflict,
+            ) => continue,
+            Err(crate::task_volume::Error::LimitExceeded) => {
+                return Err(super::rejection(
                     work,
-                )
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(crate::task_volume::Error::Conflict(_)) => continue 'snapshot,
-                Err(crate::task_volume::Error::FenceConflict) => {
-                    let fresh = authorize(true).await?;
-                    if fresh == conditions {
-                        return Err(storage(crate::task_volume::Error::FenceConflict));
-                    }
-                    conditions = fresh;
-                }
-                Err(crate::task_volume::Error::LimitExceeded) => {
-                    return Err(super::rejection(
-                        work,
-                        "search file exceeds packed byte limit",
-                    ));
-                }
-                Err(error) => return Err(storage(error)),
+                    "search file exceeds packed byte limit",
+                ));
             }
+            Err(error) => return Err(storage(error)),
         }
     }
 }

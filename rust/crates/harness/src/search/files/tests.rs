@@ -45,19 +45,15 @@ async fn shared_coordinator_tail_advance(broken: bool) -> Result<()> {
         response: Some(SearchResponse { results: vec![] }),
         error: None,
     }])?);
-    let cached = std::cell::RefCell::new(None::<Vec<CommitCondition>>);
-    let state = (&fixture, &owner, &cached);
+    let advanced = Cell::new(false);
+    let state = (&fixture, &owner, &advanced);
     let authorize = |settlement| async move {
-        let (fixture, owner, cached) = state;
-        if broken
-            && settlement
-            && let Some(stale) = cached.borrow().clone()
-        {
-            return Ok(stale);
+        let (fixture, owner, advanced) = state;
+        if broken && settlement && advanced.get() {
+            return Err(storage(crate::task_volume::Error::FenceConflict));
         }
         let authorized = condition(owner, None, settlement).await?;
-        if settlement && cached.borrow().is_none() {
-            cached.replace(Some(authorized.clone()));
+        if settlement && !advanced.replace(true) {
             fixture.running(2).await?;
         }
         Ok(authorized)
@@ -76,7 +72,7 @@ async fn shared_coordinator_tail_advance(broken: bool) -> Result<()> {
         result.is_ok(),
         "completed search response was lost: {result:?}"
     );
-    assert!(cached.borrow().is_some());
+    assert!(advanced.get());
     let result = volume
         .snapshot(&Query::File(file(&task, &id, true)), 1)
         .await
@@ -109,7 +105,7 @@ async fn completed_response_survives_another_task_advancing_the_coordinator_tail
 
 #[tokio::test]
 #[should_panic(expected = "completed search response was lost")]
-async fn negative_control_detects_cached_settlement_authorization() {
+async fn negative_control_detects_discarding_a_completed_response() {
     shared_coordinator_tail_advance(true).await.unwrap();
 }
 

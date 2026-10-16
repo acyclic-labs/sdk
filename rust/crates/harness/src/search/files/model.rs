@@ -98,6 +98,7 @@ fn initialized() -> (Arc<MemoryStream>, Arc<TaskVolume<MemoryStream>>) {
 }
 
 fn run_worker(
+    stream: &MemoryStream,
     volume: &TaskVolume<MemoryStream>,
     provider: Arc<Provider>,
     owner: u64,
@@ -109,12 +110,19 @@ fn run_worker(
         &Component::new("search-one").unwrap(),
         &fence(if owner == 1 { "old" } else { "new" }),
         &mut || Ok(Some(provider.clone())),
-        &|settlement| {
-            std::future::ready(Ok(if broken && settlement {
-                vec![]
-            } else {
-                condition(owner)
-            }))
+        &|settlement| async move {
+            if broken && settlement {
+                return Ok(vec![]);
+            }
+            let tail = stream
+                .watermarks(StreamPath::new("owner").unwrap())
+                .await
+                .unwrap()
+                .accepted;
+            if tail != owner {
+                return Err(storage(crate::task_volume::Error::FenceConflict));
+            }
+            Ok(condition(tail))
         },
         None,
     ))
@@ -143,14 +151,15 @@ fn outcome(volume: &TaskVolume<MemoryStream>) -> SearchOutcome {
 #[test]
 fn competing_claims_dispatch_once_and_replay_the_terminal_file() {
     model(|| {
-        let (_, volume) = initialized();
+        let (stream, volume) = initialized();
         let provider = Arc::new(Provider::new(None));
         let worker = thread::spawn({
+            let stream = stream.clone();
             let volume = volume.clone();
             let provider = provider.clone();
-            move || run_worker(&volume, provider, 1, false).unwrap()
+            move || run_worker(&stream, &volume, provider, 1, false).unwrap()
         });
-        run_worker(&volume, provider.clone(), 1, false).unwrap();
+        run_worker(&stream, &volume, provider.clone(), 1, false).unwrap();
         worker.join().unwrap();
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
@@ -158,7 +167,7 @@ fn competing_claims_dispatch_once_and_replay_the_terminal_file() {
             "duplicate search dispatch"
         );
         assert!(matches!(outcome(&volume), SearchOutcome::Succeeded { .. }));
-        run_worker(&volume, provider.clone(), 1, false).unwrap();
+        run_worker(&stream, &volume, provider.clone(), 1, false).unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     });
 }
@@ -170,13 +179,14 @@ fn replacement(broken: bool) {
         let old = Arc::new(Provider::new(Some(waiting)));
         let new = Arc::new(Provider::new(None));
         let worker = thread::spawn({
+            let stream = stream.clone();
             let volume = volume.clone();
             let old = old.clone();
-            move || run_worker(&volume, old, 1, broken)
+            move || run_worker(&stream, &volume, old, 1, broken)
         });
         append_owner(&stream, 1);
         let _ = release.send(());
-        run_worker(&volume, new.clone(), 2, false).unwrap();
+        run_worker(&stream, &volume, new.clone(), 2, false).unwrap();
         let result = worker.join().unwrap();
         assert!(
             result.is_ok()
@@ -199,7 +209,7 @@ fn replacement(broken: bool) {
             new.calls.load(Ordering::SeqCst) == 1,
             "stale search result escaped replacement fence"
         );
-        run_worker(&volume, new.clone(), 2, false).unwrap();
+        run_worker(&stream, &volume, new.clone(), 2, false).unwrap();
         assert_eq!(outcome(&volume), terminal);
     });
 }
@@ -233,6 +243,9 @@ fn shared_tail(broken: bool) {
         let authorize = |settlement| {
             let (stream, first, authorized, released) = (&stream, &first, &authorized, &released);
             async move {
+                if broken && settlement && !first.get() {
+                    return Err(storage(crate::task_volume::Error::FenceConflict));
+                }
                 let tail = stream
                     .watermarks(StreamPath::new("owner").unwrap())
                     .await
@@ -242,7 +255,7 @@ fn shared_tail(broken: bool) {
                     authorized.send(()).unwrap();
                     released.recv().unwrap();
                 }
-                Ok(condition(if broken && settlement { 1 } else { tail }))
+                Ok(condition(tail))
             }
         };
         let result = block_on(settle(
@@ -271,6 +284,6 @@ fn shared_tail_advance_reauthorizes_the_completed_response() {
 
 #[test]
 #[should_panic(expected = "completed search response was lost")]
-fn negative_control_detects_cached_authorization() {
+fn negative_control_detects_discarding_a_completed_response() {
     shared_tail(true);
 }
