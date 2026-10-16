@@ -5,10 +5,10 @@ use acyclic_harness::{
 use prost::Message;
 
 pub fn check(data: &[u8]) {
-    check_with_dropped_record(data, false);
+    check_with_faults(data, false, false);
 }
 
-pub fn check_with_dropped_record(data: &[u8], broken: bool) {
+pub fn check_with_faults(data: &[u8], dropped_record: bool, unrepaired_tail: bool) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state");
     std::fs::write(&path, data).unwrap();
@@ -65,7 +65,7 @@ pub fn check_with_dropped_record(data: &[u8], broken: bool) {
             ends.push(std::fs::metadata(&path).unwrap().len() as usize);
         }
         let mut recovered = store.load().unwrap();
-        if broken {
+        if dropped_record {
             recovered.pop();
         }
         assert_eq!(
@@ -88,9 +88,19 @@ pub fn check_with_dropped_record(data: &[u8], broken: bool) {
     ] {
         std::fs::write(&path, &bytes[..cut]).unwrap();
         let expected = ends.iter().take_while(|&&end| end <= cut).count();
+        let repaired_end = expected.checked_sub(1).map_or(0, |index| ends[index]) as u64;
         let mut store = FileClientState::open(&path).unwrap();
         assert_eq!(store.load().unwrap(), records[..expected]);
+        if unrepaired_tail {
+            std::fs::write(&path, &bytes[..cut]).unwrap();
+        }
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            repaired_end,
+            "journal retained an incomplete trailing record"
+        );
         assert_eq!(store.load().unwrap(), records[..expected]);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), repaired_end);
     }
     let mut corrupt = bytes;
     let offset = choice % corrupt.len();

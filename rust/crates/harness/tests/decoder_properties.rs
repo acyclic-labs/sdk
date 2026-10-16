@@ -40,5 +40,11 @@ fn negative_control_detects_dropped_generation() {
 #[test]
 #[should_panic(expected = "journal lost a complete committed record")]
 fn negative_control_detects_lost_committed_record() {
-    journal::check_with_dropped_record(b"record", true);
+    journal::check_with_faults(b"record", true, false);
+}
+
+#[test]
+#[should_panic(expected = "journal retained an incomplete trailing record")]
+fn negative_control_detects_unrepaired_tail() {
+    journal::check_with_faults(b"record", false, true);
 }
