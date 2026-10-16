@@ -172,7 +172,7 @@ fn negative_control_clears_the_source_hint_after_rechecking() {
 }
 
 #[test]
-#[should_panic(expected = "provider recheck lost its wakeup")]
+#[should_panic(expected = "coalesced wake lost its publication")]
 fn negative_control_resets_the_source_hint_without_acquiring_coalesced_wakes() {
     acyclic_stream::session::verify_source_recheck(2);
 }

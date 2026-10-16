@@ -52,15 +52,24 @@ impl Wake {
         result
     }
 }
+impl Wake {
+    // Return whether this publication joined an already queued hint. The model
+    // uses that observation without adding a synchronizing lock or handshake.
+    fn notify(&self) -> bool {
+        let coalesced = self.queued.swap(1, Ordering::AcqRel) != 0;
+        if !coalesced {
+            #[cfg(acyclic_stream_loom)]
+            if self.omit_signal {
+                return false;
+            }
+            let _ = self.signal.send(self.identity);
+        }
+        coalesced
+    }
+}
 impl ArcWake for Wake {
     fn wake_by_ref(wake: &Arc<Self>) {
-        if wake.queued.swap(1, Ordering::AcqRel) == 0 {
-            #[cfg(acyclic_stream_loom)]
-            if wake.omit_signal {
-                return;
-            }
-            let _ = wake.signal.send(wake.identity);
-        }
+        wake.notify();
     }
 }
 
