@@ -1,7 +1,8 @@
 use super::MountSourceError;
+use crate::lock_order::{GATE, Mutex as RankedMutex};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 use tokio::sync::Notify;
 
 mod admissions;
@@ -71,7 +72,7 @@ impl ViewState {
 
 /// Pins a coherent mount view across a native callback or authored mutation.
 pub(super) struct ViewGate {
-    state: Mutex<ViewState>,
+    state: RankedMutex<ViewState, GATE>,
     changed: Notify,
     generation: AtomicU64,
     reader_generation: AtomicU64,
@@ -86,7 +87,7 @@ impl ViewGate {
 
     pub(super) fn new() -> Self {
         Self {
-            state: Mutex::new(ViewState::default()),
+            state: RankedMutex::new(ViewState::default()),
             changed: Notify::new(),
             generation: AtomicU64::new(Self::INITIAL_GENERATION),
             reader_generation: AtomicU64::new(1),

@@ -51,6 +51,8 @@ mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod recovery;
 pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
+mod directory;
+pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
 mod service;

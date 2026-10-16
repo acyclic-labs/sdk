@@ -1,3 +1,4 @@
+import type { CredentialProvider } from "@acyclic-labs/actors/credential";
 import type * as NativeBinding from "../generated/native/binding.js";
 import { type OperationWindowLease } from "./compat.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
@@ -55,7 +56,8 @@ export interface FsVolumeEngine extends FsEngine {
 }
 export interface HostedFsOptions {
   readonly endpoint: string;
-  readonly bearerToken: string;
+  readonly bearerToken?: string;
+  readonly credential?: CredentialProvider;
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;

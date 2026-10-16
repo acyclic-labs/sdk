@@ -31,7 +31,7 @@ pub struct Output {
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Output> {
+pub async fn run(mut workspace: Workspace<'_>, args: &[String]) -> crate::Result<Output> {
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -47,41 +47,48 @@ pub async fn run(workspace: Workspace<'_>, args: &[String]) -> crate::Result<Out
         repository_id: workspace.repository,
         ignore,
         permit,
-        lease: workspace.lease,
+        lease: workspace.lease.take(),
         merge_drivers,
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
-    let repository = GitCompatRepository::new(workspace.repository, workspace.store.clone());
-    let (command, switched) = if let Some(identity) = workspace.checkout {
-        let executor = RootMaterializingGitExecutor {
-            inner: executor,
-            root: workspace.root,
-            source_root_identity: identity,
-        };
-        let command = run_git_command(
-            &repository,
+    let command = if let Some(identity) = workspace.checkout {
+        execute(
+            &workspace,
             args,
             tree,
             patch.as_deref(),
-            workspace.author,
-            workspace.authored_at_seconds,
-            &executor,
+            &RootMaterializingGitExecutor {
+                inner: &executor,
+                root: workspace.root,
+                source_root_identity: identity,
+            },
         )
-        .await?;
-        (command, executor.inner.switched_workspace()?)
+        .await?
     } else {
-        let command = run_git_command(
-            &repository,
-            args,
-            tree,
-            patch.as_deref(),
-            workspace.author,
-            workspace.authored_at_seconds,
-            &executor,
-        )
-        .await?;
-        (command, executor.switched_workspace()?)
+        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
     };
-    Ok(Output { command, switched })
+    Ok(Output {
+        command,
+        switched: executor.switched_workspace()?,
+    })
+}
+
+async fn execute<E: GitFilesystemExecutor<Error = Error>>(
+    workspace: &Workspace<'_>,
+    args: &[String],
+    tree: GitTreeRef,
+    patch: Option<&[u8]>,
+    executor: &E,
+) -> crate::Result<Option<GitCommandOutput>> {
+    run_git_command(
+        &GitCompatRepository::new(workspace.repository, workspace.store.clone()),
+        args,
+        tree,
+        patch,
+        workspace.author,
+        workspace.authored_at_seconds,
+        executor,
+    )
+    .await
 }
