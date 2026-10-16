@@ -84,6 +84,39 @@ impl Ord for CountedKey {
     }
 }
 #[test]
+fn small_namespaces_read_each_key_once_for_misses_and_last_rewrites() {
+    for count in 1..=DIRECT_SCAN_PATHS {
+        let reads = Rc::new(Cell::new(0));
+        let paths: BTreeMap<_, _> = (0..count)
+            .map(|index| {
+                (
+                    CountedKey {
+                        name: format!("files/{index:08}"),
+                        reads: reads.clone(),
+                    },
+                    (),
+                )
+            })
+            .collect();
+        for query in ["files/new".into(), format!("files/{:08}", count - 1)] {
+            reads.set(0);
+            assert!(!conflicts(&paths, &query));
+            assert_eq!(
+                reads.get(),
+                count,
+                "small namespace must not add root seeks"
+            );
+            let _ = paths
+                .range::<str, _>((Unbounded, Excluded(query.as_str())))
+                .next_back();
+            assert!(
+                reads.get() > count,
+                "negative control: a redundant seek violates the same bound"
+            );
+        }
+    }
+}
+#[test]
 fn leading_conflicts_read_each_key_once_without_a_root_seek() {
     let reads = Rc::new(Cell::new(0));
     let paths: BTreeMap<_, _> = (0..4096)
@@ -182,20 +215,12 @@ fn ordinary_queries_allocate_nothing_and_punctuation_scratch_is_bounded() {
 fn long_punctuation_queries_allocate_one_exact_prefix_buffer() {
     for length in [64, 4096] {
         let query = "é".repeat(length / 2);
-        let paths: BTreeMap<_, _> = [
-            format!("{query}-.txt"),
-            format!("{query}-.a"),
-            format!("{query}-.b"),
-            format!("{query}-.c"),
-            format!("{query}-.d"),
-            format!("{query}/child"),
-            format!("{query}0"),
-            "aaa".into(),
-            "zzz".into(),
-        ]
-        .into_iter()
-        .map(|path| (path, ()))
-        .collect();
+        let mut paths: BTreeMap<_, _> = (0..=DIRECT_SCAN_PATHS)
+            .map(|index| (format!("{query}-{index:08}"), ()))
+            .collect();
+        paths.insert(format!("{query}/child"), ());
+        paths.insert("aaa".into(), ());
+        paths.insert("zzz".into(), ());
         let allocation = allocation_counter::measure(|| {
             assert!(conflicts(&paths, &query));
         });
@@ -223,6 +248,7 @@ proptest! {
         let mut paths:BTreeMap<_,_>=names.iter().cloned().map(|name|(name,())).collect();
         for augmented in [false, true] {
             if augmented {
+                for index in 0..=DIRECT_SCAN_PATHS { paths.insert(format!("padding-{index:08}"),()); }
                 paths.insert(format!("{path}-.txt"),());
                 paths.insert(format!("{path}/child"),());
             }
@@ -233,93 +259,6 @@ proptest! {
                 if let Some((parent,_))=name.rsplit_once('/') { queries.push(parent.into()); }
             }
             for query in queries { prop_assert_eq!(conflicts(&paths,&query),reference(&paths,&query)); }
-        }
-    }
-}
-#[test]
-fn path_conflicts_without_subscriber() {
-    profile(false);
-}
-#[test]
-fn path_conflicts_with_tracing() {
-    profile(true);
-}
-fn profile(tracing: bool) {
-    let dispatch = if tracing {
-        tracing::Dispatch::new(tracing_subscriber::registry())
-    } else {
-        tracing::Dispatch::none()
-    };
-    let _guard = tracing::dispatcher::set_default(&dispatch);
-    let mut paths = fixture(4096);
-    paths.insert("ancestor".into(), ());
-    let mut punctuation: BTreeMap<_, _> = (0..4096)
-        .map(|index| (format!("foo-{index:08}"), ()))
-        .collect();
-    punctuation.insert("bar".into(), ());
-    punctuation.insert("foo/child".into(), ());
-    let small = fixture(4);
-    let implementation = std::env::var("HARNESS_PATH_PROFILE").ok();
-    let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
-    let batch = if cfg!(debug_assertions) || syscalls {
-        1
-    } else {
-        32
-    };
-    let samples = if syscalls { 1 } else { 64 };
-    for (label, paths, query) in [
-        ("after-last", &paths, "files/new"),
-        ("middle-gap", &paths, "files/00002048-"),
-        ("rewrite", &paths, "files/00002048"),
-        ("existing-ancestor", &paths, "files/00002048/child"),
-        ("first-ancestor", &paths, "ancestor/child"),
-        ("existing-descendant", &paths, "files"),
-        ("missing-root", &paths, "missing"),
-        ("punctuation", &punctuation, "foo"),
-        ("small", &small, "files/new"),
-    ] {
-        for legacy in [true, false] {
-            if implementation
-                .as_deref()
-                .is_some_and(|name| (name == "scan") != legacy)
-            {
-                continue;
-            }
-            let operation = || {
-                let paths = std::hint::black_box(paths);
-                let query = std::hint::black_box(query);
-                if legacy {
-                    reference(paths, query)
-                } else {
-                    conflicts(paths, query)
-                }
-            };
-            let mut times = Vec::with_capacity(samples);
-            for _ in 0..samples {
-                if syscalls {
-                    eprintln!("PATH_BEGIN");
-                }
-                let start = std::time::Instant::now();
-                for _ in 0..batch {
-                    std::hint::black_box(operation());
-                }
-                let elapsed = start.elapsed() / batch;
-                if syscalls {
-                    eprintln!("PATH_END");
-                }
-                times.push(elapsed);
-            }
-            times.sort_unstable();
-            let allocations = allocation_counter::measure(|| {
-                std::hint::black_box(operation());
-            });
-            eprintln!(
-                "conflict tracing={tracing} legacy={legacy} case={label} path={query:?} median={:?} alloc={} bytes={} peak={}",
-                times.get(samples / 2),
-                allocations.count_total,
-                allocations.bytes_total,
-                allocations.bytes_max
-            );
         }
     }
 }

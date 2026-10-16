@@ -2,6 +2,9 @@ use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
 use proptest::prelude::*;
 
+#[path = "retention_profile.rs"]
+mod production;
+
 fn fixture(count: u32) -> Result<MemoryStore> {
     let mut store = super::super::tests::store(1, u64::from(count) + 1)?;
     for index in 0..count {

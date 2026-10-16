@@ -14,8 +14,10 @@ pub(crate) fn paths_conflict(existing: &str, path: &str) -> bool {
                 .is_some_and(|suffix| suffix.starts_with('/')))
 }
 
+pub(crate) const DIRECT_SCAN_PATHS: usize = 40;
+
 pub(crate) fn conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
-    if paths.len() <= 4 {
+    if paths.len() <= DIRECT_SCAN_PATHS {
         return paths
             .keys()
             .any(|existing| paths_conflict(existing.borrow(), path));
