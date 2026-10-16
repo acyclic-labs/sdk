@@ -462,6 +462,13 @@ fn negative_control_query_counter_truncation_is_rejected() {
     );
 }
 
+#[test]
+fn empty_plan_stems_are_rejected_and_valid_spaces_and_unicode_are_preserved() {
+    query_inputs::exercise(b"");
+    query_inputs::exercise("plan α".as_bytes());
+    assert!(std::panic::catch_unwind(|| query_inputs::check_plan_stem("", true)).is_err());
+}
+
 #[tokio::test]
 async fn prepared_change_keeps_views_readable_and_rejects_an_advanced_cut() {
     use futures::StreamExt as _;

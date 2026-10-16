@@ -12,7 +12,7 @@ impl PlanName {
     pub fn new(value: impl AsRef<str>) -> Result<Self> {
         let value = value.as_ref();
         let path = format!("plans/{value}.md");
-        if value.contains('/') || path.len() > 4096 {
+        if value.is_empty() || value.contains('/') || path.len() > 4096 {
             return Err(Error::InvalidPath);
         }
         crate::conversation::validate_content_path(&path, &mut None)

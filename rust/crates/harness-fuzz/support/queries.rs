@@ -1,7 +1,7 @@
 //! Query inputs use their canonical serde types, without a second codec.
 use acyclic_harness::{
     client::QueryViewLimits,
-    task_volume::{Component, Cursor, FileKey, Generation, Query},
+    task_volume::{Component, Cursor, FileKey, Generation, PlanName, Query},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
@@ -20,7 +20,23 @@ pub fn check_query(query: &Query, bytes: &[u8]) {
     );
 }
 
+pub fn check_plan_stem(stem: &str, accepted: bool) {
+    assert!(
+        !stem.is_empty() || !accepted,
+        "empty plan names must be rejected"
+    );
+}
+
 pub fn exercise(bytes: &[u8]) {
+    if let Ok(stem) = std::str::from_utf8(bytes) {
+        let plan = PlanName::new(stem);
+        check_plan_stem(stem, plan.is_ok());
+        if let Ok(plan) = plan {
+            let key = FileKey::Plan(plan);
+            assert_eq!(FileKey::parse(&key.path()).unwrap(), key);
+            round_trip(key);
+        }
+    }
     // Arbitrary JSON reaches every public input's actual serde implementation.
     if let Ok(value) = serde_json::from_slice::<Query>(bytes) {
         round_trip(value);
@@ -44,6 +60,8 @@ pub fn exercise(bytes: &[u8]) {
         *target = *value;
     }
     let turn = u64::from_le_bytes(number);
+    let plan = PlanName::new(format!("plan {turn} α")).expect("valid nonempty plan name");
+    round_trip(FileKey::Plan(plan));
     let task: Component = "task".to_owned().try_into().unwrap();
     for query in [
         Query::Root,
