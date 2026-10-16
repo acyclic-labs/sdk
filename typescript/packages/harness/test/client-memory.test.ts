@@ -1,4 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
+import fc from "fast-check";
 import initialize from "../generated/wasm/acyclic_harness_wasm.js";
 import { HarnessClient, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
@@ -89,4 +90,39 @@ test("oversize enqueue checks its JS buffer length without growing WASM memory",
   await target.write(await target.head(), "Goal", payload, null).catch(() => {});
   expect(() => bounded(controlBefore, memory.buffer.byteLength)).toThrow("oversize admission grew WASM memory");
   client.free(); outbox.free(); target.free(); stream.free();
+});
+
+// A rendering-capable local provider must not imply network recovery policy.
+async function explicitFlushOracle(prompts: string[], automatic: boolean) {
+  const stream = new WasmStream();
+  const outbox = await TaskVolume.create(stream, "client/files");
+  const target = await TaskVolume.create(stream, "agent/files");
+  const payloads = prompts.map((prompt, index) => new TextEncoder().encode(JSON.stringify({ operationId: `request-${index}`, authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: { prompt } })));
+  const client = await HarnessClient.open(outbox, target, { commands: BigInt(prompts.length), bytes: BigInt(payloads.reduce((sum, bytes) => sum + bytes.length, 0)), durability: "Accepted" });
+  try {
+    const before = await target.head();
+    for (const [index, payload] of payloads.entries()) {
+      await client.enqueue({ Task: { task: "task", file: { Request: `${index}.json` } } }, payload);
+    }
+    // Mutate the policy by publishing without an explicit caller flush. The
+    // same oracle must catch the resulting lost pending state and target write.
+    if (automatic) await client.flush();
+    const retained = client.pending() === prompts.length && (await target.head()).position === before.position;
+    await client.flush();
+    await client.whenIdle();
+    if (!retained) throw new Error("local publication preceded explicit flush");
+    expect(client.pending()).toBe(0);
+    expect((await target.head()).position).toBe(before.position + BigInt(prompts.length));
+  } finally {
+    client.close(); client.free(); outbox.free(); target.free(); stream.free();
+  }
+}
+const localRequests = fc.array(fc.string({ maxLength: 16 }), { minLength: 1, maxLength: 4 });
+test("local rendering sessions preserve explicit publication across shrinking request histories", async () => {
+  await fc.assert(fc.asyncProperty(localRequests, prompts => explicitFlushOracle(prompts, false)), { numRuns: 16 });
+});
+test("negative control: automatic local publication fails the same shrinking oracle", async () => {
+  const result = await fc.check(fc.asyncProperty(localRequests, prompts => explicitFlushOracle(prompts, true)), { numRuns: 16 });
+  expect(result.failed).toBe(true);
+  expect(result.counterexample).toEqual([[""]]);
 });
