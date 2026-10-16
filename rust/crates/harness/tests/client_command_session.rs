@@ -186,6 +186,26 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
         None,
     )
     .await?;
+    let manifest = acyclic_harness::context::ContextManifest::new(
+        Default::default(),
+        Vec::new(),
+        &acyclic_harness::tool::ToolRegistry::default(),
+    )?;
+    let limits = serde_json::from_value(data["config"]["limits"].clone())?;
+    let context_manifest = host
+        .put_content(
+            &volume,
+            &writer,
+            "context/commands.json",
+            &manifest.encode(limits)?,
+            "application/json",
+            "commands context",
+            32_768,
+            &IdempotencyKey::new("command-context")?,
+            None,
+            None,
+        )
+        .await?;
     drop(host);
     let mut config = data["config"].clone();
     let fields = json!({
@@ -196,7 +216,7 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
         "session_limits":{"active_tasks":6,"depth":3,"model_steps":7,"total_tasks":12},
         "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":checkout,
         "command_roots":[{"scope":"user","root":{"volume":volume,"directory":""}}],
-        "deterministic_delay_ms":0
+        "deterministic_delay_ms":0,"context_manifest":context_manifest
     });
     for (name, value) in fields.as_object().unwrap() {
         config[name] = value.clone();

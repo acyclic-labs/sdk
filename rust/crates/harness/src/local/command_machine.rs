@@ -23,11 +23,13 @@ impl DirectTool {
             schema: json!({"type":"object","required":["command","sent"],"properties":{"command":{"type":"object"},"sent":{"type":"boolean"}},"additionalProperties":false}),
         }
     }
-    pub(super) fn definition(self: &Arc<Self>) -> Result<runtime::TaskDefinition<Value, Value>> {
+    pub(super) fn definition(
+        self: &Arc<Self>,
+    ) -> Result<runtime::TaskDefinition<Value, tool::ToolResult>> {
         runtime::TaskDefinition::resumable(
             self.clone(),
             json!({"type":"object","required":["command"],"properties":{"command":{"type":"object"}},"additionalProperties":false}),
-            json!({}),
+            json!({"type":"object","required":["value"],"properties":{"value":{}},"additionalProperties":false}),
         )
     }
 }
@@ -75,7 +77,7 @@ impl ResumableMachine for DirectTool {
             serde_json::from_value(result["value"].clone()).map_err(storage)?;
         let status = match value {
             Outcome::Succeeded(result) => MachineStatus::Completed {
-                value: result.value,
+                value: serde_json::to_value(result).map_err(storage)?,
             },
             Outcome::Failed { message } => MachineStatus::Failed { message },
             _ => return Err(Error::Indeterminate(command.operation_id)),

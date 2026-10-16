@@ -291,7 +291,7 @@ impl LocalHarness {
         let definition = self
             .runtime
             .harness()
-            .task::<Value, Value>("acyclic.direct_tool@1")?;
+            .task::<Value, crate::tool::ToolResult>("acyclic.direct_tool@1")?;
         let input = json!({"command":command});
         let admission = if let Some(parent) = parent {
             let record = self.runtime.task_host().observe_admission(parent).await?;
@@ -311,7 +311,7 @@ impl LocalHarness {
         let handle = self.runtime.harness().attach(task, &definition).await?;
         Box::pin(self.advance(task, &self.commands()?)).await?;
         match handle.result().await? {
-            crate::Outcome::Succeeded(value) => Ok(value),
+            crate::Outcome::Succeeded(result) => Ok(result.value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
             _ => Err(Error::Indeterminate(operation)),
         }

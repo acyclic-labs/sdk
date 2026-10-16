@@ -46,7 +46,7 @@ proptest! {
         let result = json!({"commands":[{"operation_id":operation,"value":value}]});
         let terminal = machine.transition(&sent.state, &result).unwrap();
         prop_assert!(terminal.commands.is_empty());
-        let expected = if succeeds { MachineStatus::Completed { value: json!({"text":text}) } } else { MachineStatus::Failed { message: text } };
+        let expected = if succeeds { MachineStatus::Completed { value: json!({"value":{"text":text}}) } } else { MachineStatus::Failed { message: text } };
         prop_assert_eq!(terminal.status, expected);
         let mut wrong = result;
         wrong["commands"][0]["operation_id"] = json!("mismatched");
