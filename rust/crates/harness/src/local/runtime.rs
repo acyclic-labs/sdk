@@ -11,6 +11,7 @@ pub(super) struct Configuration<'a> {
     pub project: &'a VolumeRef,
     pub scratch: &'a VolumeRef,
     pub journal: &'a VolumeRef,
+    pub task_volume: &'a VolumeRef,
     pub tools: &'a ToolRegistry,
     pub limits: Limits,
     pub run_limits: TaskRunLimits,
@@ -69,6 +70,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     .with_run_limits(config.run_limits, &mut None)?;
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
         grants.push(config.journal.capability(operation, &mut None)?);
+        grants.push(config.task_volume.capability(operation, &mut None)?);
     }
     let signed = config.issuer.issue(
         "owner",
