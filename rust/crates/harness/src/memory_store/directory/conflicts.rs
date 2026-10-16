@@ -18,21 +18,15 @@ pub(crate) fn conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &
     for existing in paths.keys() {
         let existing: &str = existing.borrow();
         let common = existing.len().min(path.len());
-        match existing.as_bytes()[..common].cmp(&path.as_bytes()[..common]) {
+        let (existing_prefix, existing_suffix) = existing.as_bytes().split_at(common);
+        let (path_prefix, path_suffix) = path.as_bytes().split_at(common);
+        match existing_prefix.cmp(path_prefix) {
             Ordering::Less => {}
             Ordering::Greater => return false,
-            Ordering::Equal => match existing.len().cmp(&path.len()) {
-                Ordering::Less => {
-                    if path.as_bytes()[existing.len()] == b'/' {
-                        return true;
-                    }
-                }
-                Ordering::Equal => {}
-                Ordering::Greater => match existing.as_bytes()[path.len()] {
-                    b'/' => return true,
-                    byte if byte > b'/' => return false,
-                    _ => {}
-                },
+            Ordering::Equal => match (existing_suffix.first(), path_suffix.first()) {
+                (None, Some(b'/')) | (Some(b'/'), None) => return true,
+                (Some(byte), None) if *byte > b'/' => return false,
+                _ => {}
             },
         }
     }
