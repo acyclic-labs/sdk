@@ -49,29 +49,31 @@ fn encode(value: &impl Serialize, work: NativeWork<'_>) -> Result<OwnedBytes> {
         .map_err(|_| super::rejection(work, "invalid search file"))
 }
 
-fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<SearchRequest> {
+fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::NativeCustody)> {
     if bytes.len() > acyclic_fs::NativeMaterializationWork::MAXIMUM_BUILTIN_BYTES {
         return Err(super::rejection(
             work,
             "search request file exceeds byte limit",
         ));
     }
-    let decoded = if let Some(work) = work {
-        crate::executor::PreparationIo::from_native_work(work)?
-            .decode_json(bytes)
-            .map_err(|error| match error {
-                Error::NativeJson { .. } => {
-                    super::rejection(Some(work), "invalid search request file")
-                }
-                error => error,
-            })?
+    let (decoded, custody) = if let Some(work) = work {
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let decoded: SearchRequest = io.decode_json(bytes).map_err(|error| match error {
+            Error::NativeJson { .. } => super::rejection(Some(work), "invalid search request file"),
+            error => error,
+        })?;
+        let retained = (std::mem::size_of::<SearchRequest>() + decoded.query.capacity()) as u64;
+        (decoded, Some(io.into_native_custody(retained)?))
     } else {
-        serde_json::from_slice(bytes)
-            .map_err(|_| super::rejection(work, "invalid search request file"))?
+        (
+            serde_json::from_slice(bytes)
+                .map_err(|_| super::rejection(work, "invalid search request file"))?,
+            None,
+        )
     };
     let decoded: SearchRequest = decoded;
     decoded.validate_with_work(work)?;
-    Ok(decoded)
+    Ok((decoded, custody))
 }
 
 async fn condition<P: StreamProvider>(
@@ -232,7 +234,7 @@ where
             Ok(_) => {}
         }
         let dispatch = async {
-            let request = request(&input.bytes, work)?;
+            let (request, _input_custody) = request(&input.bytes, work)?;
             let provider =
                 resolve()?.ok_or_else(|| super::rejection(work, "search is not configured"))?;
             authorize(false).await?;
