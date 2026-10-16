@@ -7,10 +7,20 @@ fn limits(items: u64) -> WorkBudget {
     }
 }
 
+fn model(run: impl Fn() + Send + Sync + 'static) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = None;
+    builder.max_permutations = None;
+    builder.max_duration = None;
+    builder.checkpoint_file = None;
+    builder.expect_explicit_explore = false;
+    builder.check(run);
+}
+
 #[test]
 fn block_scan_and_competing_admission_share_the_real_leaf() {
     crate::initialize_test_native_io();
-    loom::model(|| {
+    model(|| {
         let root = NativeMaterializationWork::new(limits(1), &CancellationToken::new()).unwrap();
         let view = root.native_volume_work(limits(1)).unwrap();
         let scan = view.clone();
@@ -30,7 +40,7 @@ fn block_scan_and_competing_admission_share_the_real_leaf() {
 fn model_rejects_split_admission_and_recording() {
     crate::initialize_test_native_io();
     let detected = std::panic::catch_unwind(|| {
-        loom::model(|| {
+        model(|| {
             let root =
                 NativeMaterializationWork::new(limits(1), &CancellationToken::new()).unwrap();
             let threads = [root.clone(), root.clone()].map(|work| {
@@ -64,7 +74,7 @@ fn model_rejects_split_admission_and_recording() {
 fn cancellation_preserves_completed_items_and_returns_unused_credit() {
     crate::initialize_test_native_io();
     let exercise = |leak_reservation| {
-        loom::model(move || {
+        model(move || {
             let cancellation = CancellationToken::new();
             let root = NativeMaterializationWork::new(limits(2), &cancellation).unwrap();
             let scan = root.clone();
