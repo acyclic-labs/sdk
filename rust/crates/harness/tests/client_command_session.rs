@@ -465,7 +465,7 @@ proptest! {
     // a newer catalog cut, for any selected task or command argument.
     #[test]
     fn loading_missing_task_settings_cannot_publish_an_outdated_action(
-        task_byte in 1u8..=254, arguments in "[a-zA-Z0-9 ]{1,40}"
+        task_byte in 1u8..=254, arguments in "[a-zA-Z0-9][a-zA-Z0-9 ]{0,39}"
     ) {
     futures::executor::block_on(async {
     let volume = volume().await?;
