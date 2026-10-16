@@ -5,16 +5,10 @@ use crate::tool::ToolRegistry;
     clippy::too_many_lines,
     reason = "one actual parent compaction, child capture, retry and publication scenario"
 )]
-async fn published_summary(
+async fn summary_preparation(
     inputs: [&[u8]; 3],
     model: Arc<ScriptedModelProvider>,
-) -> Result<(
-    MemoryHarnessStorage,
-    StreamAggregate<MemoryStream>,
-    crate::fork::ForkSeed,
-    Context,
-    Limits,
-)> {
+) -> Result<SummaryFixture> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
     let limits = Limits {
@@ -313,6 +307,55 @@ async fn published_summary(
         ForkHistoryPolicy::Summary(Box::new(selection)),
         &mut None,
     )?;
+    Ok(SummaryFixture {
+        storage,
+        aggregate,
+        preparer,
+        request,
+        source,
+        scope,
+        stream_provider,
+        child_private,
+        provider,
+        limits,
+    })
+}
+
+struct SummaryFixture {
+    storage: MemoryHarnessStorage,
+    aggregate: StreamAggregate<MemoryStream>,
+    preparer: FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
+    request: ForkRequest,
+    source: Context,
+    scope: Scope,
+    stream_provider: ProviderRef,
+    child_private: VolumeRef,
+    provider: ProviderRef,
+    limits: Limits,
+}
+
+async fn published_summary(
+    inputs: [&[u8]; 3],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<(
+    MemoryHarnessStorage,
+    StreamAggregate<MemoryStream>,
+    crate::fork::ForkSeed,
+    Context,
+    Limits,
+)> {
+    let SummaryFixture {
+        storage,
+        mut aggregate,
+        preparer,
+        request,
+        source,
+        scope,
+        stream_provider,
+        child_private,
+        provider,
+        limits,
+    } = summary_preparation(inputs, model).await?;
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(
@@ -464,30 +507,7 @@ async fn published_summary(
         fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
-    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(
-        &[
-            fs_verifier,
-            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
-        ],
-        &mut None,
-    )?);
-    aggregate
-        .execute(
-            Command {
-                operation_id: seed.operation_id,
-                idempotency_key: IdempotencyKey::new("publish-summary-fork")?,
-                expected_revision: aggregate.reducer().revision(),
-                scope,
-                causal_parent: None,
-                action: Action::PublishFork {
-                    seed: Box::new(seed.clone()),
-                },
-            },
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    aggregate = publish_summary_seed(&storage, aggregate, &seed, scope, &stream_provider).await?;
     assert_eq!(aggregate.reducer().fork(&seed.child), Some(&seed));
     Ok((storage, aggregate, seed, captured, limits))
 }
@@ -771,3 +791,38 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
 
 #[path = "summary_round_trips.rs"]
 mod summary_round_trips;
+
+async fn publish_summary_seed(
+    storage: &MemoryHarnessStorage,
+    mut aggregate: StreamAggregate<MemoryStream>,
+    seed: &crate::fork::ForkSeed,
+    scope: Scope,
+    stream_provider: &ProviderRef,
+) -> Result<StreamAggregate<MemoryStream>> {
+    let fs_verifier = FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?;
+    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(
+        &[
+            fs_verifier,
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+        ],
+        &mut None,
+    )?);
+    aggregate
+        .execute(
+            Command {
+                operation_id: seed.operation_id,
+                idempotency_key: IdempotencyKey::new("publish-summary-fork")?,
+                expected_revision: aggregate.reducer().revision(),
+                scope,
+                causal_parent: None,
+                action: Action::PublishFork {
+                    seed: Box::new(seed.clone()),
+                },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await?;
+    Ok(aggregate)
+}

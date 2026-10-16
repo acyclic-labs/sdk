@@ -36,7 +36,10 @@ impl Input {
                                 .content
                                 .file_refs()
                                 .map(|file| {
-                                    if file.path().starts_with("turns/") {
+                                    if matches!(
+                                        file.display_name(),
+                                        "input.txt" | "later-input.txt"
+                                    ) {
                                         60_000
                                     } else {
                                         file.descriptor().byte_length()
@@ -60,6 +63,7 @@ struct Case {
     parent: StreamAggregate<MemoryStream>,
     child: StreamAggregate<MemoryStream>,
     seed: ForkSeed,
+    parent_volume: VolumeRef,
     scope: Scope,
     reader: Arc<dyn ContentResidencyVerifier>,
     limits: Limits,
@@ -67,8 +71,27 @@ struct Case {
 
 impl Case {
     async fn new(input: &Input) -> Result<Self> {
-        let (storage, parent, seed, _, limits) =
-            published_summary(input.turns.each_ref().map(|s| s.as_bytes()), input.model()).await?;
+        let SummaryFixture {
+            storage,
+            mut aggregate,
+            preparer,
+            request,
+            scope: parent_scope,
+            stream_provider,
+            limits,
+            ..
+        } = summary_preparation(input.turns.each_ref().map(|s| s.as_bytes()), input.model())
+            .await?;
+        let (task_preparation, _invocation) =
+            sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728)
+                .await?;
+        let preparer = preparer.with_task_preparation(Arc::new(task_preparation))?;
+        let report = aggregate.prepare_fork(&preparer, request).await?;
+        let seed = report.into_seed(&mut None)?;
+        let parent =
+            publish_summary_seed(&storage, aggregate, &seed, parent_scope, &stream_provider)
+                .await?;
+        let parent_volume = storage.volume.clone();
         let issuer = AuthorityIssuer::new("summary-child", [42; 32], seed.child.clone());
         let grants = Capabilities::new(
             seed.reference_capabilities(seed.child_agent)?
@@ -101,6 +124,7 @@ impl Case {
             parent,
             child,
             seed,
+            parent_volume,
             scope,
             reader,
             limits,
@@ -192,10 +216,15 @@ async fn check_round_trip(input: &Input, case: &Case, fault: Fault) -> TestCaseR
     }
     let mut messages = Vec::new();
     let mut copied = context.current_input_index.is_none() && context.metadata.is_empty();
-    for message in &context.messages {
+    for (index, message) in context.messages.iter().enumerate() {
         let mut bytes = Vec::new();
         for file in message.content.file_refs() {
-            copied &= file.volume() == &case.seed.child_private_volume;
+            let expected_volume = if index == 0 {
+                &case.seed.child_private_volume
+            } else {
+                &case.parent_volume
+            };
+            copied &= file.volume() == expected_volume;
             bytes.extend_from_slice(
                 &case
                     .reader
@@ -221,7 +250,10 @@ async fn check_round_trip(input: &Input, case: &Case, fault: Fault) -> TestCaseR
     ];
     prop_assert!(
         copied && messages == expected,
-        "summary copies or frozen cut differ from input bytes"
+        "summary copies or frozen cut differ from input bytes: copied={}, actual={:?}, expected={:?}",
+        copied,
+        messages,
+        expected
     );
 
     let mut changed = case.seed.clone();
