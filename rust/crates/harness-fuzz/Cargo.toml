@@ -198,6 +198,7 @@ bench = false
 [[bin]]
 name = "client_file_submit"
 path = "fuzz_targets/client_file_submit.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
