@@ -40,8 +40,17 @@ impl MemoryStore {
             ));
         }
         Ok(page::page(
-            &self.paths, path, generation, after, maximum,
-            |history| history.revisions.first().map(|revision| revision.generation),
+            &self.paths,
+            path,
+            generation,
+            after,
+            maximum,
+            |history| {
+                history
+                    .revisions
+                    .first()
+                    .map(|revision| revision.generation)
+            },
         ))
     }
 
