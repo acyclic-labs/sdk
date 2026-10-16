@@ -24,7 +24,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             child.check()?;
             // Preserve the replay boundary's retirement and admission checks
             // even though its authenticated record no longer needs another read.
-            if RECHECK {
+            if RECHECK || !cfg!(all(test, acyclic_fs_loom)) {
                 self.authority_require_live(authority, &mut child).await?;
             }
             child.check()?;
