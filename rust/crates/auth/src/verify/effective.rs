@@ -2,13 +2,15 @@ use super::*;
 
 /// A filter and the block where its subject references were frozen.
 pub struct ScopedFilter<'a> {
-    /// Zero-based declaring block index.
-    pub declaring_block: usize,
-    /// Ranges/attributes, conjunctive with every other returned filter.
-    pub filter: &'a Filter,
+    declaring_block: usize,
+    filter: &'a Filter,
     capability: &'a VerifiedCapability,
 }
 impl<'a> ScopedFilter<'a> {
+    /// Zero-based declaring block index.
+    pub fn declaring_block(&self) -> usize { self.declaring_block }
+    /// Ranges/attributes, conjunctive with every other returned filter.
+    pub fn filter(&self) -> &'a Filter { self.filter }
     /// Issuer and delegation ancestors visible when this filter was declared.
     pub fn lineage(&self) -> impl DoubleEndedIterator<Item = &'a str> {
         let principal = &self.capability.blocks[0].certificates.as_ref().expect("verified certificate chain").keys.last().expect("verified leaf").key.principal;
