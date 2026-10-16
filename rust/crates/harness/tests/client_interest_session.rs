@@ -210,10 +210,13 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
                 channel_id: content.channel.as_ref().unwrap().channel_id,
                 generation: 1,
                 body: Some(wire::session_frame::Body::Data(wire::SessionData {
-                    after: Some(wire::SessionCursor {
-                        next: snapshot_cut + 1,
-                        ..Default::default()
-                    }),
+                    after: Some(
+                        acyclic_stream::wire_codec::session::record_cursor(
+                            snapshot_cut + 1,
+                            record.commit_id,
+                        )
+                        .unwrap(),
+                    ),
                     accepted: snapshot_cut + 1,
                     durable: snapshot_cut + 1,
                     item: Some(wire::session_data::Item::Record(

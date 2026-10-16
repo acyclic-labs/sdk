@@ -31,7 +31,7 @@ async fn write(config: &TaskVolume<MemoryStream>, name: &str, bytes: &[u8]) {
         .unwrap();
 }
 
-fn check_statuses(updates: &[wire::SessionInterest], count: usize) -> bool {
+fn status_paths(updates: &[wire::SessionInterest]) -> Option<BTreeSet<String>> {
     let mut found = BTreeSet::new();
     for update in updates {
         for subscription in &update.upsert {
@@ -39,15 +39,21 @@ fn check_statuses(updates: &[wire::SessionInterest], count: usize) -> bool {
                 if follow.delivery != wire::SessionDelivery::Latest as i32
                     || !found.insert(follow.path.clone())
                 {
-                    return false;
+                    return None;
                 }
             }
         }
     }
-    found
-        == (0..count)
-            .map(|id| format!("swarm/a{id:05}/status"))
-            .collect()
+    Some(found)
+}
+
+fn check_statuses(updates: &[wire::SessionInterest], count: usize) -> bool {
+    status_paths(updates)
+        == Some(
+            (0..count)
+                .map(|id| format!("swarm/a{id:05}/status"))
+                .collect(),
+        )
 }
 
 async fn discover(count: usize) -> Vec<wire::SessionInterest> {
@@ -85,10 +91,10 @@ async fn discover_with_creation(
                 })
             {
                 if let Some(id) = new_child {
-                    let name = if id == usize::MAX {
-                        "other/created".to_owned()
-                    } else {
-                        format!("swarm/a{id:05}/status")
+                    let name = match id {
+                        usize::MAX => "other/created".to_owned(),
+                        id if id == usize::MAX - 1 => "swarm/00000/status".to_owned(),
+                        _ => format!("swarm/a{id:05}/status"),
                     };
                     provider
                         .append(AppendRequest {
@@ -133,13 +139,18 @@ async fn discover_with_creation(
 
 #[test]
 fn hierarchy_creation_between_pages_restarts_without_duplicate_status_follows() {
-    for new_child in [usize::MAX, acyclic_stream::MAX_ITEMS + 1] {
+    for new_child in [usize::MAX, usize::MAX - 1, acyclic_stream::MAX_ITEMS + 1] {
         let count = acyclic_stream::MAX_ITEMS + 1;
         let updates = futures::executor::block_on(discover_with_creation(count, Some(new_child)));
-        assert!(check_statuses(
-            &updates,
-            count + usize::from(new_child != usize::MAX)
-        ));
+        let mut expected: BTreeSet<_> = (0..count)
+            .map(|id| format!("swarm/a{id:05}/status"))
+            .collect();
+        if new_child == usize::MAX - 1 {
+            expected.insert("swarm/00000/status".into());
+        } else if new_child != usize::MAX {
+            expected.insert(format!("swarm/a{new_child:05}/status"));
+        }
+        assert_eq!(status_paths(&updates), Some(expected));
         assert!(
             updates
                 .iter()
