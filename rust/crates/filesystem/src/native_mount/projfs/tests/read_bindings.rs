@@ -1,16 +1,12 @@
 use super::*;
+use windows::Win32::Storage::ProjectedFileSystem::PRJ_NOTIFICATION_CB;
 
 fn notify(runtime: &Runtime, kind: PRJ_NOTIFICATION) -> HRESULT {
-    notify_at(runtime, "read.txt", 0, kind)
-}
-
-fn notify_at(runtime: &Runtime, path: &str, process: u32, kind: PRJ_NOTIFICATION) -> HRESULT {
-    let name = HSTRING::from(path);
+    let name = HSTRING::from("read.txt");
     let data = PRJ_CALLBACK_DATA {
         InstanceContext: std::ptr::from_ref(runtime).cast_mut().cast(),
         FilePathName: PCWSTR(name.as_ptr()),
         FileId: GUID::from_u128(1),
-        TriggeringProcessId: process,
         ..Default::default()
     };
     // SAFETY: the callback data, name and runtime stay live for this call.
@@ -36,10 +32,93 @@ fn close_read(runtime: &Runtime, work: &crate::NativeMaterializationWork) {
     assert!(lock_recover(&runtime.metadata_baselines).is_empty());
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn mounted_nested_fallback_negative_control_replays_self_notifications()
--> Result<(), Box<dyn std::error::Error>> {
+#[derive(Default)]
+struct ReplayState {
+    callback: PRJ_NOTIFICATION_CB,
+    noop: bool,
+    pending: Option<(Arc<Runtime>, bool)>,
+}
+
+thread_local! {
+    static REPLAY: std::cell::RefCell<ReplayState> = Default::default();
+}
+
+pub(crate) fn registered_callbacks(mut callbacks: PRJ_CALLBACKS) -> PRJ_CALLBACKS {
+    REPLAY.with_borrow_mut(|state| {
+        if state.noop {
+            callbacks.NotificationCallback = Some(noop_notification);
+        }
+        state.callback = callbacks.NotificationCallback;
+    });
+    callbacks
+}
+
+unsafe extern "system" fn noop_notification(
+    _data: *const PRJ_CALLBACK_DATA,
+    _directory: bool,
+    _kind: PRJ_NOTIFICATION,
+    _destination: PCWSTR,
+    _parameters: *mut PRJ_NOTIFICATION_PARAMETERS,
+) -> HRESULT {
+    HR_OK
+}
+
+pub(crate) fn bypass_probe_registration() -> bool {
+    REPLAY.with_borrow(|state| state.pending.as_ref().is_some_and(|(_, bypass)| *bypass))
+}
+
+pub(crate) struct FallbackReplay(Arc<Runtime>);
+
+pub(crate) fn replay_fallback() -> Option<FallbackReplay> {
+    // Release the thread-local borrow before invoking a callback: the real
+    // entry point can itself probe metadata on the provider fiber.
+    let pending = REPLAY.with_borrow_mut(|state| state.pending.take());
+    pending.map(|(runtime, _)| {
+        notify_registered(&runtime, PRJ_NOTIFICATION_FILE_OPENED);
+        FallbackReplay(runtime)
+    })
+}
+
+impl Drop for FallbackReplay {
+    fn drop(&mut self) {
+        notify_registered(&self.0, PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION);
+    }
+}
+
+fn notify_registered(runtime: &Runtime, kind: PRJ_NOTIFICATION) {
+    let callback = REPLAY.with_borrow(|state| state.callback.expect("mounted callback"));
+    let name = HSTRING::from("nested\\read.txt");
+    let data = PRJ_CALLBACK_DATA {
+        InstanceContext: std::ptr::from_ref(runtime).cast_mut().cast(),
+        FilePathName: PCWSTR(name.as_ptr()),
+        FileId: GUID::from_u128(1),
+        TriggeringProcessId: std::process::id(),
+        ..Default::default()
+    };
+    // SAFETY: this is the callback table passed to PrjStartVirtualizing; the
+    // mounted runtime, callback data and UTF-16 name remain live for the call.
+    let result = unsafe {
+        callback(
+            &raw const data,
+            false,
+            kind,
+            PCWSTR::null(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(result, HR_OK);
+}
+
+struct ResetReplay;
+
+impl Drop for ResetReplay {
+    fn drop(&mut self) {
+        REPLAY.with_borrow_mut(|state| *state = ReplayState::default());
+    }
+}
+
+async fn mounted_replay(noop: bool, bypass: bool) -> Result<[bool; 3], Box<dyn std::error::Error>> {
+    let _reset = ResetReplay;
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
     let parent = windows_path("nested");
@@ -47,6 +126,7 @@ async fn mounted_nested_fallback_negative_control_replays_self_notifications()
     source.create_directory(&parent, FileMetadata::default(), &work)?;
     source.create_file(&path, FileMetadata::default(), None, &work)?;
     source.write_range(&path, 0, Bytes::from_static(b"contents"))?;
+    REPLAY.with_borrow_mut(|state| state.noop = noop);
     let (_root, destination, mut session) = mount_source(&source)?;
     assert_eq!(
         std::fs::read(destination.join("nested/read.txt"))?,
@@ -60,40 +140,54 @@ async fn mounted_nested_fallback_negative_control_replays_self_notifications()
             .and_then(|driver| driver.runtime.as_ref())
             .ok_or("mount has no runtime")?,
     );
-    let notify_self = |kind| {
-        assert_eq!(
-            notify_at(&runtime, "nested\\read.txt", std::process::id(), kind),
-            HR_OK
-        );
-    };
-    for suppress in [true, false, true] {
+    let mut observed = [false; 3];
+    for (index, suppress) in [true, false, true].into_iter().enumerate() {
         lock_recover(&runtime.projection).remove(&path);
-        // Replay delivery so kernel-side self-notification filtering cannot
-        // make either control vacuous. The same guard and native fallback
-        // run with suppression enabled, disabled, then restored.
-        super::super::probe_guard::with_guard(
-            || suppress.then(|| MetadataProbeGuard::enter(&runtime.metadata_probes, &path)),
-            || {
-                notify_self(PRJ_NOTIFICATION_FILE_OPENED);
-                let host = host_windows_metadata(&runtime.metadata_root, &path, &work, None);
-                notify_self(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION);
-                host
-            },
+        REPLAY.with_borrow_mut(|state| {
+            state.pending = Some((Arc::clone(&runtime), bypass || !suppress));
+        });
+        probe_host_windows_metadata(
+            &runtime.metadata_root,
+            &path,
+            &runtime.metadata_probes,
+            &work,
         )?;
-        runtime.callbacks.drain();
-        // Only the ordinary-close callback inserts this leaf binding. Parent
-        // traversal can issue callbacks too, but cannot insert the leaf key.
-        assert_eq!(
-            lock_recover(&runtime.projection).contains_key(&path),
-            !suppress,
-            "an unsuppressed fallback must produce a spurious leaf callback"
+        assert!(
+            REPLAY.with_borrow(|state| state.pending.is_none()),
+            "production fallback was not replayed"
         );
+        runtime.callbacks.drain();
+        // Only ordinary close inserts this exact leaf binding; parent callbacks
+        // cannot satisfy this observation.
+        observed[index] = lock_recover(&runtime.projection).contains_key(&path);
         assert!(!has_pending_capture(&runtime.post_operation_failure, &path));
         assert!(lock_recover(&runtime.metadata_probes).is_empty());
         assert!(lock_recover(&runtime.metadata_baselines).is_empty());
     }
     drop(runtime);
     session.stop()?;
+    Ok(observed)
+}
+
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+async fn mounted_nested_fallback_negative_control_replays_self_notifications()
+-> Result<(), Box<dyn std::error::Error>> {
+    let expected = [false, true, false];
+    assert_eq!(mounted_replay(false, false).await?, expected);
+    // Both deliberately broken production seams must fail the same oracle.
+    let callback_mutant = mounted_replay(true, false).await?;
+    assert_eq!(callback_mutant, [false; 3]);
+    assert_ne!(
+        callback_mutant, expected,
+        "no-op registered callback escaped detection"
+    );
+    let guard_mutant = mounted_replay(false, true).await?;
+    assert_eq!(guard_mutant, [true; 3]);
+    assert_ne!(
+        guard_mutant, expected,
+        "bypassed production registration escaped detection"
+    );
     Ok(())
 }
 
