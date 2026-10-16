@@ -95,7 +95,10 @@ pub(crate) fn body<'a, 'b>(
 }
 
 impl Serialize for CountInput<'_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         if self.adapter == Adapter::Gemini {
             self.generation.serialize_fields(
                 serializer,
