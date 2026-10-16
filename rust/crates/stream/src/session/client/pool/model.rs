@@ -30,6 +30,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         pool.links.insert(
             node.into(),
             Link {
+                observation: None,
                 epoch,
                 credit: wire::SessionWindow {
                     bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -86,6 +87,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
                 progress: Arc::new(Progress::new(0)),
                 records,
                 ready: None,
+                observation: crate::obs::OperationSpan::new(tracing::Span::none()),
             },
         );
     }
@@ -120,6 +122,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 let (records, receiver) = mpsc::channel(2);
                 let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
                 let (ready, opened) = oneshot::channel();
+                let observation = cursor.observation.operation.clone();
                 (
                     cursor,
                     Command::Open {
@@ -133,6 +136,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         progress,
                         records,
                         ready,
+                        observation,
                     },
                     opened,
                 )
@@ -232,6 +236,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 progress,
                 records,
                 ready,
+                observation: cursor.observation.operation.clone(),
             };
             (cursor, command, opened)
         };
@@ -449,6 +454,7 @@ pub fn verify_link_isolation(broken: bool) {
             progress: Arc::new(Progress::new(0)),
             records,
             ready,
+            observation: crate::obs::OperationSpan::new(tracing::Span::none()),
         })
         .unwrap();
         assert!(pool.receive_frame(
@@ -465,4 +471,87 @@ pub fn verify_link_isolation(broken: bool) {
         assert_eq!(opened.try_recv().unwrap().unwrap(), 5);
         assert!(pool.routes.contains_key(&3));
     });
+}
+
+/// Real deadline race and cursor destruction, with Loom-instrumented guard state.
+pub fn verify_registration_deadline(broken: bool) {
+    use std::future::Future as _;
+    for (complete, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
+        loom::model(move || {
+            let (commands, _commands) = mpsc::channel(1);
+            let client = Client {
+                commands,
+                removed: Arc::new(signal::Signal::new()),
+                next_id: Arc::new(AtomicU64::new(1)),
+                active: Arc::new(AtomicU64::new(0)),
+                attempt_epoch: Arc::new(AtomicU64::new(0)),
+                abandoned: Arc::new(gate::Gate::new()),
+            };
+            let (_, receiver) = mpsc::channel(2);
+            let progress = Arc::new(Progress::new(0));
+            let cursor = client.cursor(1, Arc::clone(&progress), receiver).unwrap();
+            let expiry = Arc::new(gate::Gate::new());
+            let opened = Arc::new(gate::Gate::new());
+            let expiring = Arc::clone(&expiry);
+            let expiry_thread = loom::thread::spawn(move || expiring.set(true).unwrap());
+            let opening = Arc::clone(&opened);
+            let open_thread = loom::thread::spawn(move || {
+                if complete {
+                    opening.set(true).unwrap();
+                }
+            });
+            let mut registration = Some(Box::pin(async move {
+                let result = deadline::until(
+                    async {
+                        opened.changed(false).await.unwrap();
+                    },
+                    async {
+                        if broken {
+                            future::pending::<()>().await;
+                        }
+                        expiry.changed(false).await.unwrap();
+                    },
+                )
+                .await;
+                drop(cursor); // Existing guard owns cancellation and removal.
+                result
+            }));
+            let wakes = Arc::new(AtomicU64::new(0));
+            let waker =
+                std::task::Waker::from(std::sync::Arc::new(RegistrationWake(Arc::clone(&wakes))));
+            let mut context = std::task::Context::from_waker(&waker);
+            let early = registration.as_mut().unwrap().as_mut().poll(&mut context);
+            if cancel {
+                drop(registration.take());
+            }
+            expiry_thread.join().unwrap();
+            open_thread.join().unwrap();
+            if !cancel && early.is_pending() {
+                assert!(
+                    registration
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .poll(&mut context)
+                        .is_ready(),
+                    "expired registration must complete"
+                );
+                assert!(
+                    wakes.load(Ordering::Acquire) > 0,
+                    "a parked registration must be woken"
+                );
+            }
+            drop(registration);
+            assert!(progress.cancelled());
+            assert_eq!(client.active.load(Ordering::Acquire), 0);
+            assert_eq!(loom::future::block_on(client.removed.next()).unwrap(), 1);
+        });
+    }
+}
+
+struct RegistrationWake(Arc<AtomicU64>);
+impl std::task::Wake for RegistrationWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Release);
+    }
 }

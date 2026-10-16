@@ -1,0 +1,2 @@
+data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"redacted-secret"}}}
+

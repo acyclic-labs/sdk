@@ -5,7 +5,7 @@ use crate::{
     model::{ModelMessage, ModelRequest, ModelRole, PreparedModelRequest},
 };
 
-pub(super) fn select(
+pub(super) async fn select(
     selected: Option<CompactionPolicy>,
     model: &Model,
     provider: &dyn ModelProvider,
@@ -34,10 +34,12 @@ pub(super) fn select(
                 limits,
                 None,
             )?;
-            let count = provider.count_tokens(&request)?;
-            count.validate(&request, &mut None)?;
+            let count = provider.count_tokens(&request).await?;
+            let fixed = u32::try_from(count.validate(&request, &mut None)?).map_err(|_| {
+                Error::Invalid("fixed tool context exceeds provider capacity".into())
+            })?;
             Ok(CompactionPolicy::Threshold(
-                ThresholdCompaction::for_capacity(capacity, count.fixed_tokens)?,
+                ThresholdCompaction::for_capacity(capacity, fixed)?,
             ))
         }
     }

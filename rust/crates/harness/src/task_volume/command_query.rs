@@ -86,7 +86,7 @@ pub(super) fn snapshot(
             return Err(Error::LimitExceeded);
         }
         if let Some(file) = index.files.get(key) {
-            selected.insert(key.clone(), file.clone());
+            selected.insert(key.clone(), file.file.clone());
         }
         Ok(())
     };

@@ -31,7 +31,7 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
     );
     for budget in 1..=6 {
         let projection = compact(&source, budget, 6);
-        if matches!(budget, 1 | 2 | 4) {
+        if matches!(budget, 1 | 2) {
             assert!(projection.is_err());
             continue;
         }
@@ -42,6 +42,12 @@ fn compaction_preserves_instructions_current_input_and_complete_exchanges() -> R
             retained.messages.contains(&source.messages[3]),
             retained.messages.contains(&source.messages[4])
         );
+        if budget == 4 {
+            assert!(
+                !retained.messages.contains(&source.messages[3]),
+                "spare slots cannot retain half an exchange"
+            );
+        }
         assert_eq!(
             retained.messages[retained.current_input_index.unwrap() as usize],
             source.messages[5]

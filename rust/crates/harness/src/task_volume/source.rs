@@ -118,9 +118,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                     for (_, file) in index
                         .files
                         .range(range)
-                        .filter(|(_, file)| query.matches_file(file))
+                        .filter(|(_, file)| query.matches_file(&file.file))
                     {
-                        include(&mut sizes, &mut bytes, file, maximum_files)?;
+                        include(&mut sizes, &mut bytes, &file.file, maximum_files)?;
                     }
                 }
                 return Ok((sizes, bytes));

@@ -204,6 +204,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_file_submit"
+path = "fuzz_targets/client_file_submit.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 required-features = ["runtime"]
@@ -231,6 +239,21 @@ bench = false
 [[bin]]
 name = "bounded_json"
 path = "fuzz_targets/bounded_json.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_frames"
+path = "fuzz_targets/wire_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_decode"
+path = "fuzz_targets/journal_decode.rs"
 test = false
 doc = false
 bench = false

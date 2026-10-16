@@ -136,9 +136,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(&index, &files)?;
-                apply(&mut index, files);
+                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
+                apply(&mut index, files, next);
                 index.commit = record.commit_id;
-                index.next += 1;
+                index.next = next;
             }
             if index.next == before {
                 return Err(Error::ResetRequired);
@@ -159,7 +160,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.commit.as_bytes() != &cursor.commit {
             return Err(Error::ResetRequired);
         }
-        let files = if let Query::CommandSession { session, recent } = query {
+        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
             let mut files = Vec::new();
@@ -167,12 +170,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 for (_, file) in index
                     .files
                     .range(range)
-                    .filter(|(_, f)| query.matches_file(f))
+                    .filter(|(_, f)| query.matches_file(&f.file))
                 {
                     if files.len() == maximum_files {
                         return Err(Error::LimitExceeded);
                     }
-                    files.push(file.clone());
+                    files.push(file.file.clone());
                 }
             }
             files

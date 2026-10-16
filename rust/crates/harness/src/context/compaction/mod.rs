@@ -119,9 +119,9 @@ impl CompactionPolicy {
     }
 }
 
+mod exchanges;
 mod selection;
-pub(crate) use selection::compact_context;
-pub(super) use selection::mandatory_flags;
+pub(crate) use selection::{compact_context, mandatory_messages};
 mod copying;
 pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;

@@ -119,7 +119,8 @@ impl LocalHarness {
                 provider.as_ref(),
                 &tools,
                 config.limits,
-            )?;
+            )
+            .await?;
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
             #[cfg(feature = "native-execution")]
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;

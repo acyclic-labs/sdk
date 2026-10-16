@@ -133,8 +133,8 @@ test("model provider callbacks are captured once per binding and retain their re
   const binding = scope.modelBinding;
   if (!binding || !admitted) throw new Error("expected an admitted scoped request");
   expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
-  const count = binding.provider.countTokens(admitted);
-  expect(count).toEqual(accounting.countTokens(admitted));
+  const count = await binding.provider.countTokens(admitted);
+  expect(count).toEqual(await accounting.countTokens(admitted));
   await binding.provider.reconcile({ operationId: "binding-probe", step: 0,
     requestDigest: count.requestDigest, observed: [] });
   expect(called).toEqual(["capacity", "count", "reconcile"]);

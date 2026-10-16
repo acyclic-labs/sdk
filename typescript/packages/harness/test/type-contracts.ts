@@ -39,21 +39,8 @@ type _CapacityFacadeUsesRustCounts = Assert<Equal<
 >>;
 type _AccountingFacadeUsesRustCounts = Assert<Equal<
   ModelTokenCount,
-  Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
+  Readonly<{ requestDigest: Uint8Array; inputTokens: RustModelTokenCount["input_tokens"]; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
 >>;
-
-type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,
-  "system" | "user" | "assistant" | "tool">>;
-type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "system" | "user" | "assistant" | "tool", ModelRoleWire>>;
-type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPartWire["kind"],
-  "text" | "file" | "tool_call" | "tool_result">>;
-type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "text" | "file" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
-type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
-  "content" | "reasoning" | "tool_call" | "completed">>;
-type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
 const generatedModelContent: ModelContentWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },

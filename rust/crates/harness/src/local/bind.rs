@@ -46,7 +46,8 @@ impl LocalHarness {
             provider.as_ref(),
             runtime.tool_registry(),
             config.limits,
-        )?;
+        )
+        .await?;
         let (filesystem, stream) = storage;
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(

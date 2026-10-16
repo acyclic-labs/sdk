@@ -118,7 +118,11 @@ impl Pool {
         }
     }
     pub(super) fn fail_link(&mut self, node: &str, error: &StreamError) {
-        self.links.remove(node);
+        if let Some(mut link) = self.links.remove(node)
+            && let Some(observation) = &mut link.observation
+        {
+            observation.finish(Some(error));
+        }
         self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
@@ -132,6 +136,7 @@ impl Pool {
                 progress,
                 records,
                 ready,
+                observation,
             } => {
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
@@ -162,6 +167,7 @@ impl Pool {
                         progress,
                         records,
                         ready: Some(ready),
+                        observation,
                     },
                 );
                 if self.links.contains_key(&self.home) {
@@ -268,6 +274,7 @@ impl Pool {
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Ok(id));
                 }
+                route.observation.record("generation", route.generation);
                 route.opened = true;
                 self.grant(id)
             }

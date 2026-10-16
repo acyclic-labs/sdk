@@ -16,17 +16,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if maximum_files == 0 {
             return Err(super::Error::LimitExceeded);
         }
-        let mut index = self.index.lock().await;
-        let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
-        if !self.refresh_to(&mut index, tail, maximum_files).await? {
+        let (_, complete) = self.refresh_bounded::<true>(maximum_files as u64).await?;
+        if !complete {
             return Ok(None);
         }
+        let index = self.index.lock().await;
         Ok(Some(
             index
                 .files
                 .range((after.map_or(Unbounded, Excluded), Unbounded))
                 .take(maximum_files)
-                .map(|(_, file)| file.clone())
+                .map(|(_, file)| file.file.clone())
                 .collect(),
         ))
     }

@@ -29,6 +29,18 @@ macro_rules! demand_calls {
     )*};
 }
 impl NativeMaterializationWork {
+    /// Registers a cancellation waiter funded by this original ledger.
+    pub fn cancellation_wait(
+        &self,
+    ) -> Result<crate::Cancelled<'static>, NativeTreeMaterializationError> {
+        self.cancellation
+            .prepare_cancelled_with_native_work(self)
+            .map_err(|cause| match cause {
+                crate::cancellation::CancellationWaitError::Work(cause) => cause.into(),
+                crate::cancellation::CancellationWaitError::Native(cause) => cause,
+            })
+    }
+
     /// Bytes retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
         std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64

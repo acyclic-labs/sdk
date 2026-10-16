@@ -94,7 +94,7 @@ pub(super) fn decode_error(
 }
 
 /// Known owned String and container slot capacities of a resident Value.
-pub(crate) fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
+pub fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
     value_owned_bytes(value, false)
 }
 

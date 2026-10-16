@@ -3,6 +3,29 @@ import { StreamSessions } from "../src/session.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 
+test("session discovery reads caller fields once and retains the original cancellation", async () => {
+  const peer = new SessionNode();
+  peer.append("agents/child");
+  const client = new StreamSessions(peer.connect);
+  const original = new AbortController();
+  const replacement = new AbortController();
+  let parent = "agents";
+  let signal = original.signal;
+  const reads = { parent: 0, signal: 0, limit: 0 };
+  const children = client.children({
+    get parent() { reads.parent++; return parent; },
+    get signal() { reads.signal++; return signal; },
+    get limit() { reads.limit++; return 1; },
+  });
+  parent = "other"; signal = replacement.signal;
+  expect((await children.next()).value?.path).toBe("agents/child");
+  original.abort();
+  expect((await children.next()).done).toBe(true);
+  await children.return(undefined);
+  expect(reads).toEqual({ parent: 1, signal: 1, limit: 1 });
+  expect(peer.active).toBe(0);
+});
+
 test("a maximum-size child and its opaque cursor fit the advertised credit", async () => {
   const peer = new SessionNode();
   const path = "a".repeat(StreamLimit.MAX_PATH_BYTES);

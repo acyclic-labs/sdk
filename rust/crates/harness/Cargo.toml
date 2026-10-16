@@ -93,6 +93,10 @@ name = "client_session"
 path = "tests/client_session.rs"
 
 [[test]]
+name = "decoder_properties"
+path = "tests/decoder_properties.rs"
+
+[[test]]
 name = "client_history"
 path = "tests/client_history.rs"
 
@@ -294,6 +298,10 @@ workspace = true
 name = "client-diff"
 path = "tests/client_diff.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-file-submit"
+path = "tests/client_file_submit.rs"
 
 [[test]]
 name = "query-model"

@@ -49,7 +49,7 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         index
             .files
             .range(..)
-            .map(|(_, file)| file.clone())
+            .map(|(_, stored)| stored.file.clone())
             .collect::<Vec<_>>(),
         snapshot.files,
         "acknowledgement overwrote rebuilt files"

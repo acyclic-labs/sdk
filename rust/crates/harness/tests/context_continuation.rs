@@ -72,11 +72,11 @@ fn summary_model(turns: usize) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>)
                     .map_err(|_| Error::Invalid("synthetic count exceeds u32".into()))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 512,
+        Ok(ModelTokenCount::from_upper_bounds(
+            request.request_digest(),
+            512,
             message_tokens,
-        })
+        ))
     });
     (Arc::new(provider), counts)
 }

@@ -322,9 +322,23 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         .await?;
     assert_eq!(first.request().messages.len(), 3);
     assert_eq!(batch.request().messages.len(), 5);
+    assert_eq!(first.request().messages[0], batch.request().messages[0]);
+    assert_eq!(first.request().messages[1], batch.request().messages[1]);
+    assert_eq!(first.request().messages[2], batch.request().messages[3]);
     assert_eq!(
-        batch.request().messages.get(..3),
-        Some(first.request().messages.as_slice())
+        batch
+            .request()
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect::<Vec<_>>(),
+        [
+            ModelRole::User,
+            ModelRole::Assistant,
+            ModelRole::Assistant,
+            ModelRole::Tool,
+            ModelRole::Tool
+        ]
     );
     let dispatched = model
         .requests()

@@ -333,7 +333,7 @@ impl WasmTaskRuntime {
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(
-            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined"
+            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount | Promise<ModelTokenCount>) | undefined"
         )]
         count_tokens: Option<Function>,
         #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,

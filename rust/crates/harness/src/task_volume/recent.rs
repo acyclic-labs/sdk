@@ -41,19 +41,19 @@ fn file_kind(file: &FileValue) -> Option<u8> {
         kind(&file.key)
     }
 }
-pub(super) fn record(index: &mut Index, file: &FileValue) {
+pub(super) fn record(index: &mut Index, file: &FileValue, position: u64) {
     let (FileKey::Task { task, file: leaf }, Some(kind)) = (&file.key, file_kind(file)) else {
         return;
     };
     if let Some((old_kind, sequence)) = index
         .view_revisions
-        .insert(file.key.clone(), (kind, index.next))
+        .insert(file.key.clone(), (kind, position))
     {
         index.view_order.remove(&(task.clone(), old_kind, sequence));
     }
     index
         .view_order
-        .insert((task.clone(), kind, index.next), file.key.clone());
+        .insert((task.clone(), kind, position), file.key.clone());
     if *leaf == TaskFile::Status {
         index.overviews.insert(task.clone(), file.key.clone());
     }
@@ -72,8 +72,8 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
                 .take((*recent as usize).min(maximum))
             {
                 let file = index.files.get(key).ok_or(Error::InvalidSegment)?;
-                if query.matches_file(file) {
-                    files.push((*sequence, file.clone()));
+                if query.matches_file(&file.file) {
+                    files.push((*sequence, file.file.clone()));
                 }
             }
         }
@@ -89,7 +89,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             .overviews
             .values()
             .take(maximum)
-            .filter_map(|key| index.files.get(key).cloned())
+            .filter_map(|key| index.files.get(key).map(|stored| stored.file.clone()))
             .collect())
     }
 }

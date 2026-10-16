@@ -110,27 +110,29 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    await validateWireRequest({ kind: "children", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) });
-    if (request.signal?.aborted) return;
-    const input = wireRequest({ kind: "children", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) });
+    const { parent, signal, limit } = request;
+    await validateWireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
+    if (signal?.aborted) return;
+    const input = wireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
     let handle: Awaited<ReturnType<WasmStream["open_children"]>>;
     try { handle = await (await this.#inner).open_children(input); }
     catch (error) { throw streamError(error, "children"); }
     const close = (): void => handle.close();
-    request.signal?.addEventListener("abort", close, { once: true });
+    signal?.addEventListener("abort", close, { once: true });
+    if (signal?.aborted) close();
     try {
-      while (!request.signal?.aborted) {
+      while (!signal?.aborted) {
         let bytes: Uint8Array | null;
         try { bytes = await handle.next(); }
-        catch (error) { if (request.signal?.aborted) return; throw streamError(error, "children"); }
-        if (bytes === null || request.signal?.aborted) return;
+        catch (error) { if (signal?.aborted) return; throw streamError(error, "children"); }
+        if (bytes === null || signal?.aborted) return;
         const child = fromBinary(ChildrenResponseSchema, bytes).child;
-        yield checkedChild(child, request.parent);
+        yield checkedChild(child, parent);
       }
     } finally {
-      request.signal?.removeEventListener("abort", close);
+      signal?.removeEventListener("abort", close);
       handle.close(); handle.free();
     }
   }

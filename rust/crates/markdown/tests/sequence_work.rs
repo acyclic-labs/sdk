@@ -67,6 +67,27 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
     (bytes, bytes + metadata)
 }
 
+#[test]
+fn backslash_checkpoint_context_has_linear_work() {
+    let measure = |count| {
+        let before = work::current();
+        let mut markdown = Markdown::default();
+        for _ in 0..count {
+            markdown.push("\\\\");
+        }
+        markdown.push("*‐*");
+        let used = work::current() - before;
+        assert_eq!(
+            markdown.lines(),
+            full_parse(&format!("{}*‐*", "\\\\".repeat(count)))
+        );
+        used
+    };
+    let small = measure(512);
+    let large = measure(1024);
+    assert!(large <= 2 * small + 1024, "work {small} -> {large}");
+}
+
 fn measure(
     actions: &[u8],
     count: usize,

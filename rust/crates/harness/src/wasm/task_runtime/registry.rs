@@ -208,23 +208,32 @@ impl ModelProvider for HostModel {
         Ok(capacity)
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        let callback = self.count_tokens.as_ref().ok_or_else(|| {
-            Error::Unsupported("selected model token counting is unavailable".into())
-        })?;
-        let digest = to_js(&request.request_digest())
-            .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
-        let value = callback
-            .call2(
-                &JsValue::UNDEFINED,
-                &js_sys::Uint8Array::from(request.bytes()),
-                &digest,
-            )
-            .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
-        let count: ModelTokenCount = from_js(value)
-            .map_err(|_| Error::Invalid("model counting callback returned invalid data".into()))?;
-        count.validate(request, &mut None)?;
-        Ok(count)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            let callback = self.count_tokens.as_ref().ok_or_else(|| {
+                Error::Unsupported("selected model token counting is unavailable".into())
+            })?;
+            let digest = to_js(&request.request_digest())
+                .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
+            let value = callback
+                .call2(
+                    &JsValue::UNDEFINED,
+                    &js_sys::Uint8Array::from(request.bytes()),
+                    &digest,
+                )
+                .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
+            let value = JsFuture::from(Promise::resolve(&value))
+                .await
+                .map_err(|_| Error::Storage("model token counting callback failed".into()))?;
+            let count: ModelTokenCount = from_js(value).map_err(|_| {
+                Error::Invalid("model counting callback returned invalid data".into())
+            })?;
+            count.validate(request, &mut None)?;
+            Ok(count)
+        })
     }
 
     fn generate<'a>(

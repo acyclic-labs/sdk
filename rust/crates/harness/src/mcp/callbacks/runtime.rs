@@ -213,7 +213,9 @@ impl McpRuntimeCallbacks {
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+                ModelEvent::Reasoning { .. }
+                | ModelEvent::ReasoningBlock { .. }
+                | ModelEvent::Completed { .. } => {}
             }
         }
         Ok(
