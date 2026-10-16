@@ -22,10 +22,11 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate && tsc -b",
-    "test": "bun run generate && tsc -b --pretty false",
+    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs sdk",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs sdk",
     "prepack": "bun run generate"
   },
   "dependencies": {

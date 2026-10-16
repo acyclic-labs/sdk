@@ -31,9 +31,9 @@
   ],
   "scripts": {
     "build": "bun run generate && bun run --cwd ../actors build && bun run --cwd ../objects build && bun run build:wasm && tsc -b",
-    "test": "bun run generate && tsc -b --pretty false",
+    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
     "pack:dry": "bun pm pack --dry-run",
-    "test:cloud": "tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/cloud-contract.test.mjs",
+    "test:cloud": "bun run generate && bun run build:wasm && tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/cloud-contract.test.mjs",
     "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs manifest",
     "test:manifest": "bun run build:wasm && node --test test/manifest-wasm.test.mjs",

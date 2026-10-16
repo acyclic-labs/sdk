@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { packageClosure } from "./package-closure.mjs";
@@ -9,6 +9,61 @@ const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^i
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
+
+test("every standalone project compilation prepares its complete WASM closure", () => {
+  const packages = new Map(readdirSync("typescript/packages", { withFileTypes: true })
+    .filter(entry => entry.isDirectory()).map(entry => [entry.name,
+      JSON.parse(readFileSync(`typescript/packages/${entry.name}/package.json`, "utf8"))]));
+  const wasm = name => [...packageClosure(process.cwd(), name)]
+    .map(name => name === "workers" ? "manifest" : name).filter(name => names.includes(name));
+
+  function check(name, operation, changed = new Map()) {
+    const prepared = new Set();
+    const active = new Set();
+    function run(name, operation) {
+      const key = `${name}:${operation}`;
+      assert.ok(!active.has(key), `recursive package script ${key}`);
+      active.add(key);
+      const script = changed.get(key) ?? packages.get(name).scripts[operation];
+      assert.equal(typeof script, "string", key);
+      for (const command of script.split(" && ")) {
+        const builder = /^bun \.\.\/\.\.\/\.\.\/scripts\/build-wasm\.mjs ([a-z-]+)$/.exec(command);
+        const dependency = /^bun run --cwd \.\.\/([a-z-]+) ([a-z0-9:-]+)$/.exec(command);
+        const local = /^bun run ([a-z0-9:-]+)$/.exec(command);
+        if (builder) {
+          for (const target of wasm(builder[1] === "manifest" ? "workers" : builder[1])) prepared.add(target);
+        } else if (dependency) {
+          run(dependency[1], dependency[2]);
+        } else if (local) {
+          run(name, local[1]);
+        } else if (/\btsc\s+-b(?:\s|$)/.test(command)) {
+          for (const target of wasm(name)) {
+            assert.ok(prepared.has(target), `${key} compiles before preparing ${target} WASM`);
+          }
+        }
+      }
+      active.delete(key);
+    }
+    run(name, operation);
+  }
+
+  // Enumerate every package and every command that invokes project compilation,
+  // including commands reached through local/dependency bun-run prerequisites.
+  for (const [name, { scripts }] of packages) {
+    for (const [operation, command] of Object.entries(scripts)) {
+      if (["build", "test", "check"].includes(operation) || /\btsc\s+-b(?:\s|$)/.test(command)) check(name, operation);
+    }
+  }
+  for (const operation of ["build", "test"]) {
+    const original = packages.get("sdk").scripts[operation];
+    assert.throws(() => check("sdk", operation, new Map([
+      [`sdk:${operation}`, original.replace("bun run build:wasm && ", "")],
+    ])), /compiles before preparing/);
+  }
+  assert.throws(() => check("sdk", "build", new Map([
+    ["sdk:build:wasm", "bun ../../../scripts/build-wasm.mjs actors"],
+  ])), /compiles before preparing/);
+});
 
 test("standalone package WASM targets follow references while groups keep exclusive targets", () => {
   const selection = build.slice(build.indexOf("const grouped ="), build.indexOf("if (!grouped)"));
