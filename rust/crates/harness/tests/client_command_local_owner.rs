@@ -113,9 +113,12 @@ async fn production_pause_stop_resume_commands_gate_real_owner_dispatch_and_reop
     );
     // Recreate the UI consumer. The active actor remains parked on its file follow.
     drop(client);
-    let mut client = selected(&local, task_id).await?;
-    assert_eq!(send(&local, &mut client, "/resume").await?["paused"], false);
-    assert_eq!(running.await?.text, "continued");
+    let (output, resumed) = tokio::join!(running, async {
+        let mut client = selected(&local, task_id).await?;
+        send(&local, &mut client, "/resume").await
+    });
+    assert_eq!(resumed?["paused"], false);
+    assert_eq!(output?.text, "continued");
     Ok(())
 }
 #[tokio::test]
@@ -264,10 +267,10 @@ async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns()
     client.submit("/model other", &NoReads).await?;
     let root = send(&local, &mut client, "root prompt").await?;
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
-    assert_eq!(local.resume(root).await?.text, "first");
-    assert_eq!(provider.requests()[0].model.name, "other");
     let child = send(&local, &mut client, "child prompt").await?;
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    assert_eq!(local.resume(root).await?.text, "first");
+    assert_eq!(provider.requests()[0].model.name, "other");
     // The task is already admitted; dispatch must read the followed selection.
     client.submit("/model child-model", &NoReads).await?;
     assert_eq!(local.resume(child).await?.text, "child");

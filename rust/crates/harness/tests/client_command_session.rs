@@ -280,7 +280,14 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
             None,
             None,
         )
-        .map_err(|failure| failure.error)?;
+        .map_err(|failure| {
+            eprintln!(
+                "{}\n{}",
+                String::from_utf8_lossy(&failure.stdout),
+                String::from_utf8_lossy(&failure.stderr)
+            );
+            failure.error
+        })?;
     assert!(
         result.status.success(),
         "{}\n{}",

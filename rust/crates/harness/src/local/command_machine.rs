@@ -73,11 +73,11 @@ impl ResumableMachine for DirectTool {
                 "direct command result identity changed".into(),
             ));
         }
-        let value: Outcome<tool::ToolResult> =
+        let value: Outcome<Value> =
             serde_json::from_value(result["value"].clone()).map_err(storage)?;
         let status = match value {
             Outcome::Succeeded(result) => MachineStatus::Completed {
-                value: serde_json::to_value(result).map_err(storage)?,
+                value: serde_json::to_value(tool::ToolResult { value: result }).map_err(storage)?,
             },
             Outcome::Failed { message } => MachineStatus::Failed { message },
             _ => return Err(Error::Indeterminate(command.operation_id)),

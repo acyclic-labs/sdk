@@ -42,7 +42,7 @@ proptest! {
         let sent = machine.transition(&restored, &Value::Null).unwrap();
         prop_assert_eq!(sent.commands.len(), 1);
         prop_assert_eq!(sent.commands[0].operation_id, operation);
-        let value = if succeeds { json!({"Succeeded":{"value":{"text":text}}}) } else { json!({"Failed":{"message":text}}) };
+        let value = if succeeds { json!({"Succeeded":{"text":text}}) } else { json!({"Failed":{"message":text}}) };
         let result = json!({"commands":[{"operation_id":operation,"value":value}]});
         let terminal = machine.transition(&sent.state, &result).unwrap();
         prop_assert!(terminal.commands.is_empty());
