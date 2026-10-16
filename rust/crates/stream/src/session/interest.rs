@@ -111,7 +111,8 @@ impl<P: StreamProvider> Session<P> {
                 generation: identity.generation,
                 latest,
                 children,
-                pending: 0,
+                pending: VecDeque::new(),
+                indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: resume.clone(),
                 applied: resume,
@@ -123,15 +124,17 @@ impl<P: StreamProvider> Session<P> {
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.sources.remove(id);
-        self.channels.remove(&id);
-        self.runnable.remove(&id);
-        self.pending
-            .retain(|pending| pending.frame.channel_id != id);
-        self.pending_bytes = self
-            .pending
-            .iter()
-            .map(|pending| pending.frame.encoded_len())
-            .sum();
+        if let Some(channel) = self.channels.remove(&id) {
+            if let Some(length) = channel.indexed {
+                self.runnable.remove(&(length, id));
+            }
+            self.pending_frames -= channel.pending.len();
+            self.pending_bytes -= channel
+                .pending
+                .iter()
+                .map(|p| p.frame.encoded_len())
+                .sum::<usize>();
+        }
         Ok(())
     }
 }

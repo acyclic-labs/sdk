@@ -4,6 +4,8 @@ use super::*;
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
+#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod ordering;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {

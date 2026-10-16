@@ -160,3 +160,19 @@ fn latest_consumption_and_move_fence_share_one_application_cut() {
 fn negative_control_checks_latest_generation_outside_the_cursor_lock() {
     acyclic_stream::session::verify_latest_progress(true);
 }
+
+#[test]
+fn source_deduplication_survives_pending_rechecks_during_drain() {
+    acyclic_stream::session::verify_source_recheck(0);
+}
+#[test]
+#[should_panic(expected = "provider recheck lost its wakeup")]
+fn negative_control_clears_the_source_hint_after_rechecking() {
+    acyclic_stream::session::verify_source_recheck(1);
+}
+
+#[test]
+#[should_panic(expected = "provider recheck lost its wakeup")]
+fn negative_control_resets_the_source_hint_without_acquiring_coalesced_wakes() {
+    acyclic_stream::session::verify_source_recheck(2);
+}

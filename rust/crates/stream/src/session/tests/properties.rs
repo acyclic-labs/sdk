@@ -2,7 +2,7 @@ use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
-fn empty_session(latest: bool) -> Session<MemoryStream> {
+pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
     Session {
         provider: Arc::new(MemoryStream::default()),
         limits: Limits::default(),
@@ -16,7 +16,8 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
                 children: false,
                 generation: 1,
                 latest,
-                pending: 0,
+                pending: VecDeque::new(),
+                indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: cursor(0),
                 applied: cursor(0),
@@ -27,9 +28,11 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
         incoming: stream::empty().boxed(),
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
-        pending: VecDeque::new(),
+        pending_frames: 0,
         pending_bytes: 0,
         runnable: BTreeSet::new(),
+        ready_after: None,
+        head_visits: 0,
     }
 }
 
@@ -79,11 +82,11 @@ proptest! {
         let expected: Vec<_> = history.iter().enumerate().filter(|(index, (key, _, attention))| {
             !latest || *attention || !history[index + 1..].iter().any(|(later_key, _, later_attention)| later_key == key && !later_attention)
         }).map(|(index, _)| index as u64 + 1).collect();
-        let actual: Vec<_> = session.pending.iter().filter_map(|pending| match &pending.frame.body {
+        let actual: Vec<_> = session.channels[&1].pending.iter().filter_map(|pending| match &pending.frame.body {
             Some(Body::Data(data)) => data.after.as_ref().map(|after| after.next), _ => None,
         }).collect();
         prop_assert_eq!(actual, expected);
-        prop_assert_eq!(session.pending_bytes, session.pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
+        prop_assert_eq!(session.pending_bytes, session.channels[&1].pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
     }
 }
 
@@ -92,10 +95,34 @@ fn check_admission(session: &Session<MemoryStream>) {
         .channels
         .iter()
         .filter_map(|(id, channel)| {
-            (channel.pending > 0 && channel.credit.frames > 0 && channel.credit.bytes > 0)
-                .then_some(*id)
+            channel
+                .pending
+                .front()
+                .filter(|p| {
+                    channel.credit.frames > 0
+                        && p.frame.encoded_len() as u64 <= channel.credit.bytes
+                })
+                .map(|p| (p.frame.encoded_len(), *id))
         })
         .collect();
+    let frames: usize = session.channels.values().map(|c| c.pending.len()).sum();
+    let bytes: usize = session
+        .channels
+        .values()
+        .flat_map(|c| &c.pending)
+        .map(|p| p.frame.encoded_len())
+        .sum();
+    assert_eq!(session.pending_frames, frames);
+    assert_eq!(session.pending_bytes, bytes);
+    for (id, channel) in &session.channels {
+        assert_eq!(
+            channel.indexed.map(|length| (length, *id)),
+            expected
+                .iter()
+                .find(|(_, candidate)| candidate == id)
+                .copied()
+        );
+    }
     assert_eq!(
         session.runnable, expected,
         "runnable index lost a credited channel"
