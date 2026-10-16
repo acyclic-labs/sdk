@@ -42,6 +42,9 @@ pub enum Error {
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// A definitive tool rejection; safe to journal without allocating a diagnostic.
+    #[error("tool rejected: {0}")]
+    ToolRejected(&'static str),
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -299,8 +302,7 @@ pub(crate) fn native_work_error_code(
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::AllocationFailed(_)
-        | Native::IndeterminatePreparation => ErrorCode::Storage,
+        | Native::AllocationFailed(_) => ErrorCode::Storage,
     }
 }
 
@@ -330,7 +332,7 @@ impl Error {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Unsupported(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -390,6 +392,7 @@ impl Error {
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
+                | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)

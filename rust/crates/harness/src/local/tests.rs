@@ -143,7 +143,7 @@ fn tool(name: &str) -> Tool {
     }
 }
 
-fn volume_config(
+pub(super) fn volume_config(
     directory: &Path,
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
@@ -151,7 +151,7 @@ fn volume_config(
     Ok(LocalHarnessConfig::new(directory.join("filesystem"), (model()?, provider)).volume(volume))
 }
 
-async fn volume(directory: &Path) -> Result<VolumeRef> {
+pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new(

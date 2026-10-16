@@ -10,6 +10,7 @@ async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResu
         "lifecycle",
         "multiple-raw-and-code",
         "filenames-and-paragraphs",
+        "empty-stem",
     ] {
         let mut baseline =
             crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
@@ -187,10 +188,24 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
                 "delta",
                 "metadata",
                 "final",
+                "insert-empty",
+                "insert-reasoning",
             ][..],
         ),
-        ("empty-deltas", &["missing"][..]),
-        ("reasoning", &["leaked", "missing", "reversed"][..]),
+        (
+            "empty-deltas",
+            &["missing", "insert-empty", "insert-reasoning"][..],
+        ),
+        (
+            "reasoning",
+            &[
+                "leaked",
+                "missing",
+                "reversed",
+                "insert-empty",
+                "insert-reasoning",
+            ][..],
+        ),
     ] {
         let baseline =
             crate::scenario::load_value(&root, &root.join(format!("markdown/{name}.json")))?;
@@ -226,6 +241,12 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
                         .ok_or("completion")?["metadata"] = json!({"injected":true});
                 }
                 "final" => case["expect"]["text"] = json!("corrupted"),
+                "insert-empty" | "insert-reasoning" => {
+                    case["turns"][0].as_array_mut().ok_or("events")?.insert(
+                        1,
+                        json!({"type":"event", "kind":if *mutation == "insert-empty" {"content"} else {"reasoning"}, "delta":""}),
+                    );
+                }
                 _ => return Err("unknown Markdown mutation".into()),
             }
             assert!(run(case).await.is_err(), "accepted {name}: {mutation}");

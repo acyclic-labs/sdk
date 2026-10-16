@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 #[path = "component.rs"]
 mod component;
@@ -45,6 +45,10 @@ pub enum ToolFile {
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
+    /// Host-owned dispatch claim for an immutable request.
+    RequestStarted(Component),
+    /// Host-owned terminal outcome of an immutable request.
+    RequestResult(Component),
     /// Current task status.
     Status,
     /// Immutable dispatch marker for one submitted command request.
@@ -107,6 +111,8 @@ impl TaskFile {
     fn path(&self) -> String {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
+            Self::RequestStarted(id) => format!("requests/{}/started.json", id.as_str()),
+            Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
             Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
@@ -279,6 +285,8 @@ impl FileKey {
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
+            ["requests", request, "started.json"] => TaskFile::RequestStarted(id(request)?),
+            ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
             ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
             ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),

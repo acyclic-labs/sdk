@@ -16,7 +16,9 @@ pub use schema::{
 };
 pub use source::FileQuerySource;
 
-use acyclic_stream::query_sync::Mutex;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::NativeWork;
+use crate::sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -28,11 +30,24 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+type NativeWork<'a> = Option<&'a ()>;
+
+#[cfg(feature = "test-support")]
+use crate::test_support::TaskVolumeFiles as FileIndex;
+#[cfg(not(feature = "test-support"))]
+type FileIndex = std::collections::BTreeMap<FileKey, FileValue>;
+
+#[inline]
+fn item_examined() {
+    #[cfg(feature = "test-support")]
+    crate::test_support::task_volume_item_examined();
+}
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Authorization, work or storage failure reading ordinary volume files.
+    /// Authorization, work or storage failure accessing volume files.
     #[cfg(feature = "filesystem")]
     #[error(transparent)]
     FileRead(#[from] crate::Error),
@@ -113,7 +128,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if header.schema != SCHEMA {
+            if !matches!(header.schema, 2 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -168,7 +183,7 @@ struct Index {
     epoch: Uuid,
     next: u64,
     commit: CommitId,
-    files: BTreeMap<FileKey, FileValue>,
+    files: FileIndex,
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
     pending_commands: BTreeSet<FileKey>,
 }
@@ -183,6 +198,10 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
+        Arc::ptr_eq(&self.provider, provider)
+    }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {
@@ -223,7 +242,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if header.schema != SCHEMA {
+        if !matches!(header.schema, 2 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
@@ -274,11 +293,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
                 .await?;
             let anchor = records.next().await.ok_or(Error::ResetRequired)??;
+            item_examined();
             if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
                 return Err(Error::ResetRequired);
             }
             let before = index.next;
             while let Some(record) = records.next().await {
+                item_examined();
                 let record = record?;
                 if record.sequence >= tail {
                     break;
@@ -303,25 +324,36 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     /// Accepts one file event in its own append, without a batching boundary.
     pub async fn append(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.append_if(expected, write, Vec::new(), None).await
+        self.append_if(expected, write, Vec::new(), None, None)
+            .await
     }
 
     /// Accepts one delta, tool event or status change in its own append.
+    /// Native callers supply their original ledger for packing and retained bytes.
     pub async fn append_if(
         &self,
         expected: Generation,
         write: &Write,
         conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
-        self.publish(expected, write, conditions, deadline_unix_millis, false)
-            .await
+        self.publish(
+            expected,
+            write,
+            conditions,
+            deadline_unix_millis,
+            false,
+            work,
+        )
+        .await
     }
 
     /// Creates one file only if absent at the exact query generation. Unlike an
     /// idempotent append, an existing identical file is still a failed creation.
     pub async fn create(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.publish(expected, write, Vec::new(), None, true).await
+        self.publish(expected, write, Vec::new(), None, true, None)
+            .await
     }
 
     async fn publish(
@@ -331,6 +363,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
         create_only: bool,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
@@ -344,9 +377,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.files.get(&write.key) == Some(write) {
             return Ok(self.generation(&index));
         }
-        let segment = segment::encode(write)?;
-        // Decode before durable action, so the accepted event is locally applicable.
-        let files = segment::decode(&segment)?;
+        let (segment, files) = segment::encode(write, work)?;
         conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,

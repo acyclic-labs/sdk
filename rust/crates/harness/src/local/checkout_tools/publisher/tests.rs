@@ -57,6 +57,29 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 }
 
 #[tokio::test]
+async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> Result<()> {
+    let (_directory, harness, publisher) = fixture().await?;
+    let workspace = publisher.tools.workspace.clone();
+    let before = workspace
+        .selection_reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    CheckoutTools::new(
+        workspace.clone(),
+        &harness.project,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+    )
+    .await?;
+    assert_eq!(
+        workspace
+            .selection_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before + 1,
+        "open reloaded Git state after selecting the checkout"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_completed_edits()
 -> Result<()> {
     let (directory, harness, publisher) = fixture().await?;
@@ -183,17 +206,11 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .await
         .map_err(storage)?
         .value;
-    let digest = blake3::derive_key(
-        "acyclic.local.checkout-publication/v1",
-        &operation.into_bytes(),
-    );
-    let mut identity = [0; 16];
-    identity.copy_from_slice(&digest[..16]);
     crate::tools::git::publish_checkout_transition(
         directory.path(),
         publisher.tools.workspace.identity,
         &publisher.tools.workspace.store,
-        acyclic_fs::OperationId::from_bytes(identity),
+        publication_operation(operation, original.path()),
         head.clone(),
         head,
         &|| std::future::ready(Ok(())),
@@ -215,4 +232,59 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         "retry captured the missing native write or authored another upload"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits() -> Result<()> {
+    let (directory, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let mut files = Vec::new();
+    for (path, bytes) in [
+        ("first.txt", b"first".as_slice()),
+        ("second.txt", b"second".as_slice()),
+    ] {
+        let (file, _) = publisher
+            .stage(operation, path, bytes, "text/plain", path, None)?
+            .await?;
+        assert_eq!(
+            std::fs::read(directory.path().join(path)).map_err(storage)?,
+            bytes
+        );
+        files.push((file, bytes));
+    }
+    for (file, bytes) in files {
+        std::fs::write(directory.path().join(file.path()), "later edit").map_err(storage)?;
+        let (retried, _) = publisher
+            .stage(
+                operation,
+                file.path(),
+                bytes,
+                "text/plain",
+                file.display_name(),
+                None,
+            )?
+            .await?;
+        assert_eq!(retried, file);
+        assert_eq!(
+            std::fs::read(directory.path().join(file.path())).map_err(storage)?,
+            b"later edit"
+        );
+    }
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn publication_identity_binds_operation_and_path(
+        operation in proptest::prelude::any::<[u8;16]>(),
+        path in "[a-z]{1,16}(/[a-z]{1,16}){0,3}",
+    ) {
+        let original = OperationId::from_bytes(operation);
+        let first = publication_operation(original, &path);
+        proptest::prop_assert_eq!(first, publication_operation(original, &path));
+        proptest::prop_assert_ne!(first, publication_operation(original, &format!("{path}x")));
+        let mut other = operation; other[0] ^= 1;
+        proptest::prop_assert_ne!(first, publication_operation(OperationId::from_bytes(other), &path));
+    }
 }

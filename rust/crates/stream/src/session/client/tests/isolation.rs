@@ -14,9 +14,13 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
             let channel = destination.clone();
             Box::pin(async move { Ok(channel) })
         });
-        let client =
-            Client::with_connector(good.channel.clone(), "Bearer fixture".parse()?, connect)
-                .await?;
+        let client = Client::with_connector(
+            good.channel.clone(),
+            Some("Bearer fixture".parse()?),
+            None,
+            connect,
+        )
+        .await?;
         let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
         let mut children = client
             .children(crate::ChildrenRequest {

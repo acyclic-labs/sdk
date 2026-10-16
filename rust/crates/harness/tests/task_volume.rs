@@ -22,12 +22,16 @@ mod acceptance;
 mod heads;
 #[path = "task_volume/history_loss.rs"]
 mod history_loss;
+#[path = "task_volume/plan_name.rs"]
+mod plan_name;
 #[path = "task_volume/properties.rs"]
 mod properties;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
 #[path = "task_volume/source.rs"]
 mod source;
+#[path = "task_volume/work.rs"]
+mod work;
 
 async fn append_all<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
@@ -49,8 +53,6 @@ async fn memory() -> Result<(Arc<MemoryStream>, TaskVolume<MemoryStream>)> {
 fn write(path: &str, text: &str) -> Result<Write> {
     Ok(Write::new(FileKey::parse(path)?, text.as_bytes().to_vec()))
 }
-
-use futures::FutureExt as _;
 
 #[tokio::test]
 async fn snapshot_cut_survives_publication_before_follow_registration() -> Result {
@@ -107,7 +109,11 @@ async fn every_accepted_cursor_reconnects_without_duplicates_or_gaps() -> Result
                 Some(expected)
             );
         }
-        assert!(stream.next().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.next())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -231,7 +237,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence.clone(),
                     expected: 1
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::FenceConflict)
@@ -246,6 +253,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                 expected: 2,
             }],
             Some(101),
+            None,
         )
         .await?;
     clock.0.store(102, Ordering::SeqCst);
@@ -258,7 +266,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence,
                     expected: 2
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::Storage(StreamError::DeadlineElapsed))
@@ -467,19 +476,40 @@ async fn ten_thousand_turns_keep_publication_and_current_chunk_queries_increment
         let task = Component::new("t")?;
         let mut file = write(&format!(".tasks/t/turns/{turn}/chunks/0"), "delta")?;
         file.channel = Some(Channel::Text);
-        generation = append_all(&volume, generation, &[file.clone()]).await?;
-        let snapshot = volume.snapshot(&Query::Chunks { task, turn }, 1).await?;
+        let (next, publication_work) = work::measured(volume.append(generation, &file))?;
+        generation = next;
+        let (snapshot, chunk_work) =
+            work::measured(volume.snapshot(&Query::Chunks { task, turn }, 1))?;
         assert_eq!(snapshot.files, vec![file]);
-        let snapshot = volume
-            .snapshot(
-                &Query::Turn {
-                    task: Component::new("t")?,
-                    turn,
-                },
-                1,
-            )
-            .await?;
+        let (snapshot, turn_work) = work::measured(volume.snapshot(
+            &Query::Turn {
+                task: Component::new("t")?,
+                turn,
+            },
+            1,
+        ))?;
         assert_eq!(snapshot.files.len(), 1);
+        if matches!(turn + 1, 1_000 | 10_000) {
+            assert!(publication_work <= 5);
+            assert!(work::query_work_is_incremental(chunk_work));
+            assert!(work::query_work_is_incremental(turn_work));
+            // Deliberately replace range selection with a full scan followed by
+            // filtering. The result is identical, but the same work bound fails.
+            let (full, scan_work) =
+                work::measured(volume.snapshot(&Query::Root, (turn + 1) as usize))?;
+            let selected: Vec<_> = full
+                .files
+                .into_iter()
+                .filter(|file| file.key == snapshot.files[0].key)
+                .collect();
+            assert_eq!(selected, snapshot.files);
+            assert!(scan_work > turn);
+            assert!(!work::query_work_is_incremental(scan_work));
+            println!(
+                "{} turns: publication={publication_work}, chunks={chunk_work}, turn={turn_work}, full scan={scan_work}",
+                turn + 1
+            );
+        }
     }
     assert_eq!(generation.position, 10_001);
     println!("10k turns: {:.3}s", start.elapsed().as_secs_f64());

@@ -64,10 +64,10 @@ impl CheckoutTools {
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<Self> {
-        let active = workspace.selected_view().await?;
+        let (active, pending) = workspace.selected_view().await?;
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
         let view = active.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await?;
+        reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) }).await?;
         let watcher = if workspace.fresh {
             Some(capture::Cursor::initial(&workspace, &capture_policy)?)
         } else {

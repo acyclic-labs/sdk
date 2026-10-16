@@ -100,7 +100,27 @@ fn local_children_observes_acceptance_during_a_device_flush()
                 assert_eq!(first.path.as_str(), "agents/new");
                 assert_eq!(first.path, replay.path);
                 #[cfg(feature = "grpc")]
-                resumed_children_session(&provider, &first.path).await?;
+                {
+                    resumed_children_session(provider.clone(), &first.path).await?;
+                    let relay = crate::grpc::tests::client(provider.clone())?;
+                    assert_eq!(
+                        relay.watermarks(first.path.clone()).await?,
+                        crate::StreamWatermarks {
+                            accepted: 1,
+                            durable: 0
+                        }
+                    );
+                    resumed_children_session(relay.clone(), &first.path).await?;
+                    let second = crate::grpc::tests::client(relay)?;
+                    assert_eq!(
+                        second.watermarks(first.path.clone()).await?,
+                        crate::StreamWatermarks {
+                            accepted: 1,
+                            durable: 0
+                        }
+                    );
+                    resumed_children_session(second, &first.path).await?;
+                }
                 assert!(!writing.is_finished());
                 assert_eq!(provider.watermarks(first.path).await?.durable, 0);
                 Ok::<_, Box<dyn std::error::Error>>(())
@@ -114,8 +134,8 @@ fn local_children_observes_acceptance_during_a_device_flush()
 }
 
 #[cfg(feature = "grpc")]
-async fn resumed_children_session(
-    provider: &LocalStream,
+async fn resumed_children_session<P: StreamProvider>(
+    provider: P,
     anchor: &StreamPath,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::wire::{self, session_frame::Body, session_subscription::Kind};
@@ -156,7 +176,7 @@ async fn resumed_children_session(
     }
     // A fresh session resumes the accepted cursor while its flush is still held.
     let mut output = crate::session::serve(
-        Arc::new(provider.clone()),
+        Arc::new(provider),
         "local".into(),
         crate::session::Limits::default(),
         input.boxed(),

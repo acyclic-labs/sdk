@@ -96,7 +96,8 @@ struct Link {
 }
 struct Pool {
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
     connect: Connect,
     home: String,
     routes: BTreeMap<u64, Route>,
@@ -120,7 +121,8 @@ impl Drop for Link {
 impl Client {
     pub(crate) async fn open(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<Self, StreamError> {
@@ -135,11 +137,12 @@ impl Client {
                 .map_err(|_| StreamError::Unavailable)
             })
         });
-        Self::with_connector(channel, authorization, connect).await
+        Self::with_connector(channel, authorization, credential, connect).await
     }
     async fn with_connector(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
         connect: Connect,
     ) -> Result<Self, StreamError> {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
@@ -149,6 +152,7 @@ impl Client {
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
+            credential,
             connect,
             home: String::new(),
             routes: BTreeMap::new(),

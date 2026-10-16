@@ -180,7 +180,7 @@ impl CheckoutTools {
     }
 
     async fn publish_reconciliation(&self, context: &ToolContext) -> Result<()> {
-        let state = self.workspace.selected_view().await?;
+        let state = self.workspace.selected_view().await?.0;
         let view = state.as_ref().unwrap_or_else(|| self.workspace.view());
         reconciliation::publish(&self.workspace, view, &|| async {
             context

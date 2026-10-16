@@ -49,7 +49,8 @@ try {
     assert.deepEqual(message.reservedRange?.map(range => [range.start, range.end]), numbers);
     assert.deepEqual(message.reservedName, names);
   };
-  assertFields("TailResponse", [["tail", 1]]);
+  assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
+  assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
   assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
   assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
   assertFields("AcknowledgeDeliveryResponse", []);

@@ -1,11 +1,318 @@
 use super::*;
 use serde::Serialize;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod digest_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn values() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(Value::from),
+            ".{0,16}".prop_map(Value::String)
+        ]
+        .prop_recursive(3, 32, 4, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                prop::collection::btree_map(".{0,8}", inner, 0..4)
+                    .prop_map(|entries| Value::Object(entries.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        // Explicit reserves are exact; only whole-object B-tree funding has
+        // bounded slack, from node occupancy rather than a split schedule.
+        #[test]
+        fn plain_maps_charge_bounded_physical_allocations(
+            entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..512),
+        ) {
+            let legacy_operations = 1 + entries.keys().filter(|key| !key.is_empty()).count() as u64;
+            let value = Value::Object(entries.into_iter().map(|(key, value)| (key, Value::from(value))).collect());
+            let mut operations = 0;
+            let mut copied = None;
+            let measured = allocation_counter::measure(|| {
+                copied = Some(json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                    operations += match event {
+                        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+                        JsonCodecCharge::AllocationOperations { operations } => operations,
+                        _ => 0,
+                    };
+                    Ok(())
+                }));
+            });
+            prop_assert_eq!(copied.unwrap().unwrap(), value.clone());
+            prop_assert!(operations >= measured.count_total);
+            prop_assert!(operations <= measured.count_total + map_slack(&value));
+            // Negative control: the previous buffer/string-only charges omit
+            // at least the root node for every generated nonempty map.
+            prop_assert!(legacy_operations < measured.count_total);
+        }
+
+        // Every prefix must either build the same value or return the original
+        // typed denial. Only B-tree node occupancy may introduce bounded slack.
+        #[test]
+        fn bounded_value_exhausted_prefixes(value in prop_oneof![
+            values(),
+            any::<u64>().prop_map(Value::from),
+            any::<f64>().prop_filter_map("finite JSON number", |number| serde_json::Number::from_f64(number).map(Value::Number)),
+        ]) {
+            exhausted_prefixes(&value);
+        }
+
+        #[test]
+        fn generic_serializers_exhausted_prefixes(value in values()) {
+            #[derive(Serialize)]
+            struct Record<'a> { borrowed: &'a Value, raw: &'a serde_json::value::RawValue, ratio: f32 }
+            #[derive(Serialize)]
+            enum Envelope<'a> { Record(Record<'a>) }
+            let raw = serde_json::value::RawValue::from_string(serde_json::to_string(&value).unwrap()).unwrap();
+            let extra_slack = 2 * map_slack(&value);
+            exhausted_serialization(raw.as_ref(), extra_slack);
+            exhausted_serialization(&Envelope::Record(Record { borrowed: &value, raw: &raw, ratio: 0.25 }), extra_slack);
+        }
+
+        // Property: canonical identity and hash charges stay exact, while the
+        // final encoded buffer is absent and all temporary custody is released.
+        #[test]
+        fn observed_digest_preserves_identity_without_an_encoded_copy(value in values()) {
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+            let native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
+            let baseline = native.live_allocation_bytes();
+            let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native).unwrap());
+            let expected = crate::contract::canonical_json_bytes(&value).unwrap();
+            let mut digest = Ok([0; 32]);
+            let measured = allocation_counter::measure(|| {
+                digest = canonical_json_digest(&value, 65_536, &mut Some(&mut work));
+            });
+            prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
+            prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
+            prop_assert_eq!(measured.bytes_current, 0);
+            prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
+            prop_assert_eq!(native.live_allocation_bytes(), baseline);
+            // Negative control: the former full-buffer path performs one extra
+            // encoded copy; it cannot meet the new copy count.
+            let legacy_native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
+            let mut legacy = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&legacy_native).unwrap());
+            let encoded = crate::store::history::canonical_bytes_with_work(&value, 65_536, &mut Some(&mut legacy)).unwrap();
+            prop_assert_eq!(&encoded, &expected);
+            prop_assert_eq!(legacy.receipt().bytes_copied, work.receipt().bytes_copied + encoded.len() as u64);
+        }
+    }
+
+    fn map_slack(value: &Value) -> u64 {
+        match value {
+            Value::Object(entries) => {
+                let count = entries.len() as u64;
+                let maximum = if count == 0 { 0 } else { 1 + (count - 1) / 5 };
+                maximum - count.div_ceil(11) + entries.values().map(map_slack).sum::<u64>()
+            }
+            Value::Array(entries) => entries.iter().map(map_slack).sum(),
+            _ => 0,
+        }
+    }
+
+    fn exhausted_prefixes(value: &Value) {
+        exhausted_serialization(value, 0);
+    }
+
+    fn exhausted_serialization<T: Serialize + ?Sized>(value: &T, extra_slack: u64) {
+        let normalized = serde_json::to_value(value).unwrap();
+        let encoded = serde_json::to_vec(&normalized).unwrap();
+        let expected: Value = serde_json::from_slice(&encoded).unwrap();
+        let slack = map_slack(&expected) + extra_slack;
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+        let reference = acyclic_fs::NativeMaterializationWork::new(
+            budget,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        let construction = reference.receipt().allocation_operations;
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&reference).unwrap(),
+        );
+        let result = json_value_bounded(
+            value,
+            BOUNDS,
+            Some(crate::wire::ErrorCode::Invalid),
+            &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
+        )
+        .unwrap();
+        assert_eq!(result, expected);
+        drop(result);
+        let operations = reference.receipt().allocation_operations - construction;
+        for prefix in 0..=operations {
+            let mut budget = budget;
+            budget.allocation_operations = construction + prefix;
+            let native = acyclic_fs::NativeMaterializationWork::new(
+                budget,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .unwrap();
+            let baseline = native.live_allocation_bytes();
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
+            );
+            let mut succeeded = false;
+            let measured = allocation_counter::measure(|| {
+                let result = json_value_bounded(
+                    value,
+                    BOUNDS,
+                    Some(crate::wire::ErrorCode::Invalid),
+                    &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
+                );
+                succeeded = result.is_ok();
+                if let Err(error) = &result {
+                    assert!(matches!(error, Error::NativeWork { .. }));
+                }
+                drop(result);
+            });
+            assert_eq!(
+                succeeded,
+                prefix == operations,
+                "prefix {prefix}/{operations}"
+            );
+            let charged = native.receipt().allocation_operations - construction;
+            assert!(
+                charged >= measured.count_total,
+                "prefix {prefix}/{operations}: {charged} charges / {} allocations",
+                measured.count_total
+            );
+            assert!(
+                charged <= measured.count_total + slack,
+                "prefix {prefix}/{operations}: {charged} charges / {} allocations / {slack} slack",
+                measured.count_total
+            );
+            assert_eq!(measured.bytes_current, 0);
+            assert!(measured.bytes_max as u64 <= native.receipt().peak_allocation_bytes);
+            if !succeeded {
+                assert_eq!(native.live_allocation_bytes(), baseline);
+            }
+            // Successful decoding transfers its retained bytes to the caller.
+            drop(work);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
+    }
+
+    #[test]
+    fn exhausted_prefixes_cover_escapes_and_node_splits() {
+        exhausted_prefixes(&serde_json::json!({"": null}));
+        exhausted_prefixes(&Value::from(6.237624688224859e252));
+        exhausted_prefixes(&Value::from(-0.0));
+        exhausted_prefixes(
+            &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
+        );
+        for size in [11, 12, 18, 19, 78] {
+            let value = Value::Object(
+                (0..size)
+                    .map(|i| (format!("{i:04}"), Value::Null))
+                    .collect(),
+            );
+            exhausted_prefixes(&value);
+            if size == 19 {
+                let raw = serde_json::value::RawValue::from_string(
+                    serde_json::to_string(&value).unwrap(),
+                )
+                .unwrap();
+                exhausted_serialization(raw.as_ref(), 2 * map_slack(&value));
+            }
+        }
+        let raw = serde_json::value::RawValue::from_string(r#"{"":null}"#.into()).unwrap();
+        exhausted_serialization(raw.as_ref(), 0);
+        let raw = serde_json::value::RawValue::from_string(
+            r#"{"b":["\u0000\n\"",{"a":1}],"b":false,"a":2}"#.into(),
+        )
+        .unwrap();
+        exhausted_serialization(raw.as_ref(), 0);
+        // Negative control: reproducing the old visitor's diagnostic after a
+        // denied charge allocates despite no admitted operation.
+        let diagnostic = allocation_counter::measure(|| {
+            let error: serde_json::Error = serde::de::Error::custom("JSON admission interrupted");
+            drop(error);
+        });
+        assert!(diagnostic.count_total > 0);
+    }
+}
+
 const BOUNDS: JsonBounds = JsonBounds {
     maximum_bytes: 65_536,
     maximum_items: 4_096,
     maximum_depth: 32,
 };
+
+#[test]
+fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> {
+    let value = serde_json::json!({"$serde_json::private::RawValue": ["\n", {"": null}]});
+    let copied = json_value_copy_bounded(&value, BOUNDS, None, &mut |_| Ok(()))?;
+    assert_eq!(copied, value);
+    for bounds in [
+        JsonBounds {
+            maximum_bytes: 1,
+            ..BOUNDS
+        },
+        JsonBounds {
+            maximum_items: 1,
+            ..BOUNDS
+        },
+        JsonBounds {
+            maximum_depth: 1,
+            ..BOUNDS
+        },
+    ] {
+        let mut allocations = 0;
+        assert!(
+            json_value_copy_bounded(&value, bounds, None, &mut |event| {
+                if matches!(event, JsonCodecCharge::AllocationOperation { .. }) {
+                    allocations += 1;
+                }
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(allocations, 0);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    // Every source byte is funded before lexical inspection; denial never
+    // starts inspection, and successful admission charges exactly its input.
+    #[test]
+    fn source_admission_funds_all_bytes_before_inspection(text in ".{0,4096}", allowance in 0_u64..16384) {
+        let bytes = serde_json::to_vec(&text).unwrap();
+        let mut read = 0;
+        let mut inspected = false;
+        let result = admission::source(&bytes, BOUNDS, None, None, &mut |event| {
+            match event {
+                JsonCodecCharge::Read { bytes } => {
+                    if bytes > allowance - read {
+                        return Err(Error::Unsupported("read denied".into()));
+                    }
+                    read += bytes;
+                }
+                JsonCodecCharge::Work { items, .. } if items > 0 => {
+                    assert_eq!(read, bytes.len() as u64);
+                    inspected = true;
+                }
+                _ => {}
+            }
+            Ok(())
+        });
+        proptest::prop_assert_eq!(result.is_ok(), bytes.len() as u64 <= allowance);
+        if result.is_ok() {
+            proptest::prop_assert_eq!(read, bytes.len() as u64);
+            proptest::prop_assert!(inspected);
+        } else {
+            proptest::prop_assert_eq!(read, 0);
+            proptest::prop_assert!(!inspected);
+            proptest::prop_assert!(matches!(result, Err(Error::Unsupported(_))));
+        }
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {

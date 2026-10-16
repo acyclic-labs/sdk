@@ -25,7 +25,7 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-pub(super) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
     let provider = Arc::new(provider);
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
