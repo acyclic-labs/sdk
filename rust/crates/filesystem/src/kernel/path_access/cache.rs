@@ -107,6 +107,15 @@ impl<'a, S> OperationReadCache<'a, S> {
         owned_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bool, crate::FsError> {
+        self.admit_with_rehash::<REPROBE_GROWTH, true>(object_id, bytes, owned_bytes, accounting)
+    }
+    fn admit_with_rehash<const REPROBE_GROWTH: bool, const CHARGE_REHASH: bool>(
+        &self,
+        object_id: ObjectId,
+        bytes: &OwnedBytes,
+        owned_bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, crate::FsError> {
         let mut state = self.lock_state();
         if state.entry_count >= self.maximum_entries {
             return Ok(false);
@@ -133,7 +142,13 @@ impl<'a, S> OperationReadCache<'a, S> {
             // the remaining original slots still own their untouched payloads.
             for entry in state.slots.value.iter_mut() {
                 if let Some(value) = entry.as_ref() {
-                    let vacant = probe_slots(&grown.value, value.object_id, accounting, None)?.1;
+                    let vacant = probe_slots_with_charge::<CHARGE_REHASH>(
+                        &grown.value,
+                        value.object_id,
+                        accounting,
+                        None,
+                    )?
+                    .1;
                     *grown
                         .value
                         .get_mut(vacant)
@@ -242,6 +257,14 @@ fn probe_slots(
     accounting: &mut KernelAccounting<'_>,
     custody: Option<&crate::kernel::ProofDataCustody>,
 ) -> Result<(Option<ObjectRead>, usize), crate::FsError> {
+    probe_slots_with_charge::<true>(slots, object_id, accounting, custody)
+}
+fn probe_slots_with_charge<const CHARGE: bool>(
+    slots: &[Option<CachedObject>],
+    object_id: ObjectId,
+    accounting: &mut KernelAccounting<'_>,
+    custody: Option<&crate::kernel::ProofDataCustody>,
+) -> Result<(Option<ObjectRead>, usize), crate::FsError> {
     let mask = slots
         .len()
         .checked_sub(1)
@@ -249,7 +272,7 @@ fn probe_slots(
     let mut index = object_hash(object_id) & mask;
     for _ in 0..slots.len() {
         let slot = slots.get(index).ok_or(ObjectStoreError::Corrupt)?;
-        let (found, next, vacant) = examine_item(accounting, custody, || match slot {
+        let examine = || match slot {
             Some(entry) if entry.object_id == object_id => (
                 Some(ObjectRead {
                     bytes: entry.bytes.clone(),
@@ -260,7 +283,12 @@ fn probe_slots(
             ),
             Some(_) => (None, (index + 1) & mask, false),
             None => (None, index, true),
-        })?;
+        };
+        let (found, next, vacant) = if CHARGE {
+            examine_item(accounting, custody, examine)?
+        } else {
+            examine()
+        };
         if found.is_some() || vacant {
             return Ok((found, index));
         }

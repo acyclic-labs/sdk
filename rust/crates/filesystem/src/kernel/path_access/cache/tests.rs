@@ -10,38 +10,127 @@ fn id(value: u8) -> ObjectId {
     }
 }
 
-proptest! {
-    // Under one guard a non-growing insert performs exactly its first probe.
-    // Every successfully admitted key remains reachable across table growth.
-    #[test]
-    fn vacant_slot_reuse_keeps_exact_probes_and_all_prior_entries(
-        keys in prop::collection::vec(any::<u8>(), 1..33),
-    ) {
-        let cancellation = CancellationToken::new();
-        let mut setup = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let cache = OperationReadCache::new(&(), 32, &mut setup, None).unwrap();
-        let bytes = OwnedBytes::from_static(b"payload");
-        let mut admitted = std::collections::BTreeSet::new();
-        for key in keys {
-            let object = id(key);
-            let mut oracle = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-            let state = cache.lock_state();
-            let grow = state.entry_count * 2 >= state.slots.value.len()
-                && state.slots.value.len() < cache.slot_limit;
-            let duplicate = probe_slots(&state.slots.value, object, &mut oracle, None).unwrap().0.is_some();
-            drop(state);
-            let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-            let inserted = cache.admit(object, &bytes, 0, &mut work).unwrap();
-            prop_assert_eq!(inserted, !duplicate);
-            if !grow || duplicate {
-                prop_assert_eq!(work.spent().items_examined, oracle.spent().items_examined);
-            }
-            admitted.insert(key);
-            for &previous in &admitted {
-                prop_assert_eq!(cache.probe(id(previous), &mut setup).unwrap().unwrap().bytes, bytes.clone());
-            }
+// Independent open-addressed table: no production probing or cache state is
+// consulted. Count every occupied collision slot and the terminating slot,
+// including old-table lookup, each rehash insertion, and the post-growth lookup.
+struct ProbeModel {
+    slots: Vec<Option<ObjectId>>,
+    entries: usize,
+}
+
+impl ProbeModel {
+    fn new() -> Self {
+        Self {
+            slots: vec![None; 16],
+            entries: 0,
         }
     }
+
+    fn hash(key: ObjectId) -> usize {
+        key.digest
+            .as_bytes()
+            .iter()
+            .fold(usize::from(key.kind.canonical_tag()), |hash, byte| {
+                (hash ^ usize::from(*byte)).wrapping_mul(16_777_619)
+            })
+    }
+
+    fn find(slots: &[Option<ObjectId>], key: ObjectId) -> (usize, bool, u64) {
+        let start = Self::hash(key) % slots.len();
+        for visits in 1..=slots.len() {
+            let index = (start + visits - 1) % slots.len();
+            match slots[index] {
+                Some(found) if found != key => continue,
+                found => return (index, found.is_some(), visits as u64),
+            }
+        }
+        panic!("model must retain a vacant slot")
+    }
+
+    fn admit(&mut self, key: ObjectId) -> (bool, u64) {
+        if self.entries == 32 {
+            return (false, 0);
+        }
+        let (mut vacant, duplicate, mut visits) = Self::find(&self.slots, key);
+        if duplicate {
+            return (false, visits);
+        }
+        if self.entries * 2 >= self.slots.len() && self.slots.len() < 64 {
+            let mut grown = vec![None; self.slots.len() * 2];
+            for old in self.slots.iter().flatten().copied() {
+                let (index, duplicate, cost) = Self::find(&grown, old);
+                assert!(!duplicate);
+                visits += cost;
+                grown[index] = Some(old);
+            }
+            self.slots = grown;
+            let (index, duplicate, cost) = Self::find(&self.slots, key);
+            assert!(!duplicate);
+            vacant = index;
+            visits += cost;
+        }
+        self.slots[vacant] = Some(key);
+        self.entries += 1;
+        (true, visits)
+    }
+}
+
+fn compare<const CHARGE_REHASH: bool>(keys: &[u8]) -> proptest::test_runner::TestCaseResult {
+    let cancellation = CancellationToken::new();
+    let mut setup = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let cache = OperationReadCache::new(&(), 32, &mut setup, None).unwrap();
+    let bytes = OwnedBytes::from_static(b"payload");
+    let mut model = ProbeModel::new();
+    for &key in keys {
+        let object = id(key);
+        let expected = model.admit(object);
+        let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let inserted = cache
+            .admit_with_rehash::<true, CHARGE_REHASH>(object, &bytes, 0, &mut work)
+            .unwrap();
+        prop_assert_eq!(inserted, expected.0);
+        prop_assert_eq!(work.spent().items_examined, expected.1);
+        for previous in model.slots.iter().flatten().copied() {
+            let (_, found, visits) = ProbeModel::find(&model.slots, previous);
+            let mut read = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            prop_assert!(found);
+            prop_assert_eq!(
+                cache.probe(previous, &mut read).unwrap().unwrap().bytes,
+                bytes.clone()
+            );
+            prop_assert_eq!(read.spent().items_examined, visits);
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn vacant_slot_reuse_keeps_exact_probes_and_all_prior_entries(
+        keys in prop::collection::vec(any::<u8>(), 1..97),
+    ) {
+        compare::<true>(&keys)?;
+    }
+}
+
+#[test]
+fn collision_growth_duplicates_and_capacity_match_independent_counts() {
+    let colliding: Vec<_> = (0..=255)
+        .filter(|&key| ProbeModel::hash(id(key)) % 16 == 0)
+        .collect();
+    assert_eq!(colliding.len(), 16);
+    let mut keys = colliding.clone();
+    keys.extend(colliding.iter().copied());
+    keys.extend(0..40);
+    keys.extend(0..40);
+    compare::<true>(&keys).unwrap();
+}
+
+#[test]
+fn independent_counts_detect_uncharged_rehash_probes() {
+    let keys: Vec<_> = (0..17).collect();
+    compare::<true>(&keys).unwrap();
+    assert!(compare::<false>(&keys).is_err());
 }
 
 #[test]
