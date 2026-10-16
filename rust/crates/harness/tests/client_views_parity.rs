@@ -15,6 +15,7 @@ use acyclic_stream::{
 use futures::{FutureExt as _, channel::oneshot};
 use js_sys::{Array, Uint8Array};
 use prost::Message as _;
+use serde::Serialize as _;
 use std::sync::Arc;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -110,7 +111,14 @@ fn same(native: &ClientViewHandle, browser: &WasmClientViews) -> Result<(), Stri
         for key in keys {
             let actual = Array::from(
                 &browser
-                    .segments(&agent, serde_wasm_bindgen::to_value(&key).unwrap())
+                    .segments(
+                        &agent,
+                        key.serialize(
+                            &serde_wasm_bindgen::Serializer::new()
+                                .serialize_large_number_types_as_bigints(true),
+                        )
+                        .unwrap(),
+                    )
                     .unwrap(),
             );
             let actual: Vec<Vec<u8>> = actual
@@ -141,7 +149,7 @@ async fn exercise(wrong_handle: bool) -> Result<(), String> {
         .unwrap();
     let mut chunk = Write::new(
         FileKey::parse(".tasks/t/turns/9007199254740993/chunks/1").unwrap(),
-        "èª¿æŸ»".as_bytes(),
+        "Ã¨ÂªÂ¿Ã¦Å¸Â»".as_bytes(),
     );
     chunk.channel = Some(Channel::Text);
     volume
