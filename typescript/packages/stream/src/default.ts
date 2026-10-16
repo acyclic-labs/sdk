@@ -1,5 +1,5 @@
 import { HttpStreamProvider } from "./http.js";
-import type { StreamEnvironment, StreamProvider } from "./types.js";
+import { StreamError, type ChildrenRequest, type StreamEnvironment, type StreamProvider } from "./types.js";
 
 type ProviderSelection = {
   readonly promise: Promise<StreamProvider>;
@@ -14,10 +14,15 @@ export class DefaultStreamProvider implements StreamProvider {
   #selection: ProviderSelection | undefined;
 
   constructor(options: StreamEnvironment) {
+    const endpoint = options.endpoint;
+    const token = options.token;
+    const credential = options.credential;
+    const caCertificate = options.caCertificate;
     this.#options = {
-      endpoint: options.endpoint,
-      token: options.token,
-      ...(options.caCertificate === undefined ? {} : { caCertificate: options.caCertificate.slice() }),
+      endpoint,
+      ...(token === undefined ? {} : { token }),
+      ...(credential === undefined ? {} : { credential }),
+      ...(caCertificate === undefined ? {} : { caCertificate: caCertificate.slice() }),
     };
   }
 
@@ -89,7 +94,7 @@ export class DefaultStreamProvider implements StreamProvider {
     if (!await native.nativeStreamAvailable()) return new HttpStreamProvider(this.#options);
     const cancellation = await native.createNativeStreamCancellation();
     registerCancel(() => cancellation.cancel());
-    return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate, cancellation);
+    return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate, cancellation, this.#options.credential);
   }
 
   inspectIdempotency(key: Parameters<StreamProvider["inspectIdempotency"]>[0]) {
@@ -128,6 +133,17 @@ export class DefaultStreamProvider implements StreamProvider {
   childrenPage(request: Parameters<StreamProvider["childrenPage"]>[0]) {
     const authored = structuredClone(request);
     return this.provider().then(provider => provider.childrenPage(authored));
+  }
+  children(request: ChildrenRequest) {
+    const authored = { limit: request.limit, ...(request.parent === undefined ? {} : { parent: request.parent }),
+      ...(request.signal === undefined ? {} : { signal: request.signal }) };
+    return this.childrenAfterSelection(authored);
+  }
+  private async *childrenAfterSelection(request: ChildrenRequest) {
+    const provider = await this.acquireProvider(request.signal);
+    if (provider === undefined || request.signal?.aborted) return;
+    if (provider.children === undefined) throw new StreamError("unsupported", "provider does not support live child discovery");
+    yield* provider.children(request);
   }
   commit(request: Parameters<StreamProvider["commit"]>[0], options: Parameters<StreamProvider["commit"]>[1]) {
     const authoredRequest = structuredClone(request);

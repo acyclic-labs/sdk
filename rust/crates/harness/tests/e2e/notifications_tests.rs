@@ -72,7 +72,7 @@ proptest! {
 #[test]
 fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
     let case = Notifications::parse(serde_json::from_slice(include_bytes!(
-        "../../fuzz/corpus/notification_scenario/early-oracle-mismatch.json"
+        "../../../harness-fuzz/corpus/notification_scenario/early-oracle-mismatch.json"
     ))?)?;
     assert_eq!(
         case.verify_history(),

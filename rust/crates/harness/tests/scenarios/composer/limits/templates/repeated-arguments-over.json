@@ -1,0 +1,2 @@
+{"seed":{".claude/commands/x.md":"$ARGUMENTS$ARGUMENTS"},"prompt":"/x 01234567890","maximum_bytes":20,"expect":{"error":
+  "expanded command exceeds byte bound","files":{".claude/commands/x.md":"$ARGUMENTS$ARGUMENTS"}}}

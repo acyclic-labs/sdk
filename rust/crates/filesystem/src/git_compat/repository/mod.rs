@@ -47,6 +47,19 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Reads the selected workspace and its pending native publication at one durable cut.
+    pub async fn checkout_selection(
+        &self,
+    ) -> Result<(WorkspaceId, Option<(OperationId, GitGenerationRef)>), GitCompatError<S::Error>>
+    {
+        let state = self.load().await?;
+        let workspace = state
+            .current()
+            .map(|branch| branch.workspace_id)
+            .map_err(|_| GitCompatError::InvalidState)?;
+        Ok((workspace, state.checkout_reconciliation))
+    }
+
     /// Returns the selected branch's tracked paths.
     pub async fn tracked_paths(&self) -> Result<BTreeSet<String>, GitCompatError<S::Error>> {
         self.load()

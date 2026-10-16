@@ -5,6 +5,7 @@ pub mod authority;
 pub mod contract;
 pub mod crypto;
 pub mod verify;
+pub mod credential;
 mod resource;
 pub mod socket;
 mod validation;

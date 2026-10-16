@@ -221,7 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction
-                        .write(path, Bytes::copy_from_slice(bytes), budget, &cancellation)
+                        .write(path, bytes.clone(), budget, &cancellation)
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
@@ -310,6 +310,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }
+        if let Some((bound, workspace)) = &self.workspace_binding
+            && bound == reference
+        {
+            return Ok(workspace.clone());
+        }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
         io.sdk(
@@ -341,13 +346,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .key()
             .try_into()
             .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
+        let generation = GenerationId::new(Digest::from_bytes(key));
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some((root, store)) = &self.project_family
+            && workspace.id() == *root
+        {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || {
+                self.project_generation(workspace, generation, *root, store, io)
+            })?
+            .await;
+        }
+
         io.sdk(
             workspace
-                .generation(
-                    GenerationId::new(Digest::from_bytes(key)),
-                    io,
-                    io.cancellation(),
-                )
+                .generation(generation, io, io.cancellation())
                 .await,
         )
     }
@@ -502,3 +514,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bytes_tests;

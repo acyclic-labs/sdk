@@ -17,10 +17,7 @@ use crate::{
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
-    tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
-    },
+    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 #[cfg(test)]
 use crate::{
@@ -102,39 +99,21 @@ use listing::LocalListFilesTool;
 use publisher::MemoryContentPublisher;
 
 impl MemoryHarnessStorage {
-    /// Assembles portable defaults with an optional explicitly bound recursive provider.
-    pub fn default_tools(
-        &self,
-        limits: Limits,
-        source: Option<
-            Arc<
-                super::ConfiguredRecursiveToolSource<
-                    MemoryStream,
-                    MemoryAuthorityBackend,
-                    MemoryObjectBackend,
-                >,
-            >,
-        >,
-    ) -> Result<ToolRegistry> {
+    /// Builds an optional directory listing tool for explicit custom registration.
+    pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
         }
-        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?;
-        tools.register((self.list_files_tool(limits), None), &mut None, None)?;
-        Ok(tools)
-    }
-
-    fn list_files_tool(&self, limits: Limits) -> Tool {
         let implementation = Arc::new(LocalListFilesTool {
             verifier: self.content_verifier.clone(),
             volume: self.volume.clone(),
             maximum_bytes: limits.render_bytes,
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
-        Tool {
+        Ok(Tool {
             hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
@@ -177,7 +156,7 @@ impl MemoryHarnessStorage {
             },
             executor: implementation.clone(),
             projection: implementation,
-        }
+        })
     }
 
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
@@ -328,6 +307,14 @@ impl MemoryHarnessStorage {
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
+    }
+
+    /// Queries the same private files written by the ordinary tools.
+    pub fn file_query(
+        &self,
+        budget: acyclic_fs::WorkBudget,
+    ) -> Result<super::FilesystemFileQuery<MemoryStream, MemoryObjectBackend>> {
+        self.content_verifier.file_query(&self.volume, budget)
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

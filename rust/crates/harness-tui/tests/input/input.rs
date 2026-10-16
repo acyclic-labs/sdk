@@ -91,9 +91,10 @@ fn cut_chord_preserves_selection_and_ordinary_cut_timing() {
 fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut input = PromptInput::default();
-    input.keymap = InputKeymap::from_json(
-        r#"{"g e":"Ctrl+x Ctrl+e","Ctrl+q Ctrl+e":"Ctrl+x Ctrl+e","Ctrl+q":""}"#,
-    )?;
+    input.keymap = InputKeymap::parse(
+        r#"{"bindings":{"g e":"external-editor","Ctrl+q Ctrl+e":"external-editor","Ctrl+q":null}}"#,
+    )
+    .unwrap();
     assert!(press(&mut input, KeyCode::Char('g'), M::NONE, 0).is_empty());
     assert_eq!(input.editor.text(), "");
     assert!(input.tick(749).is_empty());

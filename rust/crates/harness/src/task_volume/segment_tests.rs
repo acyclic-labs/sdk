@@ -33,7 +33,7 @@ async fn native_publication_funds_packing_and_retains_original_custody()
         let after = volume.snapshot(&Query::Root, 1).await?;
         if denial.is_some() {
             assert!(
-                matches!(result, Err(Error::Accounting(ref error)) if error.is_native_failure()),
+                matches!(result, Err(Error::FileRead(ref error)) if error.is_native_failure()),
                 "{denial:?}: {result:?}"
             );
             assert_eq!(after.generation, before.generation);

@@ -314,6 +314,11 @@ impl<A, O> JoinPlan<A, O> {
         self.target_head.id
     }
 
+    /// Workspace owning the immutable common ancestor, including repeat joins.
+    pub const fn common_ancestor_workspace_id(&self) -> WorkspaceId {
+        WorkspaceId::from_bytes(self.base.volume_id.into_bytes())
+    }
+
     /// Exact discovered common ancestor.
     pub const fn common_ancestor(&self) -> GenerationId {
         self.base.id

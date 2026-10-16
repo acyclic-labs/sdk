@@ -1,0 +1,64 @@
+use crate::task_volume::{FileKey, FileValue};
+use std::{cell::Cell, collections::BTreeMap, ops::RangeBounds};
+
+thread_local! {
+    static EXAMINED: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// Counts task-index accesses and stream records examined during one synchronous
+/// operation. Poll in-memory futures inside the closure; no observer is retained.
+///
+/// # Panics
+/// Panics if measurements are nested on the same thread.
+pub fn measure<T>(operation: impl FnOnce() -> T) -> (T, u64) {
+    EXAMINED.with(|counter| {
+        assert!(counter.get().is_none(), "nested task-volume measurement");
+        struct Reset<'a>(&'a Cell<Option<u64>>);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.set(None);
+            }
+        }
+        counter.set(Some(0));
+        let _reset = Reset(counter);
+        let output = operation();
+        (output, counter.get().unwrap_or_default())
+    })
+}
+
+pub(crate) fn examined() {
+    EXAMINED.with(|counter| {
+        if let Some(count) = counter.get() {
+            counter.set(Some(count.saturating_add(1)));
+        }
+    });
+}
+
+// The same BTreeMap and access operations as production. Charge iterator items
+// before consumer filters, including entries a full scan eventually discards.
+#[derive(Default)]
+pub(crate) struct Files(BTreeMap<FileKey, FileValue>);
+
+impl Files {
+    pub fn get(&self, key: &FileKey) -> Option<&FileValue> {
+        examined();
+        self.0.get(key)
+    }
+
+    pub fn contains_key(&self, key: &FileKey) -> bool {
+        examined();
+        self.0.contains_key(key)
+    }
+
+    pub fn insert(&mut self, key: FileKey, value: FileValue) -> Option<FileValue> {
+        examined();
+        self.0.insert(key, value)
+    }
+
+    pub fn range<R: RangeBounds<FileKey>>(
+        &self,
+        range: R,
+    ) -> impl DoubleEndedIterator<Item = (&FileKey, &FileValue)> {
+        self.0.range(range).inspect(|_| examined())
+    }
+}

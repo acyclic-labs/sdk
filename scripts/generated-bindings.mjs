@@ -1,4 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+
+// Use the parser locked with protoc-gen-es; the workspace's TS 7 CLI has no JS API.
+const require = createRequire(import.meta.url);
+let parser;
+export const generationTypeScript = () => parser ??= createRequire(createRequire(require.resolve("@bufbuild/protoc-gen-es/package.json")).resolve("@bufbuild/protoplugin"))("typescript");
 
 export const writeChanged = (path, content) => {
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
@@ -73,13 +80,6 @@ export const generatedDescriptors = [
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
 ];
 
-export const packagedRustBindings = [
-  ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
-  ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
-  ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
-  ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
-];
-
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   ["proto/validation/v1/options.proto", "rust/crates/contract-derive/proto/validation/v1/options.proto"],
@@ -101,30 +101,78 @@ export const packagedSourceCopies = [
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
 
-// Objects and Machines compile their tonic glue only under the `grpc` feature.
-/** @type {Record<string, string | undefined>} */
-const grpcGatedRust = {
-  "acyclic/objects/v1/acyclic.objects.v1.rs": 'include!("acyclic.objects.v1.tonic.rs");',
-  "acyclic/machines/v1/acyclic.machines.v1.rs": 'include!("acyclic.machines.v1.tonic.rs");',
+// Rust splitting and feature gates are emitted by sdk-proto-codegen.
+export const protoCodegenCommand = args => process.env.SDK_PROTO_CODEGEN
+  ? [process.env.SDK_PROTO_CODEGEN, ...args]
+  : ["cargo", "run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", ...args];
+
+export const projectGeneratedRust = (root, directory) => {
+  const [command, ...args] = protoCodegenCommand(["rust-projection", directory]);
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Rust projection failed: ${result.stderr}`);
 };
-export const normalizeGeneratedRust = (relative, source) => {
-  const normalized = `${source.trimEnd()}\n`;
-  const include = grpcGatedRust[relative];
-  const gate = relative.startsWith("acyclic/objects/")
-    ? 'all(feature = "grpc", not(target_arch = "wasm32"))' : 'feature = "grpc"';
-  return include ? normalized.replace(include, `#[cfg(${gate})]\n${include}`) : normalized;
+
+export const normalizeGeneratedRust = (_relative, source) => `${source.trimEnd()}\n`;
+
+export const packagedRustDirectories = [
+  ["acyclic/objects/v1", "rust/crates/objects/src/generated"],
+  ["acyclic/machines/v1", "rust/crates/machines/src/generated"],
+];
+
+export const rustBindingFiles = directory => {
+  const files = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      for (const child of rustBindingFiles(`${directory}/${entry.name}`)) files.push(`${entry.name}/${child}`);
+    } else if (entry.name.endsWith(".rs")) files.push(entry.name);
+  }
+  return files.sort();
 };
 
 export const normalizeGeneratedTypeScript = source => {
-  let normalized = `${source.trimEnd()}\n`;
-  // Preserve documentation while keeping large generated projections within
-  // the source-file bound. Repeated normalization is byte-idempotent.
-  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto")) && normalized.split("\n").length > 800) {
-    normalized = normalized.replaceAll("\n\n", "\n");
-    if (normalized.split("\n").length > 800) {
-      normalized = normalized.replace(/\/\*\*([\s\S]*?)\*\//g, (_, body) =>
-        `/** ${body.split("\n").map(line => line.trim().replace(/^\* ?/, "")).filter(Boolean).join(" ")} */`);
+  const normalized = `${source.trimEnd()}\n`;
+  if (normalized.split("\n").length < 800) return normalized;
+  // Reflow only lexer trivia: every generated type and runtime token survives.
+  const ts = generationTypeScript();
+  const syntax = ts.createSourceFile("generated.ts", normalized, ts.ScriptTarget.Latest, true);
+  const literals = new Map();
+  const collect = node => {
+    if (ts.isLiteralExpression(node) || ts.isTemplateExpression(node)) {
+      literals.set(node.getStart(syntax), node.end);
+    } else ts.forEachChild(node, collect);
+  };
+  collect(syntax);
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, normalized);
+  const parts = [];
+  let column = 0;
+  let lineComment = false;
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    let text = scanner.getTokenText();
+    const end = literals.get(scanner.getTokenPos());
+    if (end !== undefined) {
+      text = normalized.slice(scanner.getTokenPos(), end);
+      scanner.setTextPos(end);
+    } else if (kind === ts.SyntaxKind.NewLineTrivia) {
+      text = lineComment || column >= 180 ? "\n" : " ";
+      lineComment = false;
+    } else if (kind === ts.SyntaxKind.WhitespaceTrivia) {
+      text = " ";
+    } else if (kind === ts.SyntaxKind.MultiLineCommentTrivia && text.startsWith("/**")) {
+      text = `/** ${text.slice(3, -2).split("\n").map(line => line.trim().replace(/^\* ?/, "")).filter(Boolean).join(" ")} */`;
+    } else if (kind === ts.SyntaxKind.SingleLineCommentTrivia) {
+      lineComment = true;
     }
+    if (text === "\n") while (parts.at(-1) === " ") parts.pop();
+    parts.push(text);
+    column = text.includes("\n") ? text.length - text.lastIndexOf("\n") - 1 : column + text.length;
   }
-  return normalized;
+  const result = `${parts.join("").trimEnd()}\n`;
+  if (result.split("\n").length >= 800) throw new Error("generated TypeScript exceeds the source-file bound");
+  const projected = ts.createSourceFile("generated.ts", result, ts.ScriptTarget.Latest, true);
+  const printer = ts.createPrinter({ removeComments: true });
+  if (syntax.parseDiagnostics.length || projected.parseDiagnostics.length || printer.printFile(syntax) !== printer.printFile(projected)) {
+    throw new Error("generated TypeScript reflow changed syntax");
+  }
+  return result;
 };

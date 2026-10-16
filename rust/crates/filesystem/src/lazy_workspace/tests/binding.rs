@@ -170,7 +170,12 @@ async fn attach_open_and_fork_demand_no_source_work() {
     .await
     .unwrap();
     let (child, original) = reopened
-        .fork("child", IdempotencyKey::from_bytes([5; 16]), accounting!())
+        .fork(
+            "child",
+            IdempotencyKey::from_bytes([5; 16]),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
         .await
         .unwrap();
     let first = child.snapshot(accounting!()).await.unwrap();

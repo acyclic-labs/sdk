@@ -36,7 +36,7 @@ fn file(task: &Component, id: &Component, result: bool) -> FileKey {
 }
 
 fn storage(error: crate::task_volume::Error) -> Error {
-    if let crate::task_volume::Error::Accounting(error) = error {
+    if let crate::task_volume::Error::FileRead(error) = error {
         return error;
     }
     Error::NativeBoundary {

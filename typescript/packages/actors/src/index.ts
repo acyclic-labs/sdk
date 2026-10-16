@@ -5,3 +5,4 @@ export * from "./client.js";
 export type { TimerRecord } from "./generated/timers.js";
 export * from "./guest.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
+export { credentialProvider, type CredentialProvider, type CredentialOptions } from "./credential.js";

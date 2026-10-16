@@ -21,7 +21,7 @@ pub(super) fn existing_tracked_paths<'a>(
                     tracked.insert(path.clone());
                 }
                 Ok(_) | Err(WorkspaceError::NotFound) => {}
-                Err(error) => return Err(display(error)),
+                Err(error) => return Err(Error::from(error)),
             }
         }
         Ok(tracked)

@@ -56,6 +56,8 @@ impl DemandWork {
         &mut self,
         actual: WorkCounters,
     ) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(actual);
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }

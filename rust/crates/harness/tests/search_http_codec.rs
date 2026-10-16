@@ -55,7 +55,7 @@ fn corpus(exa: bool) {
         .unwrap();
     for corpus in ["search_http_codec", "search_http_envelope"] {
         let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fuzz/corpus")
+            .join("../harness-fuzz/corpus")
             .join(corpus);
         for entry in std::fs::read_dir(corpus).unwrap() {
             let bytes = std::fs::read(entry.unwrap().path()).unwrap();

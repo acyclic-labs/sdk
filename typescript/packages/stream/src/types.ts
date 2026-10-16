@@ -1,3 +1,4 @@
+import type { CredentialOptions } from "@acyclic-labs/actors/credential";
 import type {
   AppendReceipt as WireAppendReceipt, AppendRequest as WireAppendRequest,
   CommittedAppend as WireCommittedAppend, CommittedFork as WireCommittedFork,
@@ -73,6 +74,7 @@ export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal }
 export interface StreamChild { readonly path: string }
+export interface ChildrenRequest { readonly parent?: string; readonly limit: number; readonly signal?: AbortSignal }
 export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>
@@ -125,13 +127,14 @@ export interface StreamProvider {
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
+  children?(request: ChildrenRequest): AsyncIterable<StreamChild>;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
+export interface StreamEnvironment extends CredentialOptions { readonly endpoint: string; readonly caCertificate?: Uint8Array }
 /** Rust-owned and provider/client error codes. */
 export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"
