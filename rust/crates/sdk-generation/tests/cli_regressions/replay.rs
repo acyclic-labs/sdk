@@ -39,8 +39,13 @@ pub(super) fn relocate_receipts(original: &Fixture, relocated: &Fixture) {
                     (&original.root, &relocated.root),
                     (&original.output, &relocated.output),
                 ] {
-                    if let Some(suffix) = text.strip_prefix(old.to_str().unwrap()) {
-                        *text = format!("{}{suffix}", new.display());
+                    if let Some(rebased) = super::paths::rebase(
+                        text,
+                        old.to_str().unwrap(),
+                        new.to_str().unwrap(),
+                        cfg!(windows),
+                    ) {
+                        *text = rebased;
                         break;
                     }
                 }

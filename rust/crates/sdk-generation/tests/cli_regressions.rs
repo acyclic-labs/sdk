@@ -520,39 +520,31 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 }
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(
-        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
-            .args([
-                "generate",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--version",
-                "feature-profile-catalog",
-                "--channel",
-                "preview",
-                "--execute-profiles",
-                "--skip-scenarios",
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
+        "generate",
+        "--root",
+        fixture.root.to_str().unwrap(),
+        "--output",
+        fixture.output.to_str().unwrap(),
+        "--version",
+        "feature-profile-catalog",
+        "--channel",
+        "preview",
+        "--execute-profiles",
+        "--skip-scenarios",
+    ]))
 }
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(
-        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
-            .args([
-                "drift",
-                "--root",
-                fixture.root.to_str().unwrap(),
-                "--output",
-                fixture.output.to_str().unwrap(),
-                "--rustdoc-dir",
-                fixture.rustdoc.to_str().unwrap(),
-            ])
-            .env("CARGO_HOME", fixture_cargo_home(fixture)),
-    )
+    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
+        "drift",
+        "--root",
+        fixture.root.to_str().unwrap(),
+        "--output",
+        fixture.output.to_str().unwrap(),
+        "--rustdoc-dir",
+        fixture.rustdoc.to_str().unwrap(),
+    ]))
 }
 
 fn output_message(result: &std::process::Output) -> String {
@@ -681,11 +673,13 @@ fn write_registry_transport(support: &Path) {
         .map(|(suffix, response)| format!("{suffix}\n{response}\n"))
         .collect::<String>();
     fs::write(support.join("registry-responses.txt"), records).unwrap();
-    fs::copy(
-        env!("CARGO_BIN_EXE_registry-transport-fixture"),
-        support.join(if cfg!(windows) { "curl.exe" } else { "curl" }),
-    )
-    .unwrap();
+    let source = packaging::transport();
+    let destination = support.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    if !destination.exists() {
+        fs::hard_link(&source, &destination)
+            .or_else(|_| fs::copy(&source, &destination).map(|_| ()))
+            .unwrap();
+    }
 }
 
 fn run_historical_generate(fixture: &Fixture, support: &Path) -> std::process::Output {
@@ -814,12 +808,14 @@ fn registry_archive_fixture_configured(
     setup: Option<fn(&Path)>,
     prepared: Option<(Fixture, PathBuf)>,
 ) -> (Fixture, PathBuf) {
-    let (fixture, support) = prepared.unwrap_or_else(|| historical_source_fixture(None));
+    let needs_commit = prepared.is_some() || package_name != "demo";
+    let (fixture, support) = prepared.unwrap_or_else(packaging::source_fixture);
     let package = fixture.root.join("rust/crates/demo");
     let manifest = fs::read_to_string(package.join("Cargo.toml"))
         .unwrap()
         .replace("name = \"demo\"", &format!("name = {package_name:?}"));
-    fs::write(package.join("Cargo.toml"), manifest.replace("[package]\n", "[package]\ninclude = [\"Cargo.toml\", \"README.md\", \"src/**\", \"examples/**\", \"descriptor.bin\", \"input.json\", \"schema.proto\"]\n")).unwrap();
+    fs::write(package.join("Cargo.toml"), manifest).unwrap();
+    packaging::include_sources(&package);
     // Original Cargo and release manifests establish each renamed owner's
     // authority. Archive-only API bytes below remain divergent from this root.
     fs::write(
@@ -833,7 +829,7 @@ fn registry_archive_fixture_configured(
         lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
     )
     .unwrap();
-    if fixture.root.join(".git").is_dir() {
+    if needs_commit {
         git(
             &fixture.root,
             &[
@@ -852,8 +848,6 @@ fn registry_archive_fixture_configured(
                 "original registry owner authority",
             ],
         );
-    } else {
-        init_git(&fixture.root, "original registry owner authority");
     }
     let original = fs::read_to_string(package.join("src/lib.rs")).unwrap();
     fs::write(
@@ -872,32 +866,7 @@ fn registry_archive_fixture_configured(
     if let Some(setup) = setup {
         setup(&package);
     }
-    // Cargo itself creates the normalized manifest and published package lock.
-    let packaged = Command::new(env!("CARGO"))
-        .env("CARGO_HOME", fixture_cargo_home(&fixture))
-        .current_dir(&fixture.root)
-        .args(["package", "--allow-dirty", "--no-verify", "--manifest-path"])
-        .arg(package.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(support.join("package-target"))
-        .output()
-        .unwrap();
-    assert!(packaged.status.success(), "{}", output_message(&packaged));
-    let unpack = support.join("cargo-packaged-source");
-    fs::create_dir_all(&unpack).unwrap();
-    let source = unpack.join(format!("{package_name}-1.0.0"));
-    let members = sdk_generation::historical::decode_archive_members(
-        &fs::read(support.join(format!("package-target/package/{package_name}-1.0.0.crate")))
-            .unwrap(),
-        package_name,
-        "1.0.0",
-    )
-    .unwrap();
-    for (name, bytes) in members {
-        let file = source.join(name);
-        fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(file, bytes).unwrap();
-    }
+    let source = packaging::materialize(&package, &support, package_name);
     fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
     if !publisher_vcs {
         fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
@@ -924,3 +893,11 @@ mod replay;
 
 #[path = "cli_regressions/archives.rs"]
 mod archives;
+
+#[path = "cli_regressions/paths.rs"]
+mod paths;
+
+#[path = "cli_regressions/package_manifest.rs"]
+mod package_manifest;
+#[path = "cli_regressions/packaging.rs"]
+mod packaging;

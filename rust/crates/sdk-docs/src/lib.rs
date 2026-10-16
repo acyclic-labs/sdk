@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 pub mod historical;
 mod public_api;
 mod render_cache;
+mod sync;
 pub use render_cache::with_rustdoc_cache;
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;

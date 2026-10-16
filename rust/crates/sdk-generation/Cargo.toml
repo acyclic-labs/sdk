@@ -20,6 +20,7 @@ flate2 = "1"
 
 [dev-dependencies]
 proptest = "=1.11.0"
+toml = "=0.9.8"
 
 [[bin]]
 name = "registry-transport-fixture"
@@ -27,3 +28,6 @@ path = "tests/support/registry_transport.rs"
 test = false
 bench = false
 doc = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }

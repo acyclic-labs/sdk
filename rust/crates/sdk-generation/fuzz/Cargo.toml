@@ -11,11 +11,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+toml = "=0.9.8"
 sdk-generation = { path = ".." }
 
 [[bin]]
 name = "archive_members"
 path = "fuzz_targets/archive_members.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fixture_replay"
+path = "fuzz_targets/fixture_replay.rs"
 test = false
 doc = false
 bench = false

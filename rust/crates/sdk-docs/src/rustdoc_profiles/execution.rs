@@ -91,21 +91,21 @@ struct RustdocProducer {
     targets: BTreeSet<String>,
 }
 
-thread_local! {
-    // Profile batches are sequential; each calling thread retains its producer.
-    static PRODUCER: std::cell::RefCell<Option<RustdocProducer>> = const { std::cell::RefCell::new(None) };
-    #[cfg(test)]
-    static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+// One pinned producer is immutable for the lifetime of this process. The leaf
+// slot lock is released before profile validation or command construction.
+static PRODUCER: crate::sync::Mutex<Option<crate::sync::Arc<RustdocProducer>>> =
+    crate::sync::Mutex::new(None);
+#[cfg(test)]
+static LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 pub(super) fn rustup_lookup_count() -> usize {
-    LOOKUPS.get()
+    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     #[cfg(test)]
-    LOOKUPS.set(LOOKUPS.get() + 1);
+    LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Command::new("rustup")
         .args(args)
         .output()
@@ -151,20 +151,15 @@ fn with_producer<T>(
     required: &[&str],
     use_producer: impl FnOnce(&RustdocProducer) -> T,
 ) -> Result<T, ProfileError> {
-    PRODUCER.with_borrow_mut(|cached| {
-        let producer = match cached {
-            Some(producer) => producer,
-            None => cached.insert(resolve_producer()?),
-        };
-        for &target in required {
-            if !producer.targets.contains(target) {
-                return Err(ProfileError::UnsupportedTarget {
-                    target: target.to_owned(),
-                });
-            }
+    let producer = crate::sync::get_or_try_init(&PRODUCER, resolve_producer)?;
+    for &target in required {
+        if !producer.targets.contains(target) {
+            return Err(ProfileError::UnsupportedTarget {
+                target: target.to_owned(),
+            });
         }
-        Ok(use_producer(producer))
-    })
+    }
+    Ok(use_producer(&producer))
 }
 
 /// Queries installed targets and rejects unavailable requirements without provisioning.
