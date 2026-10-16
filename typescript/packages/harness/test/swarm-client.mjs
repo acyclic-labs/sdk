@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import { browserTest } from "../../../../scripts/browser-test.mjs";
+import { browserTest, childExit } from "../../../../scripts/browser-test.mjs";
 
 if (typeof Bun !== "undefined") {
   const built = await Bun.build({ entrypoints: [new URL("swarm-client.browser.ts", import.meta.url).pathname], outdir: import.meta.dirname, naming: "swarm-client.browser.js", target: "browser", plugins: [{ name: "existing-wasm", setup(build) {
@@ -15,7 +15,7 @@ if (typeof Bun !== "undefined") {
   process.exit(code ?? 1);
 }
 const host = spawn(resolve(process.env.CARGO_TARGET_DIR ?? "target", "debug/examples/browser-test-host"), { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
-const exited = new Promise(resolve => host.once("exit", resolve));
+const exited = childExit(host);
 let output = "";
 try {
   const endpoint = await new Promise((resolve, reject) => {
