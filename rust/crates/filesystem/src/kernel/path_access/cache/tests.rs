@@ -176,8 +176,13 @@ fn actual_slot_observer_detects_an_extra_discarded_uncharged_probe() {
 
 #[test]
 fn one_required_probe_is_sufficient_at_the_exact_item_limit() {
-    for native in [false, true] {
+    for native in [
+        false,
+        #[cfg(not(target_arch = "wasm32"))]
+        true,
+    ] {
         let cancellation = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
         let original = crate::NativeMaterializationWork::new(
             WorkBudget {
                 items_examined: 1,
@@ -186,22 +191,22 @@ fn one_required_probe_is_sufficient_at_the_exact_item_limit() {
             &cancellation,
         )
         .unwrap();
-        let mut setup = if native {
-            KernelAccounting::native(&original, &cancellation)
-        } else {
-            KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+        let mut setup = match native {
+            #[cfg(not(target_arch = "wasm32"))]
+            true => KernelAccounting::native(&original, &cancellation),
+            _ => KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         };
         let cache = OperationReadCache::new(&(), 2, &mut setup, None).unwrap();
-        let mut exact = if native {
-            KernelAccounting::native(&original, &cancellation)
-        } else {
-            KernelAccounting::standalone(
+        let mut exact = match native {
+            #[cfg(not(target_arch = "wasm32"))]
+            true => KernelAccounting::native(&original, &cancellation),
+            _ => KernelAccounting::standalone(
                 WorkBudget {
                     items_examined: 1,
                     ..WorkBudget::UNBOUNDED
                 },
                 &cancellation,
-            )
+            ),
         };
         assert!(
             cache
