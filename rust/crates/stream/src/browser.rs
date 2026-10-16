@@ -5,7 +5,7 @@ use crate::{
     *,
 };
 use async_trait::async_trait;
-use futures::FutureExt as _;
+use futures::{StreamExt, stream};
 use indexed_db_futures::{
     database::Database,
     prelude::*,
@@ -76,10 +76,7 @@ struct Cache {
 }
 struct Inner {
     database: Database,
-    // Lock order: cache -> IndexedDB transaction -> provider state -> watch.
-    // Publication hints fire after the cache guard drops, including cancellation.
-    cache: crate::query_sync::Mutex<Cache>,
-    publications: crate::browser_push::Publications,
+    cache: tokio::sync::Mutex<Cache>,
     clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
 }
@@ -122,12 +119,11 @@ impl BrowserStream {
         Ok(Self {
             inner: Rc::new(Inner {
                 database,
-                cache: crate::query_sync::Mutex::new(Cache {
+                cache: tokio::sync::Mutex::new(Cache {
                     provider,
                     cursor: 0,
                     valid: true,
                 }),
-                publications: crate::browser_push::Publications::open(name)?,
                 clock,
                 limits,
             }),
@@ -239,7 +235,6 @@ impl BrowserStream {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec();
-        let _publication = self.inner.publications.publication();
         let mut cache = self.inner.cache.lock().await;
         let transaction = self.transaction()?;
         let (count, bytes) = self.refresh(&transaction, &mut cache).await?;
@@ -350,18 +345,6 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.bounds(path).await)
             .await
     }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        // with_provider serializes with execute's committed IndexedDB transaction;
-        // its visible tail is therefore a confirmed persisted prefix.
-        self.with_provider(async move |provider| {
-            let tail = provider.tail(path).await?;
-            Ok(StreamWatermarks {
-                accepted: tail,
-                durable: tail,
-            })
-        })
-        .await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
             Outcome::Append(value) => Ok(value),
@@ -413,30 +396,44 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.follow_published(path, from, None).await
-    }
-    async fn follow_checked(&self, path: StreamPath, from: u64, preceding: CommitId) -> Result<RecordStream, StreamError> {
-        self.follow_published(path, from, Some(preceding)).await
+        if from > self.tail(path.clone()).await? {
+            return Err(StreamError::OutOfRange);
+        }
+        // Durable polling is the wakeup transport. It observes publication even
+        Ok(stream::try_unfold(
+            (self.clone(), path, memory::HistoryCursor::at(from)),
+            |(provider, path, mut cursor)| async move {
+                loop {
+                    let record = provider
+                        .with_provider(async |memory| {
+                            memory
+                                .next_checked_record(&path, &mut cursor, &mut None)
+                                .await
+                        })
+                        .await?;
+                    if let Some(record) = record {
+                        return Ok(Some((record, (provider, path, cursor))));
+                    }
+                    poll_delay().await?;
+                }
+            },
+        )
+        .boxed_local())
     }
 }
 
-impl BrowserStream {
-    async fn follow_published(&self, path: StreamPath, from: u64, anchor: Option<CommitId>) -> Result<RecordStream, StreamError> {
-        let wake = self.inner.publications.subscribe();
-        let open = {
-            let provider = self.clone();
-            move |next, anchor| {
-                let provider = provider.clone();
-                let path = path.clone();
-                async move {
-                    provider.with_provider(async move |memory| match anchor {
-                        Some(anchor) => memory.follow_checked(path, next, anchor).await,
-                        None => memory.follow(path, next).await,
-                    }).await
-                }.boxed_local()
-            }
-        };
-        let records = open(from, anchor).await?;
-        Ok(crate::push_follow::following(records, wake, from, anchor, open))
-    }
+async fn poll_delay() -> Result<(), StreamError> {
+    let timer = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
+        .map_err(backend)?
+        .dyn_into::<js_sys::Function>()
+        .map_err(backend)?;
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        if let Err(error) = timer.call2(&JsValue::UNDEFINED, &resolve, &JsValue::from_f64(100.0)) {
+            let _ = reject.call1(&JsValue::UNDEFINED, &error);
+        }
+    });
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(backend)?;
+    Ok(())
 }

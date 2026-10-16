@@ -8,10 +8,7 @@ use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{rc::Rc, sync::Mutex};
 use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 

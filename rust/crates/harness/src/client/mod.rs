@@ -57,8 +57,6 @@ mod file_views;
 pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;
-mod file_submit;
-pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod query_subscription;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{QuerySubscription, query_error};

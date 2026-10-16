@@ -12,7 +12,7 @@
     "./browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
-    "./client": { "types": "./dist/client.d.ts", "default": "./dist/client.js" },
+    "./client": { "types": "./dist/client-views.d.ts", "default": "./dist/client-views.js" },
     "./react": { "types": "./dist/react.d.ts", "default": "./dist/react.js" },
     "./svelte": { "types": "./dist/svelte.d.ts", "default": "./dist/svelte.js" },
     "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" },

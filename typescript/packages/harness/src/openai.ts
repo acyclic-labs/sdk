@@ -3,8 +3,7 @@ import type { ModelContentPart } from "./model.js";
 import type { FileRef } from "./conversation.js";
 import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
-/** Host-provided HTTP I/O for model requests. */
-export type HttpFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+import type { HttpFetcher } from "./wire-transport.js";
 
 type OpenAiProjectedPart = Readonly<{ type: "text"; text: string }>;
 

@@ -15,18 +15,3 @@ fn negative_control_unchecked_session_registration_is_detected() {
         .is_err()
     );
 }
-
-#[test]
-fn cached_follow_registration_has_no_lost_wakeup() {
-    acyclic_stream::verification::cached_follow_publication_has_no_lost_wakeup(false);
-}
-
-#[test]
-fn negative_control_missing_publication_push_is_detected() {
-    assert!(
-        std::panic::catch_unwind(|| {
-            acyclic_stream::verification::cached_follow_publication_has_no_lost_wakeup(true)
-        })
-        .is_err()
-    );
-}

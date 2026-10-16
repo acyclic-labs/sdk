@@ -8,8 +8,6 @@ use std::collections::{BTreeMap, btree_map::Entry};
 /// Bounds for one selected file query, including every retained segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct QueryViewLimits {
     /// Maximum materialized logical files.
     pub files: usize,

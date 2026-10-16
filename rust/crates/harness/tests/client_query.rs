@@ -436,5 +436,12 @@ async fn opening_published_files_does_not_initialize_a_missing_volume() {
     let opened = TaskVolume::open_existing(provider, path("agent/files"))
         .await
         .unwrap();
-    assert_eq!(opened.head().await.unwrap(), created.head().await.unwrap());
+    assert_eq!(
+        opened.snapshot(&Query::Root, 128).await.unwrap().generation,
+        created
+            .snapshot(&Query::Root, 128)
+            .await
+            .unwrap()
+            .generation,
+    );
 }

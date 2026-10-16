@@ -25,10 +25,6 @@ pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-mod browser_push;
-#[cfg(any(acyclic_loom, all(feature = "wasm", target_arch = "wasm32")))]
-mod push_follow;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
@@ -40,19 +36,17 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
-#[doc(hidden)]
-pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::WasmStream;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
