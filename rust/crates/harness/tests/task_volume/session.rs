@@ -88,10 +88,14 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
             }
 
         }
-        let pinned = reader.snapshot_at(&query, last.clone(), 1).await?;
-        assert_eq!(pinned.files, folded.values().cloned().collect::<Vec<_>>());
+        let saved_fold = folded.values().cloned().collect::<Vec<_>>();
         drop(observations.remove(0));
         generation = writer.append(generation, &write("GOAL.md", "between-tiers")?).await?;
+        assert!(generation.position > last.position);
+        let pinned = reader.snapshot_at(&query, last.clone(), 1).await?;
+        assert_eq!(pinned.cursor, last);
+        assert_eq!(pinned.files, saved_fold);
+        assert_ne!(reader.snapshot(&query, 1).await?.files, saved_fold);
         let mut resumed = reader.observe(query.clone(), Some(last.clone()), 1).await?;
         assert!(!resumed.reset);
         assert!(resumed.snapshot.is_none());

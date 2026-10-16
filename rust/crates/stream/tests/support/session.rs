@@ -94,6 +94,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             Some("Bearer fixture")
         );
         let session = self.counts.sessions.fetch_add(1, Ordering::Relaxed) + 1;
+        self.counts.changed.notify_one();
         if self.withhold_welcome {
             let input = request.into_inner();
             return Ok(Reply::new(

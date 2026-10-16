@@ -4,7 +4,10 @@ use crate::{
     CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyKey, IdempotencyObservation, ReadRequest, StreamBounds,
 };
-use futures::stream::{FuturesUnordered, SelectAll};
+use futures::{
+    stream::{FuturesUnordered, SelectAll},
+    task::{ArcWake, AtomicWaker, waker_ref},
+};
 use std::time::Instant;
 
 const AGENTS: usize = 10_000;
@@ -194,11 +197,11 @@ async fn run_swarm<P: StreamProvider>(
     consumed?;
     assert_eq!(followers.len(), AGENTS);
     // Consume completes before the producer's last checkpoint. Keep every
-    // stream open until both tasks finish, then poll each stream directly so a
-    // ready extra cannot hide behind SelectAll's cooperative polling budget.
+    // stream open until both tasks finish, then drain registered wakes directly
+    // so extra data cannot hide behind SelectAll's cooperative polling budget.
     let mut followers = followers.into_iter().collect::<Vec<_>>();
     assert!(
-        bounded_quiet(&mut followers).await,
+        quiescent(&mut followers).await,
         "follow yielded extra data, an error or EOF after the expected prefix"
     );
     drop(followers);
@@ -339,20 +342,46 @@ async fn redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget() 
     Ok(())
 }
 
-async fn bounded_quiet<S: futures::Stream + Unpin>(followers: &mut [S]) -> bool {
-    for _ in 0..2 {
+#[derive(Default)]
+struct WakeCount {
+    wakes: AtomicUsize,
+    caller: AtomicWaker,
+}
+impl ArcWake for WakeCount {
+    fn wake_by_ref(wake: &Arc<Self>) {
+        wake.wakes.fetch_add(1, Ordering::SeqCst);
+        wake.caller.wake();
+    }
+}
+
+async fn quiescent<S: futures::Stream + Unpin>(followers: &mut [S]) -> bool {
+    let wake = Arc::new(WakeCount::default());
+    futures::future::poll_fn(|caller| {
+        wake.caller.register(caller.waker());
+        let before = wake.wakes.load(Ordering::SeqCst);
+        let waker = waker_ref(&wake);
+        let mut context = std::task::Context::from_waker(&waker);
         for follower in followers.iter_mut() {
-            if !futures::poll!(follower.next()).is_pending() {
-                return false;
+            if std::pin::Pin::new(follower)
+                .poll_next(&mut context)
+                .is_ready()
+            {
+                return std::task::Poll::Ready(false);
             }
         }
-        tokio::task::yield_now().await;
-    }
-    true
+        // Every previously pending wake was driven by this pass. A new wake
+        // requires another pass; only Pending without new work is quiescent.
+        if wake.wakes.load(Ordering::SeqCst) == before {
+            std::task::Poll::Ready(true)
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await
 }
 
 #[tokio::test]
-async fn bounded_polls_reject_extra_deliveries_and_truncated_follow_controls() -> TestResult {
+async fn quiescence_rejects_extra_deliveries_and_truncated_follow_controls() -> TestResult {
     for (extra, truncate) in [(false, false), (true, false), (false, true), (true, true)] {
         let memory = MemoryStream::default();
         append(&memory, "probe", if extra { 3 } else { 2 }).await?;
@@ -366,10 +395,34 @@ async fn bounded_polls_reject_extra_deliveries_and_truncated_follow_controls() -
             assert_eq!(next(&mut follow).await?.sequence, sequence);
         }
         assert_eq!(
-            bounded_quiet(&mut [follow]).await,
+            quiescent(&mut [follow]).await,
             !extra && !truncate,
-            "extra delivery or a take(2) EOF must fail the same bounded probe"
+            "extra delivery or a take(2) EOF must fail the same quiescence check"
         );
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn quiescence_drives_self_wakes_and_rejects_a_third_poll_extra() {
+    for extra in [false, true] {
+        let polls = std::cell::Cell::new(0);
+        let delayed = stream::poll_fn(|context| {
+            polls.set(polls.get() + 1);
+            if polls.get() < 3 {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            } else if extra {
+                std::task::Poll::Ready(Some(()))
+            } else {
+                std::task::Poll::Pending
+            }
+        });
+        assert_eq!(quiescent(&mut [delayed]).await, !extra);
+        assert_eq!(
+            polls.get(),
+            3,
+            "all scheduled work must be driven before deciding"
+        );
+    }
 }

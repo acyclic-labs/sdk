@@ -413,18 +413,29 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     let fixture =
         Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
     let client = fixture.client()?;
-    let started = tokio::time::Instant::now();
     let one = StreamPath::new("one")?;
     let two = StreamPath::new("two")?;
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::join!(client.follow(one, 0), client.follow(two, 0))
+        let first = client.follow(one, 0);
+        let second = client.follow(two, 0);
+        futures::pin_mut!(first, second);
+        for attempt in 1..=3 {
+            // Neither logical follow may finish before all physical handshake
+            // attempts have begun. Ordering is independent of elapsed wall time.
+            tokio::select! {
+                biased;
+                _ = fixture.until(|counts| counts.sessions.load(Ordering::Relaxed) >= attempt) => {}
+                _ = &mut first => return Err("first follow ended before the final handshake attempt"),
+                _ = &mut second => return Err("second follow ended before the final handshake attempt"),
+            }
+        }
+        Ok(tokio::join!(first, second))
     })
-    .await?;
+    .await??;
     assert!(matches!(first, Err(StreamError::Unavailable)));
     assert!(matches!(second, Err(StreamError::Unavailable)));
-    assert!(started.elapsed() >= Duration::from_secs(3));
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
-    assert!(fixture.counts.sessions.load(Ordering::Relaxed) >= 3);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 3);
     Ok(())
 }
 
