@@ -1,6 +1,6 @@
 use super::*;
 
-async fn native_checkout(
+pub(super) async fn native_checkout(
     work: &NativeMaterializationWork,
 ) -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;

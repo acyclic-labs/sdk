@@ -408,6 +408,7 @@ impl CaptureBatch<'_> {
         let unchanged = if logical_bytes == 0
             && ranges.is_empty()
             && existing.1
+            && existing.0.is_some_and(|record| record.link_count == 1)
             && existing.0.is_some_and(|record| match record.payload {
                 crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
                 crate::kernel::FilePayload::Regular { logical_bytes, .. } => logical_bytes == 0,
@@ -460,6 +461,11 @@ impl CaptureBatch<'_> {
         } else {
             false
         };
+        #[cfg(test)]
+        let unchanged = self
+            .baseline
+            .and_then(|baseline| baseline.reuse_override)
+            .unwrap_or(unchanged);
         if unchanged {
             drop(ranges);
             self.meter
