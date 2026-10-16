@@ -6,7 +6,7 @@ mod io;
 mod journal;
 mod machine;
 mod memory;
-#[cfg(all(test, feature = "model-checking", not(target_arch = "wasm32")))]
+#[cfg(all(acyclic_harness_loom, not(target_arch = "wasm32")))]
 mod model_checking;
 mod records;
 #[cfg(test)]
