@@ -46,7 +46,6 @@
     "check:native": "node ../../../scripts/build-actors-native.mjs check",
     "assemble:native": "node ../../../scripts/assemble-actors-native-package.mjs",
     "test": "tsc -b --pretty false",
-    "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
     "test:timers": "node --test test/timers.test.mjs",
     "pack:dry": "bun pm pack --dry-run"
   },
