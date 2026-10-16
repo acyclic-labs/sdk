@@ -223,6 +223,7 @@ impl StockExecution<'_> {
             input.operation_id,
             &request_key,
             request.bytes(),
+            true,
             io,
         )
         .await?;

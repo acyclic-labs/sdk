@@ -140,3 +140,13 @@ fn latest_consumption_and_move_fence_share_one_application_cut() {
 fn negative_control_checks_latest_generation_outside_the_cursor_lock() {
     acyclic_stream::session::verify_latest_progress(true);
 }
+
+#[test]
+fn initial_eof_retry_yields_to_deadline_and_cancellation() {
+    acyclic_stream::session::verify_initial_retry_yield(false);
+}
+#[test]
+#[should_panic(expected = "initial retry must yield before another physical RPC")]
+fn negative_control_initial_eof_retry_monopolizes_the_executor() {
+    acyclic_stream::session::verify_initial_retry_yield(true);
+}

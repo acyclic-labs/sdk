@@ -421,6 +421,7 @@ impl ExecutionJournal for Journal {
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
         _context: Option<&'a crate::runtime::TaskContext>,
+        _summary_files: &'a [&'a FileRef],
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_some() {
             return Err(stock_boundary(
@@ -694,6 +695,8 @@ mod invocation_bounds;
 mod output_bounds;
 mod recovery;
 mod replay;
+#[cfg(feature = "filesystem")]
+mod summary_authorization;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

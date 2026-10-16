@@ -27,6 +27,10 @@ test("returning unread buffered deliveries never loses aggregate credit", async 
   const node = new SessionNode();
   node.append("unread", 2);
   const client = new StreamSessions(node.connect);
+  const anchorCancel = new AbortController();
+  const anchor = client.follow("anchor", { from: 0n, signal: anchorCancel.signal });
+  const parked = anchor.next();
+  await node.until(() => node.active === 1);
   for (let index = 0; index < StreamLimit.MAX_ITEMS + 8; index += 1) {
     const follow = client.follow("unread", { from: 0n });
     expect((await follow.next()).value?.sequence).toBe(0n);
@@ -40,8 +44,13 @@ test("returning unread buffered deliveries never loses aggregate credit", async 
   await healthy.return(undefined);
   await checkpoint();
   expect(node.connections.length).toBe(1);
+  expect(node.returned).toBeGreaterThan(StreamLimit.MAX_ITEMS);
+  expect(node.returned).toBeLessThanOrEqual(2 * (StreamLimit.MAX_ITEMS + 8) + 1);
+  anchorCancel.abort();
+  await parked;
+  await anchor.return(undefined);
+  await node.until(() => node.active === 0);
   expect(node.outstandingFrames).toBe(0);
-  expect(node.returned).toBe(2 * (StreamLimit.MAX_ITEMS + 8) + 1);
 }, 2_000);
 
 test("moved resumes the yielded cursor while another channel stays live", async () => {
@@ -90,6 +99,10 @@ test("aborting a suspended iterator releases its channel reservation immediately
   const node = new SessionNode();
   node.append("events");
   const client = new StreamSessions(node.connect);
+  const anchorCancel = new AbortController();
+  const anchor = client.follow("anchor", { from: 0n, signal: anchorCancel.signal });
+  const parked = anchor.next();
+  await node.until(() => node.active === 1);
   for (let index = 0; index < 16_385; index++) {
     const controller = new AbortController();
     const records = client.follow("events", { from: 0n, signal: controller.signal });
@@ -97,7 +110,12 @@ test("aborting a suspended iterator releases its channel reservation immediately
     controller.abort();
     // Deliberately discard the iterator while it is suspended at yield.
   }
-  expect(node.active).toBe(0);
+  await node.until(() => node.active === 1);
+  expect(node.connections.length).toBe(1);
+  anchorCancel.abort();
+  await parked;
+  await anchor.return(undefined);
+  await node.until(() => node.active === 0);
   expect(node.outstandingFrames).toBe(0);
 });
 
@@ -120,10 +138,32 @@ test("Welcome followed by EOF cannot strand the first subscription", async () =>
   const client = new StreamSessions(async (target, signal) => {
     const transport = await node.connect(target, signal);
     return { ...transport, async send(input) {
-      await transport.send(input);
-      if (input.body.case === "hello") transport.close();
+      if (input.body.case === "hello") {
+        await transport.send(input);
+        transport.close();
+      }
     } };
   });
-  await expect(client.follow("events", { from: 0n }).next()).rejects.toMatchObject({ code: "unavailable" });
-  expect(node.active).toBe(0);
+  const nativeSetTimeout = globalThis.setTimeout;
+  const nativeClearTimeout = globalThis.clearTimeout;
+  const handle = {};
+  let expire: (() => void) | undefined;
+  Object.assign(globalThis, {
+    setTimeout(callback: () => void, milliseconds?: number, ...args: unknown[]) {
+      if (milliseconds !== 10_000) return nativeSetTimeout(callback, milliseconds, ...args);
+      expire = callback;
+      return handle;
+    },
+    clearTimeout(timer: ReturnType<typeof setTimeout>) {
+      if (timer !== handle) nativeClearTimeout(timer);
+    },
+  });
+  try {
+    const pending = client.follow("events", { from: 0n }).next();
+    await node.until(() => node.connections.length >= 2);
+    expect(expire).toBeDefined();
+    expire!();
+    await expect(pending).rejects.toMatchObject({ code: "deadline_elapsed" });
+    await node.until(() => node.active === 0);
+  } finally { Object.assign(globalThis, { setTimeout: nativeSetTimeout, clearTimeout: nativeClearTimeout }); }
 });

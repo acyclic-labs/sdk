@@ -38,6 +38,8 @@ pub use pool::model::{
     verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
     verify_terminal_cursor_dial,
 };
+#[cfg(acyclic_stream_loom)]
+pub use pool::retry_model::verify_initial_retry_yield;
 mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]

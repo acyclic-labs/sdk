@@ -102,7 +102,11 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                 Some(InternalContentClass::Execution),
                 None,
             )
-            .await?,
+            .await?
+            .map(|(file, body)| {
+                assert_eq!(body.as_ref(), bytes);
+                file
+            }),
         Some(expected)
     );
     Ok(())

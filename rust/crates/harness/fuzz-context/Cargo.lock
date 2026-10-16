@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
  "bytes",
@@ -41,7 +42,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "ts-rs",
  "url",
@@ -53,6 +53,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
+ "acyclic-proto-build",
  "ed25519-dalek",
  "prost",
  "sha2",
@@ -78,6 +79,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -98,7 +100,6 @@ dependencies = [
  "notify",
  "parking_lot",
  "prost",
- "prost-types",
  "rustix",
  "serde",
  "serde_json",
@@ -109,7 +110,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -137,6 +137,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-markdown",
  "acyclic-native-runtime",
+ "acyclic-objects",
  "acyclic-stream",
  "arrayvec",
  "async-trait",
@@ -183,6 +184,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "libfuzzer-sys",
+ "serde",
  "serde_json",
 ]
 
@@ -208,7 +210,9 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "rustix",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 
@@ -218,6 +222,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "blake3",
@@ -239,11 +244,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-proto-build"
+version = "0.2.0"
+dependencies = [
+ "prost",
+ "prost-reflect",
+ "protoc-bin-vendored",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "async-trait",
  "base64 0.23.1",
  "bytes",
@@ -253,7 +269,6 @@ dependencies = [
  "loom",
  "pin-project-lite",
  "prost",
- "protoc-bin-vendored",
  "ruzstd",
  "serde",
  "serde_json",
@@ -261,7 +276,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tonic-prost-build",
  "tracing",
  "uuid",
 ]

@@ -408,7 +408,23 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     stream_key(key.len(), format_args!("{key}"), custody.work())
                 }?;
                 custody.adopt(retained)?;
-                let appended = if let Some((execution, expected_tail)) = idle_execution {
+                let origin = origins::event_path(&event, custody.work())?;
+                if let Some(path) = &origin {
+                    custody.adopt(path.as_str().len() as u64)?;
+                }
+                let appended = if let Some(path) = origin {
+                    origins::append_origin::<true, _, 1>(
+                        (&self.stream.0, &self.client),
+                        [record],
+                        0,
+                        self.revision,
+                        stream_key,
+                        operation_id,
+                        path,
+                        custody.work(),
+                    )
+                    .await
+                } else if let Some((execution, expected_tail)) = idle_execution {
                     append_if_execution_idle(
                         &self.client,
                         &self.stream.0,

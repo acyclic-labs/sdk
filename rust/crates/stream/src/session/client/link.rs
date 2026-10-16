@@ -217,6 +217,12 @@ impl Pool {
             return Ok(());
         };
         let node = route.node.clone();
+        if let Some(link) = self.links.get(&node) {
+            link.channel.cancel_channel(wire::SessionChannel {
+                channel_id: id,
+                generation: route.generation,
+            });
+        }
         if let Some(link) = self.links.get_mut(&node) {
             link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
             let revision = link.revision;
@@ -247,6 +253,10 @@ impl Pool {
         if let Some(observation) = &mut link.observation {
             observation.finish(Some(&StreamError::Unavailable));
         }
+        let registering = self
+            .routes
+            .values()
+            .any(|route| route.node == node && route.live() && route.ready.is_some());
         for route in self
             .routes
             .values_mut()
@@ -266,6 +276,18 @@ impl Pool {
             },
             Some(link.channel.clone()),
         );
+        if registering && let Some(dial) = self.dials.remove(node) {
+            let executor = self.executor.clone();
+            // An immediate Welcome/EOF peer can otherwise monopolize the
+            // browser microtask queue and prevent registration deadlines.
+            self.dials.insert(
+                node.into(),
+                Box::pin(async move {
+                    executor.sleep(10).await;
+                    dial.await
+                }),
+            );
+        }
         Ok(())
     }
 }

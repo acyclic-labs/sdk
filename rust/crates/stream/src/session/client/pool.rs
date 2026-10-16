@@ -4,6 +4,8 @@ use super::*;
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
+#[cfg(acyclic_stream_loom)]
+pub(super) mod retry_model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
@@ -275,6 +277,14 @@ impl Pool {
         };
         if matches!(input.body, Some(Body::Data(_))) {
             wire_codec::session::consume_credit(&mut route.credit, &input)?;
+        }
+        if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
+            && let Some(link) = self.links.get(node)
+        {
+            link.channel.cancel_channel(wire::SessionChannel {
+                channel_id: id,
+                generation: input.generation,
+            });
         }
         match input.body {
             Some(Body::Opened(opened)) => {
