@@ -6,14 +6,23 @@ fn check(source: &str, sizes: &[usize]) -> Vec<Line> {
     let mut at = 0;
     let mut chunk = 0;
     while at < source.len() {
-        let end = (at + sizes[chunk % sizes.len()]).min(source.len());
-        let changed = markdown.push(&source[at..end]);
+        let end = (at
+            + sizes
+                .get(chunk % sizes.len())
+                .expect("nonempty chunk sizes"))
+        .min(source.len());
+        let changed = markdown.push(source.get(at..end).expect("ASCII chunk boundaries"));
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(&markdown.lines()[changed..]);
+        consumer.extend_from_slice(
+            markdown
+                .lines()
+                .get(changed..)
+                .expect("valid change boundary"),
+        );
         assert_eq!(
             consumer,
-            full_parse(&source[..end]),
+            full_parse(source.get(..end).expect("ASCII prefix boundary")),
             "prefix {end}: {source:?}"
         );
         at = end;

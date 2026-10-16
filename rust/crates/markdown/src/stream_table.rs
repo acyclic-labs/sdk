@@ -153,18 +153,7 @@ impl Markdown {
         let pending = usize::from(complete < tail.len());
         let keep = addition.rows.len().saturating_sub(pending);
         addition.rows.truncate(keep);
-        for row in addition.rows.drain(1..) {
-            for (column, cell) in row.iter().enumerate() {
-                if let Some(size) = stream.widths.get_mut(column) {
-                    *size = (*size).max(stream.table.cell_width(cell));
-                }
-            }
-            #[cfg(test)]
-            if stream.table.rows.len() == stream.table.rows.capacity() {
-                work::copy(stream.table.rows.len() * std::mem::size_of::<Vec<Line>>());
-            }
-            stream.table.rows.push(row);
-        }
+        stream.append_rows(addition.rows.drain(1..));
         (stream.cost, stream.valid) = references::extend_expansion(
             stream.cost,
             &stream.valid,
@@ -176,6 +165,23 @@ impl Markdown {
         stream.displayed = widths;
         self.finish_visible();
         Some(changed)
+    }
+}
+
+impl Stream {
+    fn append_rows(&mut self, rows: impl Iterator<Item = Vec<Line>>) {
+        for row in rows {
+            for (column, cell) in row.iter().enumerate() {
+                if let Some(size) = self.widths.get_mut(column) {
+                    *size = (*size).max(self.table.cell_width(cell));
+                }
+            }
+            #[cfg(test)]
+            if self.table.rows.len() == self.table.rows.capacity() {
+                work::copy(self.table.rows.len() * std::mem::size_of::<Vec<Line>>());
+            }
+            self.table.rows.push(row);
+        }
     }
 }
 

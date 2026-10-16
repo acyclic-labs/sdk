@@ -78,7 +78,7 @@ proptest! {
             prefix.push_str(delta);
             let changed = streamed.push(delta);
             consumer.truncate(changed);
-            consumer.extend_from_slice(&streamed.lines()[changed..]);
+            consumer.extend_from_slice(streamed.lines().get(changed..).expect("valid change boundary"));
             prop_assert_eq!(&consumer, &full(&prefix, width));
         }
         bounded(streamed.lines(), source.len(), rows + 1, width);
@@ -115,7 +115,12 @@ fn table_width_survives_clear_and_late_definitions() {
             source.push_str(delta);
             let changed = markdown.push(delta);
             consumer.truncate(changed);
-            consumer.extend_from_slice(&markdown.lines()[changed..]);
+            consumer.extend_from_slice(
+                markdown
+                    .lines()
+                    .get(changed..)
+                    .expect("valid change boundary"),
+            );
             assert_eq!(consumer, full(&source, 17));
             bounded(markdown.lines(), source.len(), 2, 17);
         }
