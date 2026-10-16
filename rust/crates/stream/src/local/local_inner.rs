@@ -26,7 +26,14 @@ impl LocalInner {
     }
 
     fn poison(&self) -> StreamError {
-        self.changed.send_replace(None);
+        #[cfg(acyclic_loom)]
+        let notify =
+            !crate::verification::fault_is(crate::verification::Fault::OmitPoisonPublication);
+        #[cfg(not(acyclic_loom))]
+        let notify = true;
+        if notify {
+            self.changed.send_replace(None);
+        }
         // Wake every caller waiting for a flush, so it sees the poison.
         self.synced.send_modify(|_| {});
         StreamError::Unavailable

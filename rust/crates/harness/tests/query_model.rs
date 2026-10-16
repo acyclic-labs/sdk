@@ -1,13 +1,20 @@
-use acyclic_query_verification::{
+#![cfg(all(acyclic_loom, acyclic_harness_loom))]
+use acyclic_harness::task_volume::model_checking::{Fault, assert_index_matches, set_fault};
+
+use acyclic_harness::task_volume::{
     Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
 };
-use acyclic_stream::verification::{block_on, check as model};
+use acyclic_stream::verification::{
+    assert_negative_control, block_on, check as model, check_with_bound,
+};
 use acyclic_stream::{
     AppendRequest, CommitCondition, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamPath, StreamProvider,
 };
 use futures::StreamExt as _;
 use loom::thread;
+use std::future::Future as _;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -254,71 +261,63 @@ fn initialized(
         provider,
         StreamPath::new("model")?,
     ))?);
-    let mut generation = block_on(volume.snapshot(&Query::Root, 0))?.generation;
-    for key in [
-        FileKey::Goal,
-        FileKey::Task {
-            task: Component::new("t")?,
-            file: TaskFile::Status,
-        },
-    ] {
-        generation =
-            block_on(volume.append(generation, &Write::new(key, OwnedBytes::from_static(bytes))))?;
-    }
-    let snapshot = block_on(volume.snapshot(&Query::Root, 2))?;
+    let generation = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+    block_on(volume.append(
+        generation,
+        &Write::new(FileKey::Goal, OwnedBytes::from_static(bytes)),
+    ))?;
+    let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
     Ok((volume, snapshot))
 }
 
-#[test]
-fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
-    model(|| {
+fn snapshot_follow_and_publish(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
         ))?);
         let cut = block_on(volume.snapshot(&Query::Root, 1))?;
+        let keeper = ManuallyDrop::new(volume.clone());
         let writer = thread::spawn({
             let volume = volume.clone();
             move || {
                 block_on(volume.append(
                     cut.generation,
-                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"accepted")),
+                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"a")),
                 ))
             }
         });
+        set_fault(fault);
         block_on(async {
             let observation = volume.observe(Query::Root, None, 1).await?;
             let snapshot = observation.snapshot.ok_or("missing snapshot")?;
+            writer.join().map_err(|_| "writer panicked")??;
             let files = if snapshot.files.is_empty() {
                 let mut stream = observation.changes;
-                vec![
-                    stream
-                        .next()
-                        .await
-                        .ok_or("follow ended")??
-                        .file
-                        .ok_or("missing event")?,
-                ]
+                let mut next = Box::pin(stream.next());
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                match next.as_mut().poll(&mut context) {
+                    std::task::Poll::Ready(Some(Ok(change))) => {
+                        vec![change.file.ok_or("missing event")?]
+                    }
+                    other => panic!("snapshot follow skipped publication: {other:?}"),
+                }
             } else {
                 snapshot.files
             };
             assert_eq!(
                 files,
-                vec![Write::new(
-                    FileKey::Goal,
-                    OwnedBytes::from_static(b"accepted")
-                )]
+                vec![Write::new(FileKey::Goal, OwnedBytes::from_static(b"a"))]
             );
             Ok(()) as Result
         })?;
-        writer.join().map_err(|_| "writer panicked")??;
+        drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 
-#[test]
-fn competing_writers_cannot_tear_the_shared_projection() {
-    model(|| {
+fn competing_writers(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
@@ -327,22 +326,29 @@ fn competing_writers_cannot_tear_the_shared_projection() {
         let worker = thread::spawn({
             let volume = volume.clone();
             move || {
+                set_fault(fault);
                 block_on(volume.append(
                     expected,
-                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"one")),
+                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"a")),
                 ))
             }
         });
+        set_fault(fault);
         let second = block_on(volume.append(
             expected,
-            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"two")),
+            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"b")),
         ));
         let results = [worker.join().map_err(|_| "writer panicked")?, second];
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         assert!(
             results
                 .iter()
-                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_))))
+                .all(|result| matches!(result, Ok(_) | Err(Error::Conflict(_)))),
+            "unexpected publication error: {results:?}"
+        );
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "competing publication escaped its fence"
         );
         let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
         assert_eq!(snapshot.generation.position, expected.position + 1);
@@ -385,13 +391,12 @@ fn platform_head_recovery() {
     acyclic_stream::verification::head_fence_and_recovery_cannot_publish_an_obsolete_generation();
 }
 
-#[test]
-fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
-    model(|| {
+fn recovery_and_refresh(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let provider = Arc::new(MemoryStream::default());
-        let (volume, old) = initialized(provider.clone(), b"old")?;
+        let (volume, old) = initialized(provider.clone(), b"a")?;
         let replacement = MemoryStream::default();
-        let (_, new) = initialized(Arc::new(replacement.clone()), b"new")?;
+        let (_, new) = initialized(Arc::new(replacement.clone()), b"b")?;
         let recovery = thread::spawn({
             let provider = provider.clone();
             move || {
@@ -401,7 +406,9 @@ fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
                 ))
             }
         });
-        let observed = block_on(volume.observe(Query::Root, None, 2))?
+        set_fault(fault);
+        let observed = block_on(volume.observe(Query::Root, None, 2))
+            .expect("obsolete projection was not rebuilt")
             .snapshot
             .ok_or("missing snapshot")?;
         if observed.generation == old.generation {
@@ -411,7 +418,8 @@ fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
             assert_eq!(observed.files, new.files);
         }
         recovery.join().map_err(|_| "recovery panicked")??;
-        let current = block_on(volume.observe(Query::Root, None, 2))?
+        let current = block_on(volume.observe(Query::Root, None, 2))
+            .expect("obsolete projection was not rebuilt")
             .snapshot
             .ok_or("missing current snapshot")?;
         assert_eq!(current.generation, new.generation);
@@ -420,14 +428,13 @@ fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
     });
 }
 
-#[test]
-fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
-    model(|| {
+fn recovery_and_acknowledgement(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let provider = Arc::new(MemoryStream::default());
-        let (volume, old) = initialized(provider.clone(), b"old")?;
+        let (volume, old) = initialized(provider.clone(), b"a")?;
         let expected = old.generation;
         let replacement = MemoryStream::default();
-        let (_, new) = initialized(Arc::new(replacement.clone()), b"new")?;
+        let (_, new) = initialized(Arc::new(replacement.clone()), b"b")?;
         assert_eq!(expected.position, new.generation.position);
         let recovery = thread::spawn({
             let provider = provider.clone();
@@ -440,15 +447,17 @@ fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
                 })
             }
         });
+        set_fault(fault);
         let result = block_on(volume.append(
             expected,
-            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"obsolete")),
+            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"c")),
         ));
         assert!(matches!(
             result,
             Ok(_) | Err(Error::ResetRequired | Error::Conflict(_))
         ));
         recovery.join().map_err(|_| "recovery panicked")??;
+        block_on(assert_index_matches(&volume, &new));
         let current = block_on(volume.observe(Query::Root, None, 2))?
             .snapshot
             .ok_or("missing current snapshot")?;
@@ -458,86 +467,206 @@ fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
     });
 }
 
+loom::thread_local! {
+    static ADVANCE_DEADLINE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+fn fenced_publication(expiry: bool, broken: bool, preemptions: Option<usize>) {
+    use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    struct Clock {
+        now: AtomicU64,
+        tick: bool,
+    }
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            if ADVANCE_DEADLINE.with(std::cell::Cell::get) {
+                self.now.store(3, Ordering::SeqCst);
+            }
+            if self.tick {
+                self.now.fetch_add(1, Ordering::SeqCst)
+            } else {
+                self.now.load(Ordering::SeqCst)
+            }
+        }
+    }
+    check_with_bound(preemptions, move || {
+        let clock = Arc::new(Clock {
+            now: AtomicU64::new(1),
+            tick: !expiry,
+        });
+        let provider = Arc::new(MemoryStream::new_with_clock(
+            MemoryLimits::default(),
+            clock.clone(),
+        ));
+        let volume = block_on(TaskVolume::open(
+            provider.clone(),
+            StreamPath::new("model")?,
+        ))?;
+        let expected = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+        let actor = StreamPath::new("actor")?;
+        block_on(provider.append(AppendRequest {
+            path: actor.clone(),
+            records: vec![OwnedBytes::from_static(b"owner")],
+            if_tail: Some(0),
+            idempotency_key: None,
+        }))?;
+        let lost = Arc::new(AtomicBool::new(false));
+        let worker = thread::spawn({
+            let lost = lost.clone();
+            let provider = provider.clone();
+            move || {
+                block_on(async {
+                    let invalidated_at = if expiry {
+                        // The unrelated append advances time under the real
+                        // provider's lock, without changing the owner condition.
+                        // Its clock sample cannot land between a successful
+                        // publication's final deadline check and timestamp.
+                        ADVANCE_DEADLINE.with(|advance| advance.set(true));
+                        provider
+                            .append(AppendRequest {
+                                path: StreamPath::new("clock")?,
+                                records: vec![OwnedBytes::from_static(b"expire")],
+                                if_tail: Some(0),
+                                idempotency_key: None,
+                            })
+                            .await?;
+                        None
+                    } else {
+                        provider
+                            .append(AppendRequest {
+                                path: actor.clone(),
+                                records: vec![OwnedBytes::from_static(b"new owner")],
+                                if_tail: Some(1),
+                                idempotency_key: None,
+                            })
+                            .await?;
+                        let mut records = provider
+                            .read(acyclic_stream::ReadRequest {
+                                path: actor,
+                                from: 1,
+                                limit: 1,
+                            })
+                            .await?;
+                        Some(
+                            records
+                                .next()
+                                .await
+                                .ok_or("missing revocation")??
+                                .committed_at_micros,
+                        )
+                    };
+                    lost.store(true, Ordering::SeqCst);
+                    Ok(invalidated_at) as Result<Option<u64>>
+                })
+            }
+        });
+        let lost_at_entry = if expiry {
+            clock.now.load(Ordering::SeqCst) >= 2
+        } else {
+            lost.load(Ordering::SeqCst)
+        };
+        // The expiry control retains admission-time rejection. It must expose
+        // a missing recheck after preparation, not merely an already-expired call.
+        if broken && (!expiry || !lost_at_entry) {
+            set_fault(if expiry {
+                Fault::IgnoreDeadline
+            } else {
+                Fault::OmitAuthorityConditions
+            });
+        }
+        let file = Write::new(FileKey::Goal, OwnedBytes::from_static(b"p"));
+        let result = block_on(volume.append_if(
+            expected,
+            &file,
+            vec![CommitCondition::Tail {
+                path: StreamPath::new("actor")?,
+                expected: 1,
+            }],
+            expiry.then_some(2),
+            None,
+        ));
+        let invalidated_at = worker.join().map_err(|_| "owner panicked")??;
+        let committed = result.is_ok();
+        assert!(
+            committed
+                || matches!(
+                    result,
+                    Err(Error::FenceConflict | Error::Storage(StreamError::DeadlineElapsed))
+                )
+        );
+        if lost_at_entry {
+            assert!(!committed, "stale publisher committed");
+        }
+        if committed {
+            let mut records = block_on(provider.read(acyclic_stream::ReadRequest {
+                path: StreamPath::new("model")?,
+                from: expected.position,
+                limit: 1,
+            }))?;
+            let record = block_on(records.next()).ok_or("missing publication")??;
+            // The tick clock is sampled under the provider's state lock.
+            // These distinct commit times order publication and revocation.
+            assert!(
+                record.committed_at_micros
+                    < if expiry {
+                        2_000
+                    } else {
+                        invalidated_at.unwrap()
+                    },
+                "stale publisher committed"
+            );
+        }
+        let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
+        assert_eq!(
+            snapshot.generation.position,
+            expected.position + u64::from(committed)
+        );
+        assert_eq!(
+            snapshot.files,
+            if committed { vec![file] } else { Vec::new() }
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
+    snapshot_follow_and_publish(Fault::None, Some(4));
+    assert_negative_control(1, 4, "snapshot follow skipped publication", |bound| {
+        snapshot_follow_and_publish(Fault::ResampleFollow, bound)
+    });
+}
+
+#[test]
+fn competing_writers_cannot_tear_the_shared_projection() {
+    competing_writers(Fault::None, Some(4));
+    assert_negative_control(2, 4, "competing publication escaped its fence", |bound| {
+        competing_writers(Fault::ResamplePublicationFence, bound)
+    });
+}
+
+#[test]
+fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
+    recovery_and_refresh(Fault::None, Some(4));
+    assert_negative_control(0, 4, "obsolete projection was not rebuilt", |bound| {
+        recovery_and_refresh(Fault::RetainObsoleteIndex, bound)
+    });
+}
+
+#[test]
+fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
+    recovery_and_acknowledgement(Fault::None, Some(4));
+    assert_negative_control(1, 4, "acknowledgement overwrote rebuilt", |bound| {
+        recovery_and_acknowledgement(Fault::OverwriteRebuiltIndex, bound)
+    });
+}
+
 #[test]
 fn lease_expiry_and_authority_changes_fence_the_atomic_publication() {
-    use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     for expiry in [false, true] {
-        model(move || {
-            let clock = Arc::new(AtomicU64::new(1));
-            let provider = Arc::new(MemoryStream::new_with_clock(
-                MemoryLimits::default(),
-                clock.clone(),
-            ));
-            let volume = block_on(TaskVolume::open(
-                provider.clone(),
-                StreamPath::new("model")?,
-            ))?;
-            let expected = block_on(volume.snapshot(&Query::Root, 0))?.generation;
-            let actor = StreamPath::new("actor")?;
-            block_on(provider.append(AppendRequest {
-                path: actor.clone(),
-                records: vec![OwnedBytes::from_static(b"owner")],
-                if_tail: Some(0),
-                idempotency_key: None,
-            }))?;
-            let lost = Arc::new(AtomicBool::new(false));
-            let worker = thread::spawn({
-                let lost = lost.clone();
-                let provider = provider.clone();
-                let actor = actor.clone();
-                move || {
-                    block_on(async {
-                        if expiry {
-                            clock.store(3, Ordering::SeqCst);
-                        } else {
-                            provider
-                                .append(AppendRequest {
-                                    path: actor,
-                                    records: vec![OwnedBytes::from_static(b"new owner")],
-                                    if_tail: Some(1),
-                                    idempotency_key: None,
-                                })
-                                .await?;
-                        }
-                        lost.store(true, Ordering::SeqCst);
-                        Ok(()) as Result
-                    })
-                }
-            });
-            let lost_at_entry = lost.load(Ordering::SeqCst);
-            let file = Write::new(FileKey::Goal, OwnedBytes::from_static(b"publish"));
-            let result = block_on(volume.append_if(
-                expected,
-                &file,
-                vec![CommitCondition::Tail {
-                    path: actor,
-                    expected: 1,
-                }],
-                expiry.then_some(2),
-                None,
-            ));
-            worker.join().map_err(|_| "owner panicked")??;
-            let committed = result.is_ok();
-            assert!(
-                committed
-                    || matches!(
-                        result,
-                        Err(Error::FenceConflict | Error::Storage(StreamError::DeadlineElapsed))
-                    )
-            );
-            if lost_at_entry {
-                assert!(!committed);
-            }
-            let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
-            assert_eq!(
-                snapshot.generation.position,
-                expected.position + u64::from(committed)
-            );
-            assert_eq!(
-                snapshot.files,
-                if committed { vec![file] } else { Vec::new() }
-            );
-            Ok(())
+        fenced_publication(expiry, false, Some(4));
+        assert_negative_control(1, 4, "stale publisher committed", |bound| {
+            fenced_publication(expiry, true, bound)
         });
     }
 }

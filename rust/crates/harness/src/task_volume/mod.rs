@@ -4,6 +4,8 @@ pub(crate) mod command_query;
 mod files;
 mod follow;
 mod heads;
+#[cfg(acyclic_harness_loom)]
+pub mod model_checking;
 mod page;
 mod plan_name;
 mod schema;
@@ -423,11 +425,25 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             return Ok(self.generation(&index));
         }
         let (segment, files) = segment::encode(write, work)?;
-        conditions.push(CommitCondition::Head {
+        #[cfg(acyclic_harness_loom)]
+        if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
+            conditions.clear();
+        }
+        let fence = CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
             commit_id: CommitId::from_bytes(expected.commit),
-        });
+        };
+        #[cfg(acyclic_harness_loom)]
+        let fence = if model_checking::enabled(model_checking::Fault::ResamplePublicationFence) {
+            CommitCondition::Tail {
+                path: self.path.clone(),
+                expected: self.provider.watermarks(self.path.clone()).await?.accepted,
+            }
+        } else {
+            fence
+        };
+        conditions.push(fence);
         let request = CommitRequest {
             conditions,
             mutations: vec![CommitMutation::Append {
@@ -439,6 +455,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
+        #[cfg(acyclic_harness_loom)]
+        let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
+        {
+            None
+        } else {
+            deadline_unix_millis
+        };
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {
@@ -447,7 +470,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let mut index = self.index.lock().await;
         match outcome {
             CommitOutcome::Committed(envelope) => {
-                if self.generation(&index) == expected {
+                let unchanged = self.generation(&index) == expected;
+                #[cfg(acyclic_harness_loom)]
+                let unchanged = unchanged
+                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
+                if unchanged {
                     apply(&mut index, files);
                     index.next = expected.position + 1;
                     index.commit = envelope.commit_id;

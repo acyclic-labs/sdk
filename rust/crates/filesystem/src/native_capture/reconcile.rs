@@ -405,7 +405,16 @@ impl CaptureBatch<'_> {
         let ranges = staged;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        if let (Some(record), true, [(range, content)]) =
+        let unchanged = if logical_bytes == 0
+            && ranges.is_empty()
+            && existing.1
+            && existing.0.is_some_and(|record| record.link_count == 1)
+            && existing.0.is_some_and(|record| match record.payload {
+                crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
+                _ => false,
+            }) {
+            true
+        } else if let (Some(record), true, [(range, content)]) =
             (existing.0, existing.1, ranges.as_slice())
             && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
             && range.offset == 0
@@ -447,15 +456,23 @@ impl CaptureBatch<'_> {
                     .is_some_and(|plan| plan.spans.as_slice() == std::slice::from_ref(&expected))
             });
             drop(planned);
-            if unchanged {
-                drop(ranges);
-                self.meter
-                    .clone()
-                    .release(ranges_bytes)
-                    .map_err(capture_demand_error)?;
-                capture_drop_path(path, self.meter)?;
-                return Ok(false);
-            }
+            unchanged
+        } else {
+            false
+        };
+        #[cfg(test)]
+        let unchanged = self
+            .baseline
+            .and_then(|baseline| baseline.reuse_override)
+            .unwrap_or(unchanged);
+        if unchanged {
+            drop(ranges);
+            self.meter
+                .clone()
+                .release(ranges_bytes)
+                .map_err(capture_demand_error)?;
+            capture_drop_path(path, self.meter)?;
+            return Ok(false);
         }
         let count = ranges
             .len()

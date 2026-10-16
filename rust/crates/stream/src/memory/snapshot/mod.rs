@@ -30,6 +30,12 @@ impl MemoryStream {
         {
             return Err(StreamError::Capacity);
         }
+        #[cfg(acyclic_loom)]
+        if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
+            let previous = std::mem::replace(&mut *self.state.write().await, decoded);
+            std::mem::forget(previous);
+            return Ok(());
+        }
         *self.state.write().await = decoded;
         Ok(())
     }
