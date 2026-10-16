@@ -248,7 +248,7 @@ impl MemoryStore {
 
     #[inline]
     fn validate_retained_path(&self, path: &str, io: Option<&PreparationIo>) -> Result<()> {
-        if io.is_none() && self.paths.len() > super::directory::conflicts::DIRECT_SCAN_PATHS {
+        if io.is_none() {
             return if super::directory::conflicts::conflicts(&self.paths, path) {
                 Err(Error::Invalid(
                     "file path conflicts with an existing directory".into(),

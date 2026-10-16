@@ -16,12 +16,17 @@ pub(crate) fn paths_conflict(existing: &str, path: &str) -> bool {
 
 pub(crate) const DIRECT_SCAN_PATHS: usize = 40;
 
+#[inline]
 pub(crate) fn conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     if paths.len() <= DIRECT_SCAN_PATHS {
         return paths
             .keys()
             .any(|existing| paths_conflict(existing.borrow(), path));
     }
+    ordered_conflicts(paths, path)
+}
+
+fn ordered_conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     let mut leading = paths.keys();
     let Some(first) = leading.next() else {
         return false;
