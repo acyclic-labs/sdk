@@ -1,5 +1,7 @@
 use super::{TestResult, task_query_case::TaskQueryCase};
-use acyclic_harness::task_volume::{Change, Cursor, Error, FileKey, FileValue, Query, TaskVolume};
+use acyclic_harness::task_volume::{
+    Change, ChangeStream, Cursor, Error, FileKey, FileValue, Query, TaskVolume,
+};
 use acyclic_stream::{MemoryStream, StreamPath};
 use futures::{FutureExt as _, StreamExt as _};
 use std::{collections::BTreeMap, sync::Arc};
@@ -33,6 +35,17 @@ fn check_cursor(previous: &Cursor, next: &Cursor) -> TestResult {
     Ok(())
 }
 
+// All required records have already been accepted by the in-memory provider.
+// A pending follow is missing delivery, rather than work to wait for.
+pub(super) fn next_published(changes: &mut ChangeStream) -> TestResult<Change> {
+    changes
+        .next()
+        .now_or_never()
+        .ok_or("published follow is pending")?
+        .ok_or("published follow ended")?
+        .map_err(Into::into)
+}
+
 pub(super) async fn run(case: TaskQueryCase) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let path = StreamPath::new("task-query-scenario")?;
@@ -59,11 +72,7 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
             Ok(write) => match volume.append(generation, &write).await {
                 Ok(next) if next != generation => {
                     generation = next;
-                    let change = observation
-                        .changes
-                        .next()
-                        .await
-                        .ok_or("live follow ended")??;
+                    let change = next_published(&mut observation.changes)?;
                     check_cursor(&cursor, &change.cursor)?;
                     cursor = change.cursor.clone();
                     changes.push(change);
@@ -186,11 +195,7 @@ pub(super) async fn run(case: TaskQueryCase) -> TestResult {
         }
         let mut cursor = pinned.cursor;
         while cursor.position < generation.position {
-            let change = resumed
-                .changes
-                .next()
-                .await
-                .ok_or("resumed follow ended")??;
+            let change = next_published(&mut resumed.changes)?;
             check_cursor(&cursor, &change.cursor)?;
             let expected = &changes[(cursor.position - 1) as usize];
             if change.file != expected.file
