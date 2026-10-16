@@ -1,6 +1,7 @@
 //! Generates the public hierarchical Stream gRPC client and server.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(acyclic_stream_loom)");
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
     let mut prost = acyclic_proto_build::config("acyclic-stream-v1.bin")?;
     prost.bytes([".acyclic.stream.v1"]);
@@ -8,6 +9,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     acyclic_proto_build::compile(
         prost,
         acyclic_proto_build::services(grpc),
-        &["proto/stream/v1/stream.proto", "proto/stream/v1/session.proto"],
+        &[
+            "proto/stream/v1/stream.proto",
+            "proto/stream/v1/session.proto",
+        ],
     )
 }

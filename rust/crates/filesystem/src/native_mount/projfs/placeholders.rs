@@ -1,4 +1,11 @@
 use super::*;
+use windows::Wdk::Storage::FileSystem::{
+    FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS,
+};
+
+#[path = "rename_flags.rs"]
+mod rename_flags;
 
 pub(super) fn write_entry(
     projection: Projection<'_>,
@@ -351,7 +358,7 @@ pub(super) fn write_ordinary(
             &temporary,
             &directory,
             name,
-            held.as_ref(),
+            held.as_ref().zip(replacing),
             work,
         )
     } {
@@ -413,10 +420,14 @@ fn publish_ordinary_file(
     temporary: &std::ffi::OsStr,
     directory: &cap_std::fs::Dir,
     name: &std::ffi::OsStr,
-    held: Option<&std::fs::File>,
+    held: Option<(&std::fs::File, HostWindowsMetadata)>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), crate::NativeTreeMaterializationError> {
-    if held.is_some() {
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
+
+    if let Some((_, state)) = held {
+        let flags =
+            rename_flags::replacement_flags(state.attributes & FILE_ATTRIBUTE_READONLY.0 != 0);
         crate::native_host::with_wide_path(
             std::path::Path::new(name),
             &mut &*work,
@@ -427,8 +438,7 @@ fn publish_ordinary_file(
                     file,
                     directory,
                     to_name,
-                    windows::Wdk::Storage::FileSystem::FILE_RENAME_REPLACE_IF_EXISTS
-                        | windows::Wdk::Storage::FileSystem::FILE_RENAME_POSIX_SEMANTICS,
+                    flags,
                     windows::Wdk::Storage::FileSystem::FileRenameInformationEx,
                     work,
                 )

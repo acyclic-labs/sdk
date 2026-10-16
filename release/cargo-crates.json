@@ -13,6 +13,7 @@
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs",
+  "acyclic-markdown",
   "acyclic-harness-tui",
   "acyclic-harness",
   "acyclic-plugin"

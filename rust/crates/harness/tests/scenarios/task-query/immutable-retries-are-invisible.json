@@ -1,0 +1,2 @@
+{"writes":[{"path":".tasks/t/requests/r.json","text":"run"},{"path":".tasks/t/requests/r.json","text":"run"}],"expect":{
+  "files":{".tasks/t/requests/r.json":"run"},"changes":[{"path":".tasks/t/requests/r.json","text":"run"}]}}

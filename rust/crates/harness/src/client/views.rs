@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 /// One decoded record from a platform follow, addressed to its tracked authority.
 /// These are in-process client inputs, not another wire schema.
 pub enum ViewUpdate {
+    /// A shared file slice or cursor checkpoint from the volume query follow.
+    File(crate::task_volume::Change),
     /// One provider-neutral model event.
     Model {
         /// Conversation owning the event.
@@ -96,6 +98,10 @@ pub struct TaskView {
 /// Shared view model for ratatui, browser and WASM consumers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClientViews {
+    /// Disposable file-query folds, keyed by volume and selection identity.
+    /// Recovery observes fresh files rather than persisting a second payload store.
+    #[serde(skip)]
+    pub queries: BTreeMap<([u8; 32], [u8; 32]), super::FileQueryView>,
     /// Authority-keyed transcripts; keys are `kind:id`.
     pub transcripts: BTreeMap<String, TranscriptView>,
     /// Authority-keyed tool calls, then provider call identity.

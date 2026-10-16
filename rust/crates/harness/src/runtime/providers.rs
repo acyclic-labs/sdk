@@ -232,15 +232,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     async fn inbox(&self, _task_id: TaskId, _after: u64, _limit: usize) -> Result<Vec<InboxItem>> {
         Err(unbound("durable task inbox is not bound"))
     }
-    /// Retains or reconciles an absolute timer wait.
-    async fn wait_until(
-        &self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-        _deadline_unix_ms: u64,
-    ) -> Result<()> {
-        Err(unbound("durable timers are not bound"))
-    }
 }
 
 /// Independently replaceable durable admission boundary.

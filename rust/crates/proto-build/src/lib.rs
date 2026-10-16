@@ -1,6 +1,6 @@
 //! Build protobuf bindings from each published crate's own protocol sources.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub use tonic_prost_build::{Builder, Config};
 
@@ -37,10 +37,16 @@ pub fn actor_services() -> Builder {
 ///
 /// # Errors
 /// Returns filesystem and protobuf compilation errors.
-pub fn compile(config: Config, services: Builder, protos: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn compile(
+    config: Config,
+    services: Builder,
+    protos: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
     let include = protoc_bin_vendored::include_path()?;
-    let protos: Vec<_> = protos.iter().map(Path::new).collect();
-    services.compile_with_config(config, &protos, &[Path::new("proto"), include.as_path()])?;
+    let manifest =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?);
+    let protos: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
+    services.compile_with_config(config, &protos, &[manifest.join("proto"), include])?;
     println!("cargo:rerun-if-changed=proto");
     Ok(())
 }

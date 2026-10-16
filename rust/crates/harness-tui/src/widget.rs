@@ -1,16 +1,15 @@
 use crate::Editor;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Modifier, Style},
-    widgets::StatefulWidget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::StatefulWidget};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Rendering state, including the insertion cursor for host cursor/fade hooks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     /// First displayed visual row.
     pub scroll: usize,
+    /// Horizontal cell offset when wrapping is disabled by configuration.
+    pub horizontal: usize,
     /// Absolute terminal cursor cell, if visible.
     pub cursor: Option<(u16, u16)>,
 }
@@ -36,8 +35,8 @@ impl<'a> PromptWidget<'a> {
             editor,
             placeholder: "",
             style: Style::default(),
-            selection_style: Style::default().add_modifier(Modifier::REVERSED),
-            placeholder_style: Style::default().add_modifier(Modifier::DIM),
+            selection_style: crate::config::default_style(crate::config::ThemeRole::Selection),
+            placeholder_style: crate::config::default_style(crate::config::ThemeRole::Placeholder),
         }
     }
 
@@ -59,9 +58,18 @@ impl StatefulWidget for PromptWidget<'_> {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        buffer.set_style(area, self.style);
         let layout = self.editor.layout(usize::from(area.width));
         let (row, column) = layout.position(self.editor.cursor());
         let height = usize::from(area.height);
+        state.horizontal = if self.editor.settings().wrap {
+            0
+        } else {
+            state
+                .horizontal
+                .min(column)
+                .max(column.saturating_sub(usize::from(area.width) - 1))
+        };
         state.scroll = state.scroll.min(row).max(row.saturating_sub(height - 1));
         state.scroll = state.scroll.min(layout.rows.len().saturating_sub(height));
         let selection = self.editor.selection();
@@ -79,12 +87,28 @@ impl StatefulWidget for PromptWidget<'_> {
                     } else {
                         self.style
                     };
-                buffer.set_string(
-                    area.x + cell.column as u16,
-                    area.y + y as u16,
-                    &cell.symbol,
-                    style,
-                );
+                let right = state.horizontal + usize::from(area.width);
+                if cell.column + cell.width <= state.horizontal || cell.column >= right {
+                    continue;
+                }
+                // A collapsed paste marker is several graphemes in one source cell.
+                // Clip its visible graphemes without dropping the whole marker.
+                let mut column = cell.column;
+                for symbol in cell.symbol.graphemes(true) {
+                    let width = UnicodeWidthStr::width(symbol);
+                    if column >= state.horizontal && column + width <= right {
+                        buffer.set_string(
+                            area.x + (column - state.horizontal) as u16,
+                            area.y + y as u16,
+                            symbol,
+                            style,
+                        );
+                    }
+                    column += width;
+                    if column >= right {
+                        break;
+                    }
+                }
             }
         }
         if self.editor.text().is_empty() {
@@ -96,8 +120,14 @@ impl StatefulWidget for PromptWidget<'_> {
                 self.placeholder_style,
             );
         }
-        if row >= state.scroll && row < state.scroll + height && column < usize::from(area.width) {
-            state.cursor = Some((area.x + column as u16, area.y + (row - state.scroll) as u16));
+        if row >= state.scroll
+            && row < state.scroll + height
+            && column.saturating_sub(state.horizontal) < usize::from(area.width)
+        {
+            state.cursor = Some((
+                area.x + (column - state.horizontal) as u16,
+                area.y + (row - state.scroll) as u16,
+            ));
         }
     }
 }

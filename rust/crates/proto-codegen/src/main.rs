@@ -7,7 +7,6 @@ mod native_family;
 mod readonly;
 mod service;
 
-
 fn main() -> io::Result<()> {
     let generator = std::env::args().nth(1);
     if generator.as_deref() == Some("readonly") {
@@ -37,5 +36,7 @@ fn main() -> io::Result<()> {
             .map_err(|error| io::Error::other(error.to_string()))?;
         return serde_json::to_writer(io::stdout(), &facts).map_err(io::Error::other);
     }
-    Err(io::Error::other("expected readonly, native-absence, service or native-family generator"))
+    Err(io::Error::other(
+        "expected readonly, native-absence, service or native-family generator",
+    ))
 }

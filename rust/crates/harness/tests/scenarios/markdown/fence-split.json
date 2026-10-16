@@ -1,0 +1,6 @@
+{"turns":[[{"type":"event","kind":"content","delta":"``"},{"type":"event","kind":"content","delta":"`ru"}
+  ,{"type":"event","kind":"content","delta":"st\n"},{"type":"event","kind":"content","delta":"fn main() {}\n"}
+  ,{"type":"event","kind":"content","delta":"```"},{"type":"event","kind":"completed","metadata":null}
+  ]],"expect":{"text":"```rust\nfn main() {}\n```","model_events":[{"kind":"content","delta":"``"},{
+  "kind":"content","delta":"`ru"},{"kind":"content","delta":"st\n"},{"kind":"content","delta":"fn main() {}\n"}
+  ,{"kind":"content","delta":"```"},{"kind":"completed","metadata":null}]}}

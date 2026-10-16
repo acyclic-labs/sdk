@@ -403,19 +403,19 @@ mod tests {
         filesystem_smoke(&filesystem).await?;
 
         let stream_children = stream_provider
-            .children(acyclic_stream::ChildrenRequest {
+            .children_page(acyclic_stream::ChildrenPageRequest {
                 parent: None,
                 limit: 8,
+                after: None,
+                hierarchy_version: None,
             })
             .await
             .map_err(|error| error.to_string())?
-            .collect::<Vec<_>>()
-            .await;
-        if !stream_children.iter().any(|child| {
-            child
-                .as_ref()
-                .is_ok_and(|child| child.path.as_str() == "fs")
-        }) {
+            .children;
+        if !stream_children
+            .iter()
+            .any(|child| child.path.as_str() == "fs")
+        {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
         let filesystem_objects = objects_provider

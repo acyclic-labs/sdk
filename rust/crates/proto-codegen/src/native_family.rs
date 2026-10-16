@@ -257,8 +257,14 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         roots.insert(path);
     }
     let generators: &[&str] = match key {
-        "actors" => &["scripts/generate-actors.mjs", "scripts/generate-actors-routes.mjs"],
-        "stream" => &["scripts/generate-stream-http-contract.mjs", "scripts/generate-stream-token-operations.mjs"],
+        "actors" => &[
+            "scripts/generate-actors.mjs",
+            "scripts/generate-actors-routes.mjs",
+        ],
+        "stream" => &[
+            "scripts/generate-stream-http-contract.mjs",
+            "scripts/generate-stream-token-operations.mjs",
+        ],
         _ => &[],
     };
     for path in generators {

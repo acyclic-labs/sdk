@@ -20,6 +20,7 @@ ts-rs = "=12.0.1"
 
 [dev-dependencies]
 allocation-counter = "=0.8.1"
+futures.workspace = true
 syn = { version = "3", features = ["full"] }
 proptest.workspace = true
 prost-reflect.workspace = true

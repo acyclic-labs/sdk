@@ -175,8 +175,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             &self.workspace,
             GenerationSelector::Exact(self.id),
             path,
-            offset,
-            length,
+            crate::ByteRange { offset, length },
+            None,
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Reads a range only when its immutable file payload still matches `original`.
+    /// Metadata-only changes do not invalidate the content comparison.
+    pub async fn read_range_if_unchanged<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        range: crate::ByteRange,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+        if original.workspace.id != self.workspace.id
+            || !self
+                .workspace
+                .volume
+                .fs
+                .same_deployment(&original.workspace.volume.fs)
+        {
+            let accounting = work.accounting(cancellation);
+            return work.finish(Err(WorkspaceError::ForeignGeneration), &accounting);
+        }
+        read_range(
+            &self.workspace,
+            GenerationSelector::Exact(self.id),
+            path,
+            range,
+            Some(original.id),
             work,
             cancellation,
         )

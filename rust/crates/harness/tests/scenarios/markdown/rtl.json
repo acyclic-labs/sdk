@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"content","delta":"مر"},{"type":"event","kind":"content","delta":"حبا"}
+  ,{"type":"event","kind":"content","delta":" world"},{"type":"event","kind":"completed","metadata":
+  null}]],"expect":{"text":"مرحبا world","model_events":[{"kind":"content","delta":"مر"},{"kind":"content",
+  "delta":"حبا"},{"kind":"content","delta":" world"},{"kind":"completed","metadata":null}]}}

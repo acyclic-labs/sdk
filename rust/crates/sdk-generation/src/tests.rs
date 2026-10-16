@@ -19,16 +19,20 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     .map(str::to_owned)
     .collect();
     // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
+    assert!(
+        parse_generate(base.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("requires a complete registry corpus")
+    );
     let mut missing = base.clone();
     missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
+    assert!(
+        parse_generate(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("requires both")
+    );
     let mut complete = base;
     complete.extend([
         "--registry-frontier-repository".into(),
@@ -50,9 +54,11 @@ fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);
     let error = validate_release_package_versions("0.1.0", &versions)
         .expect_err("a stale docs version must not be released");
-    assert!(error
-        .to_string()
-        .contains("does not match SDK package version"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not match SDK package version")
+    );
     validate_release_package_versions("0.2.0", &versions)
         .expect("matching SDK and docs versions should be accepted");
 }
@@ -91,9 +97,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     );
     let before = artifact_hashes(&output).expect("artifact inventory should build");
     assert!(before.contains_key("sdk-docs-data.v1.json"));
-    assert!(!before
-        .keys()
-        .any(|path| path.starts_with(".profile-build/")));
+    assert!(
+        !before
+            .keys()
+            .any(|path| path.starts_with(".profile-build/"))
+    );
     assert_eq!(
         before.get("assets/.profile-build/qualified-example.txt"),
         Some(&sha256_bytes(b"published")),
@@ -406,9 +414,11 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
     fs::remove_file(&foreign).unwrap();
     fs::write(root.join(relative), b"changed capture").unwrap();
     let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("captured Rustdoc source digest changed"));
+    assert!(
+        error
+            .to_string()
+            .contains("captured Rustdoc source digest changed")
+    );
     assert!(!foreign.exists());
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(output);

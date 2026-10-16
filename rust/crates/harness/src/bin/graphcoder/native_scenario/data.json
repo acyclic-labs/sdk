@@ -20,9 +20,9 @@
     "effect:provider:graphcoder.native",
     "tool:call:acyclic.fork",
     "tool:call:acyclic.merge",
-    "tool:call:acyclic.read_file",
-    "tool:call:acyclic.write_file",
-    "tool:call:acyclic.edit_file"
+    "tool:call:read",
+    "tool:call:write",
+    "tool:call:edit"
   ],
   "config": {
     "limits": {

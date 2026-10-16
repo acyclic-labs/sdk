@@ -8,7 +8,7 @@ import { BucketsService as BucketsV1, ObjectsService as ObjectsV1, MultipartServ
 const objects = {
   CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
   PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head",
-  DeleteObject: "objects/delete", ListObjects: "objects/list",
+  DeleteObject: "objects/delete", ListObjects: "objects/list", RestoreObjects: "objects/restore",
   CreateMultipart: "multipart/create", UploadPart: "multipart/upload-part", ListParts: "multipart/list-parts",
   CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
 };

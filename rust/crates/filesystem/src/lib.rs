@@ -49,7 +49,8 @@ pub use wire_service::{
 };
 
 /// Canonical public descriptor set used by compatibility and conformance gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-filesystem-v2.bin"));
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-filesystem-v2.bin"));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn descriptor_digest() -> String {
@@ -101,6 +102,7 @@ pub mod hosted_contract;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
+mod lock_order;
 pub mod materializer;
 #[cfg(test)]
 pub mod memory;

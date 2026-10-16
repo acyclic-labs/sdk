@@ -602,7 +602,8 @@ proptest! {
     }
 }
 #[test]
-fn generated_artifacts_preserve_the_admitted_manifest_surface() -> Result<(), Box<dyn std::error::Error>> {
+fn generated_artifacts_preserve_the_admitted_manifest_surface()
+-> Result<(), Box<dyn std::error::Error>> {
     let declarations = typescript()?;
     let schema: Value = serde_json::from_str(&json_schema()?)?;
     let environment = environment_typescript(&fixture()?, "production", "agent")?;
@@ -612,6 +613,9 @@ fn generated_artifacts_preserve_the_admitted_manifest_surface() -> Result<(), Bo
     assert!(environment.contains("readonly MODEL_KEY: Secret;"));
     assert_eq!(declarations, typescript()?);
     assert_eq!(schema, serde_json::from_str::<Value>(&json_schema()?)?);
-    assert_eq!(environment, environment_typescript(&fixture()?, "production", "agent")?);
+    assert_eq!(
+        environment,
+        environment_typescript(&fixture()?, "production", "agent")?
+    );
     Ok(())
 }

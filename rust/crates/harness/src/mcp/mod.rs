@@ -33,7 +33,7 @@ pub mod stdio;
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
 ))]
-mod sync;
+use crate::sync;
 pub use catalog::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure};
 pub use protocol::{McpToolDefinition, McpToolTransport, PROTOCOL_VERSION};
 #[cfg(test)]

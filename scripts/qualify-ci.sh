@@ -181,7 +181,9 @@ pinned_pi() {
 case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
+    node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     nextest --workspace --all-features --locked
     ;;
   docs)
@@ -271,6 +273,7 @@ case "$lane" in
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
+    node scripts/check-git-proto-build.mjs
     background napi native_binding
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"

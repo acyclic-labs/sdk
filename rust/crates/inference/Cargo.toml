@@ -17,10 +17,11 @@ build = "build.rs"
 
 [features]
 default = ["host"]
-host = ["dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
+host = ["dep:acyclic-auth", "dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
 http-codec = ["dep:prost-reflect", "dep:serde_json"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
 prost.workspace = true
 sha2.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }
@@ -35,6 +36,7 @@ zeroize = { workspace = true, optional = true }
 acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
 
 [dev-dependencies]
+proptest.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
 tokio.workspace = true

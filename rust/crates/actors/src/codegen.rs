@@ -68,7 +68,11 @@ mod tests {
 /// Generate the Actors descriptor and transport from the packaged proto.
 pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let output_root = output_root.as_ref();
-    let proto_root = PathBuf::from("proto");
+    let proto_root = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR")
+            .ok_or_else(|| io::Error::other("CARGO_MANIFEST_DIR is unset"))?,
+    )
+    .join("proto");
     let rust_root = output_root.join("rust");
     fs::create_dir_all(&rust_root)?;
 
@@ -79,7 +83,8 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let protoc_proto = protoc_path(&proto);
     let protoc = protoc_path(&protoc_bin_vendored::protoc_bin_path().map_err(io::Error::other)?);
     let include_path = protoc_path(&protoc_bin_vendored::include_path().map_err(io::Error::other)?);
-    let mut prost = acyclic_proto_build::config("acyclic-actors-v1.bin").map_err(|error| io::Error::other(error.to_string()))?;
+    let mut prost = acyclic_proto_build::config("acyclic-actors-v1.bin")
+        .map_err(|error| io::Error::other(error.to_string()))?;
     prost
         .protoc_executable(protoc)
         .out_dir(&protoc_rust_root)

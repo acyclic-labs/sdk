@@ -89,12 +89,21 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
     ];
     let mut command = Command::new(protoc_bin_vendored::protoc_bin_path()?);
     for family in [
-        "actors", "filesystem", "objects", "machines", "inference", "stream", "harness",
+        "actors",
+        "filesystem",
+        "objects",
+        "machines",
+        "inference",
+        "stream",
+        "harness",
         "contract-derive",
     ] {
         command.arg(format!(
             "--proto_path={}",
-            root.join("rust/crates").join(family).join("proto").display()
+            root.join("rust/crates")
+                .join(family)
+                .join("proto")
+                .display()
         ));
     }
     let status = command

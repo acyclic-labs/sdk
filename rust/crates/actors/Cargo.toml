@@ -12,9 +12,12 @@ readme = "README.md"
 
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+uuid.workspace = true
 bytes = { workspace = true, features = ["serde"] }
 futures.workspace = true
 http.workspace = true
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
@@ -50,6 +53,9 @@ tokio.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true
+
+[target.'cfg(acyclic_loom)'.dev-dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
