@@ -8,7 +8,9 @@ use bytes::Bytes;
 use futures::stream::{BoxStream, SelectAll};
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use tokio::sync::oneshot;

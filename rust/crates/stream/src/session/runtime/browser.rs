@@ -13,15 +13,26 @@ pub(crate) struct OperationSpan {
 }
 impl OperationSpan {
     pub(crate) fn new(span: tracing::Span) -> Self {
-        Self {
-            span,
-            dispatch: tracing::dispatcher::get_default(Clone::clone),
-        }
+        let dispatch = span
+            .with_subscriber(|(_, dispatch)| dispatch.clone())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        Self { span, dispatch }
     }
     pub(crate) fn new_root(span: tracing::Span) -> Self {
         // Physical spans use explicit parent: None and retain only their own
         // dispatch. The browser executor carries no ambient Tokio task context.
         Self::new(span)
+    }
+    pub(crate) fn follows_from_same_subscriber(&self, cause: &Self) {
+        if let (Some(registry), Some(origin)) = (
+            self.dispatch.downcast_ref::<tracing_subscriber::Registry>(),
+            cause
+                .dispatch
+                .downcast_ref::<tracing_subscriber::Registry>(),
+        ) && std::ptr::eq(registry, origin)
+        {
+            self.span.follows_from(cause.span.id());
+        }
     }
     pub(crate) fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
         tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
