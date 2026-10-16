@@ -11,19 +11,9 @@ pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
             length = length.checked_add(1)?;
         }
         let wide = std::slice::from_raw_parts(pointer.0, length);
-        let host_path = PathBuf::from(std::ffi::OsString::from_wide(wide));
-        let mut path = MountPath::root();
-        for component in host_path.components() {
-            let std::path::Component::Normal(component) = component else {
-                return None;
-            };
-            let bytes = component
-                .encode_wide()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>();
-            path = path.child(bytes);
-        }
-        Some(path)
+        Some(MountPath {
+            components: super::callback_path::components(wide)?,
+        })
     }
 }
 
@@ -71,7 +61,12 @@ pub(super) fn host_windows_metadata(
     let metadata = crate::native_host::with_wide_path(
         &host_relative_path(path)?,
         &mut &*work,
-        |path, work| root.stat(path, work),
+        |path, work| {
+            if let Some(metadata) = query_metadata(root, path, work)? {
+                return Ok(metadata);
+            }
+            root.stat(path, work)
+        },
     )?;
     Ok(HostWindowsMetadata {
         identity: crate::NativeRootIdentity {
@@ -96,6 +91,88 @@ pub(super) fn host_windows_metadata(
             metadata.raw.LastWriteTime
         },
     })
+}
+
+fn query_metadata(
+    root: &HostRoot,
+    path: &[u16],
+    work: &mut &crate::NativeMaterializationWork,
+) -> Result<Option<crate::native_host::HostStat>, crate::NativeTreeMaterializationError> {
+    query_metadata_using(root, path, work, |name, volume| {
+        crate::native_host::stat_windows_name(&root.directory, name, volume, true)
+    })
+}
+
+fn query_metadata_using(
+    root: &HostRoot,
+    path: &[u16],
+    work: &mut &crate::NativeMaterializationWork,
+    query: impl FnOnce(
+        &windows::Win32::Foundation::UNICODE_STRING,
+        u32,
+    ) -> std::io::Result<Option<crate::native_host::HostStat>>,
+) -> Result<Option<crate::native_host::HostStat>, crate::NativeTreeMaterializationError> {
+    NativeHostWork::check(work)?;
+    // Only leaf names use the query. Parent traversal retains the held-handle
+    // validator, including its rejection of every reparse-tagged directory.
+    let (Ok(length), Ok(volume)) = (
+        u16::try_from(path.len().saturating_mul(2)),
+        u32::try_from(root.identity().device),
+    ) else {
+        return Ok(None);
+    };
+    if matches!(path, [] | [46] | [46, 46])
+        || path.iter().any(|unit| matches!(unit, 0 | 47 | 58 | 92))
+    {
+        return Ok(None);
+    }
+    // Two reads fit a held-root open + stat, but cannot also pay for an
+    // unsupported name query. Choose that path before attempting any I/O.
+    if work.remaining()?.backend_read_operations == 2 {
+        return stat_leaf_metadata(root, path, volume, work).map(Some);
+    }
+    let charge = crate::WorkCounters {
+        items_examined: path.len() as u64,
+        backend_read_operations: 1,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    let name = windows::Win32::Foundation::UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: windows::core::PWSTR(path.as_ptr().cast_mut()),
+    };
+    match work.attempt_io(charge, || query(&name, volume)) {
+        Ok(Some(metadata)) => Ok(Some(metadata)),
+        Ok(None) => stat_leaf_metadata(root, path, volume, &mut &work.recheck_admitted()).map(Some),
+        Err(crate::NativeTreeMaterializationError::Io(error))
+            if matches!(error.raw_os_error(), Some(1 | 50 | 87 | 124)) =>
+        {
+            stat_leaf_metadata(root, path, volume, &mut &work.recheck_admitted()).map(Some)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn stat_leaf_metadata(
+    root: &HostRoot,
+    path: &[u16],
+    volume: u32,
+    work: &mut &crate::NativeMaterializationWork,
+) -> Result<crate::native_host::HostStat, crate::NativeTreeMaterializationError> {
+    use windows::Wdk::Storage::FileSystem as nt;
+    use windows::Win32::Storage::FileSystem as fs;
+
+    // The caller already restricted this to one leaf. The held root can be
+    // borrowed directly; no parent traversal or duplicate handle is needed.
+    let file = crate::native_host::open_windows_at(
+        &root.directory,
+        path,
+        fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+        nt::FILE_OPEN,
+        nt::FILE_SYNCHRONOUS_IO_NONALERT,
+        work,
+    )?;
+    crate::native_host::stat_windows_file(&file, volume, work)
 }
 
 pub(super) fn host_relative_path(path: &MountPath) -> Result<PathBuf, MountSourceError> {
@@ -135,17 +212,14 @@ pub(super) fn capture_missing_host_ancestors(
 
 pub(super) struct MetadataProbeGuard<'a> {
     pub(super) probes: &'a Mutex<HashMap<MountPath, usize>>,
-    pub(super) path: MountPath,
+    pub(super) path: &'a MountPath,
 }
 
 impl<'a> MetadataProbeGuard<'a> {
-    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> Self {
+    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &'a MountPath) -> Self {
         let mut active = lock_recover(probes);
         *active.entry(path.clone()).or_default() += 1;
-        Self {
-            probes,
-            path: path.clone(),
-        }
+        Self { probes, path }
     }
 
     pub(super) fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
@@ -158,12 +232,12 @@ impl<'a> MetadataProbeGuard<'a> {
 impl Drop for MetadataProbeGuard<'_> {
     fn drop(&mut self) {
         let mut active = lock_recover(self.probes);
-        let Some(count) = active.get_mut(&self.path) else {
+        let Some(count) = active.get_mut(self.path) else {
             return;
         };
         *count -= 1;
         if *count == 0 {
-            active.remove(&self.path);
+            active.remove(self.path);
         }
     }
 }
@@ -377,3 +451,7 @@ pub(super) unsafe fn start_directory(
 ) -> HRESULT {
     HR_OK
 }
+
+#[cfg(test)]
+#[path = "tests/metadata_query.rs"]
+mod query_tests;

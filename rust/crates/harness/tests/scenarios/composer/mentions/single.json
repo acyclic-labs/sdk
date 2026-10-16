@@ -1,0 +1,5 @@
+{
+  "prompt": "@a.txt",
+  "expect":{"mention_files":["before"],"result":{"kind":"prompt","text":"@a.txt","mentions":[{"start":0,"end":6,"file":{
+    "path":"project/a.txt"}}]}}
+}

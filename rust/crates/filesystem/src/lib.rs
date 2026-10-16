@@ -64,6 +64,9 @@ pub(crate) fn initialize_test_native_io() {
     });
 }
 
+pub mod access;
+mod sync;
+
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
 #[path = "tests/accounting/mod.rs"]
@@ -98,6 +101,7 @@ pub mod hosted_contract;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;
+mod lock_order;
 pub mod materializer;
 #[cfg(test)]
 pub mod memory;

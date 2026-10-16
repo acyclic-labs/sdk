@@ -108,8 +108,26 @@ impl ProjectionState {
         self.by_inode
             .get(&inode)
             .and_then(|entry| entry.bindings.first())
-            .map(|binding| &*binding.path)
+            .map(Binding::native_path)
             .ok_or(libc::ESTALE)
+    }
+
+    pub(super) fn retain_spelling(
+        &mut self,
+        inode: u64,
+        name: ChildName,
+    ) -> Result<FuseOwned<MountPath>, NativeMountError> {
+        if let Some(key) = name.folded {
+            self.by_inode
+                .get_mut(&inode)
+                .ok_or(libc::ESTALE)?
+                .binding_mut(&key)
+                .ok_or(libc::ESTALE)?
+                .spelled = (*key != *name.spelled).then_some(name.spelled);
+            Ok(key)
+        } else {
+            Ok(name.spelled)
+        }
     }
 
     pub(super) fn child_path(
@@ -214,15 +232,15 @@ impl ProjectionState {
         };
         for binding in entry.bindings.iter() {
             work.charge(Items.delta(1))?;
-            if *binding.path == *path {
+            if binding.native_path() == path {
                 continue;
             }
             if let Some(stamp) = binding.verified
-                && source.unchanged_since_with_meter(&binding.path, None, stamp, work)?
+                && source.unchanged_since_with_meter(binding.native_path(), None, stamp, work)?
             {
                 continue;
             }
-            let name = fuse_clone_path(&binding.path, work)?;
+            let name = fuse_clone_path(binding.native_path(), work)?;
             fuse_reserve(&mut names, 1, work)?;
             names.push(name);
         }
@@ -262,6 +280,11 @@ impl ProjectionState {
         let Some(stamp) = stamp else {
             return Ok(false);
         };
+        // While the kernel may hold entries the invalidator could not drop,
+        // nothing new is cached.
+        if self.invalidation.denied {
+            return Ok(false);
+        }
         if file_id.is_some_and(|file_id| !source.reports_changes_to(file_id)) {
             return Ok(false);
         }
@@ -314,26 +337,23 @@ impl ProjectionState {
         &mut self,
         source: &dyn MountFilesystem,
         inode: u64,
-        name: &ChildName,
+        name: ChildName,
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
+        let folded = name.folded.is_some();
+        let key = self.retain_spelling(inode, name)?;
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if name.folded.is_some() {
+        if folded {
             return Ok(Duration::ZERO);
         }
         let Some(entry) = self.by_inode.get(&inode) else {
             return Ok(Duration::ZERO);
         };
-        let admitted = self.admissible(
-            source,
-            name.key(),
-            Some(entry.lookup.node.file_id),
-            stamp,
-            work,
-        )?;
+        let admitted =
+            self.admissible(source, &key, Some(entry.lookup.node.file_id), stamp, work)?;
         if let Some(entry) = self.by_inode.get_mut(&inode)
-            && let Some(binding) = entry.binding_mut(name.key())
+            && let Some(binding) = entry.binding_mut(&key)
         {
             hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
@@ -489,7 +509,7 @@ impl ProjectionState {
             let through = entry
                 .bindings
                 .first()
-                .map(|binding| fuse_clone_path(&binding.path, work))
+                .map(|binding| fuse_clone_path(binding.native_path(), work))
                 .transpose()?;
             return Ok(NodeFacts::Current(Resolved {
                 lookup: entry.lookup,
@@ -506,7 +526,7 @@ impl ProjectionState {
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
         for binding in entry.bindings.iter() {
             work.charge(Items.delta(1))?;
-            paths.push(fuse_clone_path(&binding.path, work)?);
+            paths.push(fuse_clone_path(binding.native_path(), work)?);
         }
         Ok(NodeFacts::Names {
             file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),

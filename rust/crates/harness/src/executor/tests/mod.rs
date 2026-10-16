@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod sampling_allocations;
+
 use serde_json::json;
 
 fn uncompacted_executor(
@@ -700,6 +703,7 @@ fn echo_tools(
     tools.register(
         (
             crate::tool::Tool {
+                hook_names: &[],
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
                     revision: "1".into(),

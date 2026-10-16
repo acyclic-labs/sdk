@@ -254,7 +254,7 @@ impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationTo
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {
     use crate::demand::{DemandWork, NativeDemandReadMeter};
     use crate::{CancellationToken, DemandError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     crate::fsevents::EventStream::initialize_services()?;
     for late_wait in [false, true] {
@@ -265,10 +265,10 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
         budget.backend_write_operations = 128;
         budget.allocation_operations = 128;
         budget.items_examined = 4096;
-        let birth = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(
+        let birth = Arc::new(NativeDemandReadMeter::new(DemandWork::new(
             budget,
             &root_cancellation,
-        ))));
+        )));
         let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
         let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut startup)?);
         let watch = NativeSourceWatch::start_driver(&held, delivery, &mut startup)?;
@@ -458,8 +458,9 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         .set(Arc::downgrade(&watch))
         .map_err(|_| "watch already installed")?;
     #[cfg(feature = "native-mount")]
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(stop_budget(), &CancellationToken::new()),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        stop_budget(),
+        &CancellationToken::new(),
     )));
     #[cfg(feature = "native-mount")]
     gate.original
@@ -678,10 +679,10 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
     budget.backend_write_operations = 128;
     budget.items_examined = 4096;
     budget.allocation_operations = 128;
-    let original = Arc::new(NativeDemandReadMeter(Mutex::new(DemandWork::new(
+    let original = Arc::new(NativeDemandReadMeter::new(DemandWork::new(
         budget,
         &cancellation,
-    ))));
+    )));
     let lifetime = Arc::downgrade(&original);
     let sink = Arc::new(Retires {
         watch: Mutex::new(None),

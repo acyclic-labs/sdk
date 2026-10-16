@@ -29,6 +29,8 @@ macro_rules! callback_span {
 }
 
 mod adapter;
+#[cfg(windows)]
+mod cached_binding;
 pub use adapter::{
     CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
     SharedCheckoutState, initialize_native_mount_services,
@@ -256,6 +258,8 @@ where
 
 mod source;
 pub use source::*;
+mod path;
+pub use path::MountPath;
 mod callbacks;
 pub use callbacks::*;
 mod filesystem;

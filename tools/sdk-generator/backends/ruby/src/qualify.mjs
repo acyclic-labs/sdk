@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))).qualification;
@@ -14,16 +13,6 @@ const specName = `${coordinate}.gemspec`;
 const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "code_sha256", InvalidOptionalInteger: "if_tail" };
 
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) throw new Error("tool or package inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("tool or package inventory contains a non-file");
-    return [name];
-  }).sort();
-}
-
 // Injected commands/pins support offline controls. The CLI uses real pinned tools.
 export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
   if (process.platform !== "win32" && command === spawnSync) throw new Error("installed Ruby qualification currently requires the pinned Windows runtime");
@@ -31,12 +20,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const authorityRoot = realpathSync(args.authority);
   const rubyHome = realpathSync(args["ruby-home"]);
   const cache = realpathSync(args.cache);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authorityRoot, rubyHome, cache, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [packageRoot, authorityRoot, rubyHome, cache, dirname(directory)]);
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
   const receipt = JSON.parse(receiptBytes);
   if (receipt.schema !== "acyclic.sdk.ruby-producer-receipt.v1" || receipt.authority !== "rust"
@@ -111,7 +95,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const installed = join(installedCache, "gems", `${coordinate}-${version}`);
   if (sha256(readFileSync(join(installedCache, "cache", packageName))) !== sha256(archive)) throw new Error("installed SDK archive differs");
   const installedPayload = [...payload.keys()].filter(name => name !== specName);
-  if (JSON.stringify(files(installed)) !== JSON.stringify([...installedPayload].sort())) throw new Error("installed SDK payload inventory differs");
+  if (JSON.stringify(inventory(installed)) !== JSON.stringify([...installedPayload].sort())) throw new Error("installed SDK payload inventory differs");
   for (const name of installedPayload) {
     if (sha256(readFileSync(join(installed, name))) !== sha256(payload.get(name))) throw new Error("installed SDK payload differs");
   }
@@ -135,8 +119,8 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     package_payload_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])),
     dependency_archive_sha256: Object.fromEntries([...archives].map(([name, bytes]) => [name, sha256(bytes)])),
     runtime_source: toolchain.runtime_source,
-    runtime_file_sha256: Object.fromEntries(files(rubyHome).map(name => [name, sha256(readFileSync(join(rubyHome, name)))])),
-    installed_dependency_file_sha256: Object.fromEntries(files(installedCache).map(name => [name, sha256(readFileSync(join(installedCache, name)))])),
+    runtime_file_sha256: Object.fromEntries(inventory(rubyHome).map(name => [name, sha256(readFileSync(join(rubyHome, name)))])),
+    installed_dependency_file_sha256: Object.fromEntries(inventory(installedCache).map(name => [name, sha256(readFileSync(join(installedCache, name)))])),
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     toolchain_sha256: sha256(JSON.stringify(toolchain)),
     control_sha256: Object.fromEntries(controlFiles.map(name => [name, sha256(readFileSync(join(output, "controls", name)))])),
@@ -147,10 +131,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "authority", "ruby-home", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--package, --authority, --ruby-home, --cache and --output are required");
+runCli(import.meta.url, values => {
   const result = qualify(values);
-  console.log(JSON.stringify({ scope: result.scope, gem_sha256: result.gem_sha256, qualification: resolve(values.output, "qualification.json") }, null, 2));
-}
+  return { scope: result.scope, gem_sha256: result.gem_sha256, qualification: resolve(values.output, "qualification.json") };
+}, ["package", "authority", "ruby-home", "cache", "output"]);

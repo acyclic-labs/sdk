@@ -201,7 +201,7 @@ mod tests {
             assert!(transport.reconcile(operation, None).await?.is_none());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
-                assert_eq!(result?["content"][0]["text"], "local");
+                assert_eq!(result?.content, [rmcp::model::ContentBlock::text("local")]);
             } else {
                 assert!(matches!(result, Err(Error::Indeterminate(_))));
             }

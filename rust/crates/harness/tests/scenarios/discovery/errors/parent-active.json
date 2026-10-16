@@ -1,0 +1,2 @@
+{"seed":{},"discovery":{"instructions":[{"active_directory":"../escape"}]},"expect":{"error":
+  "volume-relative path is invalid"}}

@@ -12,7 +12,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         context_messages: 8,
         ..Limits::default()
     };
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(12));
     let bundle = storage
         .builder()
         .model(

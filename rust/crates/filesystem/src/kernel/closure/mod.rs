@@ -11,6 +11,7 @@ use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Hard closure-walk limits admitted before generation publication.
@@ -45,7 +46,7 @@ pub struct GenerationProof {
     pub file_count: u64,
     /// Logical regular-file bytes, counting each file identity once, including holes.
     pub logical_file_bytes: u128,
-    /// Stable sorted identities in the complete authenticated closure.
+    /// Sorted immutable objects authenticated by this proof.
     pub objects: Vec<ObjectId>,
     /// Exact proof work.
     pub work: WorkCounters,
@@ -174,10 +175,21 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
 }
 
 mod memory;
-pub(crate) use memory::{ProofGuard, ProofMeter};
+pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
 use memory::{ProofVec, map_get, map_insert, set_insert};
 mod walk;
 pub(crate) use walk::ProofContext;
+
+pub(crate) struct CachedProof {
+    limits: ClosureLimits,
+    root: GenerationRoot,
+    generation_id: GenerationId,
+    file_count: u64,
+    logical_file_bytes: u128,
+    object_count: u64,
+    _guard: ProofGuard,
+    object_bytes: u64,
+}
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
 pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
@@ -201,7 +213,7 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;
     let result = ProofContext::new(store, limits, meter.clone())
-        .prove(generation_root)
+        .prove(generation_root, None)
         .await;
     let (proof, guard) =
         result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;

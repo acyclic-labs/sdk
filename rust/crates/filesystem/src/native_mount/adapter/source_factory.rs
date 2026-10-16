@@ -76,6 +76,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     FilesystemProfile::Portable | FilesystemProfile::Browser
                 ),
             cancellation,
+            folded_directories: super::folded_cache::FoldedDirectoryCache::new(),
             capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
             capture_quiesced: Arc::new(std::sync::Condvar::new()),
             runtime,

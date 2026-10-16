@@ -138,6 +138,7 @@ mod content;
 mod content_model;
 mod detached;
 mod diff;
+pub(crate) use diff::diff_generation_file_tables;
 mod directory;
 mod error;
 mod extents;
@@ -161,6 +162,10 @@ mod metadata;
 mod mutation_regions;
 mod mutations;
 mod names;
+#[cfg(feature = "native-mount")]
+mod names_unique;
+#[cfg(feature = "native-mount")]
+pub(crate) use names_unique::ambiguous_folded_name;
 mod namespace;
 mod proof;
 mod publication;
@@ -304,3 +309,6 @@ use workspace_creation::decode_first_creation_record;
 pub(crate) mod test_authority;
 
 use crate::kernel::{decode_published_generation, decode_volume_created};
+
+#[cfg(all(test, feature = "memory", feature = "distributed"))]
+pub(crate) mod test_fixtures;

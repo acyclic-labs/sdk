@@ -1,6 +1,12 @@
-import { rootCertificates } from "node:tls";
-import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { StreamSessions } from "./session.js";
+import { SessionQueue } from "./session-queue.js";
+import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
+import { connect as connectTls, rootCertificates } from "node:tls";
+import { createClient, ConnectError, Code, type Interceptor, type Client, type CallOptions } from "@connectrpc/connect";
+import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
@@ -11,9 +17,8 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
-export interface StreamGrpcOptions {
+export interface StreamGrpcOptions extends CredentialOptions {
   readonly endpoint: string;
-  readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
@@ -21,27 +26,100 @@ export interface StreamGrpcOptions {
   readonly acknowledgeDeliveries?: boolean;
 }
 
-/** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
+/** Virtual follows support cancellation/deadlines; metadata belongs to the shared session. */
+export type StreamFollowCallOptions = Pick<CallOptions, "signal" | "timeoutMs"> & {
+  [Option in Exclude<keyof CallOptions, "signal" | "timeoutMs">]?: never;
+};
+type Follow = (request: Parameters<Client<typeof StreamService>["follow"]>[0],
+  options?: StreamFollowCallOptions) => ReturnType<Client<typeof StreamService>["follow"]>;
+
+/** Stream v1 client; virtual follow accepts only signal and timeoutMs call options. */
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
+  const { client, sessions } = streamGrpc(options);
+  const follow: Follow = async function* (request, callOptions) {
+    const path = request.path ?? "";
+    const from = request.from ?? 0n;
+    await validateWireRequest({ kind: "follow", path, from });
+    const timeoutMs = callOptions?.timeoutMs;
+    const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
+    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    try {
+      for await (const record of sessions.follow(path, { from, signal: controller.signal })) {
+        const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
+        yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
+      }
+      if (controller.signal.aborted) throw ConnectError.from(controller.signal.reason, Code.Canceled);
+    } finally { controller.abort(); deadline.cleanup(); }
+  };
+  return { ...client, follow };
+}
+
+function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || /[\r\n]/.test(options.token)) throw new TypeError("invalid bearer token");
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
-  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
+    ...(options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] }),
+    createConnection(authority, tlsOptions) {
+      const address = new URL(authority);
+      const socket = connectTls({ ...tlsOptions, host: address.hostname.replace(/^\[|\]$/g, ""),
+        port: Number(address.port || 443), servername: address.hostname, ALPNProtocols: ["h2"], rejectUnauthorized: true });
+      socket.setNoDelay(true);
+      return socket;
+    },
+  } });
+}
+
+function streamGrpc(options: StreamGrpcOptions) {
+    const credential = credentialProvider(options);
+    const endpoint = options.endpoint;
+    const caCertificate = options.caCertificate;
+    const maximumMessageBytes = options.maximumMessageBytes;
+    const observer = options.observer;
+    const acknowledgeDeliveries = options.acknowledgeDeliveries;
+    const transportOptions = {
+      endpoint,
+      ...(caCertificate === undefined ? {} : { caCertificate }),
+      ...(maximumMessageBytes === undefined ? {} : { maximumMessageBytes }),
+      ...(observer === undefined ? {} : { observer }),
+    };
+    const home = createStreamGrpcTransport(transportOptions, credential);
+    const transports = new Map([[new URL(endpoint).href, home]]);
+    const client = createClient(StreamService, home);
+
+    const sessions = new StreamSessions(async (node, signal) => {
+      const nodeEndpoint = new URL(node?.endpoint ?? endpoint).href;
+      let transport = transports.get(nodeEndpoint);
+      if (transport === undefined) {
+        transport = createStreamGrpcTransport({ ...transportOptions, endpoint: nodeEndpoint }, credential);
+        transports.set(nodeEndpoint, transport);
+      }
+      const input = new SessionQueue<SessionFrame>(wire.StreamLimit.MAX_ITEMS);
+      const client = createClient(StreamSessionService, transport);
+      const incoming = async function* () {
+        try { yield* client.session(input, { signal }); }
+        catch (error) { throw providerError(error, "session"); }
+      };
+      return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
+    }, acknowledgeDeliveries !== false);
+    return { client, sessions };
 }
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
   readonly #client: ReturnType<typeof createStreamGrpcClient>;
   readonly #acknowledgeDeliveries: boolean;
+  readonly #sessions: StreamSessions;
   constructor(options: StreamGrpcOptions) {
-    this.#client = createStreamGrpcClient(options);
+    const { client, sessions } = streamGrpc(options);
+    this.#client = client;
+    this.#sessions = sessions;
     this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
   }
   /** Acknowledges an opaque hosted transport receipt. */
@@ -90,14 +168,8 @@ export class GrpcStreamProvider implements StreamProvider {
     } finally { controller.abort(); }
   }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "follow" as const, path, from: options.from };
-    await validateWireRequest(request);
-    if (options.signal?.aborted) return;
-    const controller = new AbortController();
-    const signal = options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]);
-    try {
-      yield* this.#frames("follow", this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), { signal }), request.from, undefined, signal);
-    } finally { controller.abort(); }
+    await validateWireRequest({ kind: "follow", path, from: options.from });
+    yield* this.#sessions.follow(path, options);
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
     remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {

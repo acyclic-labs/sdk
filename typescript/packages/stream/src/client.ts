@@ -7,7 +7,7 @@ import type {
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
   StreamProvider,
 } from "./types.js";
-import { StreamError, compareStreamPaths } from "./types.js";
+import { StreamError, commitId, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
 
 export interface Codec<Value> {
@@ -116,7 +116,7 @@ export class StreamClient {
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
-        return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail) };
+        return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail), ...(condition.ifCommitId === undefined ? {} : { ifCommitId: commitId(condition.ifCommitId) }) };
       }
       validatePathValue(condition.path);
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
@@ -143,9 +143,12 @@ export class StreamClient {
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
   static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
+    const callback = environment?.credential;
     return new StreamClient(new DefaultStreamProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
-      token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
+      ...(callback === undefined
+        ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
+        : { credential: callback }),
       ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
     }));
   }

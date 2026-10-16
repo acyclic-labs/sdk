@@ -1,5 +1,6 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
 use crate::{http_codec, http_validation, wire_codec, *};
+pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -22,7 +23,8 @@ pub struct ConnectError;
 pub struct HttpStream {
     client: Client,
     endpoint: Url,
-    authorization: HeaderValue,
+    authorization: Option<HeaderValue>,
+    credential: Option<CredentialProvider>,
     maximum: usize,
 }
 impl HttpStream {
@@ -43,10 +45,30 @@ impl HttpStream {
     ) -> Result<Self, ConnectError> {
         Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
     }
+    /// Resolve the current credential immediately before each physical request.
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ConnectError> {
+        Self::build(endpoint, None, Some(credential), maximum, ca)
+    }
+
     /// Extends system trust with a caller-supplied PEM CA certificate.
     pub fn with_ca_certificate(
         endpoint: &str,
         token: &str,
+        maximum: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ConnectError> {
+        Self::build(endpoint, Some(token), None, maximum, ca)
+    }
+
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
         maximum: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
@@ -64,8 +86,6 @@ impl HttpStream {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.len() > crate::MAX_BEARER_TOKEN_BYTES
             || maximum == 0
         {
             return Err(ConnectError);
@@ -73,9 +93,7 @@ impl HttpStream {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
-        authorization.set_sensitive(true);
+        let authorization = token.map(credential_header).transpose()?;
         let mut client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
@@ -91,10 +109,32 @@ impl HttpStream {
             client: client.build().map_err(|_| ConnectError)?,
             endpoint,
             authorization,
+            credential,
             maximum,
         })
     }
+    async fn authorization(&self) -> Result<HeaderValue, StreamError> {
+        if let Some(provider) = &self.credential {
+            let token = provider
+                .resolve()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
+            credential_header(&token).map_err(|_| StreamError::AccessDenied)
+        } else {
+            self.authorization.clone().ok_or(StreamError::AccessDenied)
+        }
+    }
+
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
+        self.request_json(route, move || http_codec::encode(route, &bytes))
+            .await
+    }
+
+    async fn request_json(
+        &self,
+        route: &'static str,
+        encode: impl FnOnce() -> Result<String, &'static str> + Send,
+    ) -> Result<Value, StreamError> {
         let mut observation = HttpObservation {
             span: obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.http.call",
@@ -108,7 +148,10 @@ impl HttpStream {
         };
         let result = observation
             .span
-            .scope(self.request_inner(route, bytes, &observation.span))
+            .scope(async {
+                let body = encode().map_err(contract_error)?;
+                self.request_inner(route, body, &observation.span).await
+            })
             .await;
         observation.finished = true;
         obs::finish(&observation.span, result)
@@ -117,10 +160,9 @@ impl HttpStream {
     async fn request_inner(
         &self,
         route: &'static str,
-        bytes: Vec<u8>,
+        body: String,
         span: &Span,
     ) -> Result<Value, StreamError> {
-        let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
@@ -128,7 +170,7 @@ impl HttpStream {
         let mut response = self
             .client
             .post(url)
-            .header(AUTHORIZATION, self.authorization.clone())
+            .header(AUTHORIZATION, self.authorization().await?)
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -259,6 +301,12 @@ impl HttpStream {
                     let path = parse_path(field(value, "path")?)?;
                     if value["expectedAbsent"] == true {
                         Ok(CommitConflict::Exists { path })
+                    } else if let Some(expected) = value.get("expectedCommitId") {
+                        Ok(CommitConflict::Head {
+                            path,
+                            expected: parse_id(expected)?,
+                            actual: parse_id(field(value, "actualCommitId")?)?,
+                        })
                     } else {
                         Ok(CommitConflict::Tail {
                             path,
@@ -442,9 +490,11 @@ impl StreamProvider for HttpStream {
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let mut bytes = Vec::with_capacity(wire_codec::requests::append_len(&request));
-        wire_codec::requests::append(&mut bytes, &request);
-        parse_append(&self.request("append", bytes).await?)
+        parse_append(
+            &self
+                .request_json("append", move || http_codec::encode_append(&request))
+                .await?,
+        )
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let source = request.source.clone();
@@ -547,6 +597,15 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
+fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
+    if !acyclic_auth::credential::valid_credential(token) {
+        return Err(ConnectError);
+    }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 // Dropping a pending physical HTTP request cancels that request, independently
 struct HttpObservation {
     span: obs::OperationSpan,
@@ -565,7 +624,60 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::HttpStream;
+    use super::{HttpStream, StreamError, wire};
+    use prost::Message;
+
+    #[test]
+    fn http_credentials_are_current_sensitive_and_fail_before_transport() {
+        use acyclic_auth::credential::{CredentialError, CredentialProvider};
+        use futures::{executor::block_on, future};
+        use proptest::prelude::*;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
+            .run(
+                &prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 2..8),
+                |values| {
+                    let expected = values.clone();
+                    let index = Arc::new(AtomicUsize::new(0));
+                    let calls = index.clone();
+                    let provider = HttpStream::with_credential_provider(
+                        "https://fixture.invalid",
+                        CredentialProvider::new(move || {
+                            future::ready(
+                                values
+                                    .get(calls.fetch_add(1, Ordering::Relaxed))
+                                    .cloned()
+                                    .ok_or(CredentialError::Invalid),
+                            )
+                        }),
+                        1024,
+                        None,
+                    )
+                    .unwrap();
+                    for value in &expected {
+                        let header = block_on(provider.authorization()).unwrap();
+                        prop_assert!(header.is_sensitive());
+                        prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
+                    }
+                    prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
+                    let result = block_on(
+                        provider.request(
+                            "tail",
+                            wire::TailRequest {
+                                path: "valid/path".into(),
+                            }
+                            .encode_to_vec(),
+                        ),
+                    );
+                    prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
@@ -650,5 +762,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "http_follow_tests.rs"]
-mod follow_tests;
+mod http_follow_tests;

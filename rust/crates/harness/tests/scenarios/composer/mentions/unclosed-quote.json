@@ -1,0 +1,4 @@
+{
+  "prompt": "@\"unclosed",
+  "expect": {"error":"unclosed file mention quote"}
+}

@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package acyclic.actors.v1;
 
+import "validation/v1/options.proto";
+
 option go_package = "github.com/acyclic-labs/sdk/go/gen/actors/v1;actorsv1";
 
 enum ActorState {
@@ -186,13 +188,58 @@ message UpdateActorResponse {
 }
 
 service ActorsService {
-  rpc CreateActor(CreateActorRequest) returns (CreateActorResponse);
-  rpc UpdateActor(UpdateActorRequest) returns (UpdateActorResponse);
-  rpc InspectActor(InspectActorRequest) returns (InspectActorResponse);
-  rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse);
-  rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse);
-  rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse);
-  rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse);
-  rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse);
-  rpc DeleteActor(DeleteActorRequest) returns (DeleteActorResponse);
+  rpc CreateActor(CreateActorRequest) returns (CreateActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/create"
+      extractor: "actors.create-with-bindings"
+    };
+  }
+  rpc UpdateActor(UpdateActorRequest) returns (UpdateActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/update"
+      extractor: "actors.update-with-bindings"
+    };
+  }
+  rpc InspectActor(InspectActorRequest) returns (InspectActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/read"
+      extractor: "actors.read"
+    };
+  }
+  rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/subscribe"
+      extractor: "actors.subscribe"
+    };
+  }
+  rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/unsubscribe"
+      extractor: "actors.unsubscribe"
+    };
+  }
+  rpc ResumeSubscription(ResumeSubscriptionRequest) returns (ResumeSubscriptionResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/resume"
+      extractor: "actors.resume"
+    };
+  }
+  rpc CheckpointActor(CheckpointActorRequest) returns (CheckpointActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/checkpoint"
+      extractor: "actors.checkpoint"
+    };
+  }
+  rpc InvokeActor(InvokeActorRequest) returns (InvokeActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/invoke"
+      extractor: "actors.invoke"
+    };
+  }
+  rpc DeleteActor(DeleteActorRequest) returns (DeleteActorResponse) {
+    option (acyclic.validation.v1.auth) = {
+      action: "actors/delete"
+      extractor: "actors.delete"
+    };
+  }
 }

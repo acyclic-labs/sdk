@@ -28,6 +28,22 @@ pub struct McpToolDefinition {
     pub output_schema: Option<Value>,
 }
 
+impl From<rmcp::model::Tool> for McpToolDefinition {
+    fn from(tool: rmcp::model::Tool) -> Self {
+        Self {
+            name: tool.name.into_owned(),
+            title: tool.title,
+            description: tool
+                .description
+                .map_or_else(String::new, |value| value.into_owned()),
+            input_schema: Value::Object(std::sync::Arc::unwrap_or_clone(tool.input_schema)),
+            output_schema: tool
+                .output_schema
+                .map(|schema| Value::Object(std::sync::Arc::unwrap_or_clone(schema))),
+        }
+    }
+}
+
 /// Pinned transport for admitted operations and optional task authority.
 pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
     /// Installed callback policy.
@@ -42,12 +58,12 @@ pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>>;
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>>;
 
     /// Queries the exact prior operation without redispatching it.
     fn reconcile<'a>(
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>>;
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>>;
 }

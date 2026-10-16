@@ -121,6 +121,7 @@ impl ProjFsSession {
             root,
             metadata_root,
             staging: Mutex::new(None),
+            creating_name: RwLock::new((MountPath::root(), None)),
             writable: request.writable,
             metadata_baselines: Mutex::new(HashMap::new()),
             projection: Mutex::new(HashMap::new()),

@@ -5,6 +5,26 @@ pub(crate) struct HistoryCursor {
     next: u64,
 }
 impl HistoryCursor {
+    fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
+        if let Some(root) = &self.root
+            && HistoryWalk::new(path.history.as_ref(), path.tail, 0)
+                .any(|(node, _)| std::ptr::eq(node, root.as_ref()))
+        {
+            return Ok(());
+        }
+        let from = self
+            .next
+            .checked_sub(1)
+            .ok_or(StreamError::InvalidArgument)?;
+        let mut previous = Self::new(path, self.next, from);
+        if previous
+            .next_record()
+            .is_none_or(|record| record.sequence != from || record.commit_id != anchor)
+        {
+            return Err(StreamError::PrefixNotRetained);
+        }
+        Ok(())
+    }
     pub(crate) fn at(next: u64) -> Self {
         Self {
             root: None,
@@ -12,9 +32,16 @@ impl HistoryCursor {
             next,
         }
     }
-    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
+    fn new(path: &PathState, tail: u64, next: u64) -> Self {
+        if let Some(window) = path.prefix_window(next, tail) {
+            return Self {
+                root: path.history.clone(),
+                windows: VecDeque::from([window]),
+                next,
+            };
+        }
         let mut cursor = Self::at(next);
-        cursor.sync(history, tail);
+        cursor.sync(path.history.as_ref(), tail);
         cursor
     }
     fn sync(&mut self, root: Option<&Arc<History>>, tail: u64) {
@@ -44,6 +71,13 @@ impl HistoryCursor {
                 } => {
                     if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
                         added.push(window);
+                    }
+                    if records
+                        .records
+                        .first()
+                        .is_some_and(|first| first.sequence <= self.next)
+                    {
+                        break;
                     }
                     node = parent.as_ref();
                 }

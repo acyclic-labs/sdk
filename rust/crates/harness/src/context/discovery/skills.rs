@@ -101,48 +101,7 @@ struct Frontmatter {
 /// Parses a bounded prefix.
 pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<SkillMetadata> {
     source.validate(&mut None)?;
-    let mut offset = 0;
-    let mut header_start = None;
-    let mut header_end = None;
-    for line in prefix.split_inclusive(|byte| *byte == b'\n') {
-        let delimiter = line.strip_suffix(b"\n").unwrap_or(line);
-        let delimiter = delimiter.strip_suffix(b"\r").unwrap_or(delimiter);
-        if offset == 0 {
-            if delimiter != b"---" || !line.ends_with(b"\n") {
-                return Err(Error::Invalid(
-                    "skill requires opening frontmatter delimiter".into(),
-                ));
-            }
-            header_start = Some(line.len());
-        } else if delimiter == b"---" && line.ends_with(b"\n") {
-            header_end = Some(offset);
-            break;
-        }
-        offset += line.len();
-    }
-    let (Some(start), Some(end)) = (header_start, header_end) else {
-        return Err(Error::Invalid(
-            "skill frontmatter is missing or exceeds prefix bound".into(),
-        ));
-    };
-    let header = prefix
-        .get(start..end)
-        .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
-    let options = serde_saphyr::options! {
-        budget: serde_saphyr::budget! {
-            max_events: usize::MAX, max_nodes: usize::MAX, max_depth: usize::MAX,
-            flow_nesting_limit: usize::MAX, max_documents: 1,
-            max_aliases: 0, max_anchors: 0, max_merge_keys: 0,
-            max_total_scalar_bytes: usize::MAX,
-        },
-        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
-        merge_keys: serde_saphyr::MergeKeyPolicy::Error,
-        reject_unsupported_tags: true,
-        emit_comments: false,
-        with_snippet: false,
-    };
-    let metadata: Frontmatter = serde_saphyr::from_slice_with_options(header, options)
-        .map_err(|error| Error::Invalid(format!("invalid skill frontmatter: {error}")))?;
+    let metadata: Frontmatter = parse_frontmatter(prefix)?;
     let metadata = SkillMetadata {
         name: metadata.name,
         description: metadata.description,
@@ -153,7 +112,7 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     Ok(metadata)
 }
 
-pub(super) async fn discover_skills(
+pub(crate) async fn discover_skills(
     reader: &dyn ContentResidencyVerifier,
     skills: &[ContextRoot],
     name: &str,

@@ -1,0 +1,4 @@
+{
+  "prompt": "/unknown",
+  "expect": {"error":"unknown command"}
+}

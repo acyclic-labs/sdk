@@ -1,0 +1,4 @@
+{
+  "prompt": "/model provider/model",
+  "expect": {"result":{"kind":"submit","request":{"kind":"model","model":"provider/model"}}}
+}

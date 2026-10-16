@@ -18,6 +18,8 @@
 #![doc = include_str!("../README.md")]
 
 pub mod agent_loop;
+#[cfg(feature = "tui")]
+pub use acyclic_harness_tui as tui;
 pub mod bundle;
 pub mod client;
 pub mod context;
@@ -34,8 +36,11 @@ pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;
+pub mod goal;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+pub mod hooks;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
@@ -49,6 +54,11 @@ pub mod mcp;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+pub mod native_settings;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_future;
 #[cfg(feature = "objects")]
@@ -62,10 +72,13 @@ pub mod runtime;
 pub mod scheduler;
 pub mod source_authorization;
 pub mod store;
+pub mod task_volume;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;
 pub mod tools;
+#[cfg(feature = "tui")]
+pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;

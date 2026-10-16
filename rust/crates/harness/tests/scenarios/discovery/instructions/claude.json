@@ -1,0 +1,3 @@
+{"seed":{"CLAUDE.md":"Claude rules"},"expect":{"request_files":[["Claude rules"]],"requests":[{"messages":[{"role":
+  "system","content":{"kind":"file","file":{"path":"CLAUDE.md"},"policy":"bounded_full"}},{"role":"user","content":
+  "Inspect files"}]}]}}

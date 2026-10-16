@@ -8,16 +8,19 @@ where
 {
     /// Reopens the admitted registered task and its bound workflow without requiring a typed definition at the worker boundary.
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
-        let journal = self.workflow_journal(task, fence.clone()).await?;
-        self.harness
-            .open_registered_task(
-                task,
-                &fence,
-                journal,
-                #[cfg(not(target_arch = "wasm32"))]
-                None,
-            )
-            .await
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let journal = self.workflow_journal(task, fence.clone()).await?;
+            self.harness
+                .open_registered_task(
+                    task,
+                    &fence,
+                    journal,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    None,
+                )
+                .await
+        })?
+        .await
     }
 
     /// Opens the original registered task using its one issued shared context.
@@ -35,23 +38,26 @@ where
                 reason: "native task context differs from original task lease",
             });
         }
-        let owner = context.journal_owner::<P>(fence, work)?;
-        let journal = FilesystemWorkflowJournal::for_task(
-            Arc::clone(&owner),
-            Arc::clone(&self.filesystem),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &self.volume,
-                verifier: &self.verifier,
-                scope: &self.signed,
-                maximum_bytes: self
-                    .maximum_payload_bytes
-                    .min(owner.input_limits().file_bytes),
-                io: Some(&super::super::PreparationIo::from_native_work(work)?),
-            },
-        )?;
-        self.harness
-            .open_registered_task(task, fence, journal, Some(context))
-            .await
+        crate::NativeFutureBundle::new(work, || async move {
+            let owner = context.journal_owner::<P>(fence, work)?;
+            let journal = FilesystemWorkflowJournal::for_task(
+                Arc::clone(&owner),
+                Arc::clone(&self.filesystem),
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &self.volume,
+                    verifier: &self.verifier,
+                    scope: &self.signed,
+                    maximum_bytes: self
+                        .maximum_payload_bytes
+                        .min(owner.input_limits().file_bytes),
+                    io: Some(&super::super::PreparationIo::from_native_work(work)?),
+                },
+            )?;
+            self.harness
+                .open_registered_task(task, fence, journal, Some(context))
+                .await
+        })?
+        .await
     }
 
     /// Performs one bounded discovery page followed by at most one owner-scoped admission and worker turn through the trusted command adapter.
@@ -133,7 +139,7 @@ where
             None,
             admission.run_limits.deadline_epoch_ms,
             admission.operation_id,
-            async {
+            || async {
                 self.poll_task_wake(task, io).await?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
@@ -218,10 +224,13 @@ where
         maximum_transitions: u32,
         io: Option<&super::super::PreparationIo>,
     ) -> TaskWorkerAttempt {
-        match self
-            .run_task_observed(&lease, commands, maximum_transitions, io)
-            .await
-        {
+        let result = match crate::conversation::BoundedContentFuture::new(io, || {
+            self.run_task_observed(&lease, commands, maximum_transitions, io)
+        }) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        match result {
             Ok(progress) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),
             Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
         }

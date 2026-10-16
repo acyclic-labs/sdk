@@ -16,7 +16,7 @@ use acyclic_fs::{
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Component, Path},
+    path::Path,
     sync::{Arc, Mutex},
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -44,7 +44,8 @@ fn now_millis() -> u64 {
 mod helpers;
 use acyclic_fs::facade::FsWork as _;
 use helpers::existing_tracked_paths;
-use helpers::workspace_path_argument;
+mod path;
+use path::workspace_path_argument;
 
 use crate::Error;
 /// Executes the full git facade against a managed lazy workspace.
@@ -67,6 +68,8 @@ pub(crate) struct WorkspaceGitExecutor<'a> {
     pub lease: Option<OperationWindowLease>,
     /// Configured merge drivers.
     pub merge_drivers: Arc<MergeDriverRegistry>,
+    /// Lock order: merge_cache is never held with switched; switched is a leaf
+    /// lock released before filesystem work or an await.
     /// Merge resolution cache.
     pub merge_cache: AsyncMutex<MemoryMergeResolutionCache>,
     /// Newly selected workspace after checkout.

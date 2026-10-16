@@ -255,7 +255,6 @@ pub(super) async fn execute(
             workers.spawn(async move { native.resume(lease).await });
             return Ok("original lease submitted for authoritative reconciliation\n".into());
         }
-        "/context" => [] { native.configure_context(read_json(path)?).await },
         "/publication-open"
         | "/publication-observe"
         | "/publication-apply"

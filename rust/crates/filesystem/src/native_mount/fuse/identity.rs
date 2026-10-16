@@ -1,9 +1,16 @@
 use super::*;
 
 pub(super) struct Binding {
+    pub(super) spelled: Option<FuseOwned<MountPath>>,
     pub(super) path: FuseOwned<MountPath>,
     pub(super) verified: Option<ViewStamp>,
     pub(super) kernel: Option<ViewStamp>,
+}
+
+impl Binding {
+    pub(super) fn native_path(&self) -> &MountPath {
+        self.spelled.as_deref().unwrap_or(&self.path)
+    }
 }
 
 pub(super) struct InodeEntry {
@@ -33,6 +40,7 @@ impl InodeEntry {
     ) -> Result<Self, NativeMountError> {
         let mut bindings = fuse_vec(1, work)?;
         bindings.push(Binding {
+            spelled: None,
             path: binding,
             verified,
             kernel: None,
@@ -65,19 +73,21 @@ impl InodeEntry {
     }
 
     pub(super) fn binding(&self, path: &MountPath) -> Option<&Binding> {
-        self.bindings.iter().find(|binding| *binding.path == *path)
+        self.bindings
+            .iter()
+            .find(|binding| *binding.path == *path || binding.native_path() == path)
     }
 
     pub(super) fn binding_mut(&mut self, path: &MountPath) -> Option<&mut Binding> {
         self.bindings
             .iter_mut()
-            .find(|binding| *binding.path == *path)
+            .find(|binding| *binding.path == *path || binding.native_path() == path)
     }
 
     pub(super) fn anchor(&self) -> &MountPath {
         self.bindings
             .first()
-            .map_or(&ROOT_PATH, |binding| &*binding.path)
+            .map_or(&ROOT_PATH, Binding::native_path)
     }
 
     pub(super) fn current_facts(
@@ -91,9 +101,12 @@ impl InodeEntry {
         let file_id = self.lookup.node.file_id;
         let current = if self.lookup.node.kind == MountNodeKind::Directory {
             match self.bindings.first() {
-                Some(anchor) => {
-                    source.unchanged_since_with_meter(&anchor.path, Some(file_id), stamp, work)?
-                }
+                Some(anchor) => source.unchanged_since_with_meter(
+                    anchor.native_path(),
+                    Some(file_id),
+                    stamp,
+                    work,
+                )?,
                 None => false,
             }
         } else {
@@ -188,6 +201,8 @@ impl ProjectionState {
         &mut self,
         source: &MountPath,
         destination: &MountPath,
+        spelled: &MountPath,
+        parent_inode: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
@@ -206,20 +221,33 @@ impl ProjectionState {
                 debug_assert!(previous.is_none(), "a path is bound to one inode");
                 if let Some(path) = rebased {
                     fuse_reserve(&mut replacements, 1, work)?;
-                    replacements.push((*inode, index, path));
+                    let native = if binding.spelled.is_some() || destination != spelled {
+                        Some(fuse_rebase_path(
+                            binding.native_path(),
+                            source.components().len(),
+                            spelled,
+                            work,
+                        )?)
+                    } else {
+                        None
+                    };
+                    replacements.push((*inode, index, path, native));
                 }
             }
         }
         // Prepare every path before changing aliases.
-        self.streams.rename_prefix(source, destination, work)?;
-        for (inode, index, path) in replacements.drain(..) {
-            self.by_inode
+        self.streams
+            .rename_prefix(source, spelled, parent_inode, &self.by_inode, work)?;
+        for (inode, index, path, native) in replacements.drain(..) {
+            let binding = self
+                .by_inode
                 .get_mut(&inode)
                 .ok_or(libc::EIO)?
                 .bindings
                 .get_mut(index)
-                .ok_or(libc::EIO)?
-                .path = path;
+                .ok_or(libc::EIO)?;
+            binding.path = path;
+            binding.spelled = native;
         }
         self.inode_by_path = paths;
         Ok(())
@@ -251,13 +279,16 @@ impl ProjectionState {
                     confirmed,
                     source,
                     entry.lookup.node.file_id,
-                    &binding.path,
+                    binding.native_path(),
                     work,
                 )?
                 || match binding.verified {
-                    Some(stamp) => {
-                        source.unchanged_since_with_meter(&binding.path, None, stamp, work)?
-                    }
+                    Some(stamp) => source.unchanged_since_with_meter(
+                        binding.native_path(),
+                        None,
+                        stamp,
+                        work,
+                    )?,
                     None => false,
                 }
             {
@@ -413,6 +444,7 @@ impl ProjectionState {
             let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
             if needs_binding {
                 entry.bindings.push(Binding {
+                    spelled: None,
                     path,
                     verified: stamp,
                     kernel: None,

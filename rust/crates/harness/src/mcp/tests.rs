@@ -20,6 +20,40 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
 struct Transport(AtomicUsize);
+
+#[test]
+fn typed_results_move_large_structured_content_and_preserve_text_and_image_parts() -> Result<()> {
+    let tool = RemoteTool {
+        server: "fixture".into(),
+        name: "a".into(),
+        output_schema: None,
+        transport: Arc::new(Transport::default()),
+    };
+    let mut result = rmcp::model::CallToolResult::success(vec![
+        rmcp::model::ContentBlock::text("hello"),
+        rmcp::model::ContentBlock::image("AAAA", "image/png"),
+    ]);
+    result.structured_content = Some(json!({"payload":"x".repeat(131_072)}));
+    let pointer = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| value["payload"].as_str())
+        .ok_or_else(|| Error::Invalid("structured payload missing".into()))?
+        .as_ptr();
+    let output = tool.result(result)?;
+    assert_eq!(
+        output.value["structuredContent"]["payload"]
+            .as_str()
+            .map(str::as_ptr),
+        Some(pointer)
+    );
+    assert_eq!(
+        output.value["content"],
+        json!([{"type":"text","text":"hello"}, {"type":"image","data":"AAAA","mimeType":"image/png"}])
+    );
+    assert_eq!(output.value["isError"], false);
+    Ok(())
+}
 impl McpToolTransport for Transport {
     fn call<'a>(
         &'a self,
@@ -27,13 +61,13 @@ impl McpToolTransport for Transport {
         _: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if let Some(context) = context {
-                return Ok(context_result(&context, &arguments));
+                return super::services::tool_result(context_result(&context, &arguments));
             }
-            Ok(
+            super::services::tool_result(
                 json!({"content":[{"type":"text","text":"ok"}], "structuredContent":{"value":1}, "isError":false}),
             )
         })
@@ -42,10 +76,14 @@ impl McpToolTransport for Transport {
         &'a self,
         _: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
-        Box::pin(
-            async move { Ok(context.map(|context| context_result(&context, &json!({"value":1})))) },
-        )
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
+        Box::pin(async move {
+            context
+                .map(|context| {
+                    super::services::tool_result(context_result(&context, &json!({"value":1})))
+                })
+                .transpose()
+        })
     }
 }
 fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
@@ -410,12 +448,23 @@ fn schema_bounds_namespace_and_result_negative_controls() {
         output_schema: catalog("1", &["a"]).tools.remove(0).output_schema,
         transport: Arc::new(Transport::default()),
     };
-    assert!(tool.result(json!({"content":[], "isError":false})).is_err());
     assert!(
-        tool.result(json!({"content":[], "structuredContent":{"value":"wrong"}, "isError":false}))
+        super::services::tool_result(json!({"content":[], "isError":false}))
+            .and_then(|result| tool.result(result))
             .is_err()
     );
-    assert!(tool.result(json!({"content":[], "isError":true})).is_ok());
+    assert!(
+        super::services::tool_result(
+            json!({"content":[], "structuredContent":{"value":"wrong"}, "isError":false})
+        )
+        .and_then(|result| tool.result(result))
+        .is_err()
+    );
+    assert!(
+        super::services::tool_result(json!({"content":[], "isError":true}))
+            .and_then(|result| tool.result(result))
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -430,7 +479,7 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
             _: &'a str,
             _: Value,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<Value>> {
+        ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
             Box::pin(async move {
                 let response = self
                     .response
@@ -438,16 +487,18 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
                     .map_err(|_| Error::Invalid("fixture lock".into()))?
                     .take()
                     .ok_or_else(|| Error::Invalid("fixture dispatched twice".into()))?;
-                response
-                    .await
-                    .map_err(|_| Error::Invalid("fixture canceled".into()))
+                super::services::tool_result(
+                    response
+                        .await
+                        .map_err(|_| Error::Invalid("fixture canceled".into()))?,
+                )
             })
         }
         fn reconcile<'a>(
             &'a self,
             _: OperationId,
             _: Option<ToolContext>,
-        ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+        ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
             Box::pin(async { Ok(None) })
         }
     }
@@ -576,4 +627,31 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
         Err(Error::Unsupported(_))
     ));
     Ok(())
+}
+
+// Property: cancellation at any registration checkpoint leaves the previous
+// selection intact; a completed registration publishes the entire catalog.
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #[test]
+    fn cancellation_never_publishes_a_partial_catalog(cancel_at in 0usize..64) {
+        let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
+        let mut registry = ToolRegistry::default();
+        let checks = AtomicUsize::new(0);
+        let check = || {
+            if checks.fetch_add(1, Ordering::SeqCst) >= cancel_at {
+                Err(Error::Invalid("test cancellation".into()))
+            } else { Ok(()) }
+        };
+        let result = catalog("1", &["a","b"]).install_checked(
+            &mut registry, None, &transport, &projection, (8, 8192), &check,
+        );
+        let definitions = registry.definitions(None).unwrap();
+        if result.is_err() {
+            proptest::prop_assert!(definitions.is_empty());
+        } else {
+            proptest::prop_assert_eq!(definitions.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(), ["mcp.fixture.a", "mcp.fixture.b"]);
+        }
+    }
 }

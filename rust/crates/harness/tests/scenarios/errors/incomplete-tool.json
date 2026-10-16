@@ -1,0 +1,5 @@
+{
+  "prompt":"Never execute an incomplete model turn.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"read-1","name":"read","arguments":{"path":"secret.txt"}}]],
+  "expect":{"error":"operation outcome is indeterminate","events":[{"kind":"model","event":{"kind":"tool_call"}}],"not_events":[{"kind":"tool_started"}]}
+}

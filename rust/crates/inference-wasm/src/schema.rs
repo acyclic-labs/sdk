@@ -27,19 +27,7 @@ fn bool_option(message: &DynamicMessage, name: &str) -> bool {
     matches!(option(message, name), Some(Value::Bool(true)))
 }
 
-/// Return the terminal metadata declared by the protobuf enum options.
-///
-/// The browser-facing package consumes this small boundary instead of
-/// reimplementing enum naming or deciding which terminal outcomes may carry
-/// incomplete output. The descriptor is the same generated descriptor used
-/// by schema validation, so adding or renaming a terminal must update the
-/// protobuf contract before it can reach TypeScript.
-#[wasm_bindgen]
-pub fn run_terminal_metadata() -> Result<String, JsValue> {
-    terminal_metadata().map_err(|message| crate::js_error("unavailable", message))
-}
-
-/// Return terminal metadata for native generators and the WASM boundary.
+/// Return descriptor-derived terminal metadata for native code generators.
 pub fn terminal_metadata() -> Result<String, &'static str> {
     let Some(pool) = pool() else {
         return Err("inference reflection descriptor is unavailable");
@@ -65,40 +53,6 @@ pub fn terminal_metadata() -> Result<String, &'static str> {
         })
         .collect::<Vec<_>>();
     Ok(format!("[{}]", values.join(",")))
-}
-
-/// Return every fixed byte width declared by the canonical customer descriptor.
-///
-/// This is consumed by the TypeScript generator. Keeping the list derived from
-/// the same reflection descriptor used for validation makes a change to a
-/// `nonzero_fixed_bytes` option fail the generated-contract check instead of
-/// silently leaving a stale handwritten width in a client helper.
-pub fn fixed_width_metadata() -> Result<String, &'static str> {
-    let Some(pool) = pool() else {
-        return Err("inference reflection descriptor is unavailable");
-    };
-    let mut values = pool
-        .all_messages()
-        .flat_map(|message| {
-            let name = message.full_name().to_owned();
-            message
-                .fields()
-                .filter_map(move |field| {
-                    let width = u32_option(&field.options(), "nonzero_fixed_bytes");
-                    (width > 0).then(|| (name.clone(), field.name().to_owned(), width))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-        })
-        .collect::<Vec<_>>();
-    values.sort_unstable();
-    let entries = values
-        .into_iter()
-        .map(|(message, field, width)| {
-            format!(r#"{{"message":"{message}","field":"{field}","width":{width}}}"#)
-        })
-        .collect::<Vec<_>>();
-    Ok(format!("[{}]", entries.join(",")))
 }
 
 const CLIENT_WIDTH_FIELDS: &[(&str, &str, &str)] = &[
@@ -680,7 +634,7 @@ mod tests {
 
     #[test]
     fn terminal_metadata_comes_from_enum_options() {
-        let metadata = run_terminal_metadata();
+        let metadata = terminal_metadata();
         assert!(
             metadata.is_ok(),
             "descriptor metadata should load: {metadata:?}"
@@ -693,28 +647,12 @@ mod tests {
     }
 
     #[test]
-    fn fixed_width_metadata_comes_from_field_options() {
-        let metadata = fixed_width_metadata();
-        assert!(
-            metadata.is_ok(),
-            "descriptor metadata should load: {metadata:?}"
-        );
-        if let Ok(metadata) = metadata {
-            assert!(metadata.contains(
-                r#"{"message":"inference.customer.v1.RequestIdentity","field":"request_id","width":16}"#
-            ));
-            assert!(metadata.contains(
-                r#"{"message":"inference.customer.v1.ContextView","field":"revision","width":32}"#
-            ));
-            assert!(!metadata.contains(r#""width":0"#));
-        }
-    }
-
-    #[test]
     fn client_widths_use_canonical_field_options() {
         let widths = client_widths().expect("all client selectors must resolve");
         assert!(widths.contains(r#""runId":16"#));
         assert!(widths.contains(r#""contextRevision":32"#));
+        assert!(widths.contains(r#""requestId":16"#));
+        assert!(!widths.contains(":0"));
         assert_eq!(widths.matches(':').count(), CLIENT_WIDTH_FIELDS.len());
     }
 

@@ -10,28 +10,27 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
+use crate::model::PreparedModelRequest;
 use crate::model::{Model, ModelProvider};
-use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::runtime::TaskSpawner;
 use crate::runtime::{TaskAdmissionRecord, TaskDefinition, TaskRegistry};
 use crate::store::{HistoryReadLimits, HistoryReader};
+use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 use crate::workflow::{
     MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
 };
-use std::sync::Mutex;
 
-#[derive(Default)]
-struct SummaryModel(Mutex<Vec<PreparedModelRequest>>);
-
-impl ModelProvider for SummaryModel {
-    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+fn summary_model(turns: usize) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(std::iter::repeat_n(
+        ScriptedTurn::Text("admitted summary or answer".into()),
+        turns,
+    ))
+    .with_context_capacity(ModelContextCapacity {
+        context_tokens: 131_072,
+        output_tokens: 4_096,
+    })
+    .with_token_counter(|request| {
         let message_tokens = request
             .request()
             .messages
@@ -50,37 +49,7 @@ impl ModelProvider for SummaryModel {
             fixed_tokens: 512,
             message_tokens,
         })
-    }
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request);
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
-                delta: "admitted summary or answer".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: crate::model::ModelDispatch,
-        _observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "fixture attempts settle immediately".into(),
-            ))
-        })
-    }
+    })
 }
 
 struct SummaryLeaseMachine {
@@ -160,6 +129,11 @@ async fn sealed_summary_preparation(
             grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
         }
     }
+    for grant in preparer.required_reference_grants(fork, None).await? {
+        if grant.reader == fork.child_agent {
+            grants.push(grant.file.read_capability(&mut None)?);
+        }
+    }
     let grants = Capabilities::new(grants);
     let signed = issuer
         .issue("summary-preparation", &grants, Some(agent), None, &mut None)
@@ -207,10 +181,11 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
+    let task_stream = Arc::new(MemoryStream::default());
     let host = Arc::new(
         CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?,
-            storage.stream.clone(),
+            DistributedCoordinator::open(&task_stream, reader.clone(), None, &mut None).await?,
+            task_stream,
             payloads.clone(),
             reader,
             authority,
@@ -417,12 +392,11 @@ async fn append_later_summary_parent_messages(
     count: usize,
 ) -> Result<()> {
     let content = parent
-        .reducer()
-        .conversation()
-        .and_then(|state| state.messages().last())
+        .history_reader()?
+        .latest_conversation_message(262_144)
+        .await?
         .ok_or_else(|| Error::Invalid("missing parent message".into()))?
-        .content
-        .clone();
+        .content;
     let mut writer = StreamAggregate::open(
         &storage.stream,
         (
@@ -443,8 +417,7 @@ async fn append_later_summary_parent_messages(
             .reducer()
             .conversation()
             .ok_or_else(|| Error::Invalid("missing conversation".into()))?
-            .messages()
-            .len() as u64
+            .logical_revision()
             + 1;
         writer
             .execute(

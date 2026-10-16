@@ -631,3 +631,43 @@ printf 'joined\\n'
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("host qualification initializes runner-local tools before both Bun installers", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  const job = workflow.jobs.qualify;
+  assert.equal(job.env.TOOLS_DIR, undefined);
+  assert.doesNotMatch(JSON.stringify(job.env), /\$\{\{\s*runner\./);
+  const setup = job.steps.find(step => step.name === "Configure local tools and compiler cache")
+    ?? assert.fail("missing host tool setup");
+  const installers = job.steps.filter(step => /^Install pinned Bun on (Unix|Windows)$/.test(step.name));
+  assert.equal(installers.length, 2);
+  for (const installer of installers) assert.ok(job.steps.indexOf(setup) < job.steps.indexOf(installer));
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/host-tools-");
+  const runnerTemp = resolve(root, "runner temp").replaceAll("\\", "/");
+  const githubEnv = resolve(root, "job env").replaceAll("\\", "/");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "/bin/bash";
+  try {
+    const result = spawnSync(bash, ["-e", "-c", setup.run], {
+      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv }, encoding: "utf8", timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(githubEnv, "utf8").trim().split(/\r?\n/), [
+      `TOOLS_DIR=${runnerTemp}/tools`, `SCCACHE_DIR=${runnerTemp}/sccache`,
+    ]);
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("docs and generation provision nightly targets after stable", () => {
+  const steps = YAML.parse(readFileSync(".github/actions/qualification-lane/action.yml", "utf8")).runs.steps;
+  const stable = steps.findIndex(step => step.uses === "./.github/actions/rust-toolchain");
+  const nightly = steps.findIndex(step => step.name === "Install pinned Rustdoc toolchain");
+  assert.ok(stable >= 0 && nightly > stable);
+  assert.equal(steps[nightly].if, "inputs.lane == 'docs' || inputs.lane == 'generation'");
+  assert.equal(steps[nightly].run, "rustup toolchain install nightly-2026-07-01 --profile minimal --target wasm32-unknown-unknown --no-self-update");
+  for (const name of ["docs", "generation"]) assert.equal(lanes.find(lane => lane.lane === name).runner, "blacksmith-2vcpu-ubuntu-2404");
+});

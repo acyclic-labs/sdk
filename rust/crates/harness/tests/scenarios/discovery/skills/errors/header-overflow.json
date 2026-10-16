@@ -1,0 +1,2 @@
+{"seed":{"skills/inspect/SKILL.md":"---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"},"discovery":{
+  "limits":{"header_bytes":48}},"expect":{"error":"skill frontmatter is missing or exceeds prefix bound"}}

@@ -4,7 +4,9 @@ use super::*;
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
     matches!(
         argv.first().map(String::as_str),
-        Some("status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore")
+        Some(
+            "commit" | "status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore"
+        )
     )
 }
 

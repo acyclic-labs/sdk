@@ -22,6 +22,18 @@ impl tonic::server::UnaryService<wire::InvokeActorRequest> for Echo {
     type Future = std::future::Ready<Result<tonic::Response<Self::Response>, tonic::Status>>;
     fn call(&mut self, request: tonic::Request<wire::InvokeActorRequest>) -> Self::Future {
         self.0.fetch_add(1, Ordering::SeqCst);
+        let expected = if request.get_ref().body.first() == Some(&8) {
+            "Bearer renewed"
+        } else {
+            "Bearer fixture"
+        };
+        assert_eq!(
+            request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected)
+        );
         let request = request.into_inner();
         std::future::ready(Ok(tonic::Response::new(wire::InvokeActorResponse {
             status: 200,
@@ -42,13 +54,6 @@ impl Service<http::Request<Body>> for Echo {
             request.uri().path(),
             "/acyclic.actors.v1.ActorsService/InvokeActor"
         );
-        assert_eq!(
-            request
-                .headers()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer fixture")
-        );
         let service = self.clone();
         Box::pin(async move {
             Ok(tonic::server::Grpc::new(tonic_prost::ProstCodec::default())
@@ -59,7 +64,7 @@ impl Service<http::Request<Body>> for Echo {
 }
 
 #[tokio::test]
-async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
+async fn request_path_binary_calls_keep_admission_credentials_and_response_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
     let endpoint = format!("http://{}", incoming.local_addr()?);
@@ -77,6 +82,7 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             .connect()
             .await?;
         let client = Client {
+            credential: None,
             inner: wire::actors_service_client::ActorsServiceClient::with_interceptor(
                 crate::grpc::TracedChannel::new(channel, crate::grpc::transport_span),
                 BearerAuth::new("fixture")?,
@@ -99,6 +105,18 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             assert_eq!(response.status, 200);
             assert_eq!(response.body, request.body);
         }
+        let renewed = wire::InvokeActorRequest {
+            body: vec![8],
+            ..request.clone()
+        };
+        let response = wire::InvokeActorResponse::decode(
+            client
+                .call_with_credential("InvokeActor", &renewed.encode_to_vec(), "renewed")
+                .await?
+                .as_slice(),
+        )?;
+        assert_eq!(response.body, vec![8]);
+        client.call("InvokeActor", &request.encode_to_vec()).await?;
         let invalid = wire::InvokeActorRequest {
             actor_id: String::new(),
             ..request
@@ -115,7 +133,22 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             client.call("Unknown", &[]).await,
             Err(Error::Configuration(_))
         ));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        let renewals = Arc::new(AtomicUsize::new(0));
+        let resolved = renewals.clone();
+        let client = client.with_credential_provider(CredentialProvider::new(move || {
+            resolved.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok("renewed".into()))
+        }));
+        let typed = domain::InvokeActorRequest::try_from(renewed.clone())?;
+        assert_eq!(client.invoke_actor(&typed).await?.body(), &[8]);
+        let output = client.call("InvokeActor", &renewed.encode_to_vec()).await?;
+        assert_eq!(
+            wire::InvokeActorResponse::decode(output.as_slice())?.body,
+            vec![8]
+        );
+        assert_eq!(renewals.load(Ordering::Relaxed), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
@@ -125,7 +158,7 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
 }
 
 #[test]
-#[ignore = "manual debug-profile request-path measurement"]
+#[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
 fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
     for consume in [false, true] {
         let requests: Result<Vec<_>, _> = (0..256)

@@ -1,0 +1,11 @@
+{"seed":{"AGENTS.md":"AGENTS.md rules","CLAUDE.md":"CLAUDE.md rules","src/AGENTS.md":"src/AGENTS.md rules",
+  "src/CLAUDE.md":"src/CLAUDE.md rules","src/deep/AGENTS.md":"src/deep/AGENTS.md rules","src/deep/CLAUDE.md":
+  "src/deep/CLAUDE.md rules"},"discovery":{"instructions":[{"active_directory":"src/deep"}]},"expect":{"request_files"
+  :[["AGENTS.md rules","CLAUDE.md rules","src/AGENTS.md rules","src/CLAUDE.md rules","src/deep/AGENTS.md rules",
+  "src/deep/CLAUDE.md rules"]],"requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{"path":
+  "AGENTS.md"},"policy":"bounded_full"}},{"role":"system","content":{"kind":"file","file":{"path":"CLAUDE.md"},
+  "policy":"bounded_full"}},{"role":"system","content":{"kind":"file","file":{"path":"src/AGENTS.md"},"policy":
+  "bounded_full"}},{"role":"system","content":{"kind":"file","file":{"path":"src/CLAUDE.md"},"policy":"bounded_full"}}
+  ,{"role":"system","content":{"kind":"file","file":{"path":"src/deep/AGENTS.md"},"policy":"bounded_full"}},{"role":
+  "system","content":{"kind":"file","file":{"path":"src/deep/CLAUDE.md"},"policy":"bounded_full"}},{"role":"user",
+  "content":"Inspect files"}]}]}}

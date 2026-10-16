@@ -1,0 +1,38 @@
+[package]
+name = "acyclic-harness-fuzz"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc"] }
+libfuzzer-sys = "0.4"
+prost.workspace = true
+acyclic-stream = { path = "../stream", default-features = false }
+futures.workspace = true
+serde_json.workspace = true
+tempfile = "3.27.0"
+
+[[bin]]
+name = "client_recovery"
+path = "fuzz_targets/client_recovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_files"
+path = "fuzz_targets/client_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_interests"
+path = "fuzz_targets/client_interests.rs"
+test = false
+doc = false
+bench = false

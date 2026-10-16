@@ -157,8 +157,9 @@ impl MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> bool {
-        self.state.read().await.replay(key.as_bytes()).is_some()
+    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
+        self.replay(&*self.state.read().await, key.as_bytes())
+            .map(|entry| entry.is_some())
     }
 
     fn publish<T>(
@@ -284,6 +285,7 @@ fn commit_hash_bytes(request: &CommitRequest) -> u64 {
             .conditions
             .iter()
             .map(|condition| match condition {
+                CommitCondition::Head { path, .. } => 1 + path_bytes(path) + 8 + 32,
                 CommitCondition::Tail { path, .. } => 1 + path_bytes(path) + 8,
                 CommitCondition::Absent { path } => 1 + path_bytes(path),
             })

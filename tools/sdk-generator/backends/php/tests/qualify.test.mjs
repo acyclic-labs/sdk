@@ -1,25 +1,13 @@
+import { gzipArchive } from "../../../shared/tests/archive.mjs";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { qualify } from "../src/qualify.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 
-function archive(payload) {
-  const blocks = [];
-  for (const [name, body] of Object.entries(payload)) {
-    const bytes = Buffer.from(body), header = Buffer.alloc(512);
-    header.write(name); header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
-    header.write(bytes.length.toString(8).padStart(11, "0") + "\0", 124); header.write("00000000000\0", 136);
-    header.fill(32, 148, 156); header[156] = 48;
-    const checksum = header.reduce((a, b) => a + b, 0); header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-    blocks.push(header, bytes, Buffer.alloc((512 - bytes.length % 512) * (bytes.length % 512 ? 1 : 0)));
-  }
-  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
-}
 function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "php-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (file, bytes) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, bytes); };
@@ -71,7 +59,7 @@ function fixture(t, failure = "") {
       const packed = Object.fromEntries(argv.slice(index + 2).map(name => [name, readFileSync(join(source, name))]));
       if (failure === "build-payload") packed.LICENSE = "drift";
       if (failure === "build-inventory") packed.extra = "extra";
-      const bytes = archive(packed); if (failure === "gzip-time") bytes.writeUInt32LE(123, 4);
+      const bytes = gzipArchive(packed); if (failure === "gzip-time") bytes.writeUInt32LE(123, 4);
       put(argv[argv.indexOf("-czf") + 1], bytes);
     }
     if (argv.includes("update")) {

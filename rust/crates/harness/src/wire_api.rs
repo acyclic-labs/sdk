@@ -1,4 +1,4 @@
-//! Transport-neutral server port implemented identically by every wire adapter.
+//! Transport-neutral client port for injected platform or local endpoints.
 
 use crate::contract::capability;
 pub use crate::wire_validation::{
@@ -10,10 +10,24 @@ use crate::{
     core::{Authority, Scope},
     scheduler::{OperationPhase, OperationState},
     wire,
-    wire_codec::{decode_authority, decode_scope, encode_authority, validate_protocol},
+    wire_codec::{
+        COMPILED_PROTOCOL, decode_authority, decode_scope, encode_authority, validate_protocol,
+    },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
+
+mod history;
+pub use history::replay_history;
+
+/// Whether a replay stops at its opening cut or remains subscribed to appends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayMode {
+    /// Finite inspection of events committed when replay opens.
+    Snapshot,
+    /// Replay followed by every later accepted event.
+    Follow,
+}
 
 /// Complete application-facing wire API.
 pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
@@ -29,11 +43,15 @@ pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
         command: wire::CommandEnvelope,
     ) -> BoxFuture<'a, Result<wire::Admission>>;
 
-    /// Replays validated gapless deliveries and then follows live events.
+    /// Replays validated gapless deliveries through an explicit end boundary.
     fn replay<'a>(
         &'a self,
         request: wire::ResumeRequest,
+        mode: ReplayMode,
     ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::Delivery>>>>;
+
+    /// Sends `ClientFrame::Acknowledge` after the client's durable replay commit.
+    fn acknowledge<'a>(&'a self, request: wire::Acknowledge) -> BoxFuture<'a, Result<()>>;
 
     /// Authenticates one decoded operation-control scope against host-held trust roots.
     fn authorize_operation_control<'a>(
@@ -46,6 +64,12 @@ pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
         &'a self,
         request: wire::ObserveRequest,
     ) -> BoxFuture<'a, Result<wire::OperationStatus>>;
+
+    /// Atomically snapshots then follows authenticated scheduler status changes.
+    fn watch_operation<'a>(
+        &'a self,
+        request: wire::ObserveRequest,
+    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::OperationStatus>>>>;
 
     /// Requests authenticated idempotent cancellation.
     fn cancel<'a>(
@@ -65,14 +89,12 @@ pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
 }
 
 fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    let expected = current_protocol();
-    validate_protocol(
-        protocol,
-        (&expected.version, &expected.descriptor_digest),
-        wire::ErrorCode::Invalid,
-        &None,
-    )
+    validate_protocol(protocol, COMPILED_PROTOCOL, wire::ErrorCode::Invalid, &None)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "wire_api_protocol_tests.rs"]
+mod protocol_tests;
 
 /// Decoded operation-control request shared by all server adapters.
 pub struct OperationControlRequest {
@@ -174,6 +196,7 @@ pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
         owner: Some(encode_authority(owner)),
         cancellation_requested: state.cancellation_requested,
         revision: state.revision,
+        replay_through: None,
     }
 }
 
@@ -309,6 +332,7 @@ mod tests {
             owner: Some(owner.clone()),
             cancellation_requested: false,
             revision: 3,
+            replay_through: None,
         };
         validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &status)?;
 
