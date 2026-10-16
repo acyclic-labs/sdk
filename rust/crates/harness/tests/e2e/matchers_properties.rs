@@ -43,6 +43,19 @@ fn subsequence(expected: &[Value], actual: &[Value]) -> bool {
 }
 
 proptest! {
+    // Complete argument payloads match iff their JSON values are equal, at any
+    // nesting depth; observation metadata outside the payload remains a subset.
+    #[test]
+    fn tool_arguments_match_exactly(expected in value(), actual in value()) {
+        let matcher = json!({"kind":"tool_call", "arguments":expected});
+        let event = json!({"kind":"tool_call", "arguments":actual, "call_id":"call"});
+        prop_assert_eq!(subset(&matcher, &event), expected == actual);
+        let array = json!({"arguments":[expected]});
+        prop_assert!(!subset(&array, &json!({"arguments":[expected, "injected"]})), "array insertion");
+        let nested = json!({"arguments":[{"payload":expected}]});
+        prop_assert!(!subset(&nested, &json!({"arguments":[{"payload":expected,"injected":actual}]})), "nested key insertion");
+    }
+
     // Ordinary JSON is reflexive. Extra object fields are harmless, while absent
     // keys and different scalar/container types can never satisfy an assertion.
     #[test]

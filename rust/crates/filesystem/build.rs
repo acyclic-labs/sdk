@@ -1,9 +1,12 @@
 //! Generates transport from the committed descriptor and builds the Darwin bridge.
 
 use prost::Message;
+#[path = "build/case_fold.rs"]
+mod case_fold;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
+    case_fold::generate()?;
     let descriptors = prost_types::FileDescriptorSet::decode(
         include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
     )?;

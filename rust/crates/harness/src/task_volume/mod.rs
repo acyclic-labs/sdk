@@ -7,7 +7,9 @@ mod segment;
 mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
-pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
+pub use schema::{
+    Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
+};
 
 use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{

@@ -359,7 +359,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
                         reason: "Filesystem verifier has no native authority" })?;
                     require_seed(binding, seed, original)?;
                     if binding.verifier.audience() != &seed.parent
-                        && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, "volume:write:")?
+                        && !io.contains_capability(binding.scope.capabilities(), &seed.child_private_volume, acyclic_fs::access::VolumeOperation::Write.capability_prefix())?
                     {
                         return Err(crate::executor::stock_boundary(Some(&io), crate::wire::ErrorCode::Unauthorized,
                             "fork private publication fence lacks the exact current provider write grant"));

@@ -432,7 +432,9 @@ impl FuseProjection {
         let path = &child.spelled;
         let stamp = source.view_stamp_with_meter(work)?;
         let (existing, proof) = match absent_since {
-            Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => {
+            Some(held)
+                if source.unchanged_since_with_meter(&child.spelled, None, held, work)? =>
+            {
                 (None, Some(held))
             }
             _ => (source.lookup_with_meter(path, work)?, stamp),
@@ -446,7 +448,7 @@ impl FuseProjection {
                 if existing.node.kind != MountNodeKind::Regular {
                     return Err(libc::EISDIR.into());
                 }
-                self.confirm_names(child.key(), existing.node, &mut confirmed, work)?;
+                self.confirm_names(&child.spelled, existing.node, &mut confirmed, work)?;
                 let (open_file, lookup, _) =
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
@@ -476,7 +478,7 @@ impl FuseProjection {
             let (handle, open_flags) = state.admit_file_handle(
                 source,
                 inode,
-                child.key(),
+                &child.spelled,
                 &lookup,
                 stamp,
                 flags,
@@ -489,7 +491,7 @@ impl FuseProjection {
         let (attr, handle, open_flags) = created.inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 }

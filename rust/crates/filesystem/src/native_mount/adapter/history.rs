@@ -52,28 +52,29 @@ impl<A, O> CheckoutMountSource<A, O> {
                     std::str::from_utf8(name.as_bytes()).map_err(|_| MountSourceError::Stale)?;
                 let folded = inputs
                     .carrier
-                    .with_work(|leaf| crate::demand::lowercase_unicode_with_work(text, leaf))
+                    .with_work(|leaf| crate::demand::case_fold_unicode_with_work(text, leaf))
                     .map_err(MountSourceError::from)?;
                 inputs.bytes = inputs
                     .bytes
                     .checked_add(folded.capacity() as u64)
                     .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-                let folded = LogicalName::new(
-                    NameEncoding::Utf8,
-                    folded,
-                    self.limits.maximum_component_bytes,
-                )
-                .map_err(|error| {
-                    MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Name(error))
-                })?;
-                let (native, _) = native_mount_name(&folded, inputs.carrier)?;
-                inputs.bytes = inputs
-                    .bytes
-                    .checked_add(native.capacity() as u64)
-                    .ok_or(MountSourceError::Work(WorkError::Overflow))?;
-                let bytes = name.retained_bytes() as u64 + folded.retained_bytes() as u64;
+                #[cfg(windows)]
+                let native = {
+                    let (native, _) =
+                        native_name_bytes(NameEncoding::Utf8, &folded, inputs.carrier)?;
+                    inputs.bytes = inputs
+                        .bytes
+                        .checked_add(native.capacity() as u64)
+                        .ok_or(MountSourceError::Work(WorkError::Overflow))?;
+                    let bytes = folded.capacity() as u64;
+                    drop(folded);
+                    inputs.release(bytes)?;
+                    native
+                };
+                #[cfg(not(windows))]
+                let native = folded;
+                let bytes = name.retained_bytes() as u64;
                 drop(name);
-                drop(folded);
                 inputs.release(bytes)?;
                 components.push(native);
             }

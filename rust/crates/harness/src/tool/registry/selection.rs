@@ -126,6 +126,9 @@ impl ToolRegistry {
                 },
             },
         };
+        if io.is_none() {
+            return Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref));
+        }
         Ok(self
             .data
             .versions

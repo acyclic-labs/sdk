@@ -76,6 +76,9 @@ pub mod task_volume;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tool;
+pub mod tools;
+#[cfg(feature = "tui")]
+pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;

@@ -21,7 +21,7 @@ pub enum Action {
     Yank,
     /// Rotate the preceding yank.
     RotateYank,
-    /// Submit, or continue after a backslash.
+    /// Accept completion, submit, or continue after a backslash.
     Submit,
     /// Insert a newline.
     Newline,
@@ -29,7 +29,7 @@ pub enum Action {
     Tab,
     /// Insert a literal tab.
     LiteralTab,
-    /// Cycle the dock backwards.
+    /// Cycle completion or dock items backwards.
     PreviousDock,
     /// Copy selection, otherwise clear/interrupt; twice quits.
     CopyOrInterrupt,
@@ -49,6 +49,8 @@ pub enum Action {
     TranscriptUp,
     /// Scroll transcript downwards.
     TranscriptDown,
+    /// Toggle host voice dictation.
+    Voice,
 }
 
 /// Binding data shared by dispatch, overrides and generated help.
@@ -76,6 +78,7 @@ const fn bind(chord: &'static str, action: Action, help: &'static str, repeat: b
 /// Default keymap. Shift extends any motion. The application must reserve these
 /// while input is focused; Ctrl+Y and Ctrl+K are exclusively editor actions.
 pub const KEYMAP: &[Binding] = &[
+    bind("Ctrl+;", Action::Voice, "Toggle voice dictation", false),
     bind(
         "Left",
         Action::Move(Motion::Left),
@@ -86,13 +89,13 @@ pub const KEYMAP: &[Binding] = &[
     bind(
         "Up",
         Action::Move(Motion::Up),
-        "Previous row; history at buffer start",
+        "Previous completion, row or history at buffer start",
         true,
     ),
     bind(
         "Down",
         Action::Move(Motion::Down),
-        "Next row; history at buffer end",
+        "Next completion, row or history at buffer end",
         true,
     ),
     bind("Home", Action::Move(Motion::LineStart), "Line start", true),
@@ -253,7 +256,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(
         "Enter",
         Action::Submit,
-        "Submit; trailing backslash continues",
+        "Accept completion or submit; trailing backslash continues",
         false,
     ),
     bind("Shift+Enter", Action::Newline, "Insert newline", false),
@@ -269,7 +272,7 @@ pub const KEYMAP: &[Binding] = &[
     bind(
         "Shift+Tab",
         Action::PreviousDock,
-        "Previous dock item",
+        "Previous completion or dock item",
         false,
     ),
     bind(

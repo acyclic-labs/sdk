@@ -301,7 +301,19 @@ impl Capabilities {
     /// Returns whether this set attenuates an ancestor set.
     #[must_use]
     pub fn is_subset_of(&self, ancestor: &Self) -> bool {
-        self.0.is_subset(&ancestor.0)
+        self.0.iter().all(|value| {
+            if ancestor.0.contains(value) {
+                return true;
+            }
+            let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
+                return false;
+            };
+            ancestor.0.iter().any(|value| {
+                acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
+                    parent.is_some_and(|parent| child.is_attenuation_of(&parent))
+                })
+            })
+        })
     }
 
     /// Iterates in canonical lexical order.

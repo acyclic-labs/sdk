@@ -359,9 +359,8 @@ fn allocation_denial_and_late_copy_denial_preserve_actual_prefix() {
 }
 
 #[test]
-fn canonical_lowercase_matches_std_contextual_unicode_model()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::types::lowercase_unicode;
+fn canonical_case_fold_matches_unicode_full_folding() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::types::case_fold_unicode;
 
     let cancellation = CancellationToken::new();
     let contexts = [
@@ -399,12 +398,15 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         }
     }
     for text in cases {
-        let expected = text.to_lowercase().into_bytes();
+        let expected = icu_casemap::CaseMapper::new()
+            .fold_string(&text)
+            .as_bytes()
+            .to_vec();
         let name = LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), u32::MAX)?;
         assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
-        let held = lowercase_unicode(
+        let held = case_fold_unicode(
             "already-held-root",
             &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(
                 &mut ledger,
@@ -417,7 +419,7 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         .0;
         let held_bytes = held.capacity() as u64;
         let before = work;
-        let folded = lowercase_unicode(
+        let folded = case_fold_unicode(
             &text,
             &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(
                 &mut ledger,
@@ -444,7 +446,7 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
             &cancellation,
         );
         let (bridged, allocation) =
-            crate::kernel::types::lowercase_unicode(&text, &mut accounting, &cancellation)?;
+            crate::kernel::types::case_fold_unicode(&text, &mut accounting, &cancellation)?;
         assert_eq!(bridged, expected, "accounting bridge: {text:?}");
         let bridged_work = accounting.spent();
         assert_eq!(

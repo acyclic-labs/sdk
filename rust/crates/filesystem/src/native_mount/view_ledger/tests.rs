@@ -122,6 +122,29 @@ fn every_spelling_of_a_name_shares_its_changes() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn full_case_fold_aliases_share_native_cache_invalidation() -> Result<(), Box<dyn std::error::Error>>
+{
+    for (changed, looked_up) in [
+        ("ΟΣ", "ος"),
+        ("Straße", "STRASSE"),
+        ("ß", "ẞ"),
+        ("ﬃ", "FFI"),
+    ] {
+        let mut work = work();
+        let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;
+        let stamp = ledger.stamp();
+        let looked_up = path(&["src", looked_up])?;
+        ledger.record(
+            &ViewChange::Bound(&path(&["src", changed])?),
+            &mut NativeDemandCarrier::Borrowed(&mut work),
+        )?;
+        assert!(!ledger.unchanged_since(&looked_up, None, stamp, &mut work)?);
+        assert!(!ledger.reported_unchanged_since(&looked_up, None, stamp, &mut work)?);
+    }
+    Ok(())
+}
+
+#[test]
 fn folded_keys_invalidate_only_older_lookups() -> Result<(), Box<dyn std::error::Error>> {
     let mut work = work();
     let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;

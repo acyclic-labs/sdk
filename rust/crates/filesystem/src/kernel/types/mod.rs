@@ -12,11 +12,10 @@ use crate::{CancellationToken, WorkCounters};
 use thiserror::Error;
 
 mod name;
-#[cfg(any(feature = "native-mount", feature = "native-watch"))]
 pub(crate) use name::utf16le_units;
 pub use name::{LogicalName, NameEncoding};
-mod lowercase;
-pub(crate) use lowercase::lowercase_unicode;
+mod case_fold;
+pub(crate) use case_fold::case_fold_unicode;
 mod tree;
 pub(crate) use tree::digest_object;
 pub use tree::{FileKind, TreeEntry, TreePage, TreePageError};
