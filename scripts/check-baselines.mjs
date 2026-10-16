@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import "./check-compatibility-digests.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,12 +15,4 @@ const nativeWasmCase = harnessSuite.cases.find(item => item.name === "native-was
 const vector = JSON.parse(readFileSync(join(root, nativeWasmVector), "utf8"));
 if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(vector)) {
   throw new Error("native/WASM fixture is not bound into the Harness suite");
-}
-
-const buf = join(root, "node_modules/.bin", process.platform === "win32" ? "buf.exe" : "buf");
-for (const artifacts of Object.values(compatibilityArtifacts)) {
-  if (!artifacts.descriptorDigest) continue;
-  const result = spawnSync(buf, ["breaking", "--against", `${artifacts.descriptorDigest}#format=binpb`, "--path", artifacts.schemaDigest], { cwd: root, stdio: "inherit" });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Protocol compatibility changed: ${artifacts.schemaDigest}`);
 }

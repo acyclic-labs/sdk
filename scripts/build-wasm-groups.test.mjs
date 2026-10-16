@@ -49,7 +49,7 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
     });
     assert.equal(maximum, 3);
     assert.equal(live, 0);
-    const skipped = failure === "root-multiple" ? ["filesystem", "objects", "machines", "inference"] : [];
+    const skipped = failure === "root-multiple" ? ["auth", "filesystem", "objects", "machines", "inference", "manifest"] : [];
     assert.deepEqual(calls.slice().sort(), names.filter(name => !skipped.includes(name)).sort());
     assert.equal(state.exitCode, failure ? 1 : 0);
     assert.equal(errors.length, ["multiple", "root-multiple"].includes(failure ?? "") ? 2 : failure ? 1 : 0);
@@ -76,7 +76,7 @@ test("Windows retains all check commands after grouped WASM builds with the wrap
   }
   assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
   assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.check,
-    "bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs");
+    "bun run generate && bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs");
 });
 
 test("Linux warms isolated WASM targets within its worker budget before the complete test command", () => {

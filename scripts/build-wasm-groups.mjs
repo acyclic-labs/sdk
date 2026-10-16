@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 
-// These groups own distinct Cargo target directories; the five packages in
+// These groups own distinct Cargo target directories; the seven packages in
 // the first group must remain serial because they share the root target.
 const groups = [
-  { packages: ["actors", "filesystem", "objects", "machines", "inference"], workers: 6 },
+  { packages: ["actors", "auth", "filesystem", "objects", "machines", "inference", "manifest"], workers: 6 },
   { packages: ["stream"], workers: 4 },
   { packages: ["harness"], workers: 6 },
 ];
