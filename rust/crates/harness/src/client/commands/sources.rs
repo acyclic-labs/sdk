@@ -109,6 +109,17 @@ impl CommandSources {
                 return Some((String::new(), true));
             }
         }
+        if self.skills.is_empty() && path.starts_with("skills/") && path.ends_with("/SKILL.md") {
+            return Some((String::new(), true));
+        }
+        if self.roots.is_empty() {
+            let relative = path
+                .strip_prefix(".claude/commands/")
+                .or_else(|| path.strip_prefix(".codex/prompts/"))?;
+            return relative
+                .strip_suffix(".md")
+                .map(|name| (name.replace('/', ":").to_ascii_lowercase(), false));
+        }
         self.roots
             .iter()
             .filter_map(|root| {
@@ -292,3 +303,7 @@ fn relative<'a>(path: &'a str, root: &str) -> Option<&'a str> {
         path.strip_prefix(root)?.strip_prefix('/')
     }
 }
+
+#[cfg(all(test, acyclic_loom))]
+#[path = "source_models.rs"]
+mod models;

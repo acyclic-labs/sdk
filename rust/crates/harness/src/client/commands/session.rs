@@ -242,8 +242,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Publish owner-provided definitions at the current query cut.
     pub async fn install_catalog(&mut self, bytes: Vec<u8>) -> Result<()> {
         let _ = CommandCatalog::from_bytes(&bytes, self.maximum_bytes)?;
-        self.publish(ui("config", "commands.json")?, bytes, false)
-            .await
+        let key = ui("config", "commands.json")?;
+        self.read_file(&key).await?;
+        self.publish(key, bytes, false).await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
