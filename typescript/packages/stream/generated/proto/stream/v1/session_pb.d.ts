@@ -318,6 +318,16 @@ export declare type SessionFollow = Message<"acyclic.stream.v1.SessionFollow"> &
    * @generated from field: acyclic.stream.v1.SessionDelivery delivery = 2;
    */
   delivery: SessionDelivery;
+
+  /**
+   * Optional 32-byte commit at resume.next - 1; requires ALL and next > 0.
+   * The provider must check this anchor and register the follow atomically,
+   * reject an absent/changed anchor without waiting for future appends, and
+   * reject history replacement during delivery. No read-then-follow fallback.
+   *
+   * @generated from field: bytes preceding_commit_id = 3;
+   */
+  precedingCommitId: Uint8Array;
 };
 
 /**
@@ -359,6 +369,16 @@ export declare type SessionOpened = Message<"acyclic.stream.v1.SessionOpened"> &
    * @generated from field: acyclic.stream.v1.SessionCursor resume = 1;
    */
   resume?: SessionCursor | undefined;
+
+  /**
+   * Echo only after the provider has enforced SessionFollow.preceding_commit_id.
+   * A checked client must match this confirmation before granting data credit.
+   * Empty/mismatched confirmation means Unsupported for that logical channel;
+   * an older peer must never silently downgrade a checked follow to unchecked.
+   *
+   * @generated from field: bytes preceding_commit_id = 2;
+   */
+  precedingCommitId: Uint8Array;
 };
 
 /**

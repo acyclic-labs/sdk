@@ -34,6 +34,7 @@ fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubsc
             } else {
                 wire::SessionDelivery::All
             } as i32,
+            ..Default::default()
         })),
     }
 }
@@ -118,6 +119,85 @@ async fn follows_share_one_session_and_credit_is_per_channel() -> TestResult {
     sender.unbounded_send(Ok(window(1)))?;
     assert_eq!(next(&mut output).await?.channel_id, 1);
     assert!(futures::poll!(output.next()).is_pending());
+    Ok(())
+}
+
+#[tokio::test]
+async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_channel() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", Bytes::from_static(b"seed")).await?;
+    let mut read = provider
+        .read(crate::ReadRequest {
+            path: StreamPath::new("events")?,
+            from: 0,
+            limit: 1,
+        })
+        .await?;
+    let anchor = read.next().await.ok_or("missing anchor")??.commit_id;
+    let mut guarded = subscribe(1, "events", 1, false);
+    let mut refused = subscribe(3, "events", 1, false);
+    for (subscription, id) in [
+        (&mut guarded, anchor),
+        (&mut refused, crate::CommitId::from_bytes([42; 32])),
+    ] {
+        let Some(Kind::Follow(follow)) = subscription.kind.as_mut() else {
+            return Err("missing follow".into());
+        };
+        follow.preceding_commit_id = Bytes::copy_from_slice(id.as_bytes());
+    }
+    let (sender, receiver) = mpsc::unbounded();
+    sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(interest(
+        1,
+        vec![guarded, refused, subscribe(5, "events", 1, false)],
+    )))?;
+    let mut output = serve(
+        Arc::clone(&provider),
+        "node".into(),
+        Limits::default(),
+        receiver.boxed(),
+    )?;
+    assert!(matches!(
+        next(&mut output).await?.body,
+        Some(Body::Welcome(_))
+    ));
+    let mut opened = BTreeSet::new();
+    let mut closed = false;
+    for _ in 0..4 {
+        let frame = next(&mut output).await?;
+        match frame.body {
+            Some(Body::InterestApplied(_)) => {}
+            Some(Body::Opened(value)) => {
+                assert_eq!(
+                    value.preceding_commit_id.as_ref(),
+                    if frame.channel_id == 1 {
+                        anchor.as_bytes().as_slice()
+                    } else {
+                        &[]
+                    }
+                );
+                opened.insert(frame.channel_id);
+            }
+            Some(Body::Closed(value)) => {
+                assert_eq!(frame.channel_id, 3);
+                assert_eq!(value.code, "prefix_not_retained");
+                closed = true;
+            }
+            _ => return Err("unexpected pre-credit data".into()),
+        }
+    }
+    assert_eq!(opened, BTreeSet::from([1, 5]));
+    assert!(closed);
+    append(&provider, "events", Bytes::from_static(b"delta")).await?;
+    assert!(futures::poll!(output.next()).is_pending());
+    for channel in [1, 5] {
+        sender.unbounded_send(Ok(window(channel)))?;
+        let frame = next(&mut output).await?;
+        assert_eq!(frame.channel_id, channel);
+        assert!(
+            matches!(frame.body, Some(Body::Data(data)) if data.after.as_ref().is_some_and(|after| after.next == 2))
+        );
+    }
     Ok(())
 }
 

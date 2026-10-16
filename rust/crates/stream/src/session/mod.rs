@@ -73,7 +73,7 @@ struct Pending {
     key: Option<Bytes>,
 }
 enum Event {
-    Opened,
+    Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Child(crate::Child, wire::SessionCursor),
 }

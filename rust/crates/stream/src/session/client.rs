@@ -175,6 +175,7 @@ impl Client {
         let kind = Kind::Follow(wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
+            ..Default::default()
         });
         Ok(self
             .open_kind(kind, from, acknowledge)

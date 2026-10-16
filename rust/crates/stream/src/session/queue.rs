@@ -12,12 +12,14 @@ impl<P: StreamProvider> Session<P> {
             return Ok(());
         };
         let (after, item, key) = match record {
-            Ok(Event::Opened) => {
+            Ok(Event::Opened(preceding)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
                     identity.generation,
                     Body::Opened(wire::SessionOpened {
                         resume: Some(channel.applied.clone()),
+                        preceding_commit_id: preceding
+                            .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
                     }),
                 ));
                 return Ok(());

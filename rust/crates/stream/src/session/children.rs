@@ -56,7 +56,7 @@ pub(super) fn source<P: StreamProvider>(
                 }
                 children = Some(opened);
                 return Ok(Some((
-                    Event::Opened,
+                    Event::Opened(None),
                     (provider, request, resume, children, enabled),
                 )));
             }
