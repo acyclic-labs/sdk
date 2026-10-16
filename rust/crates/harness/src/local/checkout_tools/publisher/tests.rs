@@ -63,6 +63,41 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         b"exact bytes"
     );
     assert!(!directory.path().join(".system").exists());
+    // Private metadata stores the publication operation, whereas the returned
+    // reference stores its immutable generation. Full reads authenticate bytes
+    // and select that generation without assuming a literal staging version.
+    let private = Publisher::new(
+        harness.files.clone(),
+        &harness.journal,
+        &harness.verifier,
+        &harness.signed,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (published, _) = private
+        .stage_once(
+            OperationId::new(),
+            "private.txt",
+            b"private bytes",
+            "text/plain",
+            "private.txt",
+            None,
+        )?
+        .await?;
+    let grant = crate::conversation::ContentGrant::verify(
+        &harness.verifier,
+        &harness.signed,
+        &harness.journal,
+        VolumeOperation::Read,
+        harness.limits.file_bytes,
+        &mut None,
+    )?;
+    let (selected, bytes) = harness
+        .files
+        .read_private_path(&harness.journal, &grant, "private.txt", None, 64, None)
+        .await?;
+    assert_eq!(selected, published);
+    assert_eq!(bytes.as_ref(), b"private bytes");
     Ok(())
 }
 
