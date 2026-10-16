@@ -418,14 +418,31 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
         let invalidator = std::thread::spawn({
             let core = Arc::clone(&core);
             move || {
-                let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let (state, waited) = core
-                    .invalidation
-                    .wait_timeout_while(state, std::time::Duration::from_secs(20), |state| {
-                        state.invalidation.deferred.is_empty()
-                    })
-                    .unwrap_or_else(PoisonError::into_inner);
-                (state.invalidation.deferred.len(), waited.timed_out())
+                let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let started = std::time::Instant::now();
+                let mut timed_out = false;
+                while state.invalidation.deferred.is_empty() {
+                    let remaining =
+                        std::time::Duration::from_secs(20).saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        timed_out = true;
+                        break;
+                    }
+                    let (next, timeout, poisoned) =
+                        match core.invalidation.wait_timeout(state, remaining) {
+                            Ok((next, timeout)) => (next, timeout, false),
+                            Err(poisoned) => {
+                                let (next, timeout) = poisoned.into_inner();
+                                (next, timeout, true)
+                            }
+                        };
+                    state = next;
+                    timed_out = timeout.timed_out();
+                    if timed_out || poisoned {
+                        break;
+                    }
+                }
+                (state.invalidation.deferred.len(), timed_out)
             }
         });
         drop(waiting);

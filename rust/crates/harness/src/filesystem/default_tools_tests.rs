@@ -292,7 +292,15 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
     let mut registry =
         recursive_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(None, 65536)?;
     registry.extend(crate::tools::defaults()?)?;
-    for expected in ["read", "write", "edit", "acyclic.fork", "acyclic.merge"] {
+    for expected in [
+        "bash",
+        "fs",
+        "read",
+        "write",
+        "edit",
+        "acyclic.fork",
+        "acyclic.merge",
+    ] {
         assert!(registry.get(expected, None, None)?.is_some());
         if let Some(tool) = ordinary.get(expected, None, None)? {
             assert_eq!(
@@ -301,7 +309,7 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             );
         }
     }
-    for name in ["acyclic.fork", "acyclic.merge"] {
+    for name in ["bash", "fs", "acyclic.fork", "acyclic.merge"] {
         let tool = registry
             .get(name, None, None)?
             .ok_or_else(|| Error::NotFound(name.into()))?;
@@ -324,6 +332,5 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
         );
         assert!(tool.executor.reconcile(invocation, None).await.is_err());
     }
-    assert!(registry.get("bash", None, None)?.is_none());
     Ok(())
 }

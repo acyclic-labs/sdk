@@ -205,6 +205,12 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             } else {
                 ("application/json", result)
             };
+            if step == 4 {
+                assert!(
+                    body.len() > CATALOG_BYTES as usize,
+                    "tool output must exceed the catalog bound"
+                );
+            }
             let session = if step == 0 {
                 "Mcp-Session-Id: configured-session\r\n"
             } else {
@@ -268,6 +274,7 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
     );
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(provider.remaining(), 0);
     assert!(requests.iter().all(|request| {
         request
             .tools

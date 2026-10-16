@@ -1,18 +1,7 @@
 use super::*;
 
 pub(super) fn rustc_host() -> Result<String, CliError> {
-    let output = Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .map_err(io_error)?;
-    if !output.status.success() {
-        return Err(CliError("rustc -vV failed".into()));
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .map(str::to_owned)
-        .ok_or_else(|| CliError("rustc -vV did not report a host target".into()))
+    sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)
 }
 
 pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
