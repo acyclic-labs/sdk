@@ -7,7 +7,7 @@ pub struct Workspace<'a> {
     /// Durable lineage and git state.
     pub store: &'a LocalCoreStateStore,
     /// Selected lazy workspace.
-    pub view: &'a LocalLazyWorkspace,
+    pub view: View<'a>,
     /// Physical view root, used to resolve patch paths.
     pub root: &'a Path,
     /// Repository identity shared by branches of this lineage.
@@ -27,7 +27,7 @@ pub struct Output {
     /// Absent when an earlier pending transition was recovered instead.
     pub command: Option<GitCommandOutput>,
     /// The newly selected view, if the command switched branches.
-    pub switched: Option<LocalLazyWorkspace>,
+    pub switched: Option<OwnedView>,
 }
 
 /// Runs one git-facade command against the task-selected workspace.
@@ -44,6 +44,7 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
+    before_effect().await?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
@@ -52,6 +53,7 @@ where
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
+        before_effect: &before_effect,
         fs: workspace.filesystem,
         store: workspace.store,
         current: workspace.view.workspace().clone(),
@@ -64,20 +66,28 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
-    let command = execute(
-        &workspace,
-        args,
-        tree,
-        patch.as_deref(),
-        &RootMaterializingGitExecutor {
-            inner: &executor,
-            root: workspace.root,
-            source_root_identity: workspace.checkout,
-            before_effect,
-        },
-    )
-    .await?;
-
+    if let Some(branch) = crate::tools::command::agent_diff(args) {
+        before_effect().await?;
+        let output = executor.diff_agent(branch, tree).await?;
+        before_effect().await?;
+        return Ok(output);
+    }
+    let command = if let Some(identity) = workspace.checkout {
+        execute(
+            &workspace,
+            args,
+            tree,
+            patch.as_deref(),
+            &RootMaterializingGitExecutor {
+                inner: &executor,
+                root: workspace.root,
+                source_root_identity: identity,
+            },
+        )
+        .await?
+    } else {
+        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+    };
     Ok(Output {
         command,
         switched: executor.switched_workspace()?,

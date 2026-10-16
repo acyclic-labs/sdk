@@ -117,6 +117,12 @@ impl CheckoutTools {
                             selection_reads: std::sync::atomic::AtomicUsize::new(0),
                             #[cfg(all(test, not(acyclic_harness_loom)))]
                             mount_advances: std::sync::atomic::AtomicUsize::new(0),
+                            state: StateArc::new(AsyncMutex::new(State::new(
+                                view.workspace().id(),
+                                Arc::clone(&parent.workspace.mounts),
+                            ))),
+                            mounts: Arc::clone(&parent.workspace.mounts),
+                            context_line: parent.workspace.context_line().into(),
                             path: path.clone(),
                             fresh: false,
                             mount_directory: parent.workspace.mount_directory.clone(),
@@ -143,6 +149,8 @@ impl CheckoutTools {
                         workspace.identity =
                             acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                         workspace.mounted = Some(mounted);
+                        workspace.mounts = parent.workspace.mounts_at(&workspace.path).await?;
+                        workspace.context_line = workspace.mounts.context_line();
                         reconciliation::recover_pending(
                             &workspace,
                             active.as_ref().unwrap_or_else(|| workspace.view()),
@@ -150,6 +158,15 @@ impl CheckoutTools {
                             &|| async { owner.verify_owner(None)?.await },
                         )
                         .await?;
+                        workspace.state = StateArc::new(AsyncMutex::new(State {
+                            active,
+                            initial_view,
+                            workspace: None,
+                            watcher: None,
+                            children: Default::default(),
+                            mounts: Arc::clone(&workspace.mounts),
+                            initialized: true,
+                        }));
                         let workspace = Arc::new(workspace);
                         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
                         Ok(Self {
@@ -159,13 +176,8 @@ impl CheckoutTools {
                             capture_options,
                             capture_policy,
                             clock: Arc::clone(&self.clock),
-                            state: StateArc::new(AsyncMutex::new(State {
-                                active,
-                                initial_view,
-                                workspace: None,
-                                watcher: None,
-                                children: Default::default(),
-                            })),
+                            task_files: Arc::clone(&self.task_files),
+                            state: StateArc::clone(&workspace.state),
                             selected: true,
                         })
                     },
@@ -195,6 +207,7 @@ impl CheckoutTools {
         let id = view.workspace().id();
         if id == state.initial_view {
             state.workspace = None;
+            state.mounts = Arc::clone(&self.workspace.mounts);
             return Ok(self.workspace.clone());
         }
         if let Some((selected, workspace)) = &state.workspace
@@ -232,11 +245,19 @@ impl CheckoutTools {
             )
             .await
             .map_err(storage)?;
+        let mounts = self.workspace.mounts_at(&path).await?;
         let workspace = Arc::new(LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(all(test, not(acyclic_harness_loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
+            context_line: mounts.context_line(),
+            mounts: Arc::clone(&mounts),
+            // This cached physical handle must not retain its owning cache.
+            state: StateArc::new(AsyncMutex::new(State::new(
+                view.workspace().id(),
+                Arc::clone(&mounts),
+            ))),
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             path,
             fresh: false,
@@ -247,6 +268,7 @@ impl CheckoutTools {
             store: self.workspace.store.clone(),
         });
         owner.verify_owner(None)?.await?;
+        state.mounts = mounts;
         state.workspace = Some((id, workspace.clone()));
         Ok(workspace)
     }

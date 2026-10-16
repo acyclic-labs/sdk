@@ -2,6 +2,50 @@ use super::*;
 use proptest::prelude::*;
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn conflict_paths_belong_to_one_pending_transition(path in "[a-z]{1,16}", stale in any::<bool>()) {
+        futures::executor::block_on(async {
+            let main = WorkspaceId::from_bytes([1; 16]);
+            let child = WorkspaceId::from_bytes([2; 16]);
+            let repository = GitCompatRepository::new(main, MemoryGitCompatStore::default());
+            repository.register_branch_workspace("topic", child, None, false).await.unwrap();
+            let GitCommandOutput::Prepared { transition, .. } = repository.execute(
+                GitCommand::Merge { branch: "topic".into() }, GitTreeRef::exact(main, generation(1)),
+            ).await.unwrap() else { panic!("pending join"); };
+            let paths = BTreeMap::from([(format!("/{path}"), Some(crate::FileId::from_bytes([3; 16])))]);
+            let operation = if stale { OperationId::from_bytes([0; 16]) } else { transition.operation_id() };
+            let result = repository.record_merge_conflicts(operation, &paths).await;
+            prop_assert_eq!(result.is_ok(), !stale);
+            let pending = repository.pending_transition().await.unwrap().unwrap();
+            let GitPendingMutation::Join { conflicts, .. } = &pending.mutation else { panic!("pending join"); };
+            prop_assert_eq!(conflicts, &(!stale).then_some(paths));
+            let restored: GitPendingTransition = serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+            prop_assert_eq!(&pending, &restored);
+            if !stale {
+                let executor = TestExecutor::returning(GitFilesystemResult::Applied {
+                    tree: Some(GitTreeRef::exact(main, generation(2))),
+                    tracked_paths: Some(BTreeSet::from([format!("/{path}")])),
+                });
+                prop_assert!(repository.resume(&executor).await.unwrap().is_none());
+                for command in [GitCommand::Status, GitCommand::Log { maximum: 10 }] {
+                    repository.run(command, GitTreeRef::exact(main, generation(2)), &executor).await.unwrap();
+                }
+                let rejected = repository.run(GitCommand::Commit {
+                    message: "not a resolution".into(), author: "test".into(), authored_at_seconds: 0,
+                }, GitTreeRef::exact(main, generation(2)), &executor).await;
+                prop_assert!(matches!(rejected,
+                    Err(GitCompatRunError::Compat(GitCompatError::TransitionPending(id))) if id == transition));
+                prop_assert!(executor.operations.lock().unwrap().is_empty());
+                let retained = repository.pending_transition().await.unwrap();
+                prop_assert_eq!(retained.as_ref(), Some(&pending));
+            } else {
+                let inspected = repository.execute(GitCommand::Status, GitTreeRef::exact(main, generation(2))).await;
+                prop_assert!(matches!(inspected, Err(GitCompatError::TransitionPending(id)) if id == transition));
+            }
+            Ok(())
+        })?;
+    }
     // Property: completing a switch requires both the prepared action and its
     // result to name the destination, for arbitrary workspace identities.
     #[test]

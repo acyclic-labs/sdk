@@ -1,6 +1,10 @@
 use super::*;
 
-impl WorkspaceGitExecutor<'_> {
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     pub(super) async fn restore_paths(
         &self,
         operation_id: OperationId,

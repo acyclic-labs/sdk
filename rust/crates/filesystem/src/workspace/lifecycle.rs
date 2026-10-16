@@ -201,6 +201,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             source: self.clone(),
             target: target.clone(),
             history: JoinHistory::Merge,
+            git_metadata: false,
             maximum_generations: 4_096,
             maximum_changes: self.volume.config().limits.maximum_paths_per_batch,
             maximum_conflicts: 1_024,

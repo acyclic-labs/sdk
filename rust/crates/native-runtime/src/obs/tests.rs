@@ -283,3 +283,93 @@ fn admitted_work_keeps_observation_after_observer_drop() {
         }
     }
 }
+
+fn root_context_case(mode: u8, broken: bool) {
+    use tracing::callsite::Callsite as _;
+    let seen = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone()));
+    let root = tracing::dispatcher::with_default(&subscriber, || {
+        let caller = tracing::info_span!("test.root.caller");
+        caller.in_scope(|| {
+            let span = match mode {
+                0 => tracing::Span::none(),
+                1 => tracing::Span::new_disabled(
+                    tracing::callsite! {
+                        name: "test.root.filtered", kind: tracing::metadata::Kind::SPAN,
+                        level: tracing::Level::DEBUG, fields:
+                    }
+                    .metadata(),
+                ),
+                _ => tracing::info_span!(parent: None, "test.root.enabled"),
+            };
+            if broken {
+                super::OperationSpan::new(span)
+            } else {
+                super::OperationSpan::new_root(span)
+            }
+        })
+    });
+    assert_eq!(
+        seen.closed("test.root.caller"),
+        1,
+        "a root must never retain its caller"
+    );
+    assert_eq!(root.context().id(), root.id());
+    drop(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn root_context_preserves_only_its_own_span(mode in 0_u8..3) {
+        root_context_case(mode, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a root must never retain its caller")]
+fn negative_control_root_falls_back_to_the_filtered_caller() {
+    root_context_case(1, true);
+}
+
+fn causal_registry_case(foreign: bool, broken: bool) {
+    let first = Capture::default();
+    let second = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let a = tracing::Dispatch::new(tracing_subscriber::registry().with(first.clone()));
+    let b = tracing::Dispatch::new(tracing_subscriber::registry().with(second));
+    let root = tracing::dispatcher::with_default(&a, || {
+        super::OperationSpan::new_root(tracing::info_span!(parent: None, "test.causal.root"))
+    });
+    let dispatch = if foreign { &b } else { &a };
+    let cause = tracing::dispatcher::with_default(dispatch, || {
+        super::OperationSpan::new(tracing::info_span!(parent: None, "test.causal.interest"))
+    });
+    if broken {
+        root.span.follows_from(cause.context().id());
+    } else {
+        root.follows_from_same_subscriber(&cause);
+    }
+    let history = first.0.lock().unwrap().spans.clone();
+    let root = history
+        .iter()
+        .find(|span| span.name == "test.causal.root")
+        .unwrap();
+    assert_eq!(
+        root.follows_from.len(),
+        usize::from(!foreign),
+        "foreign span IDs must never cross subscriber registries"
+    );
+}
+
+proptest::proptest! {
+    #[test]
+    fn causal_links_require_identical_subscriber_registries(foreign in proptest::bool::ANY) {
+        causal_registry_case(foreign, false);
+    }
+}
+#[test]
+#[should_panic(expected = "foreign span IDs must never cross subscriber registries")]
+fn negative_control_passes_foreign_ids_to_a_session_subscriber() {
+    causal_registry_case(true, true);
+}

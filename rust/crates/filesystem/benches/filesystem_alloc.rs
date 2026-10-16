@@ -5,6 +5,8 @@ mod filesystem;
 #[path = "support/admission.rs"]
 mod admission;
 
+#[path = "support/extents.rs"]
+mod extents;
 #[path = "support/lazy_nodes.rs"]
 mod lazy_nodes;
 

@@ -2,6 +2,10 @@ use super::{Error, Generation, Result, TaskVolume, apply, item_examined, segment
 use acyclic_stream::{ReadRequest, StreamProvider, StreamWatermarks};
 use futures::StreamExt as _;
 
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "../../tests/task_volume/refresh_model.rs"]
+mod tests;
+
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Lock order: index only. Provider calls and stream polls never hold it.
     // Every staged record is applied only to its captured generation.
@@ -90,7 +94,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 expected = advanced(current, &expected)?;
                 peer_advanced = true;
             }
-            if expected.position >= tail || (!RESUME && peer_advanced) {
+            if complete::<RESUME>(expected.position, tail, peer_advanced) {
                 watermarks.accepted = watermarks.accepted.max(expected.position);
                 return Ok((watermarks, true));
             }
@@ -104,7 +108,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
+fn complete<const RESUME: bool>(position: u64, tail: u64, peer_advanced: bool) -> bool {
+    position >= tail || (!RESUME && peer_advanced)
+}
+
+pub(super) fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
     if current.volume != expected.volume
         || current.epoch != expected.epoch
         || current.position <= expected.position

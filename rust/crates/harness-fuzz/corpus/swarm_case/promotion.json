@@ -1,0 +1,1 @@
+{"agents":3,"attention_every":2,"layouts":[{"visible":[0,1],"prefetch":[1,2]},{"visible":[1,2],"prefetch":[0,1]}],"turns":[["before","gap","live"],["edge","after"]],"expect":{"text":"beforegapliveedgeafter","wire":{"sessions":1}}}

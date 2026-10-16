@@ -116,6 +116,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 ConflictKind::HardLink,
             ));
         }
+        if self.git_metadata
+            && let Some(view) = self
+                .regular_conflict_view(
+                    file_id,
+                    path.clone(),
+                    [base_record, ours_record, theirs_record],
+                )
+                .await?
+        {
+            return Ok(view);
+        }
         if base_record.metadata != ours_record.metadata
             || base_record.metadata != theirs_record.metadata
         {

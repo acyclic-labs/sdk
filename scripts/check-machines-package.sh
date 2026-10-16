@@ -124,9 +124,11 @@ IFS=$'\t' read -r version observability_version <<< "$versions"
 "$cargo_bin" test --locked -p acyclic-machines -p acyclic-harness --manifest-path "$manifest" --target-dir "$package_target_argument"
 clean_head "$root" "$head"
 clean_head "$package_root" "$head"
-"$cargo_bin" package --locked --no-verify -p acyclic-grpc-observability -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-proto-build -p acyclic-grpc-observability -p acyclic-machines --manifest-path "$manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-machines-${version}.crate"
+proto_build_crate="$package_target/package/acyclic-proto-build-${version}.crate"
 observability_crate="$package_target/package/acyclic-grpc-observability-$observability_version.crate"
+strict_archive "$proto_build_crate"
 strict_archive "$observability_crate"
 strict_archive "$crate"
 tar -xOf "$crate" "acyclic-machines-${version}/.cargo_vcs_info.json" |
@@ -135,11 +137,14 @@ clean_head "$root" "$head"
 clean_head "$package_root" "$head"
 
 tar -xzf "$crate" -C "$test_root"
+tar -xzf "$proto_build_crate" -C "$test_root"
 tar -xzf "$observability_crate" -C "$test_root"
 mkdir -p "$test_root/.cargo"
+proto_build_path="$(bash "$root/scripts/native-tool-path.sh" "$test_root/acyclic-proto-build-$version")"
 observability_path="$(bash "$root/scripts/native-tool-path.sh" "$test_root/acyclic-grpc-observability-$observability_version")"
 cat >"$test_root/.cargo/config.toml" <<EOF
 [patch.crates-io]
+acyclic-proto-build = { path = "$proto_build_path" }
 acyclic-grpc-observability = { path = "$observability_path" }
 EOF
 install -m 0644 "$root/rust-toolchain.toml" "$test_root/rust-toolchain.toml"
@@ -155,9 +160,9 @@ fi
 if [[ -n "$output" ]]; then
   mkdir -p "$(dirname "$output")"
   mkdir "$output"
-  install -m 0644 "$crate" "$observability_crate" "$output/"
+  install -m 0644 "$crate" "$observability_crate" "$proto_build_crate" "$output/"
   staged="$output/$(basename "$crate")"
   cmp --silent "$crate" "$staged"
   strict_archive "$staged"
-  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$observability_crate")" > SHA256SUMS && sha256sum --strict --check SHA256SUMS)
+  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$observability_crate")" "$(basename "$proto_build_crate")" > SHA256SUMS && sha256sum --strict --check SHA256SUMS)
 fi

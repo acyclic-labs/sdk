@@ -18,8 +18,9 @@ pub struct LocalHarnessConfig {
     /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
     pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
+    pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
-    pub(super) context: ContextPipeline,
+    pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
     pub(super) limits: Limits,
@@ -41,8 +42,9 @@ impl LocalHarnessConfig {
         Self {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
+            state_directory: None,
             model,
-            context: ContextPipeline::default(),
+            context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
             limits: Limits::default(),
@@ -72,10 +74,16 @@ impl LocalHarnessConfig {
         self.project = LocalProject::Volume { directory, volume };
         self
     }
-    /// Selects the stock model's context pipeline.
+    /// Selects the caller-owned durable state directory, outside the checkout.
     #[must_use]
-    pub fn context(mut self, context: ContextPipeline) -> Self {
-        self.context = context;
+    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(directory.into());
+        self
+    }
+    /// Selects the immutable context manifest retained with each submitted turn.
+    #[must_use]
+    pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
+        self.context_manifest = Some(reference);
         self
     }
     /// Disables the default set, retaining every custom tool.

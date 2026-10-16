@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 pub enum Authentication {
     /// A provider API key is required.
     ApiKey,
+    /// Prefer an API key, otherwise reuse native Codex CLI credentials on the built-in Responses route.
+    ApiKeyOrCodexLogin,
     /// The endpoint accepts anonymous requests; use an API key when configured.
     Optional,
 }

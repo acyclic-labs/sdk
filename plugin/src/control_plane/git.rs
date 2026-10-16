@@ -111,7 +111,7 @@ impl ControlPlane {
             acyclic_harness::tools::git::Workspace {
                 filesystem: &self.fs,
                 store: &self.store,
-                view: &lazy_workspace,
+                view: (&lazy_workspace).into(),
                 root: &route_path,
                 repository: repository_id,
                 lease: Some(lease.clone()),
@@ -242,7 +242,7 @@ impl ControlPlane {
             acyclic_harness::tools::git::Workspace {
                 filesystem: &self.fs,
                 store: &self.store,
-                view: lazy_workspace,
+                view: lazy_workspace.into(),
                 root: &root_binding.path,
                 repository: repository_id,
                 lease: None,
@@ -268,7 +268,10 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-            self.roots.insert(root_key(root_id), switched);
+            self.roots.insert(
+                root_key(root_id),
+                switched.into_checkout().map_err(display)?,
+            );
         }
         self.persist()?;
         let Some(output) = output.command else {

@@ -354,7 +354,7 @@ impl ArcWake for WakeCount {
     }
 }
 
-async fn quiescent<S: futures::Stream + Unpin>(followers: &mut [S]) -> bool {
+pub(super) async fn quiescent<S: futures::Stream + Unpin>(followers: &mut [S]) -> bool {
     let wake = Arc::new(WakeCount::default());
     futures::future::poll_fn(|caller| {
         wake.caller.register(caller.waker());

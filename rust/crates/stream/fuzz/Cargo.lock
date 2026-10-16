@@ -37,6 +37,7 @@ dependencies = [
  "pin-project-lite",
  "rustix",
  "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 

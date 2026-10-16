@@ -60,6 +60,19 @@ impl<V> Files<V> {
         self.0.insert(key, value)
     }
 
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.values().inspect(|_| examined())
+    }
+
+    pub fn entry(&mut self, key: FileKey) -> std::collections::btree_map::Entry<'_, FileKey, V> {
+        examined();
+        self.0.entry(key)
+    }
+
     pub fn range<R: RangeBounds<FileKey>>(
         &self,
         range: R,

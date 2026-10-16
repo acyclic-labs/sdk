@@ -147,7 +147,7 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
         ..ProptestConfig::default()
     });
     // Property: successful owned reads retain exactly the bounded source prefix
-    // on the original ledger, initialize one buffer, and retire every claim.
+    // on the original ledger, perform no initialization copy, and retire every claim.
     // Short files fail without advancing the cursor or losing physical charges.
     runner.run(
         &(
@@ -167,7 +167,7 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
             let requested = length.min(maximum);
             let allowance = WorkBudget {
                 source_bytes_read: requested as u64,
-                bytes_copied: requested as u64,
+                bytes_copied: 0,
                 ..WorkBudget::UNBOUNDED
             };
             let original = NativeMaterializationWork::new(allowance, &cancellation).unwrap();
@@ -193,7 +193,7 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
                 if requested != 0 {
                     prop_assert!(chunk.bytes.matches_meter(&original.runtime_meter()));
                 }
-                prop_assert_eq!(original.receipt().bytes_copied, chunk.logical_owned_bytes);
+                prop_assert_eq!(original.receipt().bytes_copied, 0);
                 drop(chunk);
             }
             prop_assert_eq!(original.receipt().source_bytes_read, expected as u64);
@@ -256,7 +256,6 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                 let mut source =
                     acyclic_native_runtime::AsyncRangeReader::new(native, 0, body.len() as u64);
                 let storage = native_source_storage(maximum, &original, &cancellation).unwrap();
-                let initialized = storage.maximum_len() as u64;
                 let finish = |read: std::io::Result<_>| {
                     assert!(read.is_ok(), "the worker must complete before cancellation");
                     assert_eq!(original.receipt().source_bytes_read, maximum as u64);
@@ -264,7 +263,7 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                     accept_native_source_chunk(read, maximum, &original, &cancellation)
                 };
                 let result = if advance_early {
-                    let read = runtime.block_on(source.read_prepared(
+                    let read = runtime.block_on(source.read_spare(
                         storage,
                         maximum,
                         original.runtime_meter(),
@@ -273,7 +272,7 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                     ));
                     finish(read)
                 } else {
-                    runtime.block_on(source.read_prepared(
+                    runtime.block_on(source.read_spare(
                         storage,
                         maximum,
                         original.runtime_meter(),
@@ -307,7 +306,7 @@ fn owned_native_worker_completes_then_cancellation_preserves_cursor()
                     drop(chunk);
                 }
                 prop_assert_eq!(original.receipt().source_bytes_read, maximum as u64);
-                prop_assert_eq!(original.receipt().bytes_copied, initialized);
+                prop_assert_eq!(original.receipt().bytes_copied, 0);
                 prop_assert_eq!(original.live_allocation_bytes(), initial);
             }
             Ok(())
@@ -324,7 +323,12 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("owned-denied");
     std::fs::write(&path, b"abc")?;
-    for counter in ["source_bytes_read", "bytes_copied", "cancelled"] {
+    for counter in [
+        "source_bytes_read",
+        "bytes_copied",
+        "publication_header",
+        "cancelled",
+    ] {
         let cancellation = CancellationToken::new();
         let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -332,7 +336,11 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
         let mut limit = budget();
         match counter {
             "source_bytes_read" => limit.source_bytes_read = 2,
-            "bytes_copied" => limit.bytes_copied = 2,
+            "bytes_copied" => limit.bytes_copied = 0,
+            "publication_header" => {
+                limit.peak_allocation_bytes =
+                    NativeMaterializationWork::accounting_state_bytes() + 3;
+            }
             _ => {}
         }
         let original =
@@ -345,12 +353,27 @@ async fn owned_native_refusals_and_cancellation_precede_reads()
         let result = source
             .read_owned_with_native_work(8, &original, &cancellation)
             .await;
+        if counter == "bytes_copied" {
+            let chunk = result?.ok_or("owned source must return its chunk")?;
+            assert_eq!(chunk.bytes.as_ref(), b"abc");
+            assert_eq!(source.remaining(), 0);
+            assert_eq!(original.receipt().source_bytes_read, 3);
+            assert_eq!(original.receipt().bytes_copied, 0);
+            drop(chunk);
+            assert_eq!(original.live_allocation_bytes(), initial);
+            continue;
+        }
         if counter == "cancelled" {
             assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
         } else {
+            let expected = if counter == "publication_header" {
+                "peak_allocation_bytes"
+            } else {
+                counter
+            };
             assert!(matches!(result, Err(crate::FsError::NativeKernel(
                 crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { counter: refused, .. })
-            )) if refused == counter));
+            )) if refused == expected));
         }
         assert_eq!(source.remaining(), 3);
         assert_eq!(original.receipt().source_bytes_read, 0);

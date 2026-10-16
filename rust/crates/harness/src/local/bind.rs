@@ -74,11 +74,13 @@ impl LocalHarness {
                 workspace::open(
                     &filesystem,
                     volume,
+                    volume,
                     checkout,
                     &directory,
                     Some(identity.to_bytes()),
                     operation,
                     true,
+                    false,
                 )
                 .await?,
             ))
@@ -97,8 +99,13 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         let runtime = if let Some(workspace) = &workspace {
             runtime.with_workspace_tools(Arc::new(
-                checkout_tools::CheckoutTools::new(Arc::clone(workspace), volume, config.clock)
-                    .await?,
+                checkout_tools::CheckoutTools::new(
+                    Arc::clone(workspace),
+                    volume,
+                    config.clock,
+                    Arc::clone(&task_files),
+                )
+                .await?,
             ))?
         } else {
             runtime
@@ -114,7 +121,7 @@ impl LocalHarness {
             signed: signed.clone(),
             model,
             provider,
-            context: config.context,
+            context_manifest: config.context_manifest,
             limits: config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

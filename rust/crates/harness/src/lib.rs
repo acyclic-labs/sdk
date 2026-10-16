@@ -90,6 +90,7 @@ pub mod turn;
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;
+pub mod workspace;
 pub use wire_codec::encode_error;
 #[cfg(test)]
 #[path = "../tests/support/stream/mod.rs"]

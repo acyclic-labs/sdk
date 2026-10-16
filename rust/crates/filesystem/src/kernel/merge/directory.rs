@@ -176,7 +176,10 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 } else {
                     None
                 };
-                if resolved.is_none()
+                // A file-level delete/modify choice can retain this binding
+                // even when its isolated three-way name delta chose deletion.
+                if (resolved.is_none()
+                    || (base_value.is_some() && (ours_value.is_none() ^ theirs_value.is_none())))
                     && let Some(resolution) = requested.binding(directory_id, name, accounting)?
                 {
                     resolved = match resolution {

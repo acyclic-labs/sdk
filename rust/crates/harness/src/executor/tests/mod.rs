@@ -691,6 +691,7 @@ impl crate::context::ContextStage for OnceStage {
 mod compaction;
 mod content;
 mod invocation_bounds;
+mod output_bounds;
 mod recovery;
 mod replay;
 #[cfg(not(target_arch = "wasm32"))]

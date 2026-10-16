@@ -1,5 +1,9 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
+mod diff_case;
+mod diff_tests;
+mod diff_workspace;
+mod diffs;
 mod discovery;
 mod drivers;
 mod execution;
@@ -10,7 +14,18 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+#[path = "../support/quiescent.rs"]
+mod quiescent;
 mod scenario;
+#[path = "../support/scenario_data.rs"]
+mod scenario_data;
+mod swarm;
+mod swarm_case;
+mod swarm_publish;
+mod swarm_provider;
+mod swarm_tests;
+mod swarm_views;
+mod swarm_wire;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;
@@ -19,26 +34,11 @@ use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-fn discover(root: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            discover(&path, paths)?;
-        } else if path.extension().is_some_and(|ext| ext == "json")
-            && path
-                .file_name()
-                .is_some_and(|name| name != "_defaults.json")
-        {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
+use scenario_data::discover;
 
 #[tokio::test]
 async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turns() -> TestResult {
@@ -218,9 +218,33 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scenarios() -> TestResult {
+#[test]
+fn scenarios() -> TestResult {
     let started = Instant::now();
+    scenario_runtime()?.block_on(run_scenarios(started))
+}
+
+fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err("scenario services must start before the async runtime".into());
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?)
+}
+
+#[tokio::test]
+async fn scenario_bootstrap_rejects_an_already_running_runtime() {
+    let error = scenario_runtime().expect_err("bootstrapped inside the runtime");
+    assert!(
+        error
+            .to_string()
+            .contains("services must start before the async runtime")
+    );
+}
+
+async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;

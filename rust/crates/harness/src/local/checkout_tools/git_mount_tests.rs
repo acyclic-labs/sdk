@@ -68,6 +68,7 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
         harness.workspace.as_ref().unwrap().clone(),
         &harness.project,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        Arc::clone(&harness.task_files),
     )
     .await?;
     // Each case starts on its own task branch and commits its baseline there.

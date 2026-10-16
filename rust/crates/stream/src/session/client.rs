@@ -9,6 +9,8 @@ use tonic::{
     transport::Channel as TransportChannel,
 };
 
+mod admissions;
+use admissions::Admissions;
 mod cache;
 mod credit;
 mod deadline;
@@ -22,14 +24,19 @@ type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
 #[cfg(acyclic_stream_loom)]
+pub use admissions::verify_admission_binding;
+#[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime, verify_registration_deadline,
+    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_terminal_cursor_dial,
 };
 mod progress;
 use progress::Progress;
+#[cfg(acyclic_stream_loom)]
+pub use progress::verify_latest_progress;
 #[cfg(test)]
 mod tests;
 type Connect = std::sync::Arc<
@@ -59,6 +66,7 @@ pub struct Client {
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
+    admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
 }
@@ -70,7 +78,7 @@ struct Delivery {
     credit: Credit,
 }
 enum Received {
-    Record(crate::Record),
+    Data(wire::SessionData),
     Child(crate::Child),
 }
 enum Command {
@@ -121,12 +129,12 @@ struct Pool {
     routes: BTreeMap<u64, Route>,
     links: BTreeMap<String, Link>,
     reads: FuturesUnordered<Read>,
-    dials: FuturesUnordered<Dial>,
-    connecting: BTreeSet<String>,
+    dials: BTreeMap<String, Dial>,
     pending: VecDeque<(u64, u64)>,
     home_channel: TransportChannel,
     next_link: u64,
     active: Arc<AtomicU64>,
+    admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
     dial_epoch: u64,
@@ -134,6 +142,11 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+}
+impl Route {
+    fn live(&self) -> bool {
+        !self.progress.cancelled() && !self.records.is_closed()
+    }
 }
 impl Drop for Link {
     fn drop(&mut self) {
@@ -175,6 +188,7 @@ impl Client {
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
         let active = Arc::new(AtomicU64::new(0));
+        let admissions = Arc::new(Admissions::new());
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
@@ -186,12 +200,12 @@ impl Client {
             routes: BTreeMap::new(),
             links: BTreeMap::new(),
             reads: FuturesUnordered::new(),
-            dials: FuturesUnordered::new(),
-            connecting: BTreeSet::new(),
+            dials: BTreeMap::new(),
             pending: VecDeque::new(),
             home_channel: channel.clone(),
             next_link: 1,
             active: Arc::clone(&active),
+            admissions: Arc::clone(&admissions),
             attempt_epoch: Arc::clone(&attempt_epoch),
             abandoned: Arc::clone(&abandoned),
             dial_epoch: 0,
@@ -200,17 +214,17 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        let context = crate::obs::OperationSpan::new(tracing::Span::current());
-        tokio::spawn(context.scope(async move {
+        tokio::spawn(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        }));
+        });
         Self {
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
             active,
+            admissions,
             attempt_epoch,
             abandoned,
         }
@@ -251,20 +265,53 @@ impl Client {
         preceding: Option<crate::CommitId>,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
-        let kind = Kind::Follow(wire::SessionFollow {
+        let follow = wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-        });
+        };
         Ok(self
-            .open_kind(kind, from, acknowledge)
+            .follow_data_with_ack(follow, from, acknowledge)
             .await?
-            .map(|item| match item? {
-                Received::Record(record) => Ok(record),
+            .map(|data| match data?.item {
+                Some(Item::Record(record)) => wire_codec::record(record),
                 _ => Err(StreamError::Unavailable),
             })
             .boxed())
+    }
+    /// Follows ALL records or LATEST values on the shared per-node session,
+    /// retaining the exact data cursor and accepted/durable watermarks.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<BoxStream<'static, Result<wire::SessionData, StreamError>>, StreamError> {
+        Ok(self.follow_data_with_ack(follow, from, true).await?.boxed())
+    }
+    pub(crate) async fn follow_data_with_ack(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+        acknowledge: bool,
+    ) -> Result<
+        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + Send + 'static + use<>,
+        StreamError,
+    > {
+        StreamPath::validate(&follow.path)?;
+        if !matches!(
+            wire::SessionDelivery::try_from(follow.delivery),
+            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
+        ) {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(self
+            .open_kind(Kind::Follow(follow), from, acknowledge)
+            .await?
+            .map(|item| match item? {
+                Received::Data(data) => Ok(data),
+                _ => Err(StreamError::Unavailable),
+            }))
     }
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
@@ -290,7 +337,10 @@ impl Client {
         kind: Kind,
         from: u64,
         acknowledge: bool,
-    ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<Received, StreamError>> + Send + 'static + use<>,
+        StreamError,
+    > {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
@@ -346,8 +396,8 @@ impl Client {
             return Err(error);
         }
         operation.record("registration", "opened");
-        Ok(operation
-            .scope(stream::try_unfold(cursor, |mut cursor| async move {
+        Ok(
+            operation.scope(stream::try_unfold(cursor, |mut cursor| async move {
                 loop {
                     let delivery = match cursor
                         .receiver
@@ -364,11 +414,21 @@ impl Client {
                     // Delivery disposal returns capacity on every exit, including
                     // stale-generation suppression and cancellation of the cursor.
                     let fresh = match &delivery.item {
-                        Received::Record(record) => cursor.progress.consume_record(
-                            delivery.generation,
-                            delivery.sequence,
-                            *record.commit_id.as_bytes(),
-                        )?,
+                        Received::Data(data) => match &data.item {
+                            Some(Item::Record(record)) => cursor.progress.consume_record(
+                                delivery.generation,
+                                delivery.sequence,
+                                record
+                                    .commit_id
+                                    .as_ref()
+                                    .try_into()
+                                    .map_err(|_| StreamError::Unavailable)?,
+                            )?,
+                            Some(Item::LatestValue(_)) => cursor
+                                .progress
+                                .consume_latest(delivery.generation, delivery.sequence)?,
+                            _ => return Err(StreamError::Unavailable),
+                        },
                         Received::Child(_) => cursor.progress.consume_opaque(
                             delivery.generation,
                             delivery.sequence,
@@ -380,8 +440,8 @@ impl Client {
                         return Ok(Some((delivery.item, cursor)));
                     }
                 }
-            }))
-            .boxed())
+            })),
+        )
     }
     fn cursor(
         &self,
@@ -396,6 +456,10 @@ impl Client {
                 active.checked_add(1)
             })
             .map_err(|_| StreamError::Capacity)?;
+        if let Err(error) = self.admissions.insert(id, Arc::clone(&progress)) {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
         Ok(Cursor {
             observation: Observation::channel(id),
             id,
@@ -416,6 +480,7 @@ impl Drop for Cursor {
     fn drop(&mut self) {
         self.progress.cancel();
         self.receiver.close();
+        let _ = self.client.admissions.remove(self.id);
         self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }
