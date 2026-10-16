@@ -38,7 +38,7 @@ impl WasmFileClient {
         let inner = FileClient::open(outbox.volume.clone(), target.volume.clone(), limits)
             .await
             .map_err(admission_error)?;
-        let (commands, state) = start(inner, target).await?;
+        let (commands, state) = start(inner, outbox, target).await?;
         Ok(Self {
             commands: Rc::new(commands),
             state,

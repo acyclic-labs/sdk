@@ -23,7 +23,6 @@ use wasm_bindgen::prelude::*;
 type Inner = FileClient<dyn StreamProvider, dyn StreamProvider>;
 enum Wake {
     Command(Option<Command>),
-    Connected(Result<u64, acyclic_stream::StreamError>),
     Published(Option<Result<(), StreamError>>),
     Retry,
 }
@@ -59,16 +58,14 @@ fn retry_after(
     Some(PlatformExecutor.sleep(delay))
 }
 
-pub(super) async fn start(
-    mut inner: Inner,
-    target: &WasmTaskVolume,
-) -> Result<(mailbox::Sender<Command>, Rc<State>), JsValue> {
-    let connections = target.connections.clone();
-    // A target file follow owns the session while offline intent is retained.
-    // It consumes credit without needing a renderer to be attached.
-    let mut changes: BoxProviderStream<'static, Result<(), StreamError>> =
-        if let Some(session) = &target.session {
-            let cursor = target.volume.cut(&Query::Tasks).await.map_err(error)?;
+// Subscribe from the captured cut before the worker can admit more commands.
+// Both endpoints can delay durability, independently of data or reconnects.
+async fn publications(
+    volume: &WasmTaskVolume,
+) -> Result<BoxProviderStream<'static, Result<(), StreamError>>, JsValue> {
+    let frames: BoxProviderStream<'static, Result<(), StreamError>> =
+        if let Some(session) = &volume.session {
+            let cursor = volume.volume.cut(&Query::Root).await.map_err(error)?;
             let frames = session
                 .subscribe(wire::SessionSubscription {
                     channel: None,
@@ -78,7 +75,7 @@ pub(super) async fn start(
                     }),
                     kind: Some(wire::session_subscription::Kind::Follow(
                         wire::SessionFollow {
-                            path: target.volume.path().to_string(),
+                            path: volume.volume.path().to_string(),
                             delivery: wire::SessionDelivery::All as i32,
                             preceding_commit_id: if cursor.position == 0 {
                                 Default::default()
@@ -90,12 +87,36 @@ pub(super) async fn start(
                 })
                 .await
                 .map_err(error)?;
-            // Records AND standalone watermarks wake the durable outbox. The shared
-            // pool retains cursor validation, fencing and receive credit.
+            // Retain standalone watermarks, including a save after the last record.
             Box::pin(frames.map(|frame| frame.map(|_| ())))
         } else {
             Box::pin(futures::stream::pending())
         };
+    let recovered: BoxProviderStream<'static, Result<(), StreamError>> =
+        if let Some(connections) = volume.connections.clone() {
+            Box::pin(futures::stream::try_unfold(
+                (connections, 0),
+                |(connections, generation)| async move {
+                    let next = connections.changed(generation).await?;
+                    Ok(Some(((), (connections, next))))
+                },
+            ))
+        } else {
+            Box::pin(futures::stream::pending())
+        };
+    Ok(Box::pin(futures::stream::select(frames, recovered)))
+}
+
+pub(super) async fn start(
+    mut inner: Inner,
+    outbox: &WasmTaskVolume,
+    target: &WasmTaskVolume,
+) -> Result<(mailbox::Sender<Command>, Rc<State>), JsValue> {
+    let remote = outbox.connections.is_some() || target.connections.is_some();
+    // One pool multiplexes both follows; neither needs a renderer to consume credit.
+    let mut changes: BoxProviderStream<'static, Result<(), StreamError>> = Box::pin(
+        futures::stream::select(publications(outbox).await?, publications(target).await?),
+    );
     let state = Rc::new(State {
         pending: Cell::new(inner.pending()),
         cursor: RefCell::new(inner.cursor().clone()),
@@ -104,20 +125,11 @@ pub(super) async fn start(
     let (commands, mut receiver) = mailbox::channel();
     let current = state.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        let mut generation = 0;
         let mut failures = 0_u32;
         let mut retry: Option<BoxProviderFuture<'static, ()>> = None;
         let mut idle: Option<mailbox::Sender<Result<(), JsValue>>> = None;
         loop {
             let event = {
-                let observed = generation;
-                let recovered = async {
-                    match &connections {
-                        Some(connections) => connections.changed(observed).await,
-                        None => futures::future::pending().await,
-                    }
-                }
-                .fuse();
                 let retry_ready = async {
                     match &mut retry {
                         Some(deadline) => deadline.await,
@@ -125,10 +137,9 @@ pub(super) async fn start(
                     }
                 }
                 .fuse();
-                futures::pin_mut!(recovered, retry_ready);
+                futures::pin_mut!(retry_ready);
                 futures::select! {
                     command = receiver.recv().fuse() => Wake::Command(command),
-                    connection = recovered => Wake::Connected(connection),
                     change = changes.next().fuse() => Wake::Published(change),
                     () = retry_ready => Wake::Retry,
                 }
@@ -147,25 +158,21 @@ pub(super) async fn start(
                                     Ok(bytes.into())
                                 })
                                 .await;
-                            if let Some(deadline) = retry_after(
-                                result.as_ref().err(),
-                                connections.is_some(),
-                                &mut failures,
-                            ) {
+                            if let Some(deadline) =
+                                retry_after(result.as_ref().err(), remote, &mut failures)
+                            {
                                 retry = Some(deadline);
                             }
                             current.refresh(&inner);
                             let admitted = result.is_ok();
                             let _ = reply.reply(result.map_err(admission_error));
-                            admitted && connections.is_some()
+                            admitted && remote
                         }
                         Command::Flush(reply) => {
                             let result = inner.flush().await;
-                            if let Some(deadline) = retry_after(
-                                result.as_ref().err(),
-                                connections.is_some(),
-                                &mut failures,
-                            ) {
+                            if let Some(deadline) =
+                                retry_after(result.as_ref().err(), remote, &mut failures)
+                            {
                                 retry = Some(deadline);
                             }
                             current.refresh(&inner);
@@ -185,16 +192,6 @@ pub(super) async fn start(
                         }
                     }
                 }
-                Wake::Connected(connection) => match connection {
-                    Ok(next) => {
-                        generation = next;
-                        true
-                    }
-                    Err(failure) => {
-                        *current.error.borrow_mut() = error(failure);
-                        false
-                    }
-                },
                 Wake::Retry => true,
                 Wake::Published(change) => {
                     let ended = change.is_none();

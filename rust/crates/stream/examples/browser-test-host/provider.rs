@@ -1,11 +1,12 @@
 //! Scripted durability around the real memory provider; no extra records on save.
 use acyclic_stream::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Default)]
 pub(super) struct Provider {
     memory: MemoryStream,
     pub(super) saved: AtomicBool,
+    pub(super) outbox_saved: AtomicU64,
 }
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
@@ -22,10 +23,12 @@ impl StreamProvider for Provider {
         self.memory.bounds(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let accepted = self.memory.tail(path).await?;
+        let accepted = self.memory.tail(path.clone()).await?;
         Ok(StreamWatermarks {
             accepted,
-            durable: if self.saved.load(Ordering::Acquire) {
+            durable: if path.as_str() == "remote-outbox/files" {
+                accepted.min(self.outbox_saved.load(Ordering::Acquire))
+            } else if self.saved.load(Ordering::Acquire) {
                 accepted
             } else {
                 0

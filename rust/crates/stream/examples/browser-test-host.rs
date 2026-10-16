@@ -5,7 +5,7 @@ mod provider;
 use axum::{
     Router,
     extract::{
-        State, WebSocketUpgrade,
+        Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -28,8 +28,9 @@ use tower_http::cors::CorsLayer;
 struct Host {
     streams: Arc<Provider>,
     fail_next: Arc<AtomicUsize>,
-    saved: tokio::sync::watch::Sender<bool>,
+    saved: tokio::sync::watch::Sender<Option<String>>,
     consumed: Arc<AtomicU64>,
+    outbox_consumed: Arc<AtomicU64>,
     consumed_changed: Arc<Notify>,
     disconnect: Arc<Notify>,
     online: Arc<AtomicBool>,
@@ -41,8 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = Host {
         streams: Arc::new(Provider::default()),
         fail_next: Arc::new(AtomicUsize::new(0)),
-        saved: tokio::sync::watch::channel(false).0,
+        saved: tokio::sync::watch::channel(None).0,
         consumed: Arc::new(AtomicU64::new(0)),
+        outbox_consumed: Arc::new(AtomicU64::new(0)),
         consumed_changed: Arc::new(Notify::new()),
         disconnect: Arc::new(Notify::new()),
         online: Arc::new(AtomicBool::new(true)),
@@ -110,8 +112,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/fixture/save",
             post(|State(host): State<Host>| async move {
                 host.streams.saved.store(true, Ordering::Release);
-                let _ = host.saved.send(true);
+                let _ = host.saved.send(None);
             }),
+        )
+        .route(
+            "/fixture/save-outbox",
+            post(|State(host): State<Host>| async move {
+                let path = acyclic_stream::StreamPath::new("remote-outbox/files").unwrap();
+                let accepted = host.streams.tail(path).await.unwrap();
+                host.streams.outbox_saved.store(accepted, Ordering::Release);
+                let _ = host.saved.send(Some("remote-outbox/files".into()));
+            }),
+        )
+        .route(
+            "/fixture/outbox-consumed/{position}",
+            get(
+                |State(host): State<Host>, Path(position): Path<u64>| async move {
+                    loop {
+                        let changed = host.consumed_changed.notified();
+                        if host.outbox_consumed.load(Ordering::Acquire) >= position {
+                            break;
+                        }
+                        changed.await;
+                    }
+                },
+            ),
         )
         .route(
             "/fixture/consumed",
@@ -212,8 +237,13 @@ async fn serve(host: Host, socket: WebSocket) {
                         if let Some((_, path, opened, next)) = routes.get_mut(&frame.channel_id) {
                             if *opened {
                                 *next += u64::from(window.frames);
-                                if path == "durable/files" {
-                                    progress.consumed.fetch_max(*next, Ordering::AcqRel);
+                                let consumed = match path.as_str() {
+                                    "durable/files" => Some(&progress.consumed),
+                                    "remote-outbox/files" => Some(&progress.outbox_consumed),
+                                    _ => None,
+                                };
+                                if let Some(consumed) = consumed {
+                                    consumed.fetch_max(*next, Ordering::AcqRel);
                                     progress.consumed_changed.notify_waiters();
                                 }
                             } else {
@@ -224,10 +254,17 @@ async fn serve(host: Host, socket: WebSocket) {
                     Some(wire::session_frame::Body::Ack(ack))
                         if routes
                             .get(&frame.channel_id)
-                            .is_some_and(|(_, path, _, _)| path == "durable/files") =>
+                            .is_some_and(|(_, path, _, _)| {
+                                matches!(path.as_str(), "durable/files" | "remote-outbox/files")
+                            }) =>
                     {
                         if let Some(applied) = &ack.applied {
-                            progress.consumed.fetch_max(applied.next, Ordering::AcqRel);
+                            let consumed = if routes[&frame.channel_id].1 == "remote-outbox/files" {
+                                &progress.outbox_consumed
+                            } else {
+                                &progress.consumed
+                            };
+                            consumed.fetch_max(applied.next, Ordering::AcqRel);
                             progress.consumed_changed.notify_waiters();
                         }
                     }
@@ -249,8 +286,10 @@ async fn serve(host: Host, socket: WebSocket) {
             _ = host.disconnect.notified() => break,
             changed = saved.changed() => {
                 if changed.is_err() { break; }
+                let only = saved.borrow_and_update().clone();
                 let subscriptions = routes.lock().expect("test routes poisoned").clone();
                 for (channel_id, (generation, path, _, _)) in subscriptions {
+                    if only.as_ref().is_some_and(|only| only != &path) { continue; }
                     let Ok(marks) = host.streams.watermarks(acyclic_stream::StreamPath::new(path).unwrap()).await else { continue; };
                     let frame = wire::SessionFrame { channel_id, generation,
                         body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: marks.accepted, durable: marks.durable })) };
