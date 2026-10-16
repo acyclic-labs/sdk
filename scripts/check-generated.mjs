@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, projectGeneratedRust, packagedRustDirectories, rustBindingFiles, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 import { nativeFamily } from "./native-family.mjs";
 
@@ -167,9 +167,16 @@ try {
   }
   const freshTypeScript = join(temporary, "generated/typescript");
   const freshRust = join(temporary, "generated/rust");
-  for (const [relative, packaged] of packagedRustBindings) {
-    const fresh = normalizeGeneratedRust(relative, readFileSync(join(freshRust, relative), "utf8"));
-    if (fresh !== readFileSync(join(root, packaged), "utf8")) throw new Error(`packaged Rust drift: ${packaged}`);
+  projectGeneratedRust(root, freshRust);
+  for (const [relative, packaged] of packagedRustDirectories) {
+    const freshFiles = rustBindingFiles(join(freshRust, relative));
+    if (JSON.stringify(freshFiles) !== JSON.stringify(rustBindingFiles(join(root, packaged)))) {
+      throw new Error(`packaged Rust file set drift: ${packaged}`);
+    }
+    for (const file of freshFiles) {
+      const fresh = normalizeGeneratedRust(file, readFileSync(join(freshRust, relative, file), "utf8"));
+      if (fresh !== readFileSync(join(root, packaged, file), "utf8")) throw new Error(`packaged Rust drift: ${packaged}/${file}`);
+    }
   }
   for (const [source, destination] of generatedDescriptors) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
