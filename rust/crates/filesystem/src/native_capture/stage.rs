@@ -42,6 +42,15 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         &mut meter.clone(),
     )
     .map_err(capture_demand_error)?;
+    if ranges.is_empty() {
+        let staged = capture_vec(0, meter)?;
+        finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
+        let bytes = vector_bytes(&ranges);
+        drop(ranges);
+        drop(file);
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        return Ok(staged);
+    }
     let positional = native_positional_file(file, meter)?;
     let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
     capture_allocate(meter, native_bytes)?;
@@ -76,16 +85,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             .ok_or(CaptureError::from(WorkError::Overflow))?;
         staged.push((*range, content));
     }
-    meter.cancellation().check()?;
-    let after = source_root
-        .stat_file(native.as_file(), &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &after)?;
-    let current = source_root
-        .stat(host_path, &mut meter.clone())
-        .map_err(capture_demand_error)?;
-    ensure_same_host_node(snapshot, &current)?;
-    meter.clone().check().map_err(capture_demand_error)?;
+    finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
     let bytes = vector_bytes(&ranges)
         .checked_add(native_bytes)
         .ok_or(WorkError::Overflow)?;
@@ -93,6 +93,25 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
     Ok(staged)
+}
+
+pub(super) fn finish_regular_capture(
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    file: &std::fs::File,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    meter.cancellation().check()?;
+    let after = source_root
+        .stat_file(file, &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &after)?;
+    let current = source_root
+        .stat(host_path, &mut meter.clone())
+        .map_err(capture_demand_error)?;
+    ensure_same_host_node(snapshot, &current)?;
+    meter.clone().check().map_err(capture_demand_error)
 }
 
 #[allow(

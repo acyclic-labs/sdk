@@ -50,6 +50,8 @@ mod stage;
 use stage::*;
 mod metadata;
 use metadata::*;
+#[cfg(all(test, feature = "memory"))]
+mod empty_stage_tests;
 #[cfg(test)]
 mod host_file_race_tests;
 #[cfg(test)]
