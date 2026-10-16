@@ -3,6 +3,5 @@ import type { ActorId } from "./ActorId.js";
 
 /**
  * Inspect currently has no additional wire validator; only the semantic
- * Actor identity rule is applied by this conversion.
  */
 export type InspectActorRequest = { actorId: ActorId, };

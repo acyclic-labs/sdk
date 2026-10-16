@@ -3,6 +3,5 @@ import type { ActorId } from "./ActorId.js";
 
 /**
  * Removal has no canonical validator yet, so subscription and idempotency
- * strings remain unbranded and are carried exactly as received.
  */
 export type RemoveSubscriptionRequest = { actorId: ActorId, subscriptionId: string, idempotencyKey: string, };

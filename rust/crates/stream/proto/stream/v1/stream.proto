@@ -158,7 +158,14 @@ message CommitCondition {
   oneof condition {
     TailCondition tail = 1;
     AbsentCondition absent = 2;
+    HeadCondition head = 3;
   }
+}
+
+message HeadCondition {
+  string path = 1;
+  uint64 expected = 2;
+  bytes commit_id = 3;
 }
 
 message AppendMutation {
@@ -236,7 +243,14 @@ message CommitConflict {
   oneof conflict {
     TailCommitConflict tail = 1;
     ExistsCommitConflict exists = 2;
+    HeadCommitConflict head = 4;
   }
+}
+
+message HeadCommitConflict {
+  string path = 1;
+  bytes expected = 2;
+  bytes actual = 3;
 }
 
 message CommitConflicts {

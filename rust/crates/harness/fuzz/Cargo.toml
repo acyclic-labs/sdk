@@ -25,6 +25,7 @@ libfuzzer-sys = "0.4"
 acyclic-harness = { path = "..", features = ["filesystem", "search-http", "test-support"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory"] }
 acyclic-stream = { path = "../../stream" }
+prost = "0.14.4"
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +44,13 @@ bench = false
 [[bin]]
 name = "search_http_codec_tinyfish"
 path = "fuzz_targets/search_http_codec_tinyfish.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_identity"
+path = "fuzz_targets/protocol_identity.rs"
 test = false
 doc = false
 bench = false
