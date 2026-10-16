@@ -38,8 +38,6 @@ impl LocalHarness {
                 &mut None,
             )?;
         }
-        #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings).await?.hooks;
         let (model, provider) = config.model;
         model.validate()?;
         let compaction = compaction::select(
@@ -124,10 +122,10 @@ impl LocalHarness {
             model,
             provider,
             context_manifest: config.context_manifest,
-            #[cfg(feature = "hooks")]
-            hooks,
             #[cfg(test)]
             context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
