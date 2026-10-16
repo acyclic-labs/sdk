@@ -20,11 +20,16 @@ pub(super) enum Fault {
     IgnoreRemoval,
     CorruptSnapshot,
     ScanRetainedViews,
+    CloneSwarmPerStatus,
 }
 
 #[derive(Default, serde::Serialize)]
 pub(super) struct Counts {
     pub sessions: usize,
+    pub server_follows: usize,
+    pub server_records: usize,
+    pub delivered_records: usize,
+    pub discovered_children: usize,
     pub children: usize,
     pub actor_channels: usize,
     pub status_follows: usize,
@@ -188,8 +193,18 @@ impl Wire {
                         Some(Body::Welcome(_)) => {
                             observed.lock().unwrap_or_else(|p| p.into_inner()).sessions += 1
                         }
-                        Some(Body::Data(_)) => {
+                        Some(Body::Data(data)) => {
                             let mut counts = observed.lock().unwrap_or_else(|p| p.into_inner());
+                            match &data.item {
+                                Some(wire::session_data::Item::Child(_)) => {
+                                    counts.discovered_children += 1
+                                }
+                                Some(
+                                    wire::session_data::Item::Record(_)
+                                    | wire::session_data::Item::LatestValue(_),
+                                ) => counts.delivered_records += 1,
+                                _ => {}
+                            }
                             counts.root_credit = counts
                                 .root_credit
                                 .checked_sub(1)

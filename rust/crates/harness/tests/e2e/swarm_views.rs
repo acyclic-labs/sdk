@@ -196,6 +196,10 @@ impl<'a> State<'a> {
                 "duplicate or reversed overview delivery".into(),
             ));
         }
+        if self.fault == Fault::CloneSwarmPerStatus {
+            // Broken consumer: copy all retained status slots for every delivery.
+            std::hint::black_box(self.status_cursors.clone());
+        }
         self.status_cursors[id] = next;
         let Some(wire::session_data::Item::LatestValue(value)) = item else {
             return Err(Error::Invalid("overview changed wire fidelity".into()));

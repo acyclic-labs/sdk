@@ -17,21 +17,29 @@ impl Drop for Lease {
 
 impl Observed {
     fn observed(&self, path: &StreamPath, records: RecordStream) -> RecordStream {
-        if !path.as_str().ends_with("/files") {
-            return records;
-        }
         // Instrumentation has one lock; it is never nested or held over a poll.
         let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
-        counts.live_full += 1;
-        counts.peak_full = counts.peak_full.max(counts.live_full);
+        counts.server_follows += 1;
+        let lease = path.as_str().ends_with("/files").then(|| {
+            counts.live_full += 1;
+            counts.peak_full = counts.peak_full.max(counts.live_full);
+            Lease(self.counts.clone())
+        });
         drop(counts);
-        let lease = Lease(self.counts.clone());
-        futures::stream::unfold((records, lease), |(mut records, lease)| async move {
-            records
-                .next()
-                .await
-                .map(|record| (record, (records, lease)))
-        })
+        let counts = self.counts.clone();
+        futures::stream::unfold(
+            (records, lease, counts),
+            |(mut records, lease, counts)| async move {
+                let record = records.next().await?;
+                if record.is_ok() {
+                    counts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .server_records += 1;
+                }
+                Some((record, (records, lease, counts)))
+            },
+        )
         .boxed()
     }
 }

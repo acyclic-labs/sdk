@@ -12,13 +12,13 @@ use acyclic_harness::{
 };
 use acyclic_stream::MemoryStream;
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
-use std::sync::Arc;
+use std::{future::Future as _, sync::Arc, task::Poll};
 
 pub(super) async fn run(case: SwarmCase) -> TestResult {
-    run_with_fault(case, Fault::None).await
+    run_with_fault(case, Fault::None).await.map(|_| ())
 }
 
-pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult {
+pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<serde_json::Value> {
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());
     let config = Arc::new(TaskVolume::open(provider.clone(), publish::path("config/files")).await?);
@@ -102,6 +102,17 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
             }
         },
     );
+    // Meter the production subscription pipeline, including the server polled
+    // by its incoming stream and snapshot/reducer callbacks. Fixture seeding,
+    // producer writes and cold-reopen checks are outside this work boundary.
+    let mut allocation = allocation_counter::AllocationInfo::default();
+    let allocated = &mut allocation;
+    let mut consume = Box::pin(consume);
+    let consume = futures::future::poll_fn(move |cx| {
+        let mut result = Poll::Pending;
+        *allocated += allocation_counter::measure(|| result = consume.as_mut().poll(cx));
+        result
+    });
     let produce = Producer {
         case: &case,
         provider: &provider,
@@ -172,6 +183,8 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
     wire.as_object_mut()
         .ok_or("wire counters")?
         .extend(state.report().as_object().ok_or("view counters")?.clone());
+    wire["allocations"] = allocation.count_total.into();
+    wire["allocated_bytes"] = allocation.bytes_total.into();
     if !matchers::subset(&case.expect.wire, &wire) {
         return Err(format!("swarm wire observations differ: {wire}").into());
     }
@@ -203,5 +216,5 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult 
             measured[(measured.len() * 99 / 100).min(measured.len() - 1)]
         );
     }
-    Ok(())
+    Ok(wire)
 }
