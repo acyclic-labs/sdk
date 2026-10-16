@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 
@@ -24,8 +25,8 @@ pub(crate) struct MemoryStorePage {
     pub(crate) has_more: bool,
 }
 
-pub(super) fn page<V>(
-    paths: &BTreeMap<String, V>,
+pub(super) fn page<K: Borrow<str> + Ord, V>(
+    paths: &BTreeMap<K, V>,
     path: &str,
     generation: u64,
     after: Option<&str>,
@@ -37,57 +38,136 @@ pub(super) fn page<V>(
     } else {
         format!("{path}/")
     };
-    let cursor = after.filter(|_| !prefix.is_empty()).map(|after| format!("{prefix}{after}"));
-    let start = match after {
-        Some(after) => Excluded(cursor.as_deref().unwrap_or(after)),
-        None => Included(prefix.as_str()),
-    };
-    // Retain at most one page plus its lookahead. Keys borrow the path index;
-    // only names returned to the caller need an owned copy.
-    let mut found = BTreeMap::<&str, MemoryStoreEntryKind>::new();
-    for (name, value) in paths.range::<str, _>((start, Unbounded)) {
-        let Some(remainder) = name.strip_prefix(&prefix) else {
-            break;
-        };
-        let (segment, kind) = match remainder.split_once('/') {
-            Some((segment, _)) => (segment, MemoryStoreEntryKind::Directory),
-            None => (remainder, MemoryStoreEntryKind::File),
-        };
-        if segment.is_empty()
-            || (path.is_empty() && segment == ".system")
-            || after.is_some_and(|cursor| segment <= cursor)
-        {
-            continue;
+    let mut seek = String::new();
+    let (mut found, last_path) = select(
+        paths, &prefix, generation, after, maximum, &created, &mut seek,
+    );
+    if let (Some(last_path), Some((&largest, _))) = (last_path, found.last_key_value()) {
+        // An unseen smaller entry must be a proper prefix of the largest
+        // candidate, with '/' sorting after its next character. Other smaller
+        // names sort before an already visited path and cannot appear later.
+        let mut copied = None;
+        for (offset, character) in largest.char_indices() {
+            if offset == 0 || character >= '/' {
+                continue;
+            }
+            let Some(segment) = largest.get(..offset) else {
+                continue;
+            };
+            if (prefix.is_empty() && segment == ".system")
+                || after.is_some_and(|cursor| segment <= cursor)
+                || found.contains_key(segment)
+                || found
+                    .last_key_value()
+                    .is_some_and(|(last, _)| segment >= *last)
+            {
+                continue;
+            }
+            if let Some(previous) = copied {
+                seek.truncate(prefix.len() + previous);
+            } else {
+                seek.clear();
+                seek.reserve(prefix.len() + offset + 1);
+                seek.push_str(&prefix);
+            }
+            let Some(suffix) = largest.get(copied.unwrap_or(0)..offset) else {
+                continue;
+            };
+            seek.reserve(suffix.len() + 1);
+            seek.push_str(suffix);
+            seek.push('/');
+            copied = Some(offset);
+            // This subtree was already resolved if it precedes the final path
+            // visited by select; do not reread generation-pinned histories.
+            if seek.as_str() <= last_path {
+                continue;
+            }
+            let visible = paths
+                .range::<str, _>((Included(seek.as_str()), Unbounded))
+                .take_while(|(name, _)| {
+                    let name: &str = (*name).borrow();
+                    name.starts_with(&seek)
+                })
+                .any(|(_, value)| created(value).is_none_or(|created| created <= generation));
+            if visible {
+                found.pop_last();
+                found.insert(segment, MemoryStoreEntryKind::Directory);
+            }
         }
-        if found.len() > maximum
-            && found.last_key_value().is_some_and(|(last, _)| segment >= *last)
-        {
-            continue;
-        }
-        if (kind == MemoryStoreEntryKind::Directory && found.contains_key(segment))
-            || created(value).is_some_and(|created| created > generation)
-        {
-            continue;
-        }
-        if found.len() > maximum {
-            found.pop_last();
-        }
-        // Full-path order differs from entry order around punctuation before
-        // '/'; later paths can introduce a smaller directory entry.
-        // Full file keys are unique; repeated directory names were skipped above.
-        found.insert(segment, kind);
     }
     let has_more = found.len() > maximum;
     let entries = found
         .into_iter()
         .take(maximum)
-        .map(|(name, kind)| MemoryStoreEntry { name: name.to_owned(), kind })
+        .map(|(name, kind)| MemoryStoreEntry {
+            name: name.to_owned(),
+            kind,
+        })
         .collect();
     MemoryStorePage {
         generation,
         entries,
         has_more,
     }
+}
+
+fn select<'a, K: Borrow<str> + Ord, V>(
+    paths: &'a BTreeMap<K, V>,
+    prefix: &str,
+    generation: u64,
+    after: Option<&str>,
+    maximum: usize,
+    created: &impl Fn(&V) -> Option<u64>,
+    seek: &mut String,
+) -> (BTreeMap<&'a str, MemoryStoreEntryKind>, Option<&'a str>) {
+    if let Some(after) = after.filter(|_| !prefix.is_empty()) {
+        seek.reserve(prefix.len() + after.len());
+        seek.push_str(prefix);
+        seek.push_str(after);
+    }
+    let start = match after {
+        Some(after) => Excluded(if prefix.is_empty() {
+            after
+        } else {
+            seek.as_str()
+        }),
+        None => Included(prefix),
+    };
+    let mut rows = paths.range::<str, _>((start, Unbounded));
+    let mut found = BTreeMap::new();
+    while let Some((name, value)) = rows.next() {
+        let name: &str = name.borrow();
+        let Some(remainder) = name.strip_prefix(prefix) else {
+            break;
+        };
+        let (segment, kind) = match remainder.split_once('/') {
+            Some((segment, _)) => (segment, MemoryStoreEntryKind::Directory),
+            None => (remainder, MemoryStoreEntryKind::File),
+        };
+        let excluded = segment.is_empty()
+            || (prefix.is_empty() && segment == ".system")
+            || after.is_some_and(|cursor| segment <= cursor);
+        let known = kind == MemoryStoreEntryKind::Directory && found.contains_key(segment);
+        let visible =
+            !excluded && !known && created(value).is_none_or(|created| created <= generation);
+        if visible {
+            found.entry(segment).or_insert(kind);
+            if found.len() > maximum {
+                return (found, Some(name));
+            }
+        }
+        if kind == MemoryStoreEntryKind::Directory && (excluded || known || visible) {
+            // '/' is immediately before '0'. Seeking here skips exactly this
+            // descendant subtree; punctuation siblings have already been seen.
+            seek.clear();
+            seek.reserve(prefix.len() + segment.len() + 1);
+            seek.push_str(prefix);
+            seek.push_str(segment);
+            seek.push('0');
+            rows = paths.range::<str, _>((Included(seek.as_str()), Unbounded));
+        }
+    }
+    (found, None)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
