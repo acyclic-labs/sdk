@@ -9,6 +9,8 @@ pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use schema::{Channel, Component, FileKey, Owner, Query, SCHEMA, TaskFile, ToolFile};
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::NativeWork;
 use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
@@ -18,11 +20,14 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+type NativeWork<'a> = Option<&'a ()>;
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Original publication accounting failure, retaining its cause and custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error(transparent)]
     Accounting(#[from] crate::Error),
     /// Underlying durable storage failure.
@@ -306,7 +311,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
-        work: crate::NativeWork<'_>,
+        work: NativeWork<'_>,
     ) -> Result<Generation> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;

@@ -1,4 +1,4 @@
-use super::{Channel, Error, FileKey, FileValue, Result, Write};
+use super::{Channel, Error, FileKey, FileValue, NativeWork, Result, Write};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
 
@@ -15,10 +15,7 @@ struct Entry {
     channel: Option<Channel>,
 }
 
-pub(super) fn encode(
-    write: &Write,
-    work: crate::NativeWork<'_>,
-) -> Result<(OwnedBytes, FileValue)> {
+pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
     let entry = Entry {
         key: write.key.clone(),
         channel: write.channel,
@@ -60,7 +57,12 @@ pub(super) fn encode(
         .map_err(crate::Error::from)?;
     }
     let mut bytes = Vec::new();
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     bytes.try_reserve_exact(total).map_err(crate::Error::from)?;
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    bytes
+        .try_reserve_exact(total)
+        .map_err(|_| Error::LimitExceeded)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = &io {
         io.retain_owned((bytes.capacity() - total) as u64)
