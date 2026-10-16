@@ -3,6 +3,8 @@
 use crate::StreamProvider;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream::BoxStream;
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
 use std::collections::BTreeSet;
