@@ -185,7 +185,12 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        let state = (source, request.from, request.limit, Vec::new().into_iter());
+        let state = (
+            source,
+            request.from,
+            request.limit,
+            Vec::<Record>::new().into_iter(),
+        );
         Ok(Box::pin(futures::stream::try_unfold(
             state,
             |(mut source, mut next, mut remaining, mut pending)| async move {

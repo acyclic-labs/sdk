@@ -55,6 +55,14 @@ export async function test(endpoint: string) {
   if (!exact) throw new Error("large history was truncated by a unary response budget");
   const oldUnaryBudget = StreamLimit.MAX_COMMAND_BYTES + 16_384 + 10;
   if (records.reduce((sum, record) => sum + record.value.length, 0) <= oldUnaryBudget) throw new Error("large-history negative control did not exceed the former aggregate limit");
+  await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, {
+    path: "browser/overlap", records: Array.from({ length: 6 }, (_, index) => new Uint8Array([index])),
+  })));
+  for (const cut of [1n, 2n, 3n]) {
+    const overlap = await stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/overlap", from: cut, limit: 3 })));
+    const fresh = overlap.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);
+    if (fresh.length !== 3 || fresh.some((record, offset) => record.sequence !== cut + BigInt(offset) || record.value[0] !== Number(cut) + offset)) throw new Error("overlap consumed replayed bytes or skipped a fresh cursor");
+  }
   follow.close(); sibling.close(); latest.close(); all.close(); stream.free();
   return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length };
 }

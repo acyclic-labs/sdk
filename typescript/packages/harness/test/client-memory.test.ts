@@ -4,6 +4,28 @@ import { HarnessClient, TaskVolume, WasmStream, initializeClientQueries } from "
 
 beforeAll(initializeClientQueries);
 
+for (const quota of ["CommandQuota", "ByteQuota"] as const) {
+test(`waiting ${quota} is reserved before futures retain caller buffers`, async () => {
+  const stream = new WasmStream();
+  const outbox = await TaskVolume.create(stream, "client/files");
+  const target = await TaskVolume.create(stream, "agent/files");
+  const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
+  const limits = { commands: quota === "CommandQuota" ? 1n : 4n, bytes: BigInt(payload.length) * (quota === "ByteQuota" ? 1n : 4n), durability: "Accepted" } as const;
+  const client = await HarnessClient.open(outbox, target, limits);
+  const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
+  // These calls happen in the same JS turn, before the worker can consume either.
+  const first = client.enqueue(key, payload);
+  const second = client.enqueue(key, payload);
+  await expect(second).rejects.toMatchObject({ kind: quota });
+  await first;
+  // Successful completion releases the waiting reservation, even with a full outbox.
+  await client.enqueue(key, payload);
+  expect(client.pending()).toBe(1);
+  expect(await client.flush()).toBe(1);
+  client.free(); outbox.free(); target.free(); stream.free();
+});
+}
+
 function bounded(before: number, after: number) {
   if (after !== before) throw new Error("oversize admission grew WASM memory");
 }

@@ -76,6 +76,8 @@ pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod retry;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod waiting_calls;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use retry::submission_retry;
 pub use file_error::FileClientError;

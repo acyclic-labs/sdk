@@ -38,7 +38,11 @@ impl StreamProvider for Provider {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.memory.fork(request).await
     }
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
+        if request.path.as_str() == "browser/overlap" && request.from > 0 {
+            request.from -= 1;
+            request.limit += 1;
+        }
         self.memory.read(request).await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
