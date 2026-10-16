@@ -15,8 +15,14 @@ async fn opening_requires_the_exact_private_owner_and_both_volume_grants() {
         volume.storage_name(&mut None).unwrap()
     ))
     .unwrap();
-    for (owner, write) in [(agent, false), (AgentId::from_bytes([3; 16]), true)] {
-        let (verifier, scope) = authority(owner, &volume, write);
+    let both = [VolumeOperation::Read, VolumeOperation::Write];
+    for (owner, grants) in [
+        (agent, &[VolumeOperation::Read][..]),
+        (agent, &[VolumeOperation::Write][..]),
+        (agent, &[][..]),
+        (AgentId::from_bytes([3; 16]), &both[..]),
+    ] {
+        let (verifier, scope) = authority(owner, &volume, grants);
         assert!(matches!(
             TaskFiles::open(provider.clone(), &volume, &verifier, &scope, 4096).await,
             Err(crate::Error::Unauthorized(_))
@@ -26,7 +32,7 @@ async fn opening_requires_the_exact_private_owner_and_both_volume_grants() {
             Err(StreamError::NotFound)
         ));
     }
-    let (verifier, scope) = authority(agent, &volume, true);
+    let (verifier, scope) = authority(agent, &volume, &both);
     assert!(
         TaskFiles::open(provider.clone(), &volume, &verifier, &scope, 4096)
             .await

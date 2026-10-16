@@ -1,15 +1,16 @@
 use super::*;
+use crate::{AgentId, conversation::VolumeOwner, resources::ProviderRef};
+#[cfg(not(acyclic_harness_loom))]
 use crate::{
-    AgentId, Capabilities, TaskId,
-    conversation::VolumeOwner,
+    Capabilities, TaskId,
     core::{AggregateKind, Authority, AuthorityIssuer},
-    resources::ProviderRef,
 };
 
+#[cfg(not(acyclic_harness_loom))]
 pub(super) fn authority(
     agent: AgentId,
     volume: &VolumeRef,
-    write: bool,
+    operations: &[VolumeOperation],
 ) -> (AuthorityVerifier, Scope) {
     let issuer = AuthorityIssuer::new(
         "task-files",
@@ -19,14 +20,10 @@ pub(super) fn authority(
             id: TaskId::from_bytes([2; 16]).to_string(),
         },
     );
-    let mut grants = vec![volume.capability(VolumeOperation::Read, &mut None).unwrap()];
-    if write {
-        grants.push(
-            volume
-                .capability(VolumeOperation::Write, &mut None)
-                .unwrap(),
-        );
-    }
+    let grants: Vec<_> = operations
+        .iter()
+        .map(|operation| volume.capability(*operation, &mut None).unwrap())
+        .collect();
     let scope = issuer
         .issue(
             "caller",
