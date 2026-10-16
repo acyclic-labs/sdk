@@ -1,5 +1,5 @@
 use acyclic_fs::kernel::{
-    CanonicalDecodeError, DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord,
+    CanonicalDecodeError, Child, DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord,
     FileTablePage, GenerationRoot, MergeGenerationOutcome, MergeGenerationRequest, MetadataField,
     encode_file_metadata, encode_file_table_page, encode_generation_root, file_metadata_id,
     file_table_page_id, merge_generation_async,
@@ -39,27 +39,44 @@ async fn put(store: &Store, id: ObjectId, bytes: Vec<u8>) {
         .unwrap_or_else(fail);
 }
 
-async fn table(store: &Store, count: u8, metadata: ObjectId, changed: bool) -> ObjectId {
-    let records = (1..=count)
-        .map(|key| FileRecord {
-            file_id: FileId::from_bytes([key; 16]),
-            kind: FileKind::Fifo,
-            link_count: if changed { 2 } else { 1 },
-            metadata,
-            payload: FilePayload::Empty,
-        })
-        .collect();
-    let page = FileTablePage::Leaf(records);
-    let id = file_table_page_id(&page, u32::from(count)).unwrap_or_else(fail);
-    let bytes = encode_file_table_page(
-        &page,
-        u32::from(count),
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )
-    .unwrap_or_else(fail);
-    put(store, id, bytes).await;
-    id
+#[derive(Clone, Copy, PartialEq)]
+enum Workload {
+    Dense,
+    Append,
+    Interleaved,
+    Random,
+    Sparse,
+}
+
+async fn table(
+    store: &Store,
+    records: Vec<FileRecord>,
+    singleton: bool,
+    internal: bool,
+) -> ObjectId {
+    async fn page(store: &Store, value: FileTablePage) -> ObjectId {
+        let id = file_table_page_id(&value, 192).unwrap_or_else(fail);
+        let bytes = encode_file_table_page(
+            &value,
+            192,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed,
+        )
+        .unwrap_or_else(fail);
+        put(store, id, bytes).await;
+        id
+    }
+    if !internal {
+        return page(store, FileTablePage::Leaf(records)).await;
+    }
+    let mut children = Vec::new();
+    for chunk in records.chunks(if singleton { 1 } else { records.len() }) {
+        children.push(Child {
+            first: chunk[0].file_id,
+            page: page(store, FileTablePage::Leaf(chunk.to_vec())).await,
+        });
+    }
+    page(store, FileTablePage::Internal(children)).await
 }
 
 async fn generation(store: &Store, root: &GenerationRoot) -> ObjectId {
@@ -78,7 +95,7 @@ async fn generation(store: &Store, root: &GenerationRoot) -> ObjectId {
 }
 
 impl Fixture {
-    async fn new(count: u8) -> Self {
+    async fn new(count: u8, workload: Workload) -> Self {
         let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = Store::new(Arc::new(objects), bucket);
         let metadata = FileMetadata::default();
@@ -111,11 +128,44 @@ impl Fixture {
             parents: Vec::new(),
             required_features: 0,
         };
-        let base = root(table(&store, count, original_metadata, false).await);
-        let ours = root(table(&store, count, original_metadata, true).await);
-        // Both sides change every record in different fields. This forces both
-        // full leaf diffs and the real merge/checkpoint path.
-        let theirs = root(table(&store, count, changed_id, false).await);
+        let base_keys: Vec<_> = match workload {
+            Workload::Interleaved => (1..=count * 2).filter(|key| key % 2 == 1).collect(),
+            Workload::Random => (1..=count * 3).filter(|key| key % 3 == 1).collect(),
+            _ => (1..=count).collect(),
+        };
+        let ours_keys = match workload {
+            Workload::Dense => base_keys.clone(),
+            Workload::Append | Workload::Interleaved => (1..=count * 2).collect(),
+            Workload::Random => (1..=count * 3)
+                .filter(|key| {
+                    *key == 1 || (u32::from(*key).wrapping_mul(2654435761).rotate_left(13) % 3 != 0)
+                })
+                .collect(),
+            Workload::Sparse => vec![1, count],
+        };
+        let records = |keys: &[u8], side: u8| {
+            keys.iter()
+                .map(|key| FileRecord {
+                    file_id: FileId::from_bytes([*key; 16]),
+                    kind: FileKind::Fifo,
+                    link_count: if side == 1 && workload == Workload::Dense {
+                        2
+                    } else {
+                        1
+                    },
+                    metadata: if side == 2 && (workload == Workload::Dense || *key == 1) {
+                        changed_id
+                    } else {
+                        original_metadata
+                    },
+                    payload: FilePayload::Empty,
+                })
+                .collect()
+        };
+        let branch = workload == Workload::Sparse;
+        let base = root(table(&store, records(&base_keys, 0), branch, branch).await);
+        let ours = root(table(&store, records(&ours_keys, 1), false, branch).await);
+        let theirs = root(table(&store, records(&base_keys, 2), branch, branch).await);
         let base_generation = generation(&store, &base).await;
         Self {
             request: MergeGenerationRequest {
@@ -126,8 +176,9 @@ impl Fixture {
                 ours,
                 theirs,
                 retain_theirs_parent: true,
-                maximum_changes: u32::from(count),
-                maximum_conflicts: u32::from(count),
+                maximum_changes: u32::from(count) * if workload == Workload::Dense { 1 } else { 3 },
+                maximum_conflicts: u32::from(count)
+                    * if workload == Workload::Dense { 1 } else { 3 },
                 resolutions: BTreeMap::new(),
             },
             store,
@@ -137,10 +188,39 @@ impl Fixture {
 
 #[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 4)]
 fn ordered_leaf_merge(bencher: Bencher, count: u8) {
+    measure(bencher, count, Workload::Dense, "ordered_leaf_merge");
+}
+
+#[divan::bench(args = [8, 64], threads = [1, 4], sample_count = 32, sample_size = 4)]
+fn append_leaf_merge(bencher: Bencher, count: u8) {
+    measure(bencher, count, Workload::Append, "append_leaf_merge");
+}
+
+#[divan::bench(args = [8, 64], threads = [1, 4], sample_count = 32, sample_size = 4)]
+fn interleaved_leaf_merge(bencher: Bencher, count: u8) {
+    measure(
+        bencher,
+        count,
+        Workload::Interleaved,
+        "interleaved_leaf_merge",
+    );
+}
+
+#[divan::bench(args = [8, 64], threads = [1, 4], sample_count = 32, sample_size = 4)]
+fn random_leaf_merge(bencher: Bencher, count: u8) {
+    measure(bencher, count, Workload::Random, "random_leaf_merge");
+}
+
+#[divan::bench(args = [8, 64], threads = [1, 4], sample_count = 32, sample_size = 4)]
+fn sparse_leaf_merge(bencher: Bencher, count: u8) {
+    measure(bencher, count, Workload::Sparse, "sparse_leaf_merge");
+}
+
+fn measure(bencher: Bencher, count: u8, workload: Workload, name: &str) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap_or_else(fail);
-    let fixture = runtime.block_on(Fixture::new(count));
+    let fixture = runtime.block_on(Fixture::new(count, workload));
     let cancellation = CancellationToken::new();
     let operation = || {
         let result = runtime
@@ -159,14 +239,14 @@ fn ordered_leaf_merge(bencher: Bencher, count: u8) {
     };
     let receipt = operation();
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
-        eprintln!("ordered_leaf_merge count={count} work={:?}", receipt.work);
+        eprintln!("{name} count={count} work={:?}", receipt.work);
     }
     let markers = std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some();
     if markers {
-        eprintln!("ACYCLIC_BENCH_BOUNDARY name=ordered_leaf_merge count={count} begin=true");
+        eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} count={count} begin=true");
     }
     bencher.bench(operation);
     if markers {
-        eprintln!("ACYCLIC_BENCH_BOUNDARY name=ordered_leaf_merge count={count} begin=false");
+        eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} count={count} begin=false");
     }
 }

@@ -37,7 +37,12 @@ enum Task {
 
 type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
 
-async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
+async fn diff_with_accounting<
+    S: AsyncObjectStore,
+    F: Format,
+    const PREFIX: bool,
+    const RESET: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -144,7 +149,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                         right.retire(accounting)?;
                         aligned?;
                     } else {
-                        let pushed = push_page::<F>(
+                        let pushed = push_page::<F, PREFIX, RESET>(
                             left,
                             true,
                             &mut tasks,
@@ -158,7 +163,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                             right.retire(accounting)?;
                             return Err(error);
                         }
-                        push_page::<F>(
+                        push_page::<F, PREFIX, RESET>(
                             right,
                             false,
                             &mut tasks,
@@ -182,7 +187,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                     )
                     .await?;
                     let bytes = page.logical_bytes;
-                    push_page::<F>(
+                    push_page::<F, PREFIX, RESET>(
                         Owned::new(page, guard, bytes),
                         before,
                         &mut tasks,
@@ -321,7 +326,7 @@ fn internal_children<F: Format>(
     clippy::too_many_arguments,
     reason = "one page updates the guarded frontier and bounded sorted changes"
 )]
-fn push_page<F: Format>(
+fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
     mut page: Owned<OwnedPage<F>>,
     before: bool,
     tasks: &mut Owned<Vec<Task>>,
@@ -349,7 +354,13 @@ fn push_page<F: Format>(
         // One decoded leaf has strictly increasing keys. Keep its preceding
         // insertion position, but reset for every page: another side/leaf may
         // start before it. No changes are removed while this cursor is live.
-        let mut cursor = None;
+        // The false variant deliberately carries an end-of-previous-leaf
+        // cursor into the next page, for the traversal reset negative control.
+        let mut cursor = if RESET {
+            None
+        } else {
+            Some(values.value.len())
+        };
         match &mut page.value.page {
             PageLease::Owned(Page::Leaf(entries)) => {
                 // Move owned leaf payloads; split their original guard instead
@@ -362,7 +373,7 @@ fn push_page<F: Format>(
                     let bytes = F::value_owned_bytes(&value);
                     let guard = split_allocation(&mut page.allocation, bytes)?;
                     page.bytes = page.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
-                    insert_value::<F>(
+                    insert_value::<F, PREFIX>(
                         values,
                         Owned::new(value, guard, bytes),
                         before,
@@ -388,7 +399,7 @@ fn push_page<F: Format>(
                             0,
                         )?;
                         let bytes = F::value_owned_bytes(&value);
-                        insert_value::<F>(
+                        insert_value::<F, PREFIX>(
                             values,
                             Owned::new(value, guard, bytes),
                             before,
@@ -408,7 +419,7 @@ fn push_page<F: Format>(
     result
 }
 
-fn insert_value<F: Format>(
+fn insert_value<F: Format, const PREFIX: bool>(
     values: &mut Changes<F>,
     value: Owned<F::Value>,
     before: bool,
@@ -418,18 +429,21 @@ fn insert_value<F: Format>(
     cursor: &mut Option<usize>,
 ) -> Result<(), FsError> {
     let prepared = (|| {
-        let compare = |entry: &ValueChange<F::Key, F::Value>| entry.key.cmp(F::key(&value.value));
-        let position = match *cursor {
+        let compare = |entry: &ValueChange<F::Key, F::Value>| {
+            #[cfg(all(test, feature = "memory"))]
+            tests::ordered::record_comparison();
+            entry.key.cmp(F::key(&value.value))
+        };
+        let position = match if PREFIX { *cursor } else { None } {
             None => {
                 super::search::binary_search_with_accounting(&values.value, accounting, compare)?
             }
-            Some(start) => super::search::galloping_search_with_accounting(
-                values.value.get(start..).ok_or(FsError::InvalidDiff)?,
+            Some(start) => super::search::binary_search_from_with_accounting(
+                &values.value,
+                start,
                 accounting,
                 compare,
-            )?
-            .map(|index| start + index)
-            .map_err(|index| start + index),
+            )?,
         };
         if let Err(index) = position {
             values
@@ -552,7 +566,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, FileTableFormat>(
+    diff_with_accounting::<S, FileTableFormat, true, true>(
         store,
         before,
         after,
@@ -573,7 +587,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, TreeFormat>(
+    diff_with_accounting::<S, TreeFormat, true, true>(
         store,
         before,
         after,
