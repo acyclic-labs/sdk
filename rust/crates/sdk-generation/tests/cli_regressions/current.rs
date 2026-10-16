@@ -1,0 +1,835 @@
+use super::*;
+
+#[test]
+fn scenario_failure_leaves_docs_unadmitted() {
+    let fixture = fixture(false);
+    let result = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "unadmitted-scenario-failure",
+        "preview",
+        false,
+    );
+    assert!(!result.status.success(), "{}", output_message(&result));
+    assert!(
+        output_message(&result).contains("scenario"),
+        "{}",
+        output_message(&result)
+    );
+    assert!(fixture
+        .output
+        .join("preview/unadmitted-scenario-failure/sdk-docs-data.v1.json")
+        .exists());
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+}
+
+#[test]
+fn source_mutation_during_profiles_leaves_docs_unadmitted() {
+    let fixture = feature_profile_fixture();
+    fs::write(fixture.root.join("rust/crates/demo/build.rs"), r#"
+fn main() {
+    use std::io::Write;
+    let path = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("src/lib.rs");
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "// source mutated during profile execution").unwrap();
+}
+"#).unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "source mutation fixture"],
+    );
+    let result = run_generate_execute_profiles(&fixture);
+    assert!(!result.status.success(), "{}", output_message(&result));
+    assert!(
+        output_message(&result)
+            .contains("source closure changed during qualification before manifest admission"),
+        "{}",
+        output_message(&result)
+    );
+    assert!(!fixture.output.join("generation-manifest.v1.json").exists());
+    assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
+}
+
+fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_plugin: bool) {
+    let fixture = fixture(include_plugin);
+    let first = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "source-closure-baseline",
+        "preview",
+        true,
+    );
+    assert!(
+        first.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let source = fixture.root.join(relative);
+    let original = fs::read(&source).unwrap();
+    let original_hash = hash_bytes(&original);
+    fs::write(&source, changed).unwrap();
+    let changed_hash = hash_file(&source);
+    assert_ne!(
+        original_hash, changed_hash,
+        "test edit did not change {relative}"
+    );
+
+    let drift = run_drift(&fixture);
+    assert!(!drift.status.success());
+    let drift_message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
+    );
+    assert!(
+        drift_message.contains("source digest changed"),
+        "{drift_message}"
+    );
+    assert!(drift_message.contains(relative), "{drift_message}");
+
+    let stale_output = fixture.root.join("stale-after-source-edit");
+    let stale = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &stale_output,
+        "source-closure-stale",
+        "preview",
+        true,
+    );
+    assert!(!stale.status.success());
+    let stale_message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&stale.stdout),
+        String::from_utf8_lossy(&stale.stderr)
+    );
+    assert!(
+        stale_message.contains("matching source attestation"),
+        "{stale_message}"
+    );
+    assert!(!stale_output.join("generation-manifest.v1.json").exists());
+
+    fs::write(&source, &original).unwrap();
+    assert_eq!(hash_file(&source), original_hash);
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+
+    let refreshed_output = fixture.root.join("refreshed-after-source-restore");
+    let refreshed = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &refreshed_output,
+        "source-closure-restored",
+        "preview",
+        true,
+    );
+    assert!(
+        refreshed.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&refreshed.stdout),
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(refreshed_output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["sourceFiles"][relative], original_hash);
+}
+
+#[test]
+fn crate_rust_comment_and_markdown_guide_edits_invalidate_output() {
+    assert_source_edit_invalidates_output(
+        "rust/crates/demo/src/lib.rs",
+        "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
+        false,
+    );
+    assert_source_edit_invalidates_output(
+        "rust/crates/demo/README.md",
+        "# Demo crate\n\nChanged crate guide.\n",
+        false,
+    );
+    assert_source_edit_invalidates_output(
+        "docs/guide.md",
+        "# Fixture guide\n\nChanged workspace guide.\n",
+        false,
+    );
+}
+
+#[test]
+fn plugin_rust_edits_invalidate_output() {
+    assert_source_edit_invalidates_output(
+        "plugin/src/main.rs",
+        "fn main() {}\n// changed plugin source\n",
+        true,
+    );
+}
+
+#[test]
+fn unknown_generate_option_is_rejected_before_writes() {
+    let fixture = fixture(false);
+    let result = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "generate",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            fixture.output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--version",
+            "unknown-option",
+            "--unknown",
+            "accepted",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(message.contains("unknown option `--unknown`"), "{message}");
+    assert!(
+        !fixture.output.exists(),
+        "unknown options must fail before generation writes output"
+    );
+}
+
+#[test]
+fn unknown_drift_option_is_rejected_before_reads() {
+    let fixture = fixture(false);
+    let result = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "drift",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            fixture.output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--unknown",
+            "accepted",
+        ])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(message.contains("unknown option `--unknown`"), "{message}");
+    assert!(
+        !fixture.output.exists(),
+        "unknown options must fail before drift reads or writes output"
+    );
+}
+
+#[test]
+fn source_state_tamper_is_rejected() {
+    let fixture = fixture(false);
+    let mut value = manifest(&fixture.root, false, "working-tree");
+    write_manifest(&fixture.output, &value);
+    assert!(run_drift(&fixture).status.success());
+
+    value["sourceState"] = Value::String("captured-snapshot".to_string());
+    write_manifest(&fixture.output, &value);
+    let result = run_drift(&fixture);
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(message.contains("source state"), "{message}");
+}
+
+#[test]
+fn plugin_source_is_part_of_manifest_closure() {
+    let fixture = fixture(true);
+    let result = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "plugin-source-closure",
+        "preview",
+        true,
+    );
+    assert!(
+        result.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let generated: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(generated["sourceFiles"]
+        .get("plugin/src/main.rs")
+        .and_then(Value::as_str)
+        .is_some());
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
+fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
+    let fixture = fixture(false);
+    let result = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "versioned-provenance",
+        "preview",
+        true,
+    );
+    assert!(result.status.success(), "{}", output_message(&result));
+    let generation: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let release_relative = generation["releaseManifest"].as_str().unwrap();
+    let release_path = fixture.output.join(release_relative);
+    let release_bytes = fs::read(&release_path).unwrap();
+    let release: Value = serde_json::from_slice(&release_bytes).unwrap();
+    assert_eq!(release["schema"], "sdk-generation-release-manifest.v1");
+    assert_eq!(release["version"], "versioned-provenance");
+    assert_eq!(release["revision"], generation["revision"]);
+    assert_eq!(release["sourceSha256"], generation["sourceSha256"]);
+    assert_eq!(release["sourceFiles"], generation["sourceFiles"]);
+    let catalog = release["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["kind"] == "scenario-catalog")
+        .expect("release manifest must bind the scenario catalog artifact");
+    let catalog_path = fixture.output.join(catalog["path"].as_str().unwrap());
+    assert_eq!(catalog["sha256"], hash_file(&catalog_path));
+    assert_eq!(
+        fs::read_to_string(release_path.with_extension("sha256"))
+            .unwrap()
+            .trim(),
+        hash_bytes(&release_bytes)
+    );
+    assert!(run_drift(&fixture).status.success());
+
+    let original_catalog = fs::read(&catalog_path).unwrap();
+    fs::write(&catalog_path, b"tampered scenario catalog\n").unwrap();
+    let drift = run_drift(&fixture);
+    assert!(!drift.status.success());
+    assert!(output_message(&drift).contains("generated artifact digest changed"));
+    fs::write(&catalog_path, original_catalog).unwrap();
+    assert!(run_drift(&fixture).status.success());
+}
+
+#[test]
+fn stale_source_attestation_is_rejected_before_generate() {
+    let fixture = fixture(false);
+    let first = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "generate",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            fixture.output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--version",
+            "stale-attestation",
+            "--channel",
+            "preview",
+            "--skip-scenarios",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    fs::write(
+        fixture.root.join("rust/crates/demo/src/lib.rs"),
+        "pub fn demo() -> u64 { 8 }\n",
+    )
+    .unwrap();
+    let second_output = fixture.root.join("stale-output");
+    let second = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        .args([
+            "generate",
+            "--root",
+            fixture.root.to_str().unwrap(),
+            "--output",
+            second_output.to_str().unwrap(),
+            "--rustdoc-dir",
+            fixture.rustdoc.to_str().unwrap(),
+            "--version",
+            "stale-attestation",
+            "--channel",
+            "preview",
+            "--skip-scenarios",
+        ])
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(message.contains("matching source attestation"), "{message}");
+    assert!(!second_output.join("generation-manifest.v1.json").exists());
+}
+
+#[test]
+fn release_generation_requires_executed_profiles() {
+    let fixture = fixture(false);
+    git(&fixture.root, &["add", "rustdoc"]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "rustdoc receipt"],
+    );
+    let result = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "release-scenario-bypass",
+        "release",
+        true,
+    );
+    assert!(!result.status.success());
+    let message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        message.contains("release generation requires --execute-profiles"),
+        "{message}"
+    );
+    assert!(!fixture.output.join("generation-manifest.v1.json").exists());
+}
+
+#[test]
+fn concurrent_preview_publications_are_idempotent() {
+    let fixture = fixture(false);
+    let root_a = fixture.root.clone();
+    let rustdoc_a = fixture.rustdoc.clone();
+    let output_a = fixture.output.clone();
+    let first = std::thread::spawn(move || {
+        run_generate(
+            &root_a,
+            &rustdoc_a,
+            &output_a,
+            "concurrent-preview",
+            "preview",
+            true,
+        )
+    });
+    let root_b = fixture.root.clone();
+    let rustdoc_b = fixture.rustdoc.clone();
+    let output_b = fixture.output.clone();
+    let second = std::thread::spawn(move || {
+        run_generate(
+            &root_b,
+            &rustdoc_b,
+            &output_b,
+            "concurrent-preview",
+            "preview",
+            true,
+        )
+    });
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+    assert!(first.status.success() || second.status.success());
+    let drift = run_drift(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
+fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
+    let fixture = feature_profile_fixture();
+    let feature = "native-execution-observation-".repeat(8);
+    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let original = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{original}\n{feature} = []\n")).unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "long feature identity fixture"],
+    );
+    let generated = run_generate_execute_profiles(&fixture);
+    assert!(generated.status.success(), "{}", output_message(&generated));
+    let receipts: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let long_profiles = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|receipt| {
+            receipt["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|value| value == &feature))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !long_profiles.is_empty(),
+        "the long Cargo feature must be executed"
+    );
+    for receipt in long_profiles {
+        assert!(receipt["profile"].as_str().unwrap().len() > 255);
+        let relative = receipt["rustdocFile"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("rustdoc/")
+            .unwrap();
+        let path = fixture.rustdoc.join(relative);
+        assert!(path.file_name().unwrap().to_string_lossy().len() < 255);
+        assert!(path.is_file(), "the executed receipt must be retained");
+        assert!(path.with_extension("source.sha256").is_file());
+    }
+    let drift = run_drift_execute_profiles(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
+fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
+    let fixture = feature_profile_fixture();
+    let result = run_generate_execute_profiles(&fixture);
+    assert!(
+        result.status.success(),
+        "feature-only profile API must be joined into the docs catalog:\n{}",
+        output_message(&result)
+    );
+
+    let data_path = fixture
+        .output
+        .join("preview/feature-profile-catalog/sdk-docs-data.v1.json");
+    let data: Value = serde_json::from_slice(&fs::read(&data_path).unwrap()).unwrap();
+    assert!(data.to_string().contains("FeatureOnly"));
+
+    let availability: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let feature_entry = availability["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "demo::FeatureOnly")
+        .expect("feature-only item must retain a sidecar entry");
+    let feature_profile = feature_entry["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|profile| {
+            profile["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
+        })
+        .expect("FeatureOnly must be attributed to the extra profile");
+
+    let variant_entries = availability["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["path"] == "demo::overloaded")
+        .collect::<Vec<_>>();
+    assert!(
+        variant_entries.len() >= 2,
+        "profile merge must retain same-path items with distinct signatures"
+    );
+    let signatures = variant_entries
+        .iter()
+        .filter_map(|entry| entry["signature"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        signatures.len() >= 2,
+        "same-path profile variants must remain signature-distinct"
+    );
+    assert!(variant_entries.iter().any(|entry| {
+        entry["profiles"].as_array().is_some_and(|profiles| {
+            profiles.iter().any(|profile| {
+                profile["features"]
+                    .as_array()
+                    .is_some_and(|features| features.iter().any(|feature| feature == "extra"))
+            })
+        })
+    }));
+
+    let receipts: Value = serde_json::from_slice(
+        &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
+    )
+    .unwrap();
+    let effective = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|receipt| {
+            (
+                receipt["defaultFeatures"].as_bool().unwrap(),
+                receipt["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|feature| feature == "extra"),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        effective,
+        std::collections::BTreeSet::from([
+            (false, false),
+            (false, true),
+            (true, false),
+            (true, true),
+        ]),
+        "both API branches remain qualified with and without Cargo defaults"
+    );
+    let receipt = receipts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|receipt| receipt["profile"] == feature_profile["profile"])
+        .expect("sidecar profile must have an executed receipt row");
+    let receipt_path = fixture.output.join(".rustdoc").join(
+        receipt["rustdocFile"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("rustdoc/")
+            .unwrap(),
+    );
+    assert_eq!(
+        receipt["rustdocSha256"],
+        rustdoc_digest(&receipt_path, &fixture.root).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(receipt_path.with_extension("source.sha256"))
+            .unwrap()
+            .trim(),
+        data["source"]["sourceSha256"].as_str().unwrap()
+    );
+    assert_eq!(data["source"]["revision"], git_revision(&fixture.root));
+
+    let availability_hash =
+        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json"));
+    let second = run_generate_execute_profiles(&fixture);
+    assert!(
+        second.status.success(),
+        "replaying the same producer inputs must be deterministic:\n{}",
+        output_message(&second)
+    );
+    assert_eq!(
+        hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json")),
+        availability_hash
+    );
+
+    let source = fixture.root.join("rust/crates/demo/src/lib.rs");
+    let original = fs::read(&source).unwrap();
+    let mut changed = original.clone();
+    changed.extend_from_slice(b"// source API closure mutation\n");
+    fs::write(&source, changed).unwrap();
+    let drift = run_drift_execute_profiles(&fixture);
+    assert!(!drift.status.success());
+    assert!(output_message(&drift).contains("rust/crates/demo/src/lib.rs"));
+    fs::write(&source, original).unwrap();
+    assert!(
+        run_drift_execute_profiles(&fixture).status.success(),
+        "restoring the exact Rust source must restore drift validity"
+    );
+}
+
+#[test]
+fn current_binary_only_owner_emits_guides_without_private_api_or_registry_claims() {
+    let fixture = feature_profile_fixture();
+    fs::write(fixture.root.join("rust/crates/demo/Cargo.toml"),
+        "[package]\nname = 'demo'\nversion = '1.0.0'\nedition = '2021'\n[[bin]]\nname = 'demo-cli'\npath = 'src/main.rs'\n").unwrap();
+    fs::remove_file(fixture.root.join("rust/crates/demo/src/lib.rs")).unwrap();
+    fs::write(fixture.root.join("rust/crates/demo/src/main.rs"),
+        "//! Run the source-owned command guide.\n/// PRIVATE CLI INTERNALS\nfn hidden() {}\nfn main() { hidden(); }\n").unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &["commit", "--quiet", "-m", "binary-only fixture"],
+    );
+    let result = run_generate_execute_profiles(&fixture);
+    assert!(result.status.success(), "{}", output_message(&result));
+    let data: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .output
+                .join("preview/feature-profile-catalog/sdk-docs-data.v1.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(data["source"]["publicationStatus"], "candidate");
+    assert!(data["source"]["releasedPackages"].is_null());
+    assert!(data["families"][0]["items"].as_array().unwrap().is_empty());
+    assert!(data.to_string().contains("source-owned command guide"));
+    assert!(!data.to_string().contains("PRIVATE CLI INTERNALS"));
+    let drift = run_drift_execute_profiles(&fixture);
+    assert!(drift.status.success(), "{}", output_message(&drift));
+}
+
+#[test]
+fn clean_relocated_profile_builds_share_generated_source_content_identity() {
+    let fixture = native_profile_fixture();
+    fs::create_dir_all(fixture.root.join("rust/crates/helper/src")).unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/helper/Cargo.toml"),
+        "[package]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/helper/src/lib.rs"),
+        "pub struct Witness;\n",
+    )
+    .unwrap();
+    let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
+    let mut contents = fs::read_to_string(&manifest).unwrap();
+    contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
+    fs::write(manifest, contents).unwrap();
+    assert!(Command::new("cargo")
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(&fixture.root)
+        .status()
+        .unwrap()
+        .success());
+    fs::write(fixture.root.join("rust/crates/demo/build.rs"),
+        "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
+    fs::write(
+        fixture.root.join("rust/crates/demo/src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/wire.rs\"));\npub fn dependency_witness() -> relocation_helper::Witness { relocation_helper::Witness }\n",
+    )
+    .unwrap();
+    git(&fixture.root, &["add", "."]);
+    git(
+        &fixture.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "generated source relocation fixture",
+        ],
+    );
+    let relocated_root = fixture.root.with_extension("relocated");
+    let relocated_output = fixture.output.with_extension("relocated");
+    assert!(Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            fixture.root.to_str().unwrap(),
+            relocated_root.to_str().unwrap()
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let relocated = Fixture {
+        root: relocated_root,
+        rustdoc: relocated_output.join(".rustdoc"),
+        output: relocated_output,
+    };
+    std::thread::scope(|scope| {
+        for checkout in [&fixture, &relocated] {
+            scope.spawn(move || {
+                assert!(
+                    !checkout.output.exists(),
+                    "each profile build starts with a fresh output directory"
+                );
+                let result = run_generate_execute_profiles(checkout);
+                assert!(result.status.success(), "{}", output_message(&result));
+                assert!(run_drift_execute_profiles(checkout).status.success());
+            });
+        }
+    });
+    let dependency_paths = |checkout: &Fixture| {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&checkout.rustdoc).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let raw: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            for record in raw["external_crates"].as_object().unwrap().values() {
+                if record["name"] == "relocation_helper" {
+                    let physical = record["path"].as_str().unwrap();
+                    assert!(physical.contains(".profile-build"), "{physical}");
+                    paths.push(physical.to_string());
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        assert!(
+            !paths.is_empty(),
+            "actual dependency load paths must be captured"
+        );
+        paths
+    };
+    assert_ne!(
+        dependency_paths(&fixture),
+        dependency_paths(&relocated),
+        "raw Rustdoc must retain the independently relocated dependency artifacts"
+    );
+    let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
+    assert_eq!(
+        fs::read(fixture.output.join(path)).unwrap(),
+        fs::read(relocated.output.join(path)).unwrap(),
+        "independent clean profile outputs must publish identical content identities and bytes"
+    );
+    let data: Value =
+        serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
+    let mut spans = Vec::new();
+    fn source_paths(value: &Value, paths: &mut Vec<String>) {
+        if let Some(object) = value.as_object() {
+            if let Some(path) = object
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| path.starts_with("generated/rustdoc/"))
+            {
+                paths.push(path.to_string());
+            }
+            for child in object.values() {
+                source_paths(child, paths);
+            }
+        } else if let Some(array) = value.as_array() {
+            for child in array {
+                source_paths(child, paths);
+            }
+        }
+    }
+    source_paths(&data, &mut spans);
+    assert!(
+        !spans.is_empty(),
+        "generated source spans must appear in the actual docs data"
+    );
+    for path in spans {
+        assert_eq!(
+            fs::read(fixture.output.join(&path)).unwrap(),
+            b"pub struct GeneratedWire;\n"
+        );
+        assert_eq!(
+            fs::read(fixture.output.join(&path)).unwrap(),
+            fs::read(relocated.output.join(&path)).unwrap()
+        );
+    }
+    assert_eq!(
+        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+        fs::read(
+            relocated
+                .output
+                .join("sdk-docs-profile-availability.v1.json")
+        )
+        .unwrap()
+    );
+}

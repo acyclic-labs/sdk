@@ -1,0 +1,21 @@
+[package]
+name = "sdk-generation-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sdk-generation = { path = ".." }
+
+[[bin]]
+name = "archive_members"
+path = "fuzz_targets/archive_members.rs"
+test = false
+doc = false
+bench = false

@@ -525,3 +525,18 @@ fn restoration_rejects_junction_ancestors_before_writing() {
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(external);
 }
+
+#[test]
+fn file_hashes_keep_existing_artifact_and_tool_identities() {
+    let root = test_root("sha256-equivalence");
+    let path = root.join("input.bin");
+    let bytes = proptest::collection::vec(proptest::prelude::any::<u8>(), 0..65536);
+    proptest::test_runner::TestRunner::default()
+        .run(&bytes, |bytes| {
+            fs::write(&path, &bytes).unwrap();
+            proptest::prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(&bytes));
+            Ok(())
+        })
+        .unwrap();
+    fs::remove_dir_all(root).unwrap();
+}

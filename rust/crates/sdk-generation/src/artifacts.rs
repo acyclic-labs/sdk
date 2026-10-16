@@ -142,7 +142,14 @@ pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    Ok(sha256_bytes(&fs::read(path).map_err(io_error)?))
+    let bytes = fs::read(path).map_err(io_error)?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let hex = digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("sha256:{hex}"))
 }
 
 pub(super) fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {

@@ -278,8 +278,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         "#[cfg(feature=\"native\")] pub struct Witness;\n",
     )
     .unwrap();
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let cargo = PathBuf::from(cargo);
+    let cargo = PathBuf::from(env!("CARGO"));
     assert!(Command::new(&cargo)
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
