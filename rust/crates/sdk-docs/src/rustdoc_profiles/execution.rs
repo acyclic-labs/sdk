@@ -59,7 +59,24 @@ impl CargoExecutionContext<'_> {
     }
     pub fn configure(self, command: &mut Command) -> Result<(), ProfileError> {
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        if let Some(home) = crate::cargo_home::current() {
+            command.env("CARGO_HOME", home);
+        }
         command.args(self.config_options()?);
+        Ok(())
+    }
+
+    pub fn configure_metadata(self, command: &mut MetadataCommand) -> Result<(), ProfileError> {
+        command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        if let Some(home) = crate::cargo_home::current() {
+            command.env("CARGO_HOME", home);
+        }
+        if let Some(cargo) = self.cargo_path {
+            command.cargo_path(cargo);
+        }
+        let mut options = vec!["--locked".to_owned()];
+        options.extend(self.config_options()?);
+        command.other_options(options);
         Ok(())
     }
 }
@@ -70,13 +87,7 @@ pub fn load_metadata(
     context: CargoExecutionContext<'_>,
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
-    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-    if let Some(cargo_path) = context.cargo_path {
-        command.cargo_path(cargo_path);
-    }
-    let mut options = vec!["--locked".to_owned()];
-    options.extend(context.config_options()?);
-    command.other_options(options);
+    context.configure_metadata(&mut command)?;
     command
         .no_deps()
         .manifest_path(manifest.as_ref())

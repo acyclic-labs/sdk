@@ -27,13 +27,14 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     // the locked graph, retaining only those exact local published owners.
     // Registry dependencies must never become documentation owners implicitly.
     let mut command = cargo_metadata::MetadataCommand::new();
-    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-    if let Some(cargo) = cargo_path {
-        command.cargo_path(cargo);
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path,
+        lock_selection: None,
     }
+    .configure_metadata(&mut command)
+    .map_err(profile_error)?;
     let resolved = command
         .manifest_path(root.join("Cargo.toml"))
-        .other_options(vec!["--locked".to_owned()])
         .exec()
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;

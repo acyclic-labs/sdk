@@ -289,14 +289,25 @@ fn write_manifest(output: &Path, value: &Value) {
 }
 
 fn invoke(command: &mut Command) -> std::process::Output {
-    if command.get_envs().next().is_some() || command.get_current_dir().is_some() {
+    let env = command.get_envs().collect::<Vec<_>>();
+    let cargo_home = match env.as_slice() {
+        [(key, Some(home))] if *key == "CARGO_HOME" => Some(Path::new(home)),
+        _ => None,
+    };
+    if (cargo_home.is_none() && !env.is_empty()) || command.get_current_dir().is_some() {
         return command.output().unwrap();
     }
-    let result = sdk_generation::run(
-        command
-            .get_args()
-            .map(|arg| arg.to_str().unwrap().to_owned()),
-    );
+    let run = || {
+        sdk_generation::run(
+            command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap().to_owned()),
+        )
+    };
+    let result = match cargo_home {
+        Some(home) => sdk_docs::with_cargo_home(home, run),
+        None => run(),
+    };
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
@@ -520,31 +531,39 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 }
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
-        "generate",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--version",
-        "feature-profile-catalog",
-        "--channel",
-        "preview",
-        "--execute-profiles",
-        "--skip-scenarios",
-    ]))
+    invoke(
+        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+            .args([
+                "generate",
+                "--root",
+                fixture.root.to_str().unwrap(),
+                "--output",
+                fixture.output.to_str().unwrap(),
+                "--version",
+                "feature-profile-catalog",
+                "--channel",
+                "preview",
+                "--execute-profiles",
+                "--skip-scenarios",
+            ])
+            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+    )
 }
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
-        "drift",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-    ]))
+    invoke(
+        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+            .args([
+                "drift",
+                "--root",
+                fixture.root.to_str().unwrap(),
+                "--output",
+                fixture.output.to_str().unwrap(),
+                "--rustdoc-dir",
+                fixture.rustdoc.to_str().unwrap(),
+            ])
+            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+    )
 }
 
 fn output_message(result: &std::process::Output) -> String {
