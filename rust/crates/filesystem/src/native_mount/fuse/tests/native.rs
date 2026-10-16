@@ -14,28 +14,39 @@ pub(super) fn memory_checkout(
     use crate::model::GenerationSelector;
     let fs = crate::Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let checkouts = runtime.block_on(async {
+    let future = Box::pin(async {
         let cancellation = crate::CancellationToken::new();
-        let volume = fs
-            .create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume =
+            Box::pin(fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation))
+                .await?
+                .value;
         let mut checkouts = Vec::with_capacity(count);
         for _ in 0..count {
             checkouts.push(
-                volume
-                    .checkout(
-                        GenerationSelector::Head,
-                        mode,
-                        crate::WorkBudget::UNBOUNDED,
-                        &cancellation,
-                    )
-                    .await?
-                    .value,
+                Box::pin(volume.checkout(
+                    GenerationSelector::Head,
+                    mode,
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                ))
+                .await?
+                .value,
             );
         }
         Ok::<_, crate::OperationFailure<crate::FsError>>(checkouts)
-    })?;
+    });
+    #[cfg(acyclic_fs_loom)]
+    {
+        static REPORTED: std::sync::Once = std::sync::Once::new();
+        REPORTED.call_once(|| {
+            eprintln!(
+                "checkout fixture future: {} bytes backing, {} bytes on the caller stack",
+                std::mem::size_of_val(future.as_ref().get_ref()),
+                std::mem::size_of_val(&future),
+            )
+        });
+    }
+    let checkouts = runtime.block_on(future)?;
     Ok(checkouts)
 }
 

@@ -108,8 +108,11 @@ pub(super) fn record(
         let plan = Plan::of(&map.read().unwrap_or_else(PoisonError::into_inner), key);
         if plan.tracked != 0 {
             #[cfg(all(test, acyclic_fs_loom))]
-            let _broken_lock = model_checking::hold_map_while_charging(map);
-            charge(carrier, scan_work(1))?;
+            let broken_lock = model_checking::hold_map_while_charging(map);
+            let charged = charge(carrier, scan_work(1));
+            #[cfg(all(test, acyclic_fs_loom))]
+            drop(broken_lock.map(std::mem::ManuallyDrop::into_inner));
+            charged?;
         }
         if plan.known || (plan.tracked < plan.capacity && plan.tracked < MAXIMUM_TRACKED_KEYS) {
             let mut positions = map.write().unwrap_or_else(PoisonError::into_inner);
