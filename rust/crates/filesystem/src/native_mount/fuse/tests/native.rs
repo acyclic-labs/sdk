@@ -114,6 +114,34 @@ fn shared_sources_from_checkout(
     ))
 }
 
+#[cfg(acyclic_fs_loom)]
+pub(super) fn invalidation_model_source() -> Arc<dyn MountFilesystem> {
+    use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
+    let config = posix_config();
+    let checkouts = memory_checkout(
+        config,
+        CheckoutMode {
+            access: AccessMode::ReadWrite,
+            consistency: ConsistencyMode::Pinned,
+            mutations: MutationMode::PrivateOverlay,
+        },
+        1,
+    )
+    .unwrap();
+    invalidation_source_from_checkouts(checkouts, config)
+}
+
+#[cfg(acyclic_fs_loom)]
+#[inline(never)]
+fn invalidation_source_from_checkouts(
+    checkouts: Vec<MemoryCheckout>,
+    config: crate::model::VolumeConfig,
+) -> Arc<dyn MountFilesystem> {
+    let checkout = checkouts.into_iter().next().expect("one checkout");
+    let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
+    Arc::new(MemorySource::new(shared, config).unwrap())
+}
+
 pub(super) struct FuseWriteGuard {
     pub(super) writable: AtomicBool,
 }
