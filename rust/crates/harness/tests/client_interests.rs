@@ -3,6 +3,8 @@ use acyclic_harness::client::{ClientInterests, InterestTier};
 use acyclic_stream::{StreamPath, wire::SessionDelivery};
 use std::collections::BTreeSet;
 
+#[path = "client_interest_discovery.rs"]
+mod discovery;
 #[path = "client_interest_session.rs"]
 mod session;
 

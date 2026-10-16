@@ -1,0 +1,214 @@
+//! Complete discovery and fail-closed lifecycle over the real swarm driver.
+
+use super::path;
+use acyclic_harness::{
+    Error, Result,
+    client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
+    task_volume::{FileKey, Query, TaskVolume, Write},
+};
+use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider, wire};
+use futures::{SinkExt as _, channel::mpsc};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc, sync::Arc};
+
+fn limits(agents: usize) -> SwarmClientLimits {
+    SwarmClientLimits {
+        agents,
+        selected: agents,
+        layout_bytes: 4096,
+        config_files: 10,
+        snapshot_files: 1,
+    }
+}
+
+async fn write(config: &TaskVolume<MemoryStream>, name: &str, bytes: &[u8]) {
+    let cut = config.snapshot(&Query::Inputs, 10).await.unwrap();
+    config
+        .append(
+            cut.generation,
+            &Write::new(FileKey::parse(name).unwrap(), bytes.to_vec()),
+        )
+        .await
+        .unwrap();
+}
+
+fn check_statuses(updates: &[wire::SessionInterest], count: usize) -> bool {
+    let mut found = BTreeSet::new();
+    for update in updates {
+        for subscription in &update.upsert {
+            if let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind {
+                if follow.delivery != wire::SessionDelivery::Latest as i32
+                    || !found.insert(follow.path.clone())
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    found
+        == (0..count)
+            .map(|id| format!("swarm/a{id:05}/status"))
+            .collect()
+}
+
+async fn discover(count: usize) -> Vec<wire::SessionInterest> {
+    let provider = Arc::new(MemoryStream::default());
+    let config = TaskVolume::open(provider.clone(), path("config/files"))
+        .await
+        .unwrap();
+    for id in 0..count {
+        provider
+            .append(AppendRequest {
+                path: path(&format!("swarm/a{id:05}/status")),
+                records: vec![b"idle".to_vec().into()],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await
+            .unwrap();
+    }
+    let updates = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::pin(futures::sink::unfold(
+        updates.clone(),
+        |updates, update| async move {
+            updates.borrow_mut().push(update);
+            Ok::<_, Error>(updates)
+        },
+    ));
+    let client = SwarmClient::new(path("swarm"), limits(count.max(1))).unwrap();
+    let result = client
+        .follow(
+            provider.as_ref(),
+            &config,
+            sink,
+            futures::stream::pending(),
+            |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
+            |update| {
+                futures::future::ready(match update {
+                    SwarmUpdate::Layout(_) => Err(Error::Unsupported("complete".into())),
+                    _ => Ok(()),
+                })
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Unsupported(_))));
+    let result = updates.borrow().clone();
+    result
+}
+
+#[test]
+fn discovery_follows_every_page_and_status_once() {
+    for count in [
+        0,
+        1,
+        acyclic_stream::MAX_ITEMS,
+        acyclic_stream::MAX_ITEMS + 1,
+        acyclic_stream::MAX_ITEMS * 2 + 1,
+    ] {
+        let updates = futures::executor::block_on(discover(count));
+        assert!(check_statuses(&updates, count), "agent count {count}");
+        assert!(
+            updates
+                .iter()
+                .enumerate()
+                .all(|(index, update)| update.revision == index as u64 + 1)
+        );
+    }
+}
+
+#[test]
+fn negative_control_truncated_discovery_is_rejected() {
+    let mut updates = futures::executor::block_on(discover(2));
+    assert!(check_statuses(&updates, 2));
+    updates.last_mut().unwrap().upsert.pop();
+    assert!(!check_statuses(&updates, 2));
+}
+
+#[test]
+fn config_capacity_is_independent_and_closed_active_channels_fail() {
+    futures::executor::block_on(async {
+        let provider = Arc::new(MemoryStream::default());
+        let config = TaskVolume::open(provider.clone(), path("config/files"))
+            .await
+            .unwrap();
+        let agent = TaskVolume::open(provider.clone(), path("swarm/a/files"))
+            .await
+            .unwrap();
+        write(
+            &config,
+            "workspace/layout.json",
+            br#"{"in_view":["swarm/a"]}"#,
+        )
+        .await;
+        write(&config, "workspace/open-views.json", b"{}").await;
+        for id in 0..6 {
+            write(&config, &format!("commands/{id}.md"), b"unrelated").await;
+        }
+        let cut = agent.snapshot(&Query::Root, 1).await.unwrap();
+        agent
+            .append(
+                cut.generation,
+                &Write::new(
+                    FileKey::parse(".tasks/t/status.json").unwrap(),
+                    b"active".to_vec(),
+                ),
+            )
+            .await
+            .unwrap();
+        for channel_id in [0, 1, 2, 3] {
+            let (frames, incoming) = mpsc::unbounded();
+            let snapshots = RefCell::new(0);
+            let client = SwarmClient::new(path("swarm"), limits(1)).unwrap();
+            let result = client
+                .follow(
+                    provider.as_ref(),
+                    &config,
+                    futures::sink::drain().sink_map_err(|never| match never {}),
+                    incoming,
+                    |_, maximum| {
+                        assert_eq!(maximum, 1);
+                        agent.heads(&Query::Root, None, maximum)
+                    },
+                    |update| {
+                        match update {
+                            SwarmUpdate::Snapshot { snapshot, .. } => {
+                                assert_eq!(snapshot.files.len(), 1);
+                                *snapshots.borrow_mut() += 1;
+                            }
+                            SwarmUpdate::Layout(_) => frames
+                                .unbounded_send(Ok(wire::SessionFrame {
+                                    channel_id,
+                                    generation: 1,
+                                    body: Some(wire::session_frame::Body::Closed(
+                                        wire::SessionClosed {
+                                            code: "permission_revoked".into(),
+                                            message: "closed".into(),
+                                        },
+                                    )),
+                                }))
+                                .unwrap(),
+                            _ => {}
+                        }
+                        futures::future::ready(Ok(()))
+                    },
+                )
+                .await;
+            assert_eq!(*snapshots.borrow(), 1);
+            let Err(Error::Storage(message)) = result else {
+                panic!("closed channel {channel_id} must fail")
+            };
+            assert!(message.contains(&format!(
+                "subscription {channel_id} closed: permission_revoked"
+            )));
+        }
+    });
+}
+
+proptest::proptest! {
+    // Every admitted direct child gets exactly one latest-value follow, including
+    // an empty hierarchy; page boundaries never change this set property.
+    #[test]
+    fn discovery_preserves_the_complete_status_set(count in 0usize..64) {
+        let updates = futures::executor::block_on(discover(count));
+        proptest::prop_assert!(check_statuses(&updates, count));
+    }
+}

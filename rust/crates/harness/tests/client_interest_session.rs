@@ -73,6 +73,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             agents: 10,
             selected: 2,
             layout_bytes: 1024,
+            config_files: 10,
             snapshot_files: 10,
         },
     )?;
@@ -82,7 +83,9 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
     let (data_seen, mut observed) = mpsc::unbounded();
     let snapshots = Rc::new(RefCell::new(Vec::new()));
     let delivered = Rc::new(RefCell::new(Vec::new()));
+    let discovery = MemoryStream::default();
     let consumer = client.follow(
+        &discovery,
         &config,
         session.sink_map_err(|e| Error::Storage(e.to_string())),
         incoming,
@@ -324,6 +327,7 @@ async fn check_snapshot_follow(
             agents: 4,
             selected: 4,
             layout_bytes: 4096,
+            config_files: 10,
             snapshot_files: 10,
         },
     )
@@ -335,7 +339,9 @@ async fn check_snapshot_follow(
     });
     let (layouts, mut rendered) = mpsc::unbounded();
     let sink = futures::sink::drain().sink_map_err(|never| match never {});
+    let discovery = MemoryStream::default();
     let consumer = client.follow(
+        &discovery,
         &config,
         sink,
         incoming,

@@ -5,7 +5,7 @@ use crate::{
     Error, Result,
     task_volume::{HeadSnapshot, TaskVolume},
 };
-use acyclic_stream::{StreamPath, StreamProvider, wire};
+use acyclic_stream::{ChildrenPageRequest, StreamPath, StreamProvider, wire};
 use futures::{FutureExt as _, Sink, SinkExt as _, Stream, StreamExt as _};
 use std::{collections::BTreeMap, future::Future};
 
@@ -18,6 +18,8 @@ pub struct SwarmClientLimits {
     pub selected: usize,
     /// Combined layout and open-view document bytes.
     pub layout_bytes: usize,
+    /// Maximum command/workspace files in the config query, independent of agents.
+    pub config_files: usize,
     /// Maximum logical files in each selected snapshot.
     pub snapshot_files: usize,
 }
@@ -160,6 +162,7 @@ impl SwarmClient {
         if limits.agents == 0
             || limits.selected > limits.agents
             || limits.layout_bytes == 0
+            || limits.config_files == 0
             || limits.snapshot_files == 0
         {
             return Err(Error::Invalid("invalid swarm client bounds".into()));
@@ -178,8 +181,9 @@ impl SwarmClient {
     /// it reuses the query owner's materialized index rather than replaying agent
     /// history into a second client index.
     /// Finite sources fail closed rather than returning success with stale views.
-    pub async fn follow<P, S, I, Q, QFut, F, Fut>(
+    pub async fn follow<D, P, S, I, Q, QFut, F, Fut>(
         &self,
+        streams: &D,
         files: &TaskVolume<P>,
         mut session: S,
         incoming: I,
@@ -187,6 +191,7 @@ impl SwarmClient {
         mut publish: F,
     ) -> Result<()>
     where
+        D: StreamProvider + ?Sized,
         P: StreamProvider + ?Sized,
         S: Sink<wire::SessionInterest, Error = Error> + Unpin,
         I: Stream<Item = Result<wire::SessionFrame>>,
@@ -217,12 +222,38 @@ impl SwarmClient {
             ..Default::default()
         });
         state.send(&mut session, initial).await?;
+        // Subscribe before enumerating: the platform queues subsequent child
+        // changes while we acquire every page of one hierarchy cut. Duplicate
+        // children from the subscription and snapshot share the same fold.
+        let mut after = None;
+        let mut hierarchy_version = None;
+        loop {
+            let page = streams
+                .children_page(ChildrenPageRequest {
+                    parent: Some(self.root.clone()),
+                    after,
+                    hierarchy_version,
+                    limit: acyclic_stream::MAX_ITEMS as u32,
+                })
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let mut update = state.update()?;
+            for child in page.children {
+                state.discover(child.path, self.limits.agents, &mut update)?;
+            }
+            state.send(&mut session, update).await?;
+            let Some(next) = page.next_after else {
+                break;
+            };
+            after = Some(next);
+            hierarchy_version = Some(page.hierarchy_version);
+        }
         let mut files = InterestFiles::observe(
             files,
             self.root.clone(),
             self.limits.selected,
             self.limits.layout_bytes,
-            self.limits.snapshot_files,
+            self.limits.config_files,
         )
         .await?;
         let incoming = incoming.fuse();
@@ -261,6 +292,11 @@ impl SwarmClient {
                     // Placement/reconnect generations belong to the platform
                     // session. Its incoming iterator has already fenced stale
                     // frames; channel identities here are never reused.
+                    if let Some(wire::session_frame::Body::Closed(closed)) = &frame.body {
+                        if frame.channel_id == 0 || frame.channel_id == 1 || state.routes.contains_key(&frame.channel_id) {
+                            return Err(Error::Storage(format!("platform subscription {} closed: {}: {}", frame.channel_id, closed.code, closed.message)));
+                        }
+                    }
                     if let Some(wire::session_frame::Body::Data(data)) = frame.body {
                         if frame.channel_id == 1 {
                             let Some(wire::session_data::Item::Child(child)) = data.item else {
