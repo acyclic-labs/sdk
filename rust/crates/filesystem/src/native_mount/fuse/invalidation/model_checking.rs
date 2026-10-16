@@ -99,18 +99,12 @@ fn production_guard_wakes_invalidator_and_waiters_retry_a_refused_tail() {
             // No waiter notification can rescue a missing producer wakeup.
             attempt.recv().unwrap();
             assert!(core.state().unwrap().invalidation.in_flight);
-            let (waiting, waits) = mpsc::channel();
-            let waiter = loom::thread::spawn({
-                let (core, work) = (Arc::clone(&core), work.clone());
-                move || {
-                    WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(waiting));
-                    core.wait_for_invalidation(core.state().unwrap(), None, &work)
-                }
-            });
-            waits.recv().unwrap();
-            release.send(()).unwrap();
+            // Release the refused notification while the real waiter still
+            // owns state, immediately before its atomic Condvar wait. The
+            // invalidator cannot publish the denial before that wait starts.
+            WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(release));
             assert!(matches!(
-                waiter.join().unwrap(),
+                core.wait_for_invalidation(core.state().unwrap(), None, &work),
                 Err(NativeMountError::Lifecycle(_))
             ));
             {
