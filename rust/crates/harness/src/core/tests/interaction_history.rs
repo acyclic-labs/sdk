@@ -241,7 +241,10 @@ impl History {
         prop_assert_eq!(&self.replay, &self.reducer);
         let settled = self.reducer.copy(&mut None).unwrap();
         let retried = self.reducer.apply(&cmd).unwrap();
-        prop_assert!(matches!(retried, ApplyResult::Replayed { .. }));
+        prop_assert!(
+            matches!(retried, ApplyResult::Replayed { .. }),
+            "exact interaction retry did not replay"
+        );
         if fault == Fault::DoubleRetry {
             self.reducer.events.push_back(event);
             self.reducer.revision += 1;
