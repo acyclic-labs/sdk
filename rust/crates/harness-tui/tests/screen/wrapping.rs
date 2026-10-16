@@ -29,7 +29,7 @@ fn wrapped_graphemes_keep_style_and_exact_width_has_no_cursor_row() {
     assert_eq!(cache.rows()[0].spans[0].style, red);
     assert_eq!(cache.rows()[0].spans[0].content, "e\u{301}");
     assert_eq!(cache.rows()[2].spans[0].content, "👩‍💻");
-    let allocations = allocation_counter::measure(|| cache.update(&source, source.len(), 2));
+    let allocations = acyclic_test_support::measure(|| cache.update(&source, source.len(), 2));
     assert_eq!(
         allocations.count_total, 0,
         "unchanged frames must reuse the projection"
