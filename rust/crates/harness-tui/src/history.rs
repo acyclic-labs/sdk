@@ -162,18 +162,40 @@ impl Edit {
 #[derive(Clone, Debug, Default)]
 pub struct PromptHistory {
     entries: Vec<String>,
+    generation: u64,
     pub(crate) navigation: Navigation,
 }
 
 // Search cancellation snapshots navigation without copying the shared entries.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Navigation {
+    generation: u64,
     index: Option<usize>,
     draft: String,
     search_before: Option<usize>,
 }
 
 impl PromptHistory {
+    /// Replace the history-file projection and invalidate saved navigation.
+    pub fn replace(&mut self, snapshot: Self) {
+        self.entries = snapshot.entries;
+        self.generation = self.generation.wrapping_add(1);
+        self.reset();
+    }
+
+    /// Revision of the loaded history projection, independent of its contents.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn restore_navigation(&mut self, saved: Navigation) {
+        if saved.generation == self.generation {
+            self.navigation = saved;
+        } else {
+            self.reset();
+        }
+    }
+
     /// Record a nonblank prompt, suppressing adjacent duplicates.
     pub fn push(&mut self, text: String) {
         let text = normalize(&text);
@@ -190,8 +212,10 @@ impl PromptHistory {
 
     /// Begin a new history navigation session.
     pub fn reset(&mut self) {
-        self.navigation.index = None;
-        self.navigation.search_before = None;
+        self.navigation = Navigation {
+            generation: self.generation,
+            ..Navigation::default()
+        };
     }
 
     /// Go backwards, saving the live draft on the first invocation.

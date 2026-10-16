@@ -123,9 +123,11 @@ fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn 
 #[test]
 fn reverse_search_is_a_reversible_preview_not_a_series_of_edits() {
     let mut input = PromptInput::new(Editor::new("draft"));
+    let mut history = acyclic_harness_tui::PromptHistory::default();
     for text in ["first foo", "bar", "second foo"] {
-        input.history.push(text.into());
+        history.push(text.into());
     }
+    input.replace_history(history);
     press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
     input.committed_text("foo", 1);
     assert_eq!(input.editor.text(), "second foo");
@@ -309,8 +311,10 @@ fn shift_click_extends_selection_and_release_survives_a_zero_size_area() {
 #[test]
 fn cancelling_reverse_search_preserves_down_to_the_original_draft() {
     let mut input = PromptInput::new(Editor::new("working draft"));
-    input.history.push("older".into());
-    input.history.push("newer".into());
+    let mut history = acyclic_harness_tui::PromptHistory::default();
+    history.push("older".into());
+    history.push("newer".into());
+    input.replace_history(history);
     press(&mut input, KeyCode::Home, M::NONE, 0);
     press(&mut input, KeyCode::Up, M::NONE, 1);
     assert_eq!(input.editor.text(), "newer");
@@ -332,11 +336,11 @@ fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn 
     let path = directory.path().join("input-history.json");
     std::fs::write(&path, r#"["first"]"#)?;
     let mut input = PromptInput::new(Editor::new("working draft"));
-    input.history = load_history(&path)?;
+    input.replace_history(load_history(&path)?);
     input.edit_message("old-message".into(), "original");
     // A live-query snapshot changes history while the prior message is edited.
     std::fs::write(&path, r#"["first","external"]"#)?;
-    input.history = load_history(&path)?;
+    input.replace_history(load_history(&path)?);
     input.external_result(Some("edited\r\nmessage"), 0);
     assert_eq!(
         press(&mut input, KeyCode::Enter, M::NONE, 1),
@@ -347,10 +351,10 @@ fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn 
         }]
     );
     assert_eq!(input.editor.text(), "working draft");
-    save_history(&path, &input.history)?;
-    input.history = load_history(&path)?;
+    save_history(&path, input.history())?;
+    input.replace_history(load_history(&path)?);
     assert_eq!(
-        input.history.entries(),
+        input.history().entries(),
         &["first", "external", "edited\nmessage"]
     );
     press(&mut input, KeyCode::Home, M::NONE, 2);
@@ -361,6 +365,71 @@ fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn 
     press(&mut input, KeyCode::End, M::CONTROL, 5);
     press(&mut input, KeyCode::Down, M::NONE, 6);
     assert_eq!(input.editor.text(), "working draft");
-    assert_eq!(load_history(&path)?.entries(), input.history.entries());
+    assert_eq!(load_history(&path)?.entries(), input.history().entries());
+    Ok(())
+}
+
+#[test]
+fn history_reload_invalidates_navigation_saved_by_edit_or_search()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness_tui::load_history;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("history.json");
+    for search in [false, true] {
+        for replacement in [
+            r#"["replacement"]"#,
+            "",
+            "[]",
+            r#"["first","second","third","fourth","fifth"]"#,
+        ] {
+            std::fs::write(&path, r#"["first","second","third","fourth","fifth"]"#)?;
+            let mut input = PromptInput::new(Editor::new("working draft"));
+            input.replace_history(load_history(&path)?);
+            press(&mut input, KeyCode::Home, M::CONTROL, 0);
+            press(&mut input, KeyCode::Up, M::NONE, 1);
+            press(&mut input, KeyCode::Up, M::NONE, 2);
+            press(&mut input, KeyCode::End, M::CONTROL, 3);
+            assert_eq!(input.editor.text(), "fourth");
+            if search {
+                press(&mut input, KeyCode::Char('r'), M::CONTROL, 4);
+                input.committed_text("first", 5);
+            } else {
+                input.edit_message("message".into(), "edited message");
+            }
+            let generation = input.history().generation();
+            std::fs::write(&path, replacement)?;
+            let snapshot = load_history(&path)?;
+            assert!(
+                snapshot.generation() > 0,
+                "every file load has a generation"
+            );
+            let entries = snapshot.entries().to_vec();
+            input.replace_history(snapshot);
+            assert!(input.history().generation() > generation);
+            press(&mut input, KeyCode::Esc, M::NONE, 6);
+            assert_eq!((input.editor.text(), input.editor.cursor()), ("fourth", 6));
+            let mut recall = input.clone();
+            press(&mut recall, KeyCode::Home, M::CONTROL, 7);
+            press(&mut recall, KeyCode::Up, M::NONE, 8);
+            assert_eq!(
+                recall.editor.text(),
+                entries.last().map_or("fourth", String::as_str),
+                "Up must immediately reach the reloaded history"
+            );
+            press(&mut input, KeyCode::Down, M::NONE, 7);
+            assert_eq!(
+                input.editor.text(),
+                "fourth",
+                "stale navigation must be reset"
+            );
+            assert_eq!(input.history().entries(), entries);
+            press(&mut input, KeyCode::Home, M::CONTROL, 8);
+            press(&mut input, KeyCode::Up, M::NONE, 9);
+            assert_eq!(
+                input.editor.text(),
+                entries.last().map_or("fourth", String::as_str)
+            );
+        }
+    }
     Ok(())
 }

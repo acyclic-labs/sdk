@@ -28,6 +28,10 @@ fn draft_history_and_keymap_views_follow_their_injected_files()
     );
     let history_path = directory.path().join("config/input-history.json");
     let mut history = load_history(&history_path)?;
+    assert!(
+        history.generation() > 0,
+        "missing history files still produce a loaded generation"
+    );
     history.push("first\r\nsecond".into());
     save_history(&history_path, &history)?;
     assert_eq!(load_history(&history_path)?.entries(), &["first\nsecond"]);

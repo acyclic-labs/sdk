@@ -55,7 +55,7 @@ pub struct PromptInput {
     pub editor: Editor,
     /// Shared input-history file projection; load/save with the history codecs.
     /// Message edits and search previews never own or replace these entries.
-    pub history: PromptHistory,
+    history: PromptHistory,
     /// Whether a submission is queued behind active host work.
     pub busy: bool,
     /// Whether Tab and empty-input Up/Down navigate approval/question items.
@@ -83,6 +83,16 @@ pub struct PromptInput {
 }
 
 impl PromptInput {
+    /// Current history-file projection, shared by every editor context.
+    pub fn history(&self) -> &PromptHistory {
+        &self.history
+    }
+
+    /// Fold a loaded history-file snapshot, invalidating older navigation.
+    pub fn replace_history(&mut self, snapshot: PromptHistory) {
+        self.history.replace(snapshot);
+    }
+
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
         Self {
@@ -98,7 +108,7 @@ impl PromptInput {
         self.finish_search(self.last_activity, false);
         if let Some(editing) = self.editing.take() {
             self.editor = editing.draft;
-            self.history.navigation = editing.navigation;
+            self.history.restore_navigation(editing.navigation);
         }
         self.editing = Some(MessageEdit {
             message,
@@ -383,7 +393,7 @@ impl PromptInput {
                         self.history.push(text.clone());
                         let edit = self.editing.take().map(|edit| {
                             self.editor = edit.draft;
-                            self.history.navigation = edit.navigation;
+                            self.history.restore_navigation(edit.navigation);
                             edit.message
                         });
                         effects.push(InputEffect::Submit {
@@ -469,7 +479,7 @@ impl PromptInput {
                 Action::Escape if self.editing.is_some() => {
                     if let Some(edit) = self.editing.take() {
                         self.editor = edit.draft;
-                        self.history.navigation = edit.navigation;
+                        self.history.restore_navigation(edit.navigation);
                     }
                 }
                 Action::Escape if !self.busy && !self.editor.selection().is_empty() => {
@@ -499,7 +509,7 @@ impl PromptInput {
         if let Some(search) = self.search.take() {
             let chosen = self.editor.text().to_owned();
             self.editor = search.original;
-            self.history.navigation = search.navigation;
+            self.history.restore_navigation(search.navigation);
             if accept && search.matched {
                 self.editor.set_text(&chosen, now_ms);
                 self.history.reset();

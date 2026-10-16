@@ -16,7 +16,9 @@ pub fn parse_history(json: &str) -> io::Result<PromptHistory> {
     for entry in entries {
         history.push(entry);
     }
-    Ok(history)
+    let mut loaded = PromptHistory::default();
+    loaded.replace(history);
+    Ok(loaded)
 }
 
 /// Encode the history file; navigation and search cursors remain ephemeral.
@@ -38,7 +40,7 @@ pub fn save_draft(path: &Path, editor: &Editor) -> io::Result<()> {
 pub fn load_history(path: &Path) -> io::Result<PromptHistory> {
     let json = read_or_empty(path)?;
     if json.is_empty() {
-        return Ok(PromptHistory::default());
+        return parse_history("[]");
     }
     parse_history(&json)
 }

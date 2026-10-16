@@ -64,7 +64,7 @@ fn exercise_variant(data: &[u8], broken: bool) {
         input.keymap = map;
     }
     if let Some(history) = parsed_history {
-        input.history = history;
+        input.replace_history(history);
     }
     for chunk in data.chunks(8) {
         let op = chunk[0];
@@ -214,8 +214,9 @@ fn dispatch(
 fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
     let mut input = PromptInput::new(Editor::default());
     input.keymap = InputKeymap::from_json(r#"{"Super+k":"Home"}"#).expect("valid keymap fixture");
-    input.history =
-        parse_history(r#"["older\r\nprompt","newer\rhistory"]"#).expect("valid history fixture");
+    input.replace_history(
+        parse_history(r#"["older\r\nprompt","newer\rhistory"]"#).expect("valid history fixture"),
+    );
     let mut viewport = Viewport::default();
     let mut at = 0;
     let mut send = |input: &mut PromptInput, event| {
@@ -299,7 +300,7 @@ fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
         }]
     );
     assert_eq!(
-        input.history.entries(),
+        input.history().entries(),
         &["older\nprompt", "newer\nhistory", "edited prompt"],
         "edited submissions remain in the shared history file projection"
     );
