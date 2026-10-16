@@ -77,6 +77,10 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         .workspace()
         .write("/note", bytes::Bytes::from_static(b"\xffchild"))
         .await?;
+    child
+        .workspace()
+        .write_text("/clean", "source change\n")
+        .await?;
     execute(
         &filesystem,
         &store,
@@ -103,15 +107,58 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         &["commit", "-m", "parent"],
     )
     .await?;
-    let merge = execute(
-        &filesystem,
-        &store,
-        (&main).into(),
-        repository,
-        &["merge", "topic"],
+    let merge = super::super::run_with_guard(
+        Workspace {
+            filesystem: &filesystem,
+            store: &store,
+            view: (&main).into(),
+            root: Path::new("."),
+            repository,
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+        },
+        &["merge".into(), "topic".into()],
+        || async {
+            let pending = GitCompatRepository::new(repository, store.clone())
+                .pending_transition()
+                .await
+                .map_err(super::super::errors::compat_error)?;
+            if let Some(pending) = pending {
+                let published = main
+                    .operation_generation(
+                        IdempotencyKey::from_bytes(pending.id.operation_id().into_bytes()),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| Error::from(failure.error))?
+                    .value
+                    .is_some();
+                if !published
+                    && matches!(
+                        pending.mutation,
+                        acyclic_fs::GitPendingMutation::Join {
+                            conflicts: Some(_),
+                            ..
+                        }
+                    )
+                {
+                    return Err(Error::Unauthorized(
+                        "interrupted before merge projection".into(),
+                    ));
+                }
+            }
+            Ok(())
+        },
     )
     .await;
     assert!(matches!(merge, Err(Error::Conflict(_))));
+    assert_eq!(
+        View::Volume(&main).read("/clean", 64).await?.as_ref(),
+        b"source change\n"
+    );
     let compatibility = GitCompatRepository::new(repository, store.clone());
     let before = compatibility
         .pending_transition()
@@ -322,6 +369,18 @@ async fn continuation_checks_manual_paths_even_without_a_join_generation() -> Te
     else {
         return Err("pending merge".into());
     };
+    assert!(
+        execute(
+            &filesystem,
+            &store,
+            (&main).into(),
+            repository,
+            &["merge", "--continue"]
+        )
+        .await
+        .is_err()
+    );
+    assert!(compatibility.pending_transition().await?.is_some());
     compatibility
         .record_merge_conflicts(
             transition.operation_id(),

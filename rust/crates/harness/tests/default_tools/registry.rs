@@ -85,6 +85,7 @@ proptest! {
         let expected = registry.definitions(None).unwrap();
         let mut builder = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
+            .tool(example_tool())
             .replace_tools(registry)
             .tool(example_tool());
         if volume { builder = builder.content(content()); }

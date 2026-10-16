@@ -117,12 +117,6 @@ where
                 &|| self.validate(),
             )
             .await?;
-                // This is metadata in the existing durable transition, not another
-                // conflict index. Persist before any projection can become visible.
-                GitCompatRepository::new(self.repository_id, self.store.clone())
-                    .record_merge_conflicts(operation, &paths)
-                    .await
-                    .map_err(super::errors::compat_error)?;
                 let resolutions = super::materialize::prepared(
                     async {
                         plan.prepare_candidate(&candidate)
@@ -132,7 +126,22 @@ where
                     &|| self.validate(),
                 )
                 .await?;
-                plan.apply(options, resolutions, self.permit).await?
+                let outcome = plan.apply(options, resolutions, self.permit).await?;
+                if matches!(
+                    &outcome,
+                    JoinOutcome::Applied(_)
+                        | JoinOutcome::AlreadyApplied(_)
+                        | JoinOutcome::NoChanges(_)
+                ) {
+                    // Only an applied projection can authorize continuation.
+                    // An interruption before this durable write leaves the
+                    // existing transition uninspected and continuation refuses.
+                    GitCompatRepository::new(self.repository_id, self.store.clone())
+                        .record_merge_conflicts(operation, &paths)
+                        .await
+                        .map_err(super::errors::compat_error)?;
+                }
+                outcome
             } else {
                 initial
             };

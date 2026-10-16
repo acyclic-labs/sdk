@@ -212,7 +212,7 @@ pub(super) async fn open(
         ));
     }
     let exclusions = if native_mounts {
-        volumes::excluded(&path, config)?
+        volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
     } else {
         Vec::new()
     };

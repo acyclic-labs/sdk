@@ -25,8 +25,9 @@ pub(in crate::local) fn require_available(
 pub(in crate::local) fn excluded(
     root: &Path,
     config: acyclic_fs::VolumeConfig,
+    relative: &str,
 ) -> Result<Vec<NamespacePath>> {
-    let destination = root.join(SCRATCH_PATH);
+    let destination = root.join(relative);
     std::iter::once(destination.clone())
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
         .map(|path| {

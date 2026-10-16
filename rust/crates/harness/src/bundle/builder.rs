@@ -100,6 +100,7 @@ impl HarnessBuilder {
     #[must_use]
     pub fn replace_tools(mut self, registry: ToolRegistry) -> Self {
         self.bindings.tools = registry;
+        self.custom_tools.clear();
         self.disable_default_tools = true;
         self
     }

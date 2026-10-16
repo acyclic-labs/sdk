@@ -243,7 +243,21 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
                 .map_err(storage)
         })
         .collect::<Result<Vec<_>>>()?;
-    excluded.extend(workspace::volumes::excluded(&workspace.path, config)?);
+    for (relative, mount) in workspace.mounts.mounts() {
+        if !relative.is_empty()
+            && mount
+                .view
+                .source
+                .as_ref()
+                .is_some_and(|source| source.native.is_some())
+        {
+            excluded.extend(workspace::volumes::excluded(
+                &workspace.path,
+                config,
+                relative,
+            )?);
+        }
+    }
     let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
     Ok((options, policy))
 }

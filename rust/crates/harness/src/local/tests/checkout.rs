@@ -25,6 +25,62 @@ const COMMANDS: [(&str, &str); 8] = [
 ];
 
 #[tokio::test]
+async fn an_unmounted_scratch_directory_captures_edits_and_additions() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let scratch = directory.path().join(".volumes/scratch");
+    std::fs::create_dir_all(&scratch).map_err(super::super::storage)?;
+    std::fs::write(scratch.join("existing"), b"base").map_err(super::super::storage)?;
+    let provider = scripted([
+        call(0, "fs", "status"),
+        ScriptedTurn::Text("baseline".into()),
+        call(1, "fs", "status"),
+        ScriptedTurn::Text("captured".into()),
+    ]);
+    let fs = crate::tools::defaults()?
+        .get("fs", None, None)?
+        .unwrap()
+        .clone();
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path())
+            .without_default_tools()
+            .tool(fs),
+    )
+    .await?;
+    assert_eq!(harness.run("capture baseline").await?.text, "baseline");
+    std::fs::write(scratch.join("existing"), b"changed").map_err(super::super::storage)?;
+    std::fs::write(scratch.join("added"), b"new").map_err(super::super::storage)?;
+    assert_eq!(harness.run("capture edits").await?.text, "captured");
+    let head = harness
+        .workspace()
+        .unwrap()
+        .view()
+        .workspace()
+        .head(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value;
+    for (name, expected) in [("existing", b"changed".as_slice()), ("added", b"new")] {
+        let bytes = head
+            .read(
+                &format!("/.volumes/scratch/{name}"),
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        assert_eq!(bytes.as_ref(), expected);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
@@ -122,7 +178,7 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
     assert!(requests[0].messages.iter().any(|message| {
-        matches!(&message.content, ModelContent::Text(text)
+        matches!(&message.content, crate::model::ModelContent::Text(text)
             if text.contains(harness.workspace().unwrap().context_line()))
     }));
     let results: std::collections::BTreeMap<_, _> = requests
