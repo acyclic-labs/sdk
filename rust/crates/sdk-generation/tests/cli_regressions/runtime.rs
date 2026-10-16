@@ -111,7 +111,13 @@ pub(super) fn configure(command: &mut Command) {
         .env("CARGO_PROFILE_DEV_INCREMENTAL", "false")
         // Private fixtures do not inherit this checkout's static-CRT flags.
         // Resolver/lock configuration is still discovered by the real Cargo.
-        .env("CARGO_ENCODED_RUSTFLAGS", "")
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            // Cargo supplies the compiler's DLL search path when running these
+            // private examples. Avoid linking a separate static standard library
+            // into every Windows fixture executable; assertions stay enabled.
+            if cfg!(windows) { "-C\u{1f}prefer-dynamic" } else { "" },
+        )
         .env(
             "RUSTUP_TOOLCHAIN",
             cargo()
