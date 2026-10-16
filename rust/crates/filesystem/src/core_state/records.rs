@@ -177,7 +177,7 @@ pub(super) fn with_lock<T>(
     with_lock_with_retry(paths, action, retry_record_lock)
 }
 
-fn with_lock_with_retry<T>(
+pub(super) fn with_lock_with_retry<T>(
     paths: &mut RecordPaths,
     action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
     retry: impl FnMut(Instant) -> bool,
@@ -223,7 +223,7 @@ pub(super) fn acquire_lock(
     acquire_lock_with_retry(paths, mode, retry_record_lock)
 }
 
-fn retry_record_lock(deadline: Instant) -> bool {
+pub(super) fn retry_record_lock(deadline: Instant) -> bool {
     retry_record_lock_at(deadline, Instant::now(), std::thread::sleep)
 }
 

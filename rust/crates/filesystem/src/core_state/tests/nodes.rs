@@ -23,29 +23,24 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     let (waiting, wait_started) = tokio::sync::oneshot::channel();
     let (resume, resumed) = std::sync::mpsc::sync_channel(1);
     let contender = tokio::spawn(async move {
+        let mut waiting = Some(waiting);
+        let mut attempts = 0;
+        let mut original_deadline = None;
         store
-            .transaction(move |namespace| {
-                let mut paths = namespace.record(MATERIALIZATION_FAMILY, &held_id.into_bytes())?;
-                let mut waiting = Some(waiting);
-                let mut attempts = 0;
-                let mut original_deadline = None;
-                let result =
-                    read_locked_with_retry::<MaterializationJournal>(&mut paths, |deadline| {
-                        assert_eq!(*original_deadline.get_or_insert(deadline), deadline);
-                        attempts += 1;
-                        let now = if attempts == 1 {
-                            deadline - RECORD_LOCK_RETRY
-                        } else {
-                            deadline
-                        };
-                        retry_record_lock_at(deadline, now, |delay| {
-                            assert_eq!(delay, RECORD_LOCK_RETRY);
-                            waiting.take().unwrap().send(()).unwrap();
-                            resumed.recv().unwrap();
-                        })
-                    });
-                assert_eq!(attempts, 2, "one retry, then timeout at the deadline");
-                result
+            .load_materialization_with_retry(held_id, move |deadline| {
+                assert_eq!(*original_deadline.get_or_insert(deadline), deadline);
+                attempts += 1;
+                assert!(attempts <= 2, "one retry, then timeout at the deadline");
+                let now = if attempts == 1 {
+                    deadline - RECORD_LOCK_RETRY
+                } else {
+                    deadline
+                };
+                retry_record_lock_at(deadline, now, |delay| {
+                    assert_eq!(delay, RECORD_LOCK_RETRY);
+                    waiting.take().unwrap().send(()).unwrap();
+                    resumed.recv().unwrap();
+                })
             })
             .await
     });
