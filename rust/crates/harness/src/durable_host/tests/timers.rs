@@ -2,7 +2,14 @@ use super::*;
 
 #[tokio::test]
 async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
-    let f = fixture::fixture().await?;
+    let f = Fixture::new(
+        Arc::new(MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[crate::contract::capability::TIMER_WAIT],
+    )
+    .await?;
     f.host.admit(f.admission(1, json!(0))).await?;
     let lease = f.claim(1, "timer").await?;
     let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
