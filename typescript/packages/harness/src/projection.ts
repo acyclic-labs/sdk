@@ -1,7 +1,7 @@
 import type * as NativeModel from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicit, ref-only selection from canonical conversation history into model context. */
 import { DEFAULT_LIMITS,
-  type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
+  type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
 import { NativeContracts, type NativeFileRef } from "./native-contracts.js";
 import type { ContentBindings } from "./content.js";
