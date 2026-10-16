@@ -86,6 +86,21 @@ test("transport recovery fences queued records and reuses one live node session"
   await records.return(undefined);
 });
 
+test("aborting a suspended iterator releases its channel reservation immediately", async () => {
+  const node = new SessionNode();
+  node.append("events");
+  const client = new StreamSessions(node.connect);
+  for (let index = 0; index < 16_385; index++) {
+    const controller = new AbortController();
+    const records = client.follow("events", { from: 0n, signal: controller.signal });
+    expect((await records.next()).value?.sequence).toBe(0n);
+    controller.abort();
+    // Deliberately discard the iterator while it is suspended at yield.
+  }
+  expect(node.active).toBe(0);
+  expect(node.outstandingFrames).toBe(0);
+});
+
 test("concurrent first follows share a bounded silent-peer handshake", async () => {
   let connections = 0;
   const client = new StreamSessions(async () => {
@@ -99,3 +114,16 @@ test("concurrent first follows share a bounded silent-peer handshake", async () 
   expect(results.every(result => result.status === "rejected" && result.reason.code === "unavailable")).toBe(true);
   expect(connections).toBe(3);
 }, 4_000);
+
+test("Welcome followed by EOF cannot strand the first subscription", async () => {
+  const node = new SessionNode();
+  const client = new StreamSessions(async (target, signal) => {
+    const transport = await node.connect(target, signal);
+    return { ...transport, async send(input) {
+      await transport.send(input);
+      if (input.body.case === "hello") transport.close();
+    } };
+  });
+  await expect(client.follow("events", { from: 0n }).next()).rejects.toMatchObject({ code: "unavailable" });
+  expect(node.active).toBe(0);
+});

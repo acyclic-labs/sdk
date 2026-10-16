@@ -185,7 +185,9 @@ if (process.argv.includes("--client")) {
 
 await ensureStreamWasm();
 const memory = new WasmStream();
-const identity = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
+const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE;
+const identity = spawnSync(certificate ?? "cargo", certificate === undefined ? ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"] : [], { cwd: root, encoding: "utf8" });
+assert.ifError(identity.error);
 assert.equal(identity.status, 0, identity.stderr);
 const tls = JSON.parse(identity.stdout);
 // One Read frame per batch, optionally Zstandard-compressed.

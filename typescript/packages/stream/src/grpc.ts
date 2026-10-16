@@ -3,6 +3,7 @@ import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor, type Client } from "@connectrpc/connect";
+import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -31,10 +32,16 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     const path = request.path ?? "";
     const from = request.from ?? 0n;
     await validateWireRequest({ kind: "follow", path, from });
-    for await (const record of sessions.follow(path, { from, ...(callOptions?.signal === undefined ? {} : { signal: callOptions.signal }) })) {
-      const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
-      yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
-    }
+    const timeoutMs = callOptions?.timeoutMs;
+    const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
+    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    try {
+      for await (const record of sessions.follow(path, { from, signal: controller.signal })) {
+        const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
+        yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
+      }
+      if (controller.signal.aborted) throw ConnectError.from(controller.signal.reason, Code.Canceled);
+    } finally { controller.abort(); deadline.cleanup(); }
   };
   return Object.assign(client, { follow });
 }

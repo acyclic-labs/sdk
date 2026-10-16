@@ -47,7 +47,13 @@ fn run(scenario: &str, fault: &str, left: &'static [&'static str], right: &'stat
         let mut driver = driver::Driver::configured(&root, scenario, fault);
         driver.call(json!({"action":"ready"}));
         for action in trace {
-            driver.call(json!({"action":action}));
+            let state = driver.call(json!({"action":action}));
+            if scenario == "reservation" && action == "abort" {
+                assert_eq!(
+                    state["activeReservations"], 0,
+                    "cancellation must release the reservation before generator cleanup"
+                );
+            }
         }
         let state = driver.call(json!({"action":"release"}));
         match scenario {
@@ -82,6 +88,44 @@ fn run(scenario: &str, fault: &str, left: &'static [&'static str], right: &'stat
                     "all buffered credit must be returned"
                 );
                 assert_eq!(state["returned"], 2);
+                assert_eq!(state["active"], 0);
+            }
+            "immediate" | "ack" => {
+                assert_eq!(
+                    state["rejected"],
+                    serde_json::Value::Null,
+                    "reconnect must preserve the follow after control-write failure"
+                );
+                assert_eq!(
+                    state["settled"], true,
+                    "reconnect must settle the pending next"
+                );
+                assert_eq!(
+                    state["seen"],
+                    json!([0, 1]),
+                    "reconnect must resume every record once"
+                );
+                assert_eq!(state["connections"], 2);
+            }
+            "reject" => {
+                assert_eq!(
+                    state["settled"], true,
+                    "rejected resubscription must settle the follow"
+                );
+                assert!(
+                    state["rejected"]
+                        .as_str()
+                        .is_some_and(|error| error.contains("resubscription write rejected"))
+                );
+                assert_eq!(state["rejectedCode"], "unavailable");
+                assert_eq!(state["active"], 0);
+            }
+            "reservation" => {
+                assert_eq!(state["activeReservations"], 0);
+                assert_eq!(
+                    state["minimumReservations"], 0,
+                    "cleanup must never release a reservation twice"
+                );
                 assert_eq!(state["active"], 0);
             }
             _ => unreachable!(),
@@ -119,6 +163,54 @@ fn consume_and_discard_return_each_delivery_credit_once() {
 #[should_panic(expected = "all buffered credit must be returned")]
 fn disposal_negative_control_discards_buffered_credit() {
     run("drop", "credit", &["consume"], &["drop"]);
+}
+
+#[test]
+fn next_immediately_after_disconnect_recovers() {
+    run("immediate", "", &["disconnectNext"], &["append"]);
+}
+#[test]
+#[should_panic(expected = "reconnect must")]
+fn immediate_next_negative_control_propagates_control_write_failure() {
+    run("immediate", "control", &["disconnectNext"], &["append"]);
+}
+#[test]
+fn disconnect_during_acknowledgement_recovers() {
+    run(
+        "ack",
+        "",
+        &["consume", "releaseAck"],
+        &["disconnect", "append"],
+    );
+}
+#[test]
+#[should_panic(expected = "reconnect must")]
+fn acknowledgement_negative_control_propagates_control_write_failure() {
+    run(
+        "ack",
+        "control",
+        &["consume", "releaseAck"],
+        &["disconnect", "append"],
+    );
+}
+#[test]
+fn failed_resubscription_settles_the_reassigned_route() {
+    run("reject", "", &["disconnectNext"], &["release"]);
+}
+#[test]
+#[should_panic(expected = "rejected resubscription must settle")]
+fn resubscription_negative_control_only_checks_the_old_link() {
+    run("reject", "resubscribe", &["disconnectNext"], &["release"]);
+}
+
+#[test]
+fn abort_and_generator_cleanup_release_one_reservation() {
+    run("reservation", "", &["abort"], &["drop"]);
+}
+#[test]
+#[should_panic(expected = "cancellation must release the reservation")]
+fn reservation_negative_control_waits_for_generator_cleanup() {
+    run("reservation", "reservation", &["abort"], &["drop"]);
 }
 
 proptest::proptest! {

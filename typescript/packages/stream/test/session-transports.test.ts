@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSecureServer } from "node:http2";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 import { StreamSessionService, SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
-import { GrpcStreamProvider } from "../src/grpc.js";
+import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
 import { SessionNode } from "./session-node.js";
 import type { SessionTransport } from "../src/session.js";
@@ -26,19 +27,17 @@ beforeAll(() => {
 });
 afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
 
-test("public gRPC follows and unaries share one physical HTTP/2 session", async () => {
+async function grpcFixture() {
   const node = new SessionNode();
-  let connections = 0;
-  let sessions = 0;
-  let legacyFollows = 0;
+  const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
   const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
       tail() { return { tail: 0n }; },
-      async *follow() { legacyFollows += 1; throw new Error("legacy Follow RPC is forbidden"); },
+      async *follow() { counts.legacyFollows += 1; throw new Error("legacy Follow RPC is forbidden"); },
     });
     router.service(StreamSessionService, { async *session(input, context) {
       expect(context.requestHeader.get("authorization")).toBe("Bearer fixture");
-      sessions += 1;
+      counts.sessions += 1;
       const transport = await node.connect(undefined, context.signal);
       const abort = (): void => transport.close();
       context.signal.addEventListener("abort", abort, { once: true });
@@ -49,26 +48,57 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     } });
   } }));
   server.on("connection", socket => socket.setNoDelay(true));
-  server.on("session", () => { connections += 1; });
+  server.on("session", () => { counts.connections += 1; });
   const close = ownFixtureServer(server);
+  await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
+  return { node, counts, close, options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
+}
+
+test("public gRPC follows and unaries share one physical HTTP/2 session", async () => {
+  const { node, counts, close, options } = await grpcFixture();
   try {
-    await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
-    const provider = new GrpcStreamProvider({ endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert });
+    const provider = new GrpcStreamProvider(options);
     expect(await provider.tail("unary")).toBe(0n);
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
     const pending = Promise.all(follows.map(follow => follow.next()));
     await Promise.race([node.until(() => node.active === follows.length), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
-    expect(connections).toBe(1);
-    expect(sessions).toBe(1);
-    expect(legacyFollows).toBe(0);
+    expect(counts.connections).toBe(1);
+    expect(counts.sessions).toBe(1);
+    expect(counts.legacyFollows).toBe(0);
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
     await node.until(() => node.active === 0);
   } finally { await close(); }
+});
+
+test("raw gRPC follow deadlines remove only their logical channel", async () => {
+  const { node, counts, close, options } = await grpcFixture();
+  const controller = new AbortController();
+  try {
+    const client = createStreamGrpcClient(options);
+    const expired = client.follow({ path: "deadline", from: 0n }, { timeoutMs: 100 })[Symbol.asyncIterator]();
+    const live = client.follow({ path: "live", from: 0n }, { timeoutMs: 0, signal: controller.signal })[Symbol.asyncIterator]();
+    const expiry = expired.next().then(() => { throw new Error("deadline did not reject"); }, error => error);
+    const first = live.next();
+    await node.until(() => node.active === 2);
+    const error = await expiry;
+    expect(error).toBeInstanceOf(ConnectError);
+    expect(error.code).toBe(Code.DeadlineExceeded);
+    await node.until(() => node.active === 1);
+    node.append("live");
+    expect((await first).done).toBe(false);
+    expect(counts.connections).toBe(1);
+    expect(counts.sessions).toBe(1);
+    expect(counts.legacyFollows).toBe(0);
+    controller.abort();
+    await live.return?.();
+    await node.until(() => node.active === 0);
+    expect(node.outstandingFrames).toBe(0);
+  } finally { controller.abort(); await close(); }
 });
 
 test("public browser follows use one authenticated binary WebSocket without fetch polling", async () => {

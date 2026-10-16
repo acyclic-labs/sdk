@@ -17,7 +17,7 @@ type Delivery = { record: EncodedRecord; generation: bigint; link: Link; release
 type Route = {
   id: bigint; generation: bigint; path: string; applied: bigint; received: bigint;
   placement: bigint; link: Link; queue: SessionQueue<Delivery>; credit: Credit;
-  opened: boolean; moving: boolean; resolve(): void;
+  opened: boolean; moving: boolean; resolve(): void; release(): void;
 };
 type Connection = { promise: Promise<Link>; link?: Link };
 type Link = {
@@ -60,19 +60,23 @@ export class StreamSessions {
     const id = this.#nextId;
     this.#nextId += 2n;
     this.#active += 1;
+    let reserved = true;
+    const release = (): void => { if (reserved) { reserved = false; this.#active -= 1; } };
     const queue = new SessionQueue<Delivery>(2);
     let route: Route | undefined;
-    const abort = (): void => { queue.end(); queue.discard(delivery => delivery.release()); if (route !== undefined) this.#remove(route); };
+    const abort = (): void => { release(); queue.end(); queue.discard(delivery => delivery.release()); if (route !== undefined) this.#remove(route); };
     options.signal?.addEventListener("abort", abort, { once: true });
     try {
       const link = await untilAborted(this.#link(undefined), options.signal);
       if (link === undefined || options.signal?.aborted) return;
+      if (link.controller.signal.aborted) throw new StreamError("unavailable", "Streams session ended before subscription");
       let resolve!: () => void;
       const opened = new Promise<void>(yes => { resolve = yes; });
       route = { id, generation: 1n, path, applied: options.from, received: options.from, placement: 0n,
-        link, queue, credit: emptyCredit(), opened: false, moving: false, resolve };
+        link, queue, credit: emptyCredit(), opened: false, moving: false, resolve, release };
       this.#routes.set(id, route);
-      await this.#subscribe(route);
+      try { await this.#subscribe(route); }
+      catch (error) { this.#lost(link, error); }
       await opened;
       for await (const delivery of queue) {
         delivery.release();
@@ -83,12 +87,12 @@ export class StreamSessions {
         route.applied += 1n;
         yield delivery.record;
         if (this.#acknowledge && this.#routes.get(id) === route) {
-          await route.link.transport.send(frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied } }) }));
+          await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied } }) }));
         }
         await this.#grant(route);
       }
     } finally {
-      this.#active -= 1;
+      release();
       options.signal?.removeEventListener("abort", abort);
       if (route !== undefined) this.#remove(route);
       queue.end();
@@ -145,31 +149,41 @@ export class StreamSessions {
     try {
       for await (const input of link.transport.incoming) await this.#receive(link, input);
       throw new StreamError("unavailable", "Streams session ended");
-    } catch (error) {
-      link.reject(error);
-      link.controller.abort();
-      link.transport.close();
-      if (link.node === "") return; // The shared initializer owns handshake retries.
-      // Fence all old-node deliveries before asynchronously reconnecting that node.
-      const affected = [...this.#routes.values()].filter(route => route.link === link && !route.moving);
-      for (const route of affected) { route.generation += 1n; route.opened = false; }
-      for (const key of [link.target?.nodeId ?? "", link.node]) {
-        if (this.#links.get(key)?.link === link) this.#links.delete(key);
-      }
-      if (error instanceof StreamError && error.code !== "unavailable" && error.code !== "transport") {
-        for (const route of affected) this.#fail(route, error);
-      } else if (affected.length) void this.#recover(link, affected, error);
-    }
+    } catch (error) { this.#lost(link, error); }
   }
-  async #recover(link: Link, routes: Route[], error: unknown): Promise<void> {
+  #lost(link: Link, error: unknown): void {
+    if (link.controller.signal.aborted) return;
+    link.reject(error);
+    link.controller.abort();
+    link.transport.close();
+    if (link.node === "") return; // The shared initializer owns handshake retries.
+    // Read and write failures share one idempotent fencing/recovery transition.
+    const affected = [...this.#routes.values()].filter(route => route.link === link && !route.moving);
+    for (const route of affected) { route.generation += 1n; route.opened = false; }
+    for (const key of [link.target?.nodeId ?? "", link.node]) {
+      if (this.#links.get(key)?.link === link) this.#links.delete(key);
+    }
+    if (error instanceof StreamError && error.code !== "unavailable" && error.code !== "transport") {
+      for (const route of affected) this.#fail(route, error);
+    } else if (affected.length) void this.#recover(link, affected);
+  }
+  async #write(link: Link, input: wire.SessionFrame): Promise<void> {
+    if (link.controller.signal.aborted) return;
+    try { await link.transport.send(input); }
+    catch (error) { this.#lost(link, error); }
+  }
+  async #recover(link: Link, routes: Route[]): Promise<void> {
+    let next: Link;
     try {
       // A failed transport is retried once; idle live follows never use a timer.
-      const next = await this.#link(link.target);
-      for (const route of routes) if (this.#routes.get(route.id) === route && route.link === link) {
-        route.link = next;
-        await this.#subscribe(route);
-      }
-    } catch { for (const route of routes) if (route.link === link) this.#fail(route, error); }
+      next = await this.#link(link.target);
+    } catch (error) { for (const route of routes) if (route.link === link && !route.moving) this.#fail(route, error); return; }
+    for (const route of routes) if (this.#routes.get(route.id) === route && route.link === link && !route.moving) {
+      const generation = route.generation;
+      route.link = next;
+      try { await this.#subscribe(route); }
+      catch (error) { if (route.link === next && route.generation === generation) this.#fail(route, error); }
+    }
   }
   async #subscribe(route: Route): Promise<void> {
     route.moving = false;
@@ -257,28 +271,29 @@ export class StreamSessions {
       bytes: BigInt(route.queue.available) * RECORD_BYTES > route.credit.bytes ? BigInt(route.queue.available) * RECORD_BYTES - route.credit.bytes : 0n };
     if (grant.frames === 0 && grant.bytes === 0n) return;
     add(route.credit, grant);
-    await route.link.transport.send(frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }));
+    await this.#write(route.link, frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }));
   }
   #release(link: Link, bytes: bigint): void {
     if (link.controller.signal.aborted) return;
     const grant = { bytes, frames: 1 };
     add(link.credit, grant);
-    void link.transport.send(frame(0n, 0n, { case: "window", value: create(wire.SessionWindowSchema, grant) }))
-      .catch(() => { link.controller.abort(); link.transport.close(); });
+    void this.#write(link, frame(0n, 0n, { case: "window", value: create(wire.SessionWindowSchema, grant) }));
   }
   #fail(route: Route, error: unknown): void {
     if (this.#routes.get(route.id) !== route) return;
     this.#routes.delete(route.id);
+    route.release();
     route.resolve();
     route.queue.end(error);
   }
   #remove(route: Route): void {
     if (this.#routes.get(route.id) !== route) return;
     this.#routes.delete(route.id);
+    route.release();
     route.resolve();
-    void Promise.resolve(route.link.transport.send(frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
+    void this.#write(route.link, frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
       revision: ++route.link.revision, remove: [{ channelId: route.id, generation: route.generation }],
-    }) }))).catch(error => route.queue.end(error));
+    }) }));
   }
 }
 
