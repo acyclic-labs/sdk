@@ -190,7 +190,7 @@ pub(super) async fn runtime(
             Some(reference) => reference.clone(),
             None => {
                 let manifest = ContextManifest::new(Default::default(), Vec::new(), &toolset)?;
-                let publisher = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                let publisher = FilesystemContentPublisher::new(
                     files.clone(),
                     &config.private_volume,
                     &verifier,
