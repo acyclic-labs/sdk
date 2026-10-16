@@ -144,7 +144,7 @@ async fn manual_summary_reserves_actual_input_on_a_small_model() -> Result<()> {
     .await?;
     let target = admitted(
         local
-            .submit(OperationId::new(), "source".repeat(200))
+            .submit(OperationId::new(), &"source".repeat(200))
             .await?,
     );
     let operation = OperationId::new();
