@@ -145,6 +145,8 @@ installed_graphcoder() {
   local install_root="$SDK_TEMP_DIR/graphcoder-installed"
   cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug \
     --root "$install_root" --target-dir "$target_dir"
+  bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
+  node --test scripts/graphcoder-pty/screen.test.mjs
   node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder"
   node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
 }
@@ -177,6 +179,7 @@ pinned_pi() {
 case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features

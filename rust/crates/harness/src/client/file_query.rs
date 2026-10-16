@@ -10,6 +10,10 @@ use std::{
     sync::Arc,
 };
 
+fn goal_revision(file: Option<&FileValue>) -> Option<crate::OperationId> {
+    file.and_then(|file| file.publication)
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod goal_lines_tests;
 
@@ -59,6 +63,7 @@ pub struct FileQueryView {
     models: ViewIndex<super::ModelFileView>,
     rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
+    goal_revision: Option<crate::OperationId>,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
@@ -133,6 +138,7 @@ impl FileQueryView {
             )
             .collect();
         let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
+        let goal_revision = goal_revision(files.get(&FileKey::Goal));
         let goal_line_starts = goal_line_starts(&goal);
         Ok(Self {
             query,
@@ -140,6 +146,7 @@ impl FileQueryView {
             models,
             rejected_models,
             goal,
+            goal_revision,
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
@@ -197,6 +204,10 @@ impl FileQueryView {
 
     pub(super) fn progress(&self) -> Option<&super::GoalProgress> {
         self.progress.as_ref()
+    }
+
+    pub(super) fn goal_revision(&self) -> Option<crate::OperationId> {
+        self.goal_revision
     }
 
     /// Borrows cached rows; iteration and clipping never parse or format a file.
@@ -304,6 +315,7 @@ impl FileQueryView {
         for key in change.removed {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
+                self.goal_revision = None;
                 self.goal_line_starts = Arc::default();
             }
             if key == FileKey::RequestHead {
@@ -328,6 +340,7 @@ impl FileQueryView {
             }
             if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
+                self.goal_revision = goal_revision(Some(&file));
                 self.goal_line_starts = goal_line_starts(&self.goal);
             }
             if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {

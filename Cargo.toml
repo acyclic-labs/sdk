@@ -33,6 +33,7 @@ members = [
   "compatibility",
   "rust/crates/stream",
   "rust/crates/stream-napi",
+  "rust/crates/test-support",
   "rust/crates/harness-tui",
   "rust/crates/workers",
   "rust/fuzz",

@@ -13,10 +13,8 @@
 </script>
 <body data-result="pending">
 <script type="module">
-import { create } from "@bufbuild/protobuf";
-import { DEFAULT_LIMITS, EmbeddedWireTransport, Harness, NativeContracts, WireError } from "../dist/index.js";
-import { ErrorCode, ResumeRequestSchema } from "../generated/proto/harness/v2/harness_pb.js";
-import { HandshakeRequestSchema, HandshakeResponseSchema } from "../generated/proto/protocol/v1/protocol_pb.js";
+import { DEFAULT_LIMITS, Harness, NativeContracts, ClientQuery, TaskVolume, WasmStream,
+  initializeClientQueries } from "../dist/index.js";
 
 try {
   const options = {
@@ -94,25 +92,26 @@ try {
   try { contracts.applyContextProjection(base, rendered, "prompt", "prepend", { ...DEFAULT_LIMITS, render_bytes: 1 }); }
   catch { rejected = true; }
   if (!rejected) throw new Error("oversized mandatory context accepted");
-  const protocol = harness.protocolIdentity();
-  const handshake = async request => create(HandshakeResponseSchema, {
-    protocol: request.protocol, supported: { capabilities: [] },
-  });
-  const open = async () => ({
-    async *[Symbol.asyncIterator]() {}, async send() {}, close() {},
-    async observe() { throw new Error("unused"); }, async cancel() { throw new Error("unused"); },
-  });
-  await new EmbeddedWireTransport(create(HandshakeRequestSchema, { protocol }), handshake, open)
-    .connect(create(ResumeRequestSchema, {}));
-  const foreign = new EmbeddedWireTransport(create(HandshakeRequestSchema, {
-    protocol: { ...protocol, descriptorDigest: "foreign" },
-  }), handshake, open);
-  try {
-    await foreign.connect(create(ResumeRequestSchema, {}));
-    throw new Error("foreign protocol accepted");
-  } catch (error) {
-    if (!(error instanceof WireError) || error.code !== ErrorCode.UNSUPPORTED) throw error;
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  const files = await TaskVolume.create(stream, "browser/files");
+  const query = await ClientQuery.open(files, "Root", null, { files: 4n, segments: 4n, bytes: 4096n });
+  const views = query.views();
+  const before = views.cursor();
+  const stop = Promise.withResolvers();
+  let publications = 0;
+  const followed = query.follow(delivery => {
+    if (views.cursor().position !== before.position) throw new Error("cursor advanced before output");
+    if (new TextDecoder().decode(delivery.file.bytes) !== "browser query") throw new Error("changed file bytes");
+    publications++;
+  }, () => stop.resolve(), stop.promise);
+  await files.write(await files.head(), "Goal", new TextEncoder().encode("browser query"), null);
+  await followed;
+  if (publications !== 1 || views.cursor().position !== before.position + 1n
+      || new TextDecoder().decode(views.segments("Goal")[0]) !== "browser query") {
+    throw new Error("published query and view disagree");
   }
+  views.free(); query.free(); files.free(); stream.free();
   harness.free();
   document.body.dataset.result = "passed";
 } catch (error) {

@@ -1,6 +1,6 @@
 //! One disposable file-query fold with publish-before-cursor delivery.
 
-use super::{FileViews, QuerySubscription, QueryViewLimits, query_error};
+use super::{FileViews, PublishError, QuerySubscription, QueryViewLimits, query_error};
 use crate::{
     Result,
     task_volume::{Change, Cursor, Generation, HeadFile, HeadSnapshot, Query, TaskVolume},
@@ -78,25 +78,18 @@ impl ClientQuery {
         F: for<'a> std::ops::AsyncFnMut(&'a Change) -> Result<()>,
     {
         let views = &mut self.views;
-        let mut rejected = false;
-        let result = self
-            .subscription
+        self.subscription
             .publish_next(async |change| {
-                let apply = match views.prepare(change) {
-                    Ok(apply) => apply,
-                    Err(error) => {
-                        rejected = true;
-                        return Err(query_error(error));
-                    }
-                };
-                publish(change).await?;
-                apply(views).map_err(query_error)
+                let apply = views
+                    .prepare(change)
+                    .map_err(query_error)
+                    .map_err(PublishError::Rejected)?;
+                publish(change).await.map_err(PublishError::Failed)?;
+                apply(views)
+                    .map_err(query_error)
+                    .map_err(PublishError::Failed)
             })
-            .await;
-        if rejected {
-            self.subscription.discard_rejected();
-        }
-        result
+            .await
     }
 
     /// Resumes matching views directly, or atomically installs a validated reset

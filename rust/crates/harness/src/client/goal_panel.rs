@@ -47,7 +47,14 @@ impl GoalPanel<'_> {
             ),
         };
         let count = self.view.progress.map_or_else(
-            || "unknown".into(),
+            || {
+                if status == "blocked" {
+                    "pending"
+                } else {
+                    "unknown"
+                }
+                .into()
+            },
             |progress| progress.continuations.to_string(),
         );
         let title = format!("Status: {status} | Continuations: {count}");

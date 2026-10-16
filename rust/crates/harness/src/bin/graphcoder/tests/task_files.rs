@@ -30,6 +30,7 @@ async fn followed_task_files_render_without_a_wire_connection() {
         .append(
             cut.generation,
             &FileValue {
+                publication: None,
                 key: FileKey::Task {
                     task: Component::new(task.to_string()).unwrap(),
                     file: TaskFile::Chunk {

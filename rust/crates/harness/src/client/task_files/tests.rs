@@ -24,6 +24,7 @@ proptest! {
             let key = format!("AGGREGATE_KIND_TASK:{task}");
             let mut generation = volume.snapshot(&Query::Tasks, 32).await.unwrap().generation;
             let files: Vec<_> = chunks.iter().enumerate().map(|(index, bytes)| FileValue {
+                publication: None,
                 key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: index as u64 } },
                 channel: Some(if reasoning { Channel::Reasoning } else { Channel::Text }), bytes: bytes.clone().into(),
             }).collect();
@@ -75,6 +76,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
             .append(
                 empty.generation,
                 &FileValue {
+                    publication: None,
                     key: FileKey::Task {
                         task: Component::new(&owner.id).unwrap(),
                         file: TaskFile::Chunk {
@@ -131,6 +133,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
         .append(
             cut.generation,
             &FileValue {
+                publication: None,
                 key: FileKey::Task {
                     task: Component::new(&owners[0].id).unwrap(),
                     file: TaskFile::Chunk {
@@ -180,6 +183,7 @@ proptest! {
             let key = format!("AGGREGATE_KIND_TASK:{task}");
             let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
             volume.append(cut.generation, &FileValue {
+                publication: None,
                 key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: 0 } },
                 channel: Some(Channel::Reasoning), bytes: b"reasoning".to_vec().into(),
             }).await.unwrap();

@@ -32,6 +32,10 @@ fn snapshot(cursor: Cursor, text: Option<&str>) -> Snapshot {
 }
 
 fn assert_lines(view: &FileQueryView) {
+    assert_eq!(
+        view.goal_revision(),
+        goal_revision(view.files().get(&FileKey::Goal))
+    );
     let expected: Vec<_> = match view.goal() {
         GoalFileView::Present { goal } => goal.markdown.lines().collect(),
         _ => vec![],

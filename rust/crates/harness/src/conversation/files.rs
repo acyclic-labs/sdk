@@ -69,6 +69,21 @@ impl FileDescriptor {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        if self.matches_bytes(bytes, work)? {
+            return Ok(());
+        }
+        Err(conversation_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "file content does not match its descriptor",
+        ))
+    }
+
+    pub(crate) fn matches_bytes(
+        &self,
+        bytes: &[u8],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
@@ -77,14 +92,10 @@ impl FileDescriptor {
                 io.hashed_bytes(bytes.len() as u64)?;
             }
             if Sha256::digest(bytes).as_slice() == self.sha256 {
-                return Ok(());
+                return Ok(true);
             }
         }
-        Err(conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "file content does not match its descriptor",
-        ))
+        Ok(false)
     }
 
     /// Validates metadata under the caller's optional work observer.

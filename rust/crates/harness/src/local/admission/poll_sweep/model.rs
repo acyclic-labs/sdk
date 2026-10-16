@@ -2,6 +2,7 @@
 use super::{schedule::Schedule, *};
 use crate::{
     context::{ModelContextCapacity, ModelTokenCount},
+    conversation::FileRef,
     model::{ModelDispatch, ModelEvent, PreparedModelRequest},
     runtime::ToolContext,
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn},
@@ -17,9 +18,14 @@ pub(super) struct ModelEffects {
     pub schedule: Arc<Schedule>,
     // Single executor; never held across an await, no nested locks.
     responses: Mutex<Vec<(ModelDispatch, Vec<ModelEvent>)>>,
+    summary_files: Mutex<Vec<FileRef>>,
 }
 
 impl ModelEffects {
+    pub fn summary_files(&self) -> Vec<FileRef> {
+        self.summary_files.lock().unwrap().clone()
+    }
+
     pub fn dispatches(&self) -> Vec<ModelDispatch> {
         self.responses
             .lock()
@@ -32,13 +38,49 @@ impl ModelEffects {
         self.responses.lock().unwrap().len()
     }
 
-    pub fn new(turns: Vec<ScriptedTurn>, schedule: Arc<Schedule>) -> Self {
-        let script = ScriptedModelProvider::new([]);
+    pub fn new(turns: Vec<ScriptedTurn>, schedule: Arc<Schedule>, compact: bool) -> Self {
+        let mut script = ScriptedModelProvider::new([]);
+        if compact {
+            script = script
+                .with_context_capacity(ModelContextCapacity {
+                    context_tokens: 1024,
+                    output_tokens: 64,
+                })
+                .with_token_counter(|request| {
+                    Ok(ModelTokenCount::from_upper_bounds(
+                        request.request_digest(),
+                        10,
+                        request
+                            .request()
+                            .messages
+                            .iter()
+                            .map(|m| match &m.content {
+                                _ if m
+                                    .content
+                                    .file_refs()
+                                    .any(|file| file.path() == "history/0.txt") =>
+                                {
+                                    800
+                                }
+                                _ if m
+                                    .content
+                                    .file_refs()
+                                    .any(|file| file.path().starts_with("history/")) =>
+                                {
+                                    100
+                                }
+                                _ => 10,
+                            })
+                            .collect(),
+                    ))
+                });
+        }
         Self {
             accounting: script,
             turns: Mutex::new(turns.into()),
             schedule,
             responses: Mutex::default(),
+            summary_files: Mutex::default(),
         }
     }
 }
@@ -51,6 +93,18 @@ impl ModelProvider for ModelEffects {
         &'a self,
         request: &'a PreparedModelRequest,
     ) -> BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        let mut summaries = self.summary_files.lock().unwrap();
+        for file in request
+            .request()
+            .messages
+            .iter()
+            .flat_map(|m| m.content.file_refs())
+        {
+            if file.path().starts_with("summaries/") && !summaries.contains(file) {
+                summaries.push(file.clone());
+            }
+        }
+        drop(summaries);
         self.accounting.count_tokens(request)
     }
 

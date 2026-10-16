@@ -62,6 +62,7 @@ pub use file_query::{FileQueryView, GoalFileView};
 mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
+mod goal_selection;
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]
@@ -83,12 +84,22 @@ pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;
 mod file_submit;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use file_submit::validate_request_key;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod retry;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod waiting_calls;
 pub use file_error::FileClientError;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use retry::submission_retry;
+mod offline;
+pub use offline::validate_offline_request;
 mod query_subscription;
 pub(crate) use file_views::FileViews;
-pub(crate) use query_subscription::{QuerySubscription, query_error};
+pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod query_verification {
@@ -182,3 +193,7 @@ pub use native_input::next_file_tui_event;
 mod local_headless;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
+#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+pub(crate) mod mailbox;
+#[cfg(acyclic_harness_loom)]
+pub use mailbox::verify_mailbox;

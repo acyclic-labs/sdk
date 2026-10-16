@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 /// Folder selectors have bounded matching cost and allocate no per-chunk paths.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum Query {
     /// Active command inbox plus a bounded recent outcome window. Historical
     /// request/claim/result files remain addressable by exact file queries.

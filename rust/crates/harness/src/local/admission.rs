@@ -22,7 +22,10 @@ mod tests;
 const HEAD: &str = "inputs/current.json";
 
 // The same serialization boundary and predicate are exercised by the Loom model.
-async fn serialized<T>(gate: &StateArc<Mutex<()>>, action: impl AsyncFnOnce() -> T) -> T {
+pub(super) async fn serialized<T>(
+    gate: &StateArc<Mutex<()>>,
+    action: impl AsyncFnOnce() -> T,
+) -> T {
     let _guard = lock_owned(StateArc::clone(gate)).await;
     action().await
 }
@@ -112,6 +115,8 @@ impl LocalHarness {
         &self,
         turn: &Turn,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        self.prepare_inheritance(crate::runtime::task_id_for_admission(turn.operation), None)
+            .await?;
         let definition = self
             .runtime
             .harness()
@@ -129,45 +134,41 @@ impl LocalHarness {
 
     async fn publish_turn(
         &self,
-        operation: OperationId,
-        inputs: (WorkflowCommand, WorkflowCommand),
-        root: OperationId,
-        automatic_turns: u32,
+        turn: Turn,
         previous: Option<OperationId>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        self.publish_turn_with(
-            operation,
-            inputs,
-            root,
-            automatic_turns,
-            previous,
-            async |turn| self.admit_retained(turn).await,
-        )
-        .await
+        self.publish_turn_with(turn, previous, async |turn| self.admit_retained(turn).await)
+            .await
     }
 
     async fn publish_turn_with(
         &self,
-        operation: OperationId,
-        inputs: (WorkflowCommand, WorkflowCommand),
-        root: OperationId,
-        automatic_turns: u32,
+        turn: Turn,
         previous: Option<OperationId>,
         admit: impl AsyncFnOnce(&Turn) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        let (receive, model) = inputs;
-        let turn = Turn {
-            operation,
-            root,
-            automatic_turns,
-            receive,
-            model,
-        };
-        let bytes = serde_json::to_vec(&turn).map_err(storage)?;
         let (latest, generation) = self.current_turn().await?;
         if latest.as_ref().map(|turn| turn.operation) != previous {
             return Err(Error::Conflict("local admission head changed".into()));
         }
+        // Request publication precedes admission. Cancellation/lost acknowledgements
+        // retain the exact input so resume can finish admission without re-reading GOAL.md.
+        self.write_turn(
+            &turn,
+            &generation,
+            &crate::IdempotencyKey::new(format!("local-turn:{}", turn.operation))?,
+        )
+        .await?;
+        admit(&turn).await
+    }
+
+    async fn write_turn(
+        &self,
+        turn: &Turn,
+        generation: &GenerationRef,
+        key: &crate::IdempotencyKey,
+    ) -> Result<()> {
+        let bytes = serde_json::to_vec(turn).map_err(storage)?;
         let grant = crate::conversation::ContentGrant::verify(
             &self.verifier,
             &self.signed,
@@ -176,8 +177,6 @@ impl LocalHarness {
             u64::MAX,
             &mut None,
         )?;
-        // Request publication precedes admission. Cancellation/lost acknowledgements
-        // retain the exact input so resume can finish admission without re-reading GOAL.md.
         self.files
             .put_content(
                 &self.journal,
@@ -187,12 +186,12 @@ impl LocalHarness {
                 "application/json",
                 "current.json",
                 self.limits.file_bytes,
-                &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
-                Some(&generation),
+                key,
+                Some(generation),
                 None,
             )
             .await?;
-        admit(&turn).await
+        Ok(())
     }
 
     pub(super) async fn recover_unadmitted_turn(
@@ -261,11 +260,16 @@ impl LocalHarness {
                     reason: "local agent already has an admitted turn".into(),
                 });
             }
+            let (receive, model) = self.stage_turn(operation, prompt).await?;
             self.publish_turn(
-                operation,
-                self.stage_turn(operation, prompt).await?,
-                operation,
-                0,
+                Turn {
+                    operation,
+                    root: operation,
+                    automatic_turns: 0,
+                    goal_revision: None,
+                    receive,
+                    model,
+                },
                 current.as_ref().map(|turn| turn.operation),
             )
             .await
@@ -279,7 +283,7 @@ impl LocalHarness {
         root: OperationId,
     ) -> Result<Option<TaskId>> {
         serialized(&self.admission, async || {
-            let (current, _) = self.current_turn().await?;
+            let (current, generation) = self.current_turn().await?;
             let Some(current) = current else {
                 return Ok(None);
             };
@@ -315,19 +319,23 @@ impl LocalHarness {
                     .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
                 return admitted_task(
                     self.publish_turn(
-                        operation,
-                        inputs,
-                        current.root,
-                        count,
+                        Turn {
+                            operation,
+                            root: current.root,
+                            automatic_turns: count,
+                            goal_revision: None,
+                            receive: inputs.0,
+                            model: inputs.1,
+                        },
                         Some(current.operation),
                     )
                     .await?,
                 )
                 .map(Some);
             }
-            let (source, bytes) = match self
+            let (source, bytes, publication) = match self
                 .files
-                .read_private_path(
+                .read_private_path_indexed(
                     &self.scratch,
                     &self.read_grant(&self.scratch)?,
                     "GOAL.md",
@@ -342,6 +350,10 @@ impl LocalHarness {
                 Err(error) => return Err(error),
             };
             let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
+            if goal.status == GoalStatus::Blocked {
+                self.record_goal_revision(&current, &generation, &goal.source, publication)
+                    .await?;
+            }
             let unreachable = GoalBlockedReason::TaskViewUnreachable;
             if goal.status == GoalStatus::Blocked
                 && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
@@ -359,24 +371,38 @@ impl LocalHarness {
                     let Some(path) = self.goal_task_path() else {
                         let contents = goal
                             .status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
-                        self.block_goal(&goal, settled, &contents).await?;
+                        let blocked = self.block_goal(&goal, settled, &contents).await?;
+                        self.record_goal_revision(
+                            &current,
+                            &generation,
+                            &blocked.0,
+                            Some(blocked.1),
+                        )
+                        .await?;
                         return Err(Error::GoalBlocked(unreachable));
                     };
                     let prompt =
                         format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
+                    let (receive, model) = self.stage_turn(operation, &prompt).await?;
                     let admission = self
                         .publish_turn(
-                            operation,
-                            self.stage_turn(operation, &prompt).await?,
-                            current.root,
-                            current.automatic_turns + 1,
+                            Turn {
+                                operation,
+                                root: current.root,
+                                automatic_turns: current.automatic_turns + 1,
+                                goal_revision: publication,
+                                receive,
+                                model,
+                            },
                             Some(current.operation),
                         )
                         .await?;
                     admitted_task(admission).map(Some)
                 }
                 Some(GoalContinuation::Block(contents)) => {
-                    self.block_goal(&goal, settled, &contents).await?;
+                    let blocked = self.block_goal(&goal, settled, &contents).await?;
+                    self.record_goal_revision(&current, &generation, &blocked.0, Some(blocked.1))
+                        .await?;
                     Ok(None)
                 }
             }

@@ -1,5 +1,6 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+pub(crate) mod admission_work;
 mod scripted;
 mod search;
 mod task_volume_work;

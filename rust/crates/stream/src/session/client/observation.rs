@@ -1,4 +1,5 @@
-use crate::{StreamError, obs::OperationSpan};
+use super::super::runtime::OperationSpan;
+use crate::StreamError;
 use tracing::field::Empty;
 
 pub(super) struct Observation {

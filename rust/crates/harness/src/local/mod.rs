@@ -34,6 +34,7 @@ mod compaction;
 mod config;
 mod files;
 mod context;
+mod inheritance;
 mod owner;
 mod owner_record;
 mod runtime;

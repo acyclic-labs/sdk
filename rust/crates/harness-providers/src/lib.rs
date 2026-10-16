@@ -27,9 +27,12 @@ mod dispatch;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+mod input;
+pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod projection;
+mod protocol;
 mod reasoning;
 mod registry;
 mod resolved;

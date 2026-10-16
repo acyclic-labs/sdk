@@ -12,7 +12,7 @@ fn rustdoc_digest_omits_only_external_crate_load_paths() {
         "index": {"0": {"path": "demo::Witness", "filename": "src/lib.rs"}}
     });
     let digest = |value: &serde_json::Value| {
-        normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap(), Path::new("."))
+        normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap().into(), Path::new("."))
             .unwrap()
     };
     let mut relocated = original.clone();
@@ -807,4 +807,5 @@ mod projection;
 mod publication;
 mod scratch;
 
+mod identity;
 mod rustdoc_adapter;

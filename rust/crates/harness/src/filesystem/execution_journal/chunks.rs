@@ -39,6 +39,7 @@ where
             .and_then(|part| part.parse().ok())
             .ok_or_else(|| Error::Invalid("model event has no canonical ordinal".into()))?;
         let value = FileValue {
+            publication: None,
             key: FileKey::Task {
                 task: Component::new(owner.task_id().to_string())?,
                 file: TaskFile::Chunk {

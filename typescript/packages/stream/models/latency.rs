@@ -31,8 +31,8 @@ proptest! {
         // One test-harness lock, never nested: serialize commands to the JS
         // process. Production provider synchronization executes inside Bun.
         static DRIVER: OnceLock<Mutex<driver::Driver>> = OnceLock::new();
-        let shared = DRIVER.get_or_init(|| Mutex::new(driver::Driver::open(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."))));
+        let shared = DRIVER.get_or_init(|| Mutex::new(driver::Driver::configured(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let state = shared.lock().unwrap().call(json!({ "action":"latency", "path":name,
             "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }));
         verify(&state, warm, samples);
@@ -42,7 +42,11 @@ proptest! {
 #[test]
 #[should_panic(expected = "runtime latency workloads collided")]
 fn negative_control_reuses_one_runtime_namespace() {
-    let mut real = driver::Driver::open(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."));
+    let mut real = driver::Driver::configured(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+        "decode",
+        "",
+    );
     let state = real.call(json!({ "action":"latency", "path":"before",
         "work": { "warm":1, "samples":2, "reverse":false, "shared":true } }));
     assert!(

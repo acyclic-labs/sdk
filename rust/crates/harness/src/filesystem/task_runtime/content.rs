@@ -11,6 +11,55 @@ where
         self.task_files = files;
     }
 
+    /// Binds root private files independently of the project's default output.
+    pub fn with_private_volume(
+        mut self,
+        volume: &VolumeRef,
+        io: Option<&super::super::PreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self
+            ._native_configuration_custody
+            .as_ref()
+            .is_some_and(|custody| {
+                io.and_then(super::super::PreparationIo::original_native_work)
+                    .is_none_or(|work| !custody.work().shares_ledger(work))
+            })
+        {
+            return Err(observed::boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "private binding differs from original runtime work",
+            ));
+        }
+        if !private_owner_matches(volume, self.signed.agent()) {
+            return Err(observed::boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "private content requires the signed agent's private volume",
+            ));
+        }
+        let harness = Arc::get_mut(&mut self.harness).ok_or_else(|| {
+            observed::boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "bind private content before sharing the task runtime",
+            )
+        })?;
+        harness.bind_private_output(
+            FilesystemContentPublisher::new(
+                self.filesystem.clone(),
+                volume,
+                &self.verifier,
+                &self.signed,
+                self.maximum_payload_bytes,
+                io,
+            )?,
+            io,
+        )?;
+        Ok(self)
+    }
+
     /// Binds workspace command execution before sharing the runtime.
     pub fn with_workspace_tools(
         mut self,
@@ -88,3 +137,12 @@ where
         Ok(self)
     }
 }
+
+fn private_owner_matches(volume: &VolumeRef, agent: Option<crate::AgentId>) -> bool {
+    volume.class() == crate::conversation::VolumeClass::AgentPrivate
+        && matches!(volume.owner(), crate::conversation::VolumeOwner::Agent(owner)
+            if Some(*owner) == agent)
+}
+
+#[cfg(test)]
+mod tests;

@@ -42,6 +42,16 @@ pub fn check(data: &[u8]) -> Result<()> {
     if data.len() as u64 > LIMIT {
         return Ok(());
     }
+    let record = acyclic_stream::Record {
+        sequence: 1,
+        value: data.to_vec().into(),
+        commit_id: acyclic_stream::CommitId::from_bytes([1; 32]),
+        committed_at_micros: 0,
+    };
+    if let Ok(Some(file)) = FileValue::from_record(&record) {
+        let json = serde_json::to_vec(&file).unwrap();
+        assert_eq!(serde_json::from_slice::<FileValue>(&json).unwrap(), file);
+    }
     let state = GoalState::from_bytes(data, LIMIT);
     let view = GoalView::from_file(file(data)?, data, LIMIT);
     if let Ok(state) = &state {

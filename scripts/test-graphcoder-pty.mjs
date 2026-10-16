@@ -5,28 +5,11 @@ import { spawn } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "./graphcoder-fixture.mjs";
+import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
 const [binary, scenario = "success"] = process.argv.slice(2);
 assert.ok(["success", "command-recovery", "uncertain", "typeahead", "cancel", "cancel-preparation"].includes(scenario));
 assert.ok(binary && isAbsolute(binary), "absolute installed binary required");
-// Interpret SGR state at the answer itself; a bold header cannot satisfy this.
-function hasBoldAnswer(bytes) {
-  const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
-  let bold = false, cursor = 0;
-  for (const match of bytes.matchAll(ansi)) {
-    if (bold && bytes.slice(cursor, match.index).includes("test answer")) return true;
-    if (match[0].endsWith("m")) {
-      const codes = match[0].slice(2, -1).split(";").map(value => Number(value || 0));
-      for (let index = 0; index < codes.length; index++) {
-        const code = codes[index];
-        if ([38, 48, 58].includes(code)) { index += codes[index + 1] === 2 ? 4 : 2; continue; }
-        if (code === 0 || code === 22) bold = false;
-        if (code === 1) bold = true;
-      }
-    }
-    cursor = match.index + match[0].length;
-  }
-  return bold && bytes.slice(cursor).includes("test answer");
-}
+const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
 const host = await fixture();
 if (scenario === "uncertain") host.fail();
 else host.hold();
@@ -46,15 +29,11 @@ if (process.platform === "win32") {
 const child = spawn(launcher, args, { windowsHide: true, env: { ...process.env, TERM: "xterm-256color" }, stdio: ["pipe", "pipe", "pipe"] });
 if (scenario === "cancel-preparation") host.counting.then(() => child.stdin.write("\x03"));
 const sendPrompt = text => child.stdin.write(`\x1b[200~${text}\x1b[201~\r`);
-let output = "", submitted = false, retried = false, completed = false, intermediate = false, intermediateCut = 0;
+let failure, stopped = false;
+let output = "", submitted = false, retried = false, completed = false, intermediate = false;
 const timeout = setTimeout(() => child.kill("SIGKILL"), 8000);
-child.stdout.on("data", bytes => {
-  output += bytes.toString("utf8");
-  const visible = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-  if (scenario === "typeahead" && !submitted && output.includes("\x1b[")) {
-    submitted = true;
-    child.stdin.write("/delegate say hello\r\n");
-  }
+function frame() {
+  const visible = screenText(screen);
   if (scenario === "typeahead" && !retried && visible.includes("GraphCoder")) {
     retried = true;
     child.stdin.write("\x1b[?1;2c\x1b[>0;1;0c\x1b[12;40R");
@@ -70,16 +49,27 @@ child.stdout.on("data", bytes => {
   }
   if (scenario !== "uncertain" && !intermediate && visible.includes("test answer")) {
     assert.ok(!visible.includes("**test answer**"), "raw Markdown must not count as a rendered answer");
-    assert.ok(hasBoldAnswer(output), "answer must have a bold terminal span");
-    intermediate = true; intermediateCut = output.length;
+    assert.ok(hasBoldAnswer(screen), "answer must have a bold terminal span");
+    intermediate = true;
     if (scenario === "cancel") child.stdin.write("\x03");
     else host.complete();
   }
-  const settled = ["cancel", "cancel-preparation"].includes(scenario) ? (intermediate || scenario === "cancel-preparation") && /cancelled/i.test(visible) : scenario === "uncertain" ? retried && visible.includes("conflict:") && visible.includes("admitted") : intermediate && output.slice(intermediateCut).includes("○");
+  const settled = ["cancel", "cancel-preparation"].includes(scenario) ? (intermediate || scenario === "cancel-preparation") && /cancelled/i.test(visible) : scenario === "uncertain" ? retried && visible.includes("conflict:") && visible.includes("admitted") : intermediate && visible.includes("○");
   if (!completed && settled) { completed = true; child.stdin.write("\x04"); }
+}
+child.stdout.on("data", bytes => {
+  output += bytes.toString("utf8");
+  if (scenario === "typeahead" && !submitted && output.includes("\x1b[")) {
+    submitted = true;
+    child.stdin.write("/delegate say hello\r\n");
+  }
+  screen.write(bytes, () => {
+    if (stopped || failure) return;
+    try { frame(); }
+    catch (error) { failure = error; child.kill(); }
+  });
 });
 child.stderr.on("data", bytes => { output += bytes.toString("utf8"); });
-let failure;
 try {
   const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY ${scenario} terminated by ${signal} (submitted=${submitted}, retried=${retried}, calls=${host.calls()}): ${output}`)) : resolve(code)); });
   assert.equal(code, 0, output);
@@ -89,9 +79,9 @@ try {
   if (!["uncertain", "cancel-preparation"].includes(scenario)) assert.ok(intermediate, "no styled frame before provider completion");
   assert.equal(host.calls(), scenario === "cancel-preparation" ? 0 : 1, "each scenario must execute exactly one stock model turn");
   assert.ok(output.includes("\x1b["), "no terminal frames emitted");
-} catch (error) { failure = error; }
+} catch (error) { failure ??= error; }
 finally {
-  clearTimeout(timeout); child.kill();
+  stopped = true; clearTimeout(timeout); child.kill(); screen.dispose();
   try { await host.close(); }
   catch (cleanup) { throw failure ? new AggregateError([failure, cleanup], "PTY qualification and cleanup failed") : cleanup; }
 }

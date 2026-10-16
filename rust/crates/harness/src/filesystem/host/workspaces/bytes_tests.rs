@@ -32,7 +32,7 @@ fn rejected(
     reference: &WorkspaceRef,
     bytes: acyclic_stream::OwnedBytes,
     io: Option<&PreparationIo>,
-) -> Result<(allocation_counter::AllocationInfo, std::time::Duration)> {
+) -> Result<(acyclic_test_support::AllocationInfo, std::time::Duration)> {
     let mutations = [WorkspaceMutation::PutFile {
         path: "/../invalid".into(),
         bytes,
@@ -40,7 +40,7 @@ fn rejected(
     let key = IdempotencyKey::new("rejected-write")?;
     let mut result = None;
     let started = std::time::Instant::now();
-    let allocations = allocation_counter::measure(|| {
+    let allocations = acyclic_test_support::measure(|| {
         result = Some(runtime.block_on(async {
             host.apply_generation(reference, None, &mutations, key, io, None)?
                 .await

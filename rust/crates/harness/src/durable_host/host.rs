@@ -350,6 +350,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
     }
 
     async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {
+        #[cfg(feature = "test-support")]
+        crate::test_support::admission_work::observed();
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
         self.admission(operation_id, &mut None).await
     }

@@ -85,11 +85,20 @@ pub(crate) fn directory_path<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
+    #[cfg(unix)]
     let mut current = clone_directory(parent, work)?;
     #[cfg(unix)]
     let components = path.components();
     #[cfg(windows)]
-    let components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    let mut components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    #[cfg(windows)]
+    let mut current = {
+        let Some(name) = components.next() else {
+            return clone_directory(parent, work);
+        };
+        work.started_io(ITEM)?;
+        open_windows_directory(parent, name, create, work)?.0
+    };
     for component in components {
         work.started_io(ITEM)?;
         #[cfg(unix)]

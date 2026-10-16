@@ -144,7 +144,7 @@ async fn invalid_publications_validate_before_hashing_or_reading() -> Result<()>
             pause_first: None,
         };
         let mut result = Ok(Vec::new());
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = futures::executor::block_on(view.apply(&publication, &reader, limits()));
         });
         assert!(matches!(result, Err(acyclic_harness::Error::Invalid(_))));
@@ -199,7 +199,7 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
         };
         view.apply(&publication, &reader, limits).await?;
         let mut result = Ok(Vec::new());
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = futures::executor::block_on(view.apply(&publication, &reader, limits));
         });
         assert!(result?.is_empty());

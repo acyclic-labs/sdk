@@ -22,34 +22,38 @@ use crate::workflow::{
 };
 
 fn summary_model(turns: usize) -> ScriptedModelProvider {
-    ScriptedModelProvider::new(std::iter::repeat_n(
+    summary_model_turns(std::iter::repeat_n(
         ScriptedTurn::Text("admitted summary or answer".into()),
         turns,
     ))
-    .with_context_capacity(ModelContextCapacity {
-        context_tokens: 131_072,
-        output_tokens: 4_096,
-    })
-    .with_token_counter(|request| {
-        let message_tokens = request
-            .request()
-            .messages
-            .iter()
-            .map(|message| {
-                let bytes = message.content.file_refs().try_fold(0_u64, |bytes, file| {
-                    bytes
-                        .checked_add(file.descriptor().byte_length())
-                        .ok_or_else(|| Error::Invalid("synthetic accounting overflow".into()))
-                })?;
-                u32::try_from(bytes + 512).map_err(|error| Error::Invalid(error.to_string()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ModelTokenCount::from_upper_bounds(
-            request.request_digest(),
-            512,
-            message_tokens,
-        ))
-    })
+}
+
+fn summary_model_turns(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(turns)
+        .with_context_capacity(ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: 4_096,
+        })
+        .with_token_counter(|request| {
+            let message_tokens = request
+                .request()
+                .messages
+                .iter()
+                .map(|message| {
+                    let bytes = message.content.file_refs().try_fold(0_u64, |bytes, file| {
+                        bytes
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("synthetic accounting overflow".into()))
+                    })?;
+                    u32::try_from(bytes + 512).map_err(|error| Error::Invalid(error.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                512,
+                message_tokens,
+            ))
+        })
 }
 
 struct SummaryLeaseMachine {

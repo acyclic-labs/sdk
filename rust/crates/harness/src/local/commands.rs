@@ -21,7 +21,18 @@ impl LocalHarness {
         self.dispatch_configured_command(operation, target, resolution, &json!({}))
             .await
     }
-    pub(crate) async fn dispatch_configured_command(
+    pub(crate) fn dispatch_configured_command<'a>(
+        &'a self,
+        operation: OperationId,
+        target: Option<TaskId>,
+        resolution: CommandResolution,
+        settings: &'a Value,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
+        // Cut the concrete admission/tool/compaction future graph here, before
+        // it becomes part of each client owner's dispatch future.
+        Box::pin(self.dispatch_effect(operation, target, resolution, settings))
+    }
+    async fn dispatch_effect(
         &self,
         operation: OperationId,
         target: Option<TaskId>,
@@ -104,11 +115,13 @@ impl LocalHarness {
                         ));
                     }
                 };
-                let lineage = self.command_lineage(task).await?;
-                let paused = CommandControl::change(
+                if let Some(task) = task {
+                    self.runtime.task_host().observe_admission(task).await?;
+                }
+                let paused = CommandControl::change_matching(
                     &self.task_files.inner,
                     task,
-                    &lineage,
+                    |scope| Box::pin(self.command_has_ancestor(task, scope)),
                     paused,
                     self.limits.file_bytes,
                 )
@@ -120,37 +133,21 @@ impl LocalHarness {
             )),
         }
     }
-    pub(super) async fn command_lineage(&self, task: Option<TaskId>) -> Result<Vec<TaskId>> {
-        match task {
-            Some(task) => {
-                let admission = self.runtime.task_host().observe_admission(task).await?;
-                self.runtime
-                    .harness()
-                    .durable_context(task, admission.operation_id, None)
-                    .await?
-                    .lineage(task)
-                    .await
-            }
-            None => Ok(Vec::new()),
-        }
+    pub(super) async fn wait_command_control(&self, task: TaskId) -> Result<()> {
+        CommandControl::wait_matching(
+            &self.task_files.inner,
+            |scope| Box::pin(self.command_has_ancestor(Some(task), scope)),
+            self.limits.file_bytes,
+        )
+        .await
     }
     pub(super) async fn prompt_context(
         &self,
         target: Option<TaskId>,
         prompt: &str,
     ) -> Result<String> {
-        for task in self.command_lineage(target).await? {
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&Query::File(compact_key(task)?), 1)
-                .await
-                .map_err(storage)?;
-            if let Some(file) = snapshot.files.first() {
-                let value: Value = serde_json::from_slice(&file.bytes).map_err(storage)?;
-                let summary = value["summary"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("compacted context missing summary".into()))?;
+        if let Some(target) = target {
+            if let Some(summary) = self.resolved_value(target, "summary").await? {
                 let text = format!(
                     "Previous compacted conversation:\n{summary}\nCurrent request:\n{prompt}"
                 );
@@ -382,20 +379,29 @@ impl LocalHarness {
             .harness()
             .task::<Value, crate::tool::ToolResult>("acyclic.direct_tool@1")?;
         let input = json!({"command":command});
-        let admission = if let Some(parent) = parent {
-            let record = self.runtime.task_host().observe_admission(parent).await?;
-            self.runtime
-                .harness()
-                .durable_context(parent, record.operation_id, None)
-                .await?
-                .admit(operation, &definition, input)
-                .await?
-        } else {
-            self.runtime
-                .harness()
-                .admit(operation, &definition, input, None)
-                .await?
-        };
+        let admission = inheritance::admit_prepared(
+            &self.admission,
+            Box::pin(
+                self.prepare_inheritance(crate::runtime::task_id_for_admission(operation), parent),
+            ),
+            Box::pin(async {
+                if let Some(parent) = parent {
+                    let record = self.runtime.task_host().observe_admission(parent).await?;
+                    self.runtime
+                        .harness()
+                        .durable_context(parent, record.operation_id, None)
+                        .await?
+                        .admit(operation, &definition, input)
+                        .await
+                } else {
+                    self.runtime
+                        .harness()
+                        .admit(operation, &definition, input, None)
+                        .await
+                }
+            }),
+        )
+        .await?;
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
         Box::pin(self.advance(task, &self.commands()?)).await?;
@@ -587,9 +593,7 @@ impl TaskCommandHost for CommandOwner<'_> {
             let task = context
                 .durable_task_id()
                 .ok_or_else(|| Error::Invalid("command task absent".into()))?;
-            let lineage = context.lineage(task).await?;
-            CommandControl::wait(&self.0.task_files.inner, &lineage, self.0.limits.file_bytes)
-                .await?;
+            self.0.wait_command_control(task).await?;
             self.0
                 .stock_commands(Some(task))
                 .await?

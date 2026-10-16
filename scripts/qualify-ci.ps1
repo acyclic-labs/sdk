@@ -185,6 +185,8 @@ bun run --filter '@acyclic-labs/fs' test:composition
 $GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
 cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
+node --test scripts/graphcoder-pty/screen.test.mjs
 node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 # Exact external-host lockfile inputs; every test uses this source-built CLI.

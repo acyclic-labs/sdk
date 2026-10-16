@@ -230,6 +230,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let (file, bytes, _) = self
+            .read_private_path_indexed(volume, grant, path, expected_generation, maximum_bytes, io)
+            .await?;
+        Ok((file, bytes))
+    }
+
+    pub(crate) async fn read_private_path_indexed(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         self.require_private_directory(volume, grant, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
@@ -332,7 +351,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         }
-        Ok((reference, bytes))
+        let publication = staged
+            .as_ref()
+            .map(|file| file_publication(file, Some(io)))
+            .transpose()?;
+        Ok((reference, bytes, publication))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -480,3 +503,18 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
 }
 
 use crate::executor::stock_boundary;
+
+pub(crate) fn file_publication(
+    reference: &FileRef,
+    io: Option<&PreparationIo>,
+) -> Result<crate::OperationId> {
+    if let Some(io) = io {
+        io.charge(WorkCounters {
+            items_examined: reference.version().len() as u64,
+            ..Default::default()
+        })?;
+    }
+    uuid::Uuid::parse_str(reference.version())
+        .map(|id| crate::OperationId::from_bytes(*id.as_bytes()))
+        .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
+}

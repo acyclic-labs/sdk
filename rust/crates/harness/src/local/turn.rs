@@ -1,10 +1,11 @@
 use super::*;
 use crate::{executor::TurnOutput, runtime::TaskStateProvider};
+use acyclic_stream::BoxProviderFuture;
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
-    /// Stock command bindings for a service-owned fenced worker.
+    /// Stock command bindings using retained task inheritance.
     pub(super) async fn stock_commands(
         &self,
         task: Option<TaskId>,
@@ -17,45 +18,43 @@ impl LocalHarness {
         >,
     > {
         let mut model = self.model.clone();
-        let mut lineage = self.command_lineage(task).await?;
-        lineage.reverse();
-        for directory in std::iter::once("config".to_owned())
-            .chain(lineage.into_iter().map(|task| format!("task-{task}")))
-        {
-            let key = crate::task_volume::FileKey::Ui {
-                directory: crate::task_volume::Component::new(directory).map_err(storage)?,
-                name: crate::task_volume::Component::new("settings.json").map_err(storage)?,
-            };
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&crate::task_volume::Query::File(key), 1)
-                .await
-                .map_err(storage)?;
-            if let Some(file) = snapshot.files.first() {
-                if file.bytes.len() as u64 > self.limits.file_bytes {
-                    return Err(Error::Invalid("settings exceed file bound".into()));
-                }
-                let settings: serde_json::Value =
-                    serde_json::from_slice(&file.bytes).map_err(storage)?;
-                if !settings.is_object() {
-                    return Err(Error::Invalid("settings must be an object".into()));
-                }
-                if let Some(name) = settings.get("model") {
-                    model.name = name
-                        .as_str()
-                        .ok_or_else(|| Error::Invalid("model must be text".into()))?
-                        .into();
-                }
+        let settings = self
+            .task_files
+            .inner
+            .snapshot(
+                &crate::task_volume::Query::File(
+                    crate::task_volume::FileKey::parse(".ui/config/settings.json")
+                        .map_err(storage)?,
+                ),
+                1,
+            )
+            .await
+            .map_err(storage)?;
+        if let Some(file) = settings.files.first() {
+            if file.bytes.len() as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid("settings exceed file bound".into()));
+            }
+            let settings: serde_json::Value =
+                serde_json::from_slice(&file.bytes).map_err(storage)?;
+            if !settings.is_object() {
+                return Err(Error::Invalid("settings must be an object".into()));
+            }
+            if let Some(name) = settings.get("model") {
+                model.name = name
+                    .as_str()
+                    .ok_or_else(|| Error::Invalid("model must be text".into()))?
+                    .into();
+            }
+        }
+        if let Some(task) = task {
+            if let Some(name) = self.resolved_value(task, "model").await? {
+                model.name = name;
             }
         }
         model.validate()?;
-        self.runtime.commands().with_model(
-            &model,
-            self.provider.clone(),
-            &self.compaction,
-            None,
-        )
+        self.runtime
+            .commands()
+            .with_model(&model, self.provider.clone(), &self.compaction, None)
     }
     /// Owner-gated stock commands for this same runtime.
     pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
@@ -75,30 +74,38 @@ impl LocalHarness {
                 "local prompt is empty or exceeds the file limit".into(),
             ));
         }
-        let prompt = self.prompt_context(Some(parent), prompt).await?;
-        let (receive, model) = self.stage_turn(operation, &prompt).await?;
-        let definition = self
-            .runtime
-            .harness()
-            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-        let record = self.runtime.task_host().observe_admission(parent).await?;
-        self.runtime
-            .harness()
-            .durable_context(parent, record.operation_id, None)
-            .await?
-            .admit(
-                operation,
-                &definition,
-                serde_json::json!({"receive":receive,"model":model}),
-            )
-            .await
+        let task = crate::runtime::task_id_for_admission(operation);
+        inheritance::admit_prepared(
+            &self.admission,
+            Box::pin(self.prepare_inheritance(task, Some(parent))),
+            Box::pin(async {
+                let prompt = self.prompt_context(Some(task), prompt).await?;
+                let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+                let record = self.runtime.task_host().observe_admission(parent).await?;
+                self.runtime
+                    .harness()
+                    .durable_context(parent, record.operation_id, None)
+                    .await?
+                    .admit(
+                        operation,
+                        &definition,
+                        serde_json::json!({"receive":receive,"model":model}),
+                    )
+                    .await
+            }),
+        )
+        .await
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(
         &'a self,
         operation: OperationId,
         prompt: &'a str,
-    ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+    ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
         Box::pin(async move {
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
@@ -190,7 +197,7 @@ impl LocalHarness {
             .map(Some)
     }
 
-    async fn finish_turn_inputs(
+    pub(super) async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
@@ -295,7 +302,7 @@ impl LocalHarness {
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
-    pub fn resume(&self, task: TaskId) -> impl Future<Output = Result<TurnOutput>> {
+    pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
             let root = self.loop_root(task).await?;
             let mut current = task;
@@ -337,8 +344,10 @@ impl LocalHarness {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
+        } else {
+            // Advance already refreshes projections; terminal recovery must repair them.
+            self.refresh_command_task(task).await?;
         }
-        self.refresh_command_task(task).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
