@@ -100,6 +100,7 @@ fn quoted_and_mid_token_requests_replace_the_whole_token() {
     menu.refresh(&editor, &[&Files]);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), "read @src/readme.md old");
+    assert_eq!((editor.cursor(), editor.anchor()), (20, 20));
     assert!(editor.undo());
     assert_eq!(
         (editor.text(), editor.cursor(), editor.anchor()),
@@ -390,6 +391,73 @@ fn acceptance_reuses_an_existing_separator_and_rejects_invalid_values() {
     }
 }
 
+#[test]
+fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() {
+    use acyclic_harness_tui::PromptInput;
+    let mut input = PromptInput::new(Editor::new("@srm old"));
+    input.editor.set_cursor(4, false);
+    input.refresh_completions(&[&Files]);
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 0, 80)
+            .is_empty()
+    );
+    assert_eq!((input.editor.cursor(), input.editor.anchor()), (15, 15));
+    input.committed_text("new ", 1);
+    assert_eq!(input.editor.text(), "@src/readme.md new old");
+    assert!(input.editor.undo());
+    assert_eq!(input.editor.text(), "@src/readme.md old");
+    assert!(input.editor.undo());
+    assert_eq!(
+        (input.editor.text(), input.editor.cursor()),
+        ("@srm old", 4)
+    );
+    assert!(input.editor.redo());
+    assert_eq!(
+        (input.editor.text(), input.editor.cursor()),
+        ("@src/readme.md old", 15)
+    );
+
+    for (tail, separator) in [
+        ("\told", "\t"),
+        (" \u{301}old", " \u{301}"),
+        ("\u{a0}old", "\u{a0}"),
+        ("\nold", " "),
+    ] {
+        let mut editor = Editor::new(&format!("@srm{tail}"));
+        editor.set_cursor(4, false);
+        let mut menu = CompletionMenu::default();
+        menu.refresh(&editor, &[&Files]);
+        assert!(menu.accept(&mut editor, 0));
+        assert_eq!(editor.cursor(), "@src/readme.md".len() + separator.len());
+        let expected = if tail.starts_with('\n') {
+            format!("@src/readme.md {tail}")
+        } else {
+            format!("@src/readme.md{tail}")
+        };
+        assert_eq!(editor.text(), expected);
+    }
+    let mut editor = Editor::new("@srm");
+    let paste = " ".repeat(1100);
+    editor.paste(&paste, 0);
+    editor.set_cursor(4, false);
+    let mut menu = CompletionMenu::default();
+    menu.refresh(&editor, &[&Files]);
+    assert!(menu.accept(&mut editor, 1));
+    assert_eq!(editor.text(), format!("@src/readme.md {paste}"));
+    assert_eq!(editor.collapsed_pastes().len(), 1);
+    assert_eq!(
+        (editor.cursor(), editor.collapsed_pastes()[0].start),
+        (15, 15)
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.text(), format!("@srm{paste}"));
+    assert_eq!(
+        (editor.cursor(), editor.collapsed_pastes()[0].start),
+        (4, 4)
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
     #[test]
@@ -411,7 +479,7 @@ proptest! {
         prop_assert!(menu.accept(&mut editor, 0));
         let token = if path.chars().any(char::is_whitespace) { format!("@\"{path}\"") } else { format!("@{path}") };
         let accepted = format!("before {token} after");
-        let desired = 7 + token.len();
+        let desired = 7 + token.len() + 1;
         let cursor = accepted.grapheme_indices(true).map(|(i, _)| i).chain([accepted.len()]).find(|i| *i >= desired).unwrap_or(accepted.len());
         prop_assert_eq!(editor.text(), &accepted);
         prop_assert_eq!((editor.cursor(), editor.anchor()), (cursor, cursor));

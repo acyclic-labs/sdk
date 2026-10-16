@@ -36,7 +36,8 @@ pub struct Completion {
     pub description: String,
     /// Direct tool commands sort before other results and show a [tool] suffix.
     pub tool: bool,
-    /// Add a space after acceptance (tools, /theme and completed file names).
+    /// End acceptance after a separator (tools, /theme and completed file names).
+    /// Existing horizontal whitespace is preserved and included in the edit.
     pub append_space: bool,
 }
 
@@ -299,14 +300,33 @@ impl CompletionMenu {
             }
             CompletionKind::Mention => format!("@{value}"),
         };
-        if (item.append_space
+        let mut range = request.range.clone();
+        if item.append_space
             || item.tool
-            || request.kind == CompletionKind::Command && value == "theme")
-            && !editor.text()[request.range.end..].starts_with(char::is_whitespace)
+            || request.kind == CompletionKind::Command && value == "theme"
         {
-            replacement.push(' ');
+            // Reusing whitespace must place the caret after it. Include it in
+            // this edit so redo records the final cursor too. A paste stays atomic.
+            let folded = editor
+                .collapsed_pastes()
+                .iter()
+                .any(|r| r.start == range.end);
+            let separator = if folded {
+                None
+            } else {
+                editor.text()[range.end..]
+                    .graphemes(true)
+                    .next()
+                    .filter(|s| s.starts_with(|c: char| c.is_whitespace() && c != '\n'))
+            };
+            if let Some(separator) = separator {
+                replacement.push_str(separator);
+                range.end += separator.len();
+            } else {
+                replacement.push(' ');
+            }
         }
-        if !editor.replace_range(request.range.clone(), &replacement, now_ms) {
+        if !editor.replace_range(range, &replacement, now_ms) {
             return false;
         }
         self.dismiss(editor);
