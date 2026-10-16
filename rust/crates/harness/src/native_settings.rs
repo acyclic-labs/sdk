@@ -10,6 +10,7 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
 };
+mod workspace;
 
 /// Native user locations and independent trust for repository-supplied commands.
 pub struct SettingsConfig {
@@ -276,8 +277,7 @@ impl NativeSettings {
                 if source.local
                     && let Some(projects) = document.remove("projects")
                     && let Some((_, project)) = object(projects)?.into_iter().find(|(path, _)| {
-                        Path::new(path) == configured_workspace
-                            || Path::new(path) == config.workspace
+                        workspace::matches(path, &configured_workspace, &config.workspace)
                     })
                     && let Some(servers) = object(project)?.remove("mcpServers")
                 {
