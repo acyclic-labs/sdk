@@ -1,3 +1,4 @@
+//! Properties over authenticated chains and current trust snapshots.
 #[path = "common/signed.rs"]
 mod signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
@@ -6,23 +7,54 @@ use proptest::prelude::*;
 use prost::Message;
 use signed::*;
 
-fn limits(n: Option<u64>) -> Limits {
-    Limits { rps: n, burst: n, bytes_per_s: n, channels: n, concurrency: n, bytes: n, spend_micros: n, tokens: n }
-}
 fn caveat() -> impl Strategy<Value = Caveat> {
     prop_oneof![
         (0..1200u64).prop_map(CaveatKind::ExpiresAtUnixSeconds),
         (0..1200u64).prop_map(CaveatKind::NotBeforeUnixSeconds),
         prop::option::of(0..10u64).prop_map(|n| CaveatKind::Limits(limits(n))),
-        "[a-z]{1,5}".prop_map(|name| CaveatKind::Audience(ResourcePattern { name: format!("workers:/{name}"), prefix: false })),
-        any::<bool>().prop_map(|allow| CaveatKind::Grants(GrantSet { grants: if allow { vec![Grant { kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: "fs:/public".into(), prefix: true }, actions: vec!["fs/read".into()] }) }] } else { vec![] } })),
-        "[a-z]{1,5}".prop_map(|account| CaveatKind::Holder(Holder { account: Some(account) })),
+        "[a-z]{1,5}".prop_map(|name| CaveatKind::Audience(ResourcePattern {
+            name: format!("workers:/{name}"),
+            prefix: false
+        })),
+        any::<bool>().prop_map(|allow| CaveatKind::Grants(GrantSet {
+            grants: if allow {
+                vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: "fs:/public".into(),
+                            prefix: true,
+                        },
+                        actions: vec!["fs/read".into()],
+                    }),
+                }]
+            } else {
+                vec![]
+            }
+        })),
+        "[a-z]{1,5}".prop_map(|account| CaveatKind::Holder(Holder {
+            account: Some(account)
+        })),
         "[a-z]{1,5}".prop_map(|id| CaveatKind::LineageAppend(LineageAppend { ids: vec![id] })),
-        "[a-z]{1,5}".prop_map(|value| CaveatKind::Pin(Pin { name: "author".into(), value: PinValue::Literal(value.into_bytes()) })),
-        any::<bool>().prop_map(|empty| CaveatKind::Filter(Filter { keys: vec![], attributes: if empty { vec![] } else { vec![AttributeMatch { name: "author".into(), any_of: vec![b"issuer".to_vec()], subjects: vec![] }] } })),
+        "[a-z]{1,5}".prop_map(|value| CaveatKind::Pin(Pin {
+            name: "author".into(),
+            value: PinValue::Literal(value.into_bytes())
+        })),
+        any::<bool>().prop_map(|empty| CaveatKind::Filter(Filter {
+            keys: vec![],
+            attributes: if empty {
+                vec![]
+            } else {
+                vec![AttributeMatch {
+                    name: "author".into(),
+                    any_of: vec![b"issuer".to_vec()],
+                    subjects: vec![],
+                }]
+            }
+        })),
         (2..8u32).prop_map(CaveatKind::MaxDepth),
         "[a-z]{0,5}".prop_map(CaveatKind::Label),
-    ].prop_map(|kind| Caveat { kind })
+    ]
+    .prop_map(|kind| Caveat { kind })
 }
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
@@ -195,55 +227,138 @@ proptest! {
 #[test]
 fn effective_filters_keep_the_declaring_subject() {
     let trust = Snapshot::default();
-    let bytes = root(|block| block.caveats.push(Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![AttributeMatch { name: "author".into(), any_of: vec![], subjects: vec![SubjectReference { kind: SubjectReferenceKind::Id(SubjectId {}) }] }] }) }));
+    let bytes = root(|block| {
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Filter(Filter {
+                keys: vec![],
+                attributes: vec![AttributeMatch {
+                    name: "author".into(),
+                    any_of: vec![],
+                    subjects: vec![SubjectReference {
+                        kind: SubjectReferenceKind::Id(SubjectId {}),
+                    }],
+                }],
+            }),
+        })
+    });
     let parent = verify(&bytes, &trust, NOW).unwrap();
-    let child = parent.attenuate(vec![Caveat { kind: CaveatKind::LineageAppend(LineageAppend { ids: vec!["child".into()] }) }, Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![] }) }], &[5;32]).unwrap();
+    let child = parent
+        .attenuate(
+            vec![
+                Caveat {
+                    kind: CaveatKind::LineageAppend(LineageAppend {
+                        ids: vec!["child".into()],
+                    }),
+                },
+                Caveat {
+                    kind: CaveatKind::Filter(Filter {
+                        keys: vec![],
+                        attributes: vec![],
+                    }),
+                },
+            ],
+            &[5; 32],
+        )
+        .unwrap();
     let effective = child.effective();
     let filters = effective.filters().collect::<Vec<_>>();
     assert_eq!(filters[0].subject_id(), "issuer");
     assert_eq!(filters[0].lineage().collect::<Vec<_>>(), ["issuer"]);
     assert_eq!(filters[1].subject_id(), "child");
-    assert_eq!(filters[1].lineage().collect::<Vec<_>>(), ["issuer", "child"]);
-    let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
+    assert_eq!(
+        filters[1].lineage().collect::<Vec<_>>(),
+        ["issuer", "child"]
+    );
+    let attributes = RecordAttributes::try_new(vec![Attribute {
+        name: "author".into(),
+        value: b"issuer".to_vec(),
+    }])
+    .unwrap();
     let usage = limits(None);
-    child.authorize(&trust, &request("fs:/public", &attributes, &usage), PolicyDecision::Allow).unwrap();
+    child
+        .authorize(
+            &trust,
+            &request("fs:/public", &attributes, &usage),
+            PolicyDecision::Allow,
+        )
+        .unwrap();
 }
 
 #[test]
 fn valid_blocks_cannot_be_spliced_reordered_or_truncated() {
     let trust = Snapshot::default();
     let parent = verify(&root(|_| {}), &trust, NOW).unwrap();
-    let child = parent.attenuate(vec![], &[5;32]).unwrap().attenuate(vec![], &[6;32]).unwrap();
+    let child = parent
+        .attenuate(vec![], &[5; 32])
+        .unwrap()
+        .attenuate(vec![], &[6; 32])
+        .unwrap();
     let original = CapabilityProto::decode(child.encode().as_slice()).unwrap();
-    let other = root(|block| block.caveats.push(Caveat { kind: CaveatKind::Label("different root".into()) }));
+    let other = root(|block| {
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Label("different root".into()),
+        })
+    });
     let other = CapabilityProto::decode(other.as_slice()).unwrap();
-    let mut spliced = original.clone(); spliced.blocks[0] = other.blocks[0].clone();
-    let mut reordered = original.clone(); reordered.blocks.swap(1,2);
-    let mut truncated = original; truncated.blocks.pop();
-    for wire in [spliced,reordered,truncated] {
-        assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
+    let mut spliced = original.clone();
+    spliced.blocks[0] = other.blocks[0].clone();
+    let mut reordered = original.clone();
+    reordered.blocks.swap(1, 2);
+    let mut truncated = original;
+    truncated.blocks.pop();
+    for wire in [spliced, reordered, truncated] {
+        assert!(matches!(
+            verify(&wire.encode_to_vec(), &trust, NOW),
+            Err(VerifyError::Signature)
+        ));
     }
 }
 
 #[test]
 fn cached_admission_observes_current_trust_epochs_and_parent_revocations() {
-    let bytes = root(|block| block.certificates.as_mut().unwrap().keys[0].key.parent_revocation_ids.push(vec![9;32]));
+    let bytes = root(|block| {
+        block.certificates.as_mut().unwrap().keys[0]
+            .key
+            .parent_revocation_ids
+            .push(vec![9; 32])
+    });
     let mut trust = Snapshot::default();
     let cap = verify(&bytes, &trust, NOW).unwrap();
     trust.environments.push(key(8).verifying_key().to_bytes());
     cap.check(&trust, NOW).unwrap();
     trust.environments.remove(0);
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Trust));
-    trust = Snapshot::default(); trust.issuers.clear();
+    trust = Snapshot::default();
+    trust.issuers.clear();
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Trust));
-    trust = Snapshot::default(); trust.minimum_epoch = 2;
+    trust = Snapshot::default();
+    trust.minimum_epoch = 2;
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Revoked));
-    trust = Snapshot::default(); trust.revoked_keys.push("key".into());
+    trust = Snapshot::default();
+    trust.revoked_keys.push("key".into());
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Revoked));
-    trust = Snapshot::default(); trust.revoked_blocks.push([9;32]);
+    trust = Snapshot::default();
+    trust.revoked_blocks.push([9; 32]);
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Revoked));
-    trust = Snapshot::default(); trust.available = false;
+    trust = Snapshot::default();
+    trust.available = false;
     assert_eq!(cap.check(&trust, NOW), Err(VerifyError::Trust));
+}
+
+#[test]
+fn cached_and_fresh_admission_agree_when_issuer_sets_change() {
+    for environment in [false, true] {
+        let mut trust = Snapshot::default();
+        let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
+        let roots = if environment { &mut trust.environments } else { &mut trust.issuers };
+        roots.push(key(8).verifying_key().to_bytes());
+        cap.check(&trust, NOW).unwrap();
+        verify(&cap.encode(), &trust, NOW).unwrap();
+        let roots = if environment { &mut trust.environments } else { &mut trust.issuers };
+        roots.push(key(4).verifying_key().to_bytes());
+        assert_eq!(cap.check(&trust, NOW), Err(VerifyError::RepeatedKey));
+        assert!(matches!(verify(&cap.encode(), &trust, NOW), Err(VerifyError::RepeatedKey)));
+    }
 }
 
 #[test]
@@ -251,18 +366,41 @@ fn every_signature_precedes_semantic_claim_admission() {
     // Fully signed, structurally decodable claims with a duplicate attribute.
     let bytes = root(|block| {
         let principal = &mut block.certificates.as_mut().unwrap().keys[0].key.principal;
-        principal.attributes = vec![Attribute { name: "role".into(), value: b"one".to_vec() }, Attribute { name: "role".into(), value: b"two".to_vec() }];
+        principal.attributes = vec![
+            Attribute {
+                name: "role".into(),
+                value: b"one".to_vec(),
+            },
+            Attribute {
+                name: "role".into(),
+                value: b"two".to_vec(),
+            },
+        ];
     });
     let trust = Snapshot::default();
-    assert!(matches!(verify(&bytes, &trust, NOW), Err(VerifyError::Malformed)));
+    assert!(matches!(
+        verify(&bytes, &trust, NOW),
+        Err(VerifyError::Malformed)
+    ));
     let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
     wire.blocks[0].signature[0] ^= 1;
-    assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
+    assert!(matches!(
+        verify(&wire.encode_to_vec(), &trust, NOW),
+        Err(VerifyError::Signature)
+    ));
 }
 
 #[test]
 fn cached_clock_cannot_predate_birth_and_validity_is_half_open() {
-    let bytes = root(|block| block.certificates.as_mut().unwrap().birth.birth.issued_at_unix_seconds = 50);
+    let bytes = root(|block| {
+        block
+            .certificates
+            .as_mut()
+            .unwrap()
+            .birth
+            .birth
+            .issued_at_unix_seconds = 50
+    });
     let trust = Snapshot::default();
     let cap = verify(&bytes, &trust, NOW).unwrap();
     assert_eq!(cap.check(&trust, 49), Err(VerifyError::Time));
@@ -276,16 +414,33 @@ fn signed_parser_seed_corpus() {
     let trust = Snapshot::default();
     let bytes = root(|_| {});
     let root = verify(&bytes, &trust, NOW).unwrap();
-    let child = root.attenuate(vec![Caveat { kind: CaveatKind::ExpiresAtUnixSeconds(900) }], &[5;32]).unwrap();
-    let cases = [("root", root.encode()), ("attenuated", child.encode()), ("sealed", child.seal().unwrap().encode())];
+    let child = root
+        .attenuate(
+            vec![Caveat {
+                kind: CaveatKind::ExpiresAtUnixSeconds(900),
+            }],
+            &[5; 32],
+        )
+        .unwrap();
+    let cases = [
+        ("root", root.encode()),
+        ("attenuated", child.encode()),
+        ("sealed", child.seal().unwrap().encode()),
+    ];
     for (name, bytes) in cases {
         let parsed = verify(&bytes, &trust, NOW).unwrap();
         assert_eq!(parsed.encode().as_slice(), bytes.as_slice());
         // Explicit corpus regeneration shares the same fully signed fixtures.
         if let Some(directory) = std::env::var_os("AUTH_CORPUS_OUTPUT") {
-            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(directory);
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../..")
+                .join(directory);
             std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(std::path::Path::new(&directory).join(name), bytes.as_slice()).unwrap();
+            std::fs::write(
+                std::path::Path::new(&directory).join(name),
+                bytes.as_slice(),
+            )
+            .unwrap();
         }
     }
 }

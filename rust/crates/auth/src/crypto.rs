@@ -26,10 +26,18 @@ pub(crate) fn block_message(message: &mut Vec<u8>, index: u64, previous: &BlockI
 
 /// SHA-256 of the exact signing transcript followed by its Ed25519 signature.
 pub fn block_id(transcript: &[u8], signature: &[u8]) -> BlockId {
-    Sha256::new().chain_update(transcript).chain_update(signature).finalize().into()
+    Sha256::new()
+        .chain_update(transcript)
+        .chain_update(signature)
+        .finalize()
+        .into()
 }
 
-pub(crate) fn claims_message(message: &mut Vec<u8>, domain: &[u8], claims: &impl Message) -> Result<(), VerifyError> {
+pub(crate) fn claims_message(
+    message: &mut Vec<u8>,
+    domain: &[u8],
+    claims: &impl Message,
+) -> Result<(), VerifyError> {
     message.clear();
     message.extend_from_slice(domain);
     claims.encode(message).map_err(|_| VerifyError::Malformed)
@@ -38,11 +46,18 @@ pub(crate) fn claims_message(message: &mut Vec<u8>, domain: &[u8], claims: &impl
 pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
     let bytes = bytes.try_into().map_err(|_| VerifyError::Malformed)?;
     let key = VerifyingKey::from_bytes(bytes).map_err(|_| VerifyError::Signature)?;
-    if key.is_weak() { return Err(VerifyError::Signature); }
+    if key.is_weak() {
+        return Err(VerifyError::Signature);
+    }
     Ok(key)
 }
 
-pub(crate) fn verify_signature(key: &VerifyingKey, message: &[u8], signature: &[u8]) -> Result<(), VerifyError> {
+pub(crate) fn verify_signature(
+    key: &VerifyingKey,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<(), VerifyError> {
     let signature = Signature::from_slice(signature).map_err(|_| VerifyError::Signature)?;
-    key.verify_strict(message, &signature).map_err(|_| VerifyError::Signature)
+    key.verify_strict(message, &signature)
+        .map_err(|_| VerifyError::Signature)
 }
