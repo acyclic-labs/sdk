@@ -111,6 +111,7 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
+ "tempfile",
  "tokio-util",
  "which",
 ]
