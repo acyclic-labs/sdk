@@ -21,6 +21,8 @@ mod goal_sources;
 mod goals;
 #[path = "file_query/objects.rs"]
 mod objects;
+#[path = "file_query/replacements.rs"]
+mod replacements;
 use objects::CountingObjects;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {

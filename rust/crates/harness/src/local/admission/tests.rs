@@ -19,10 +19,14 @@ async fn cancel_at_admission_await(harness: &LocalHarness, after_admission: bool
         let previous = harness.current_turn().await?.0.map(|turn| turn.operation);
         harness
             .publish_turn_with(
-                operation,
-                inputs,
-                operation,
-                0,
+                Turn {
+                    operation,
+                    root: operation,
+                    automatic_turns: 0,
+                    goal_revision: None,
+                    receive: inputs.0,
+                    model: inputs.1,
+                },
                 previous,
                 async move |turn| {
                     if after_admission {

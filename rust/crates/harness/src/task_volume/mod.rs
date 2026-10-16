@@ -131,6 +131,9 @@ pub struct FileValue {
     pub key: FileKey,
     /// Assistant channel discriminator, required only for assistant chunks.
     pub channel: Option<Channel>,
+    /// Original filesystem write operation, when supplied by a file query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<crate::OperationId>,
     /// Zero-copy segment view, retaining original allocation custody.
     pub bytes: OwnedBytes,
 }
@@ -159,6 +162,7 @@ impl FileValue {
         Self {
             key,
             channel: None,
+            publication: None,
             bytes: bytes.into(),
         }
     }

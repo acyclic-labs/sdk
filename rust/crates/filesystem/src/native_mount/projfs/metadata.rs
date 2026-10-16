@@ -60,12 +60,22 @@ pub(super) fn host_windows_metadata(
     work: &crate::NativeMaterializationWork,
     probes: Option<&Mutex<HashMap<MountPath, usize>>>,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let guard = || probes.map(|probes| MetadataProbeGuard::enter(probes, path));
+    let guard = || {
+        #[cfg(test)]
+        if super::tests::read_bindings::bypass_probe_registration() {
+            return None;
+        }
+        probes.map(|probes| MetadataProbeGuard::enter(probes, path))
+    };
     let query = |path: &[u16], work: &mut &crate::NativeMaterializationWork| {
         if let Some(metadata) = query_metadata(root, path, work, &guard)? {
             return Ok(metadata);
         }
-        with_guard(&guard, || root.stat(path, work))
+        with_guard(&guard, || {
+            #[cfg(test)]
+            let _replay = super::tests::read_bindings::replay_fallback();
+            root.stat(path, work)
+        })
     };
     let metadata = if let Some(units) = super::callback_path::wide_components(path.components()) {
         crate::native_host::with_wide_units(units, &mut &*work, query)?

@@ -325,6 +325,18 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.views.query_change(change)
     }
 
+    /// Selects both file sources required for goal status and continuation counts.
+    pub async fn select_goal_view(
+        &mut self,
+        goal: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        request: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        self.views
+            .select_goal_view(goal, request, maximum_bytes)
+            .await
+    }
+
     /// Joins observed GOAL.md and request-head cuts without persisting file payloads.
     pub fn bind_goal_sources(
         &mut self,

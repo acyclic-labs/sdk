@@ -11,6 +11,7 @@ use wire::stream_session_service_server::{StreamSessionService, StreamSessionSer
 mod admissions;
 mod allocations;
 mod checked;
+mod checked_recovery;
 mod connections;
 mod context;
 mod credentials;

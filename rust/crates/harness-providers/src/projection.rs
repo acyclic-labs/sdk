@@ -1,9 +1,12 @@
+pub(crate) mod arguments;
+mod call;
 pub(crate) mod gemini;
 mod gemini_results;
+mod json_string;
 pub(crate) mod native_reasoning;
 mod sequence;
 pub(crate) mod text;
-mod wire;
+pub(crate) mod wire;
 use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
 use acyclic_harness::{
     Result,
@@ -239,28 +242,6 @@ pub(crate) fn body_named<'a>(
     })
 }
 
-fn merge_chat_text(previous: &mut Value, next: Value) -> Result<()> {
-    match (previous, next) {
-        (_, Value::Null) => {}
-        (previous @ Value::Null, next) => *previous = next,
-        (Value::String(previous), Value::String(next)) => {
-            previous.push('\n');
-            previous.push_str(&next);
-        }
-        (Value::Array(previous), Value::Array(mut next)) => previous.append(&mut next),
-        (Value::Array(previous), Value::String(next)) => {
-            previous.push(json!({"type":"text", "text":next}));
-        }
-        (previous @ Value::String(_), Value::Array(mut next)) => {
-            let text = previous.take();
-            next.insert(0, json!({"type":"text", "text":text}));
-            *previous = Value::Array(next);
-        }
-        _ => return Err(invalid("invalid Chat tool batch content")),
-    }
-    Ok(())
-}
-
 fn project_message<'a>(
     adapter: Adapter,
     message: &'a ModelMessage,
@@ -306,29 +287,21 @@ fn project_message<'a>(
             }) => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let mut call = match adapter {
-                    Adapter::Anthropic => {
-                        json!({"type":"tool_use","id":call_id,"name":name,"input":arguments})
-                    }
-                    Adapter::Responses => {
-                        json!({"type":"function_call","call_id":call_id,"name":name,
-                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?})
-                    }
-                    Adapter::Chat => json!({"id":call_id,"type":"function","function":{"name":name,
-                        "arguments":serde_json::to_string(arguments).map_err(|e| invalid(e.to_string()))?}}),
-                    Adapter::Gemini => {
-                        json!({"functionCall":{"id":call_id,"name":name,"args":arguments}})
-                    }
+                let call = call::Call {
+                    adapter,
+                    id: call_id.into_owned(),
+                    name,
+                    arguments,
+                    signature: if adapter == Adapter::Gemini {
+                        gemini.signature.take()
+                    } else {
+                        None
+                    },
                 };
-                if adapter == Adapter::Gemini {
-                    if let Some(signature) = gemini.signature.take() {
-                        call["thoughtSignature"] = signature;
-                    }
-                }
                 if adapter == Adapter::Chat {
                     calls.push(call);
                 } else {
-                    ordered.push(Item::Json(call));
+                    ordered.push(Item::Call(call));
                 }
             }
             ModelContentPart::Reasoning { block } => {
@@ -408,14 +381,16 @@ fn project_message<'a>(
         Adapter::Chat => {
             let mut output = Vec::new();
             if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
-                let mut value = json!({"role":role,"content":if texts.is_empty() {if calls.is_empty() {json!("")} else {Value::Null}} else {json!(texts.concat())}});
-                if !calls.is_empty() {
-                    value["tool_calls"] = json!(calls);
-                }
-                if !chat_reasoning.is_empty() {
-                    value["reasoning_content"] = json!(chat_reasoning);
-                }
-                output.push(Message::Item(Item::Json(value)));
+                output.push(Message::Chat(wire::Chat {
+                    role,
+                    content: if texts.is_empty() {
+                        calls.is_empty().then(String::new)
+                    } else {
+                        Some(texts.concat())
+                    },
+                    tool_calls: calls,
+                    reasoning_content: (!chat_reasoning.is_empty()).then_some(chat_reasoning),
+                }));
             }
             output.extend(
                 results

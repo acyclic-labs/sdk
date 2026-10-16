@@ -1,35 +1,34 @@
 use futures::channel::oneshot;
-use wasm_bindgen::{JsCast as _, closure::Closure};
+use wasm_bindgen::{closure::Closure, prelude::wasm_bindgen};
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(callback: &Closure<dyn FnMut()>, milliseconds: u32) -> wasm_bindgen::JsValue;
+    #[wasm_bindgen(js_name = clearTimeout)]
+    fn clear_timeout(timer: &wasm_bindgen::JsValue);
+}
 struct Timer {
-    global: web_sys::WorkerGlobalScope,
-    handle: i32,
+    handle: wasm_bindgen::JsValue,
     _callback: Closure<dyn FnMut()>,
 }
 impl Drop for Timer {
     fn drop(&mut self) {
-        self.global.clear_timeout_with_handle(self.handle);
+        clear_timeout(&self.handle);
     }
 }
 pub(crate) async fn delay(milliseconds: u32) {
-    // Window and worker globals expose the same timer operations. Cancellation
-    // unregisters the callback; no polling task or detached timeout is retained.
-    let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+    // Browsers return a number; Node/Bun may return an object. Preserve the
+    // original handle so cancellation clears the actual runtime timer.
     let (sender, receiver) = oneshot::channel();
-    let callback = Closure::once(move || {
-        let _ = sender.send(());
+    let mut sender = Some(sender);
+    let callback: Closure<dyn FnMut()> = Closure::new(move || {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(());
+        }
     });
-    let Ok(milliseconds) = i32::try_from(milliseconds) else {
-        return;
-    };
-    let Ok(handle) = global.set_timeout_with_callback_and_timeout_and_arguments_0(
-        callback.as_ref().unchecked_ref(),
-        milliseconds,
-    ) else {
-        return;
-    };
+    let handle = set_timeout(&callback, milliseconds);
     let _timer = Timer {
-        global,
         handle,
         _callback: callback,
     };
