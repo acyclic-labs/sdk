@@ -152,12 +152,34 @@ where
                             ),
                         });
                     }
-                    Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
+                    Err(error) => {
+                        tracing::trace!(
+                            %task,
+                            operation = %command.operation_id,
+                            command = %command.kind,
+                            cause = ?error,
+                            "task command failed; recording indeterminate outcome"
+                        );
+                        return Ok(CommandDispatch::Indeterminate);
+                    }
+                    Ok(TaskCommandProgress::Indeterminate) => {
+                        tracing::trace!(
+                            %task,
+                            operation = %command.operation_id,
+                            command = %command.kind,
+                            "task command reported indeterminate progress"
+                        );
                         return Ok(CommandDispatch::Indeterminate);
                     }
                     Ok(progress) => {
                         results.push_result(command.operation_id, progress)?;
                         if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
+                            tracing::trace!(
+                                %task,
+                                operation = %command.operation_id,
+                                command = %command.kind,
+                                "task command result exceeds input limit; recording indeterminate outcome"
+                            );
                             return Ok(CommandDispatch::Indeterminate);
                         }
                     }

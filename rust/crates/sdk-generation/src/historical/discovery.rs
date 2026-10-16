@@ -26,7 +26,7 @@ pub struct CargoDiscoveryInputs {
 }
 
 pub(super) fn frontier_git() -> Result<std::path::PathBuf, String> {
-    std::env::var_os("PATH")
+    crate::command_var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|path| path.join(if cfg!(windows) { "git.exe" } else { "git" }))
@@ -42,7 +42,7 @@ pub(super) fn git_source_blobs(
     listing: &[u8],
     consume: impl FnMut(&str, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut child = Command::new(frontier_git()?)
+    let mut child = sdk_docs::command(frontier_git()?)
         .arg("--no-replace-objects")
         .current_dir(repository)
         .args(["cat-file", "--batch"])
@@ -157,10 +157,10 @@ pub(super) fn cargo_discovery_inputs(
     cargo: &Path,
 ) -> Result<CargoDiscoveryInputs, String> {
     let mut config_sha256 = BTreeMap::new();
-    let home = std::env::var_os("CARGO_HOME")
+    let home = crate::command_var_os("CARGO_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            crate::command_var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .map(|home| std::path::PathBuf::from(home).join(".cargo"))
         })
         .ok_or("Cargo discovery home is absent")?;
@@ -185,36 +185,34 @@ pub(super) fn cargo_discovery_inputs(
             config_sha256.insert(crate::path_string(&path), digest);
         }
     }
-    let environment_sha256 = discovery_environment_inputs(std::env::vars_os(), cfg!(windows))?;
-    let git_sha256 = crate::sha256_file(&frontier_git()?).map_err(|e| e.to_string())?;
-    let cargo_sha256 = crate::sha256_file(cargo).map_err(|e| e.to_string())?;
+    let environment_sha256 =
+        discovery_environment_inputs(sdk_docs::command_environment().into_iter(), cfg!(windows))?;
+    let git_sha256 =
+        crate::file_cache::tool_identity(&frontier_git()?).map_err(|e| e.to_string())?;
+    let cargo_sha256 = crate::file_cache::tool_identity(cargo).map_err(|e| e.to_string())?;
+    let cargo_version = crate::toolchains::cargo_version(cargo, root).map_err(|e| e.to_string())?;
     Ok(CargoDiscoveryInputs {
         git_sha256,
         cargo_sha256,
-        cargo_version: String::from_utf8(command_output(
-            Command::new(cargo).current_dir(root).arg("-vV"),
-        )?)
-        .map_err(|e| e.to_string())?,
+        cargo_version,
         config_sha256,
         environment_sha256,
     })
 }
 
-pub(super) fn registry_owner_source_inner(
+pub(super) fn registry_source(
     repository: &Path,
     root: &Path,
     revision: &str,
-    cargo: &Path,
     capture: bool,
-    frontier_authority: Option<&BTreeSet<String>>,
-) -> Result<RegistryOwnerSource, String> {
+) -> Result<(RegistryOwnerSource, BTreeSet<String>), String> {
     if revision.len() != 40 || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("registry owner source requires an immutable Git revision".into());
     }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let repository = repository.canonicalize().map_err(|e| e.to_string())?;
     let top = command_output(
-        Command::new(frontier_git()?)
+        sdk_docs::command(frontier_git()?)
             .arg("--no-replace-objects")
             .current_dir(&repository)
             .args(["rev-parse", "--show-toplevel"]),
@@ -227,7 +225,7 @@ pub(super) fn registry_owner_source_inner(
         return Err("registry owner discovery requires the complete source root".into());
     }
     let listing = command_output(
-        Command::new(frontier_git()?)
+        sdk_docs::command(frontier_git()?)
             .arg("--no-replace-objects")
             .current_dir(&repository)
             .args(["ls-tree", "-r", "-z", revision]),
@@ -251,7 +249,11 @@ pub(super) fn registry_owner_source_inner(
     };
     // The complete tracked frontier includes configs, workspace manifests and
     // original release authority; no source-owned input is replaced by a name list.
+    let mut authority = BTreeSet::new();
     git_source_blobs(&repository, &listing, |path, original| {
+        if path == "release/cargo-crates.json" {
+            authority.extend(decode_release_authority(original)?);
+        }
         let input = root.join(path);
         validate_import_path(&root, &input)?;
         if capture {
@@ -278,6 +280,16 @@ pub(super) fn registry_owner_source_inner(
             return Err("original Git link is a Cargo discovery config".into());
         }
     }
+    Ok((source, authority))
+}
+
+pub(super) fn discover_owner(
+    root: &Path,
+    cargo: &Path,
+    mut source: RegistryOwnerSource,
+    frontier_authority: Option<&BTreeSet<String>>,
+) -> Result<RegistryOwnerSource, String> {
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
     source.discovery = cargo_discovery_inputs(&root, cargo)?;
     let authority_path = "release/cargo-crates.json";
     let authority = if source.input_sha256.contains_key(authority_path) {
@@ -291,15 +303,23 @@ pub(super) fn registry_owner_source_inner(
     // Cargo's no-deps branch serializes validated workspace members without
     // build_resolve_graph. Reuse the maintained context, not a workspace glob parser.
     validate_archive_inventory(&root, &source.input_sha256.keys().cloned().collect())?;
-    let metadata = cargo_metadata::MetadataCommand::new()
+    let mut discovery = cargo_metadata::MetadataCommand::new();
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path: Some(cargo),
+        lock_selection: None,
+    }
+    .configure_metadata(&mut discovery)
+    .map_err(|e| e.to_string())?;
+    discovery
         .cargo_path(cargo)
         .current_dir(&root)
         .manifest_path(root.join("Cargo.toml"))
         .env_remove("CARGO_RESOLVER_LOCKFILE_PATH")
         .other_options(vec!["--locked".into(), "--offline".into()])
-        .no_deps()
-        .exec()
-        .map_err(|e| e.to_string())?;
+        .no_deps();
+    let metadata = owner_metadata(&root, cargo, &source, || {
+        discovery.exec().map_err(|e| e.to_string())
+    })?;
     if metadata
         .workspace_root
         .as_std_path()
@@ -392,3 +412,118 @@ pub(super) fn registry_owner_source_inner(
     }
     Ok(source)
 }
+
+fn owner_metadata(
+    root: &Path,
+    cargo: &Path,
+    source: &RegistryOwnerSource,
+    mut query: impl FnMut() -> Result<Metadata, String>,
+) -> Result<Metadata, String> {
+    // Opaque Cargo configuration may include further files. Leave it Cargo-owned.
+    if !crate::file_cache::is_resolved_cargo(cargo)
+        || source.discovery.config_sha256.values().any(Option::is_some)
+    {
+        return query();
+    }
+    let Ok(workspace) = workspace_inputs(root) else {
+        return query();
+    };
+    let mut checked_query = || {
+        let metadata = query()?;
+        if workspace_inputs(root)? != workspace {
+            return Err("Cargo workspace discovery inputs changed during inspection".into());
+        }
+        Ok(metadata)
+    };
+    // The caller checks the complete original inventory and discovery inputs
+    // before AND after this lookup. Never reuse an external input closure.
+    let context =
+        owner_metadata_context(root, source, sdk_docs::command_environment(), &workspace)?;
+    let mut queried = None;
+    let encoded = crate::file_cache::owner_metadata(cargo, &context, || {
+        let metadata = checked_query().map_err(crate::CliError)?;
+        let encoded =
+            serde_json::to_string(&metadata).map_err(|error| crate::CliError(error.to_string()))?;
+        queried = Some(metadata);
+        Ok(encoded)
+    })
+    .map_err(|error| error.to_string())?;
+    let metadata = if let Some(metadata) = queried {
+        metadata
+    } else {
+        let metadata: Metadata =
+            serde_json::from_str(&encoded).map_err(|error| error.to_string())?;
+        let closed = metadata.packages.iter().all(|package| {
+            std::iter::once(package.manifest_path.as_std_path())
+                .chain(
+                    package
+                        .targets
+                        .iter()
+                        .map(|target| target.src_path.as_std_path()),
+                )
+                .chain(package.dependencies.iter().filter_map(|dependency| {
+                    dependency.path.as_ref().map(|path| path.as_std_path())
+                }))
+                .map(Path::to_owned)
+                .chain(
+                    [package.readme.as_ref(), package.license_file.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .map(|path| {
+                            package
+                                .manifest_path
+                                .parent()
+                                .unwrap()
+                                .join(path)
+                                .into_std_path_buf()
+                        }),
+                )
+                .all(|path| path.canonicalize().is_ok_and(|path| path.starts_with(root)))
+        });
+        if closed {
+            metadata
+        } else {
+            checked_query()?
+        }
+    };
+    if workspace_inputs(root)? != workspace {
+        return Err("Cargo workspace discovery inputs changed during inspection".into());
+    }
+    Ok(metadata)
+}
+
+fn workspace_inputs(root: &Path) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut inputs = BTreeMap::new();
+    for directory in root.ancestors().skip(1) {
+        for name in ["Cargo.toml", "Cargo.lock"] {
+            let path = directory.join(name);
+            let digest = match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !is_linked(&metadata) => {
+                    Some(crate::sha256_file(&path).map_err(|error| error.to_string())?)
+                }
+                Ok(_) => return Err("workspace discovery input is redirected or non-file".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            inputs.insert(crate::path_string(&path), digest);
+        }
+    }
+    Ok(inputs)
+}
+
+fn owner_metadata_context(
+    root: &Path,
+    source: &RegistryOwnerSource,
+    environment: BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    workspace: &BTreeMap<String, Option<String>>,
+) -> Result<String, String> {
+    let input = serde_json::to_vec(&(source, workspace)).map_err(|error| error.to_string())?;
+    Ok(crate::toolchains::cargo_context(
+        root,
+        &format!("owner-metadata:{}", crate::sha256_bytes(&input)),
+        environment,
+    ))
+}
+
+#[cfg(test)]
+mod metadata_tests;

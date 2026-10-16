@@ -4,7 +4,7 @@ use crate::{
     TaskId,
     task_volume::{FileKey, FileValue, Query, TaskVolume},
 };
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use futures::StreamExt as _;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -32,6 +32,18 @@ impl CommandControl {
             .max_by_key(|(revision, _)| revision)
             .is_some_and(|(_, paused)| *paused)
     }
+    async fn paused_matching<'a>(
+        &self,
+        matches: &(impl Fn(TaskId) -> BoxProviderFuture<'a, Result<bool>> + Sync),
+    ) -> Result<bool> {
+        let mut latest = self.all;
+        for (task, state) in &self.tasks {
+            if latest.is_none_or(|(revision, _)| revision < state.0) && matches(*task).await? {
+                latest = Some(*state);
+            }
+        }
+        Ok(latest.is_some_and(|(_, paused)| paused))
+    }
     pub(crate) fn set(&mut self, task: Option<TaskId>, revision: u64, paused: bool) {
         if let Some(task) = task {
             self.tasks.insert(task, (revision, paused));
@@ -50,16 +62,54 @@ impl CommandControl {
         paused: Option<bool>,
         maximum: u64,
     ) -> Result<bool> {
+        Self::change_matching(
+            volume,
+            task,
+            |task| Box::pin(async move { Ok(lineage.contains(&task)) }),
+            paused,
+            maximum,
+        )
+        .await
+    }
+    pub(crate) async fn change_matching<'a, P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
+        task: Option<TaskId>,
+        matches: impl Fn(TaskId) -> BoxProviderFuture<'a, Result<bool>> + Sync,
+        paused: Option<bool>,
+        maximum: u64,
+    ) -> Result<bool> {
         let snapshot = volume
             .snapshot(&Query::File(Self::key()?), 1)
             .await
             .map_err(storage)?;
-        Self::publish_change(volume, task, lineage, paused, maximum, snapshot).await
+        Self::publish_matching(volume, task, &matches, paused, maximum, snapshot).await
     }
+    #[cfg(all(test, acyclic_loom))]
     async fn publish_change<P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         task: Option<TaskId>,
         lineage: &[TaskId],
+        paused: Option<bool>,
+        maximum: u64,
+        snapshot: crate::task_volume::Snapshot,
+    ) -> Result<bool> {
+        Self::publish_matching(
+            volume,
+            task,
+            &|task| {
+                let lineage = &lineage;
+                Box::pin(async move { Ok(lineage.contains(&task)) })
+            },
+            paused,
+            maximum,
+            snapshot,
+        )
+        .await
+    }
+    async fn publish_matching<'a, P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
+        task: Option<TaskId>,
+        matches: &(impl Fn(TaskId) -> BoxProviderFuture<'a, Result<bool>> + Sync),
         paused: Option<bool>,
         maximum: u64,
         mut snapshot: crate::task_volume::Snapshot,
@@ -72,7 +122,10 @@ impl CommandControl {
                 .map(|file| Self::from_bytes(&file.bytes, maximum))
                 .transpose()?
                 .unwrap_or_default();
-            let desired = paused.unwrap_or_else(|| !control.paused(lineage));
+            let desired = match paused {
+                Some(paused) => paused,
+                None => !control.paused_matching(matches).await?,
+            };
             control.set(task, snapshot.generation.position, desired);
             let bytes =
                 serde_json::to_vec(&control).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -101,6 +154,18 @@ impl CommandControl {
         lineage: &[TaskId],
         maximum: u64,
     ) -> Result<()> {
+        Self::wait_matching(
+            volume,
+            |task| Box::pin(async move { Ok(lineage.contains(&task)) }),
+            maximum,
+        )
+        .await
+    }
+    pub(crate) async fn wait_matching<'a, P: StreamProvider + ?Sized>(
+        volume: &TaskVolume<P>,
+        matches: impl Fn(TaskId) -> BoxProviderFuture<'a, Result<bool>> + Sync,
+        maximum: u64,
+    ) -> Result<()> {
         let mut observed = volume
             .observe(Query::File(Self::key()?), None, 1)
             .await
@@ -115,7 +180,7 @@ impl CommandControl {
             .map(|file| Self::from_bytes(&file.bytes, maximum))
             .transpose()?
             .unwrap_or_default();
-        while control.paused(lineage) {
+        while control.paused_matching(&matches).await? {
             if let Some(file) = observed
                 .changes
                 .next()
@@ -137,3 +202,32 @@ fn storage(error: crate::task_volume::Error) -> Error {
 #[cfg(all(test, acyclic_loom))]
 #[path = "control_models.rs"]
 mod models;
+
+#[cfg(all(test, not(acyclic_loom)))]
+mod invariants {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Bounded control scopes use the same latest-revision rule whether
+        // ancestry comes from a slice or an asynchronous memoized matcher.
+        #[test]
+        fn matching_scopes_preserve_control_precedence(
+            states in prop::collection::vec(any::<bool>(), 0..9),
+            membership in any::<u16>(), global_revision in 0u64..10, global in any::<bool>(),
+        ) {
+            let mut control = CommandControl::default();
+            control.set(None, global_revision, global);
+            let mut lineage = Vec::new();
+            for (index, state) in states.into_iter().enumerate() {
+                let task = TaskId::from_bytes([index as u8; 16]);
+                control.set(Some(task), index as u64 + 1, state);
+                if membership & (1 << index) != 0 { lineage.push(task); }
+            }
+            let actual = futures::executor::block_on(control.paused_matching(
+                &|task| { let lineage = &lineage; Box::pin(async move { Ok(lineage.contains(&task)) }) },
+            )).unwrap();
+            prop_assert_eq!(actual, control.paused(&lineage));
+        }
+    }
+}

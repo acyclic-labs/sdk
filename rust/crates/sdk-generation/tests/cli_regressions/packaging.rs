@@ -6,6 +6,7 @@ static PACKAGE: cache::Mutex<Option<cache::Arc<(Fixture, BTreeMap<String, Vec<u8
     cache::Mutex::new(None);
 
 fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
+    let cargo = runtime::cargo();
     cache::get_or_try_init(&PACKAGE, || {
         let (fixture, support) = historical_source_fixture(None);
         let source = fixture.root.join("rust/crates/demo");
@@ -16,7 +17,7 @@ fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
         )
         .unwrap();
         init_git(&fixture.root, "original registry owner authority");
-        let result = Command::new(env!("CARGO"))
+        let result = Command::new(&*cargo)
             .env("CARGO_HOME", fixture_cargo_home(&fixture))
             .current_dir(&fixture.root)
             .args([
@@ -39,7 +40,7 @@ fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
         )
         .unwrap();
         fs::copy(
-            env!("CARGO_BIN_EXE_registry-transport-fixture"),
+            runtime::binary("registry-transport-fixture"),
             support.join(if cfg!(windows) { "curl.exe" } else { "curl" }),
         )
         .unwrap();

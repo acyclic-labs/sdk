@@ -15,12 +15,3 @@ pub(super) fn room(
         credit,
     )
 }
-
-pub(super) fn enabled(
-    latest: bool,
-    pending: usize,
-    room: (bool, bool, bool),
-    channel_credit: bool,
-) -> bool {
-    (latest && pending < 3 && room.0) || (pending == 0 && room.1 && room.2 && channel_credit)
-}

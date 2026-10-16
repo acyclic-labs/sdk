@@ -28,6 +28,14 @@ impl<T> Signal<T> {
         }
         Ok(())
     }
+    pub(super) fn try_next(&self) -> Result<Option<T>, StreamError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .0
+            .pop_front())
+    }
     pub(super) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
         let wake = cx.waker().clone();
         let previous = {

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
+pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(), CliError> {
     let mut root = canonical(&args.root)?;
     let catalog_output = absolute(&args.output)?;
     let output = if args.historical_archives.is_some() {
@@ -11,7 +11,7 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
         catalog_output.clone()
     };
     if args.historical_archives.is_some() && args.historical_source == HistoricalSource::Git {
-        let top = Command::new("git")
+        let top = sdk_docs::command("git")
             .current_dir(&root)
             .args(["rev-parse", "--show-toplevel"])
             .output()
@@ -712,13 +712,13 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
     )?;
     // Re-read the source closure, revision, receipts and all immutable artifacts
     // after execution. Failed qualification leaves files unadmitted.
-    drift((root.clone(), output.clone(), rustdoc_dir.clone()))?;
+    drift((root.clone(), output.clone(), rustdoc_dir.clone()), stdout)?;
     if historical_plan.is_some() {
         sdk_docs::historical::write_bundle(&data, &catalog_output, true)
     } else {
         write_bundle(&data, &catalog_output, input.mark_latest)
     }
     .map_err(docs_error)?;
-    println!("generated {}", output.display());
+    writeln!(stdout, "generated {}", output.display()).map_err(io_error)?;
     Ok(())
 }

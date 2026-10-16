@@ -27,8 +27,8 @@ proptest! {
         let bytes = serde_json::to_vec(&decoded).unwrap();
         let round_trip: Crate = serde_json::from_slice(&bytes).unwrap();
         prop_assert_eq!(serde_json::to_value(&round_trip).unwrap(), serde_json::to_value(&owned).unwrap());
-        let original = crate::public_api::extract(Path::new("fixture.json"), &original_bytes, &decoded);
-        let replay = crate::public_api::extract(Path::new("fixture.json"), &bytes, &round_trip);
+        let original = crate::public_api::extract(Path::new("fixture.json"), &original_bytes.into(), &decoded);
+        let replay = crate::public_api::extract(Path::new("fixture.json"), &bytes.into(), &round_trip);
         if private || legacy {
             prop_assert!(original.is_err());
             prop_assert!(replay.is_err());

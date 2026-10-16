@@ -7,11 +7,15 @@ struct LocalInner {
     visibility: RwLock<()>,
     /// The journal's `synced` sequence, published under the journal lock so
     synced: watch::Sender<u64>,
-    // None is terminal; publication and failure share one synchronized push state.
-    changed: watch::Sender<Option<u64>>,
-    // Model-only mutation control at the production persist wake site.
+    // Lock order: visibility -> journal -> failure watch. No failure borrow
+    // crosses a visibility wait or provider call. Only poison wakes this watch.
+    failed: watch::Sender<bool>,
+    // Lock order: visibility -> revision watch; no borrow crosses provider work.
+    // Borrow-only admission fence: record/discovery cursors never subscribe.
+    revision: watch::Sender<u64>,
+    // Model-only control: omit the accepted-path wait registration.
     #[cfg(acyclic_loom)]
-    omit_persist_wake: bool,
+    omit_follow_wake: bool,
     // Lock order: visibility -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
 }
@@ -32,7 +36,7 @@ impl LocalInner {
         #[cfg(not(acyclic_loom))]
         let notify = true;
         if notify {
-            self.changed.send_replace(None);
+            self.failed.send_replace(true);
         }
         // Wake every caller waiting for a flush, so it sees the poison.
         self.synced.send_modify(|_| {});
@@ -40,11 +44,19 @@ impl LocalInner {
     }
 
     fn published(&self) {
-        self.changed.send_modify(|revision| {
-            if let Some(revision) = revision {
-                *revision = revision.saturating_add(1);
+        self.revision
+            .send_modify(|revision| *revision = revision.saturating_add(1));
+    }
+
+    async fn unavailable(failed: &mut watch::Receiver<bool>) -> StreamError {
+        loop {
+            if *failed.borrow_and_update() {
+                return StreamError::Unavailable;
             }
-        });
+            if failed.changed().await.is_err() {
+                return StreamError::Unavailable;
+            }
+        }
     }
 
     /// Records that every frame through `target` is durable.

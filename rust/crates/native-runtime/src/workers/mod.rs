@@ -1,5 +1,5 @@
 use crate::*;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use admission::poll_submission_with;
 pub(crate) use admission::{
     AdmissionState, CapacityWaiter, allocate_capacity_waiter, notify_capacity_released,

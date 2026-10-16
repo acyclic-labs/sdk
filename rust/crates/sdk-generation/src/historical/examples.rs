@@ -99,7 +99,7 @@ pub fn scope_source_file_hashes(
     }
 }
 
-/// Executes actual historical targets against their original owner and captured source.
+/// Execute each target with one shared Cargo cache and one source baseline.
 pub fn execute_examples(
     root: &Path,
     cargo: &Path,
@@ -131,7 +131,7 @@ pub fn execute_examples(
         {
             return Err("historical example source changed before execution".into());
         }
-        let mut command = Command::new(cargo);
+        let mut command = sdk_docs::command(cargo);
         let manifest = if let Some(owners) = owner_metadata {
             let metadata = owners
                 .get(&example.package)

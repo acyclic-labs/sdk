@@ -33,6 +33,7 @@ mod commands;
 mod compaction;
 mod config;
 mod context;
+mod inheritance;
 mod owner;
 mod owner_record;
 mod runtime;

@@ -5,6 +5,37 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
+// Journals fence the entire command and authenticate each referenced input against
+// its admission. Reuse the issued context for content reads, including its grants,
+// immutable descriptor verification and original native accounting.
+#[cfg(feature = "filesystem")]
+impl ContentResidencyVerifier for TaskContext {
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
+        self.content_binding(Some(volume))
+            .map_or(Ok(false), |binding| {
+                binding.reader.supports_read(volume, io)
+            })
+    }
+
+    fn read<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Invalid,
+                    "content exceeds the callback byte bound",
+                ));
+            }
+            self.read_file(reference, io).await
+        })
+    }
+}
+
 #[cfg(feature = "filesystem")]
 struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
     context: Arc<TaskContext>,
@@ -141,6 +172,16 @@ impl TaskContext {
                 })
             })
             .or_else(|| self.scope.created_content(volume))
+            .or_else(|| {
+                self.harness.artifacts.as_ref().filter(|binding| {
+                    volume.is_some_and(|volume| {
+                        binding
+                            .writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.volume() == volume)
+                    })
+                })
+            })
             .or(self.harness.content.as_ref())
     }
 

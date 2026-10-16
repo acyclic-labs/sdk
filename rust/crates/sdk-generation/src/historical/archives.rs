@@ -87,7 +87,7 @@ pub fn archive_plan(
                 None => OriginalLock::Absent,
             };
             if !producer_lock.exists() {
-                let mut command = Command::new(cargo);
+                let mut command = sdk_docs::command(cargo);
                 command
                     .args(["generate-lockfile", "--manifest-path"])
                     .arg(&manifest);
@@ -125,7 +125,7 @@ pub fn archive_plan(
             // Reuse an already captured producer resolution; the locked Cargo
             // metadata/profile commands below validate it without updating it.
             if !lock.exists() {
-                let mut command = Command::new(cargo);
+                let mut command = sdk_docs::command(cargo);
                 command
                     .args(["generate-lockfile", "--manifest-path"])
                     .arg(&manifest);
