@@ -39,10 +39,16 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     let mut transaction = workspace
         .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
         .await?;
-    for index in 0..256 {
+    let (prefix, files) = profile_layout();
+    if !prefix.is_empty() {
+        transaction
+            .create_dir_all("/nested", &work, work.cancellation())
+            .await?;
+    }
+    for index in 0..files {
         transaction
             .create_file(
-                &format!("/entry{index:03}"),
+                &format!("/{prefix}entry{index:03}"),
                 payload.clone(),
                 FileMetadata::default(),
                 &work,
@@ -93,7 +99,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
             "profile_external_client",
             "--nocapture",
         ])
-        .env("ACYCLIC_PROJFS_PROFILE_ROOT", &destination);
+        .env("ACYCLIC_PROJFS_PROFILE_ROOT", destination.join(prefix));
     let mut child = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
     let result = child.wait(std::time::Duration::from_secs(45));
     child.terminate(None)?;
@@ -111,7 +117,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     phase("verify")?;
     let changed = workspace
         .read(
-            "/entry000",
+            &format!("/{prefix}entry000"),
             65536,
             WorkBudget::UNBOUNDED,
             work.cancellation(),
@@ -122,7 +128,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     assert_eq!(changed.as_ref(), &[0; 65536]);
     let unchanged = workspace
         .read(
-            "/entry255",
+            &format!("/{prefix}entry{:03}", files - 1),
             65536,
             WorkBudget::UNBOUNDED,
             work.cancellation(),
@@ -132,6 +138,14 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
         .value;
     assert_eq!(unchanged.as_ref(), payload.as_ref());
     Ok(())
+}
+
+fn profile_layout() -> (&'static str, usize) {
+    if std::env::var_os("ACYCLIC_PROJFS_PROFILE_NESTED").is_some() {
+        ("nested/", 64)
+    } else {
+        ("", 256)
+    }
 }
 
 fn phase(name: &str) -> std::io::Result<()> {
@@ -149,6 +163,7 @@ fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let root = std::path::PathBuf::from(root);
+    let (_, count) = profile_layout();
     phase("enumerate")?;
     let started = Instant::now();
     let mut files = Vec::new();
@@ -156,7 +171,7 @@ fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
         files = std::fs::read_dir(&root)?
             .map(|entry| entry.map(|entry| entry.path()))
             .collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(files.len(), 256);
+        assert_eq!(files.len(), count);
     }
     eprintln!("PROJFS_TIME enumerate {:?}", started.elapsed());
     phase("read")?;
