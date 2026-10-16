@@ -61,3 +61,13 @@ proptest::proptest! {
         acyclic_stream::session::verify_interest_accounting(operations);
     }
 }
+
+#[test]
+fn registration_expiry_races_open_and_releases_the_real_cursor_guard() {
+    acyclic_stream::session::verify_registration_deadline(false);
+}
+#[test]
+#[should_panic(expected = "expired registration must complete")]
+fn negative_control_forgets_the_logical_registration_deadline() {
+    acyclic_stream::session::verify_registration_deadline(true);
+}

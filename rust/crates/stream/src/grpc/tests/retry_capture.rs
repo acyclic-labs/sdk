@@ -3,7 +3,7 @@ use acyclic_grpc_observability::tests::Capture;
 use tracing::{Dispatch, instrument::WithSubscriber as _};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-pub(super) fn dispatch(capture: Capture) -> (Dispatch, Dispatch) {
+pub(crate) fn dispatch(capture: Capture) -> (Dispatch, Dispatch) {
     // tracing-core's single-dispatcher fast path computes first-registration
     // interest using the registering thread's current subscriber. An unrelated
     // caller without a subscriber can therefore cache Never for our RPC callsite.
@@ -13,7 +13,7 @@ pub(super) fn dispatch(capture: Capture) -> (Dispatch, Dispatch) {
     (registration, capture)
 }
 
-pub(super) fn isolate(test: &str) -> TestResult<bool> {
+pub(crate) fn isolate(test: &str) -> TestResult<bool> {
     const CHILD: &str = "ACYCLIC_RETRY_CAPTURE_TEST";
     if std::env::var(CHILD).as_deref() == Ok(test) {
         return Ok(false);
@@ -21,9 +21,12 @@ pub(super) fn isolate(test: &str) -> TestResult<bool> {
     // Another test can already be inside tracing's first-registration fast path
     // when this capture starts. Isolate that process-global cache, not just TLS.
     let parent = module_path!().rsplit_once("::").ok_or("test module")?.0;
-    let output = child_command(&format!("{parent}::{test}"))?
-        .env(CHILD, test)
-        .output()?;
+    let path = if test.contains("::") {
+        test.to_owned()
+    } else {
+        format!("{parent}::{test}")
+    };
+    let output = child_command(&path)?.env(CHILD, test).output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}\n{stderr}");

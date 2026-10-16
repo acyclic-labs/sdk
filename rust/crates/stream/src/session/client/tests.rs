@@ -9,6 +9,7 @@ use wire::stream_session_service_server::{StreamSessionService, StreamSessionSer
 mod checked;
 mod credentials;
 mod isolation;
+mod lifecycle;
 mod outbound;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
