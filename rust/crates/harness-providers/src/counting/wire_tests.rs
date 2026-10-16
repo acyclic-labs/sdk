@@ -23,6 +23,10 @@ fn spec(adapter: Adapter) -> TokenCounterSpec {
     }
 }
 
+fn assert_count_wire(actual: &Value, expected: &Value) {
+    assert_eq!(actual, expected);
+}
+
 #[test]
 fn response_count_request_keeps_every_input_field_without_generation_controls() {
     let original = json!({"model":"gpt-6-luna", "input":[{"role":"user", "content":"dense"}],
@@ -76,9 +80,9 @@ proptest! {
                 expected["model"] = json!("models/model");
                 expected = json!({"generateContentRequest":expected});
             }
-            prop_assert_eq!(&counted, &expected);
+            assert_count_wire(&counted, &expected);
             // A missing filter/envelope fails the same independent oracle.
-            prop_assert_ne!(&original, &expected);
+            prop_assert!(std::panic::catch_unwind(|| assert_count_wire(&original, &expected)).is_err());
             prop_assert_eq!(serde_json::to_value(&generation).unwrap(), original);
         }
     }
