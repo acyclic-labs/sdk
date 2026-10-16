@@ -145,13 +145,16 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                             std::fs::rename(&replacement, &file).unwrap();
                             prop_assert_ne!(std::fs::metadata(&file).unwrap().ino(), before.ino());
                         }
-                        1 => rustix::fs::setxattr(
+                        1 => match rustix::fs::setxattr(
                             &file,
                             c"user.rev693",
                             &attribute,
                             rustix::fs::XattrFlags::empty(),
-                        )
-                        .unwrap(),
+                        ) {
+                            Ok(()) => {}
+                            Err(rustix::io::Errno::NOTSUP) => continue,
+                            Err(error) => panic!("setxattr failed: {error}"),
+                        },
                         2 => std::fs::hard_link(&file, source.path().join("zlink")).unwrap(),
                         3 => {
                             let record = file_record(&mut initial, &path, &work).await;
