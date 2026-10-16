@@ -18,7 +18,21 @@ struct Histories {
 
 // Production never nests the index and provider locks. Recovery only acquires
 // histories; the pause control releases its lock before provider state is read.
-struct Provider(Mutex<Histories>, Option<Arc<Pause>>);
+struct Provider(
+    Mutex<Histories>,
+    Option<Arc<Pause>>,
+    Option<Arc<ReadPauses>>,
+);
+
+impl Histories {
+    fn records(&self) -> &[Record] {
+        if self.replaced {
+            &self.replacement
+        } else {
+            &self.original
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
@@ -29,7 +43,7 @@ impl StreamProvider for Provider {
         Err(StreamError::Unsupported)
     }
     async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
-        Ok(2)
+        Ok(self.0.lock().unwrap().records().len() as u64)
     }
     async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
         Err(StreamError::Unsupported)
@@ -39,29 +53,41 @@ impl StreamProvider for Provider {
         _: StreamPath,
     ) -> std::result::Result<StreamWatermarks, StreamError> {
         if let Some(pause) = &self.1 {
-            pause.watermark();
+            pause.hit();
         }
         let state = self.0.lock().unwrap();
+        let accepted = state.records().len() as u64;
         Ok(StreamWatermarks {
-            accepted: 2,
-            durable: if state.replaced { 2 } else { 1 },
+            accepted,
+            durable: accepted - u64::from(!state.replaced),
         })
     }
     async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
-        let records = {
-            let state = self.0.lock().unwrap();
-            if state.replaced {
-                state.replacement.clone()
-            } else {
-                state.original.clone()
-            }
+        let records = self.0.lock().unwrap().records().to_vec();
+        let pauses = self.2.clone();
+        let read = pauses.as_ref().map_or(0, |pauses| pauses.begin());
+        let limit = if pauses
+            .as_ref()
+            .is_some_and(|pauses| pauses.short_first && read == 1)
+        {
+            1
+        } else {
+            request.limit as usize
         };
-        Ok(Box::pin(futures::stream::iter(
-            records
-                .into_iter()
-                .skip(request.from as usize)
-                .take(request.limit as usize)
-                .map(Ok),
+        let records = records.into_iter().skip(request.from as usize).take(limit);
+        Ok(Box::pin(futures::stream::unfold(
+            (records, 0),
+            move |(mut records, item)| {
+                let pauses = pauses.clone();
+                async move {
+                    if let Some(pauses) = &pauses {
+                        pauses.item(read, item);
+                    }
+                    records
+                        .next()
+                        .map(|record| (Ok(record), (records, item + 1)))
+                }
+            },
         )))
     }
     async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
@@ -146,7 +172,7 @@ fn check<const CHECK_ANCHOR: bool>() {
     // bound the state rather than preemptions, permutations or runtime.
     loom::model(|| {
         let (histories, value, path) = block_on(histories());
-        let provider = Arc::new(Provider(Mutex::new(histories), None));
+        let provider = Arc::new(Provider(Mutex::new(histories), None, None));
         let volume = block_on(TaskVolume::open_existing(provider.clone(), path)).unwrap();
         let recovery = thread::spawn(move || provider.0.lock().unwrap().replaced = true);
         let result = block_on(volume.file_durability::<CHECK_ANCHOR, false>(&value));
@@ -181,7 +207,7 @@ struct Paused {
 struct Pause(Mutex<Paused>, Condvar);
 
 impl Pause {
-    fn watermark(&self) {
+    fn hit(&self) {
         let mut state = self.0.lock().unwrap();
         if state.remaining == 0 {
             return;
@@ -213,7 +239,7 @@ fn suspended_io<const HOLD_INDEX: bool>(pause_at: usize) {
     loom::model(move || {
         let (histories, value, path) = block_on(histories());
         let pause = Arc::new(Pause::default());
-        let provider = Arc::new(Provider(Mutex::new(histories), Some(pause.clone())));
+        let provider = Arc::new(Provider(Mutex::new(histories), Some(pause.clone()), None));
         let volume = Arc::new(block_on(TaskVolume::open_existing(provider, path)).unwrap());
         pause.0.lock().unwrap().remaining = pause_at;
         let reader = volume.clone();
@@ -242,4 +268,130 @@ fn suspended_provider_does_not_exclude_a_competing_index_operation() {
 #[test]
 fn negative_control_holding_index_across_io_is_detected() {
     assert!(std::panic::catch_unwind(|| suspended_io::<true>(2)).is_err());
+}
+
+// Read-counter, pause and provider/index locks never nest. Reuse the same
+// suspension hook to gate stream polls, including the finite page's EOF.
+#[derive(Default)]
+struct ReadPauses {
+    reads: Mutex<usize>,
+    first: Pause,
+    second: Pause,
+    short_first: bool,
+}
+
+impl ReadPauses {
+    fn begin(&self) -> usize {
+        let mut reads = self.reads.lock().unwrap();
+        *reads += 1;
+        *reads
+    }
+    fn item(&self, read: usize, item: usize) {
+        if read == 1 && item == 1 {
+            self.first.hit();
+        }
+        if read == 2 && item == 2 {
+            self.second.hit();
+        }
+    }
+}
+
+fn concurrent_refresh<const RESUME: bool>(snapshot: bool, short_first: bool) {
+    loom::model(move || {
+        let (mut histories, _, path) = block_on(histories());
+        let mut records = histories.original.clone();
+        let latest = FileValue::new(FileKey::Goal, b"latest".to_vec());
+        let mut last = records.last().unwrap().clone();
+        last.sequence += 1;
+        last.commit_id = CommitId::from_bytes([7; 32]);
+        last.value = crate::task_volume::segment::encode(&latest, None)
+            .unwrap()
+            .0;
+        records.push(last);
+        histories.original.truncate(1);
+        let pauses = Arc::new(ReadPauses {
+            short_first,
+            ..Default::default()
+        });
+        let provider = Arc::new(Provider(Mutex::new(histories), None, Some(pauses.clone())));
+        let volume = Arc::new(block_on(TaskVolume::open_existing(provider.clone(), path)).unwrap());
+        // Both writes completed before either reader begins. Its accepted tail
+        // is immutable for this scenario, while the shared index starts empty.
+        provider.0.lock().unwrap().original = records;
+        *pauses.reads.lock().unwrap() = 0;
+        pauses.first.0.lock().unwrap().remaining = 1;
+        pauses.second.0.lock().unwrap().remaining = 1;
+        let first = thread::spawn({
+            let volume = volume.clone();
+            move || {
+                block_on(async {
+                    if RESUME && snapshot {
+                        let observed = volume
+                            .snapshot(&crate::task_volume::Query::Root, 1)
+                            .await
+                            .unwrap();
+                        return (
+                            observed.generation.position,
+                            observed.files[0].bytes.clone(),
+                        );
+                    }
+                    let position = if RESUME {
+                        volume.head().await.unwrap().position
+                    } else {
+                        volume.refresh_to_tail::<false>().await.unwrap();
+                        volume.index.lock().await.next
+                    };
+                    let bytes = volume
+                        .index
+                        .lock()
+                        .await
+                        .files
+                        .get(&FileKey::Goal)
+                        .unwrap()
+                        .file
+                        .bytes
+                        .clone();
+                    (position, bytes)
+                })
+            }
+        });
+        pauses.first.reached();
+        let second = thread::spawn({
+            let volume = volume.clone();
+            move || block_on(volume.head()).unwrap()
+        });
+        pauses.second.reached();
+        // Reader two has applied only the first record. Reader one must finish
+        // the captured tail without waiting for reader two's remaining I/O.
+        pauses.first.release();
+        let observed = first.join().unwrap();
+        pauses.second.release();
+        second.join().unwrap();
+        assert_eq!(
+            observed,
+            (3, latest.bytes),
+            "refresh returned a partial accepted prefix"
+        );
+    });
+}
+
+#[test]
+fn concurrent_readers_finish_the_tail_captured_at_entry() {
+    for snapshot in [false, true] {
+        for short_first in [false, true] {
+            concurrent_refresh::<true>(snapshot, short_first);
+        }
+    }
+}
+
+#[test]
+fn negative_control_partial_peer_advance_cannot_count_as_complete() {
+    for snapshot in [false, true] {
+        for short_first in [false, true] {
+            assert!(
+                std::panic::catch_unwind(|| concurrent_refresh::<false>(snapshot, short_first))
+                    .is_err()
+            );
+        }
+    }
 }

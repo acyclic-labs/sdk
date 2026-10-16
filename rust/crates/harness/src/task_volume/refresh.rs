@@ -6,6 +6,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Lock order: index only. Provider calls and stream polls never hold it.
     // Every staged record is applied only to its captured generation.
     pub(super) async fn refresh(&self) -> Result<StreamWatermarks> {
+        self.refresh_to_tail::<true>().await
+    }
+
+    // RESUME=false is the model's deliberately broken early-success variant.
+    pub(super) async fn refresh_to_tail<const RESUME: bool>(&self) -> Result<StreamWatermarks> {
         let mut expected = {
             let index = self.index.lock().await;
             self.generation(&index)
@@ -35,6 +40,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 return Err(Error::ResetRequired);
             }
             let before = expected.position;
+            let mut peer_advanced = false;
             while let Some(record) = records.next().await {
                 item_examined();
                 let record = record?;
@@ -47,7 +53,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 let mut index = self.index.lock().await;
                 let current = self.generation(&index);
                 if current != expected {
-                    return advanced(current, &expected, watermarks);
+                    expected = advanced(current, &expected)?;
+                    peer_advanced = true;
+                    break;
                 }
                 let file = segment::decode(&record.value)?;
                 validate_file(&index, &file)?;
@@ -62,9 +70,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 self.generation(&index)
             };
             if current != expected {
-                return advanced(current, &expected, watermarks);
+                expected = advanced(current, &expected)?;
+                peer_advanced = true;
             }
-            if expected.position == tail {
+            if expected.position >= tail || (!RESUME && peer_advanced) {
                 watermarks.accepted = watermarks.accepted.max(expected.position);
                 return Ok(watermarks);
             }
@@ -75,19 +84,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 }
 
-fn advanced(
-    current: Generation,
-    expected: &Generation,
-    mut watermarks: StreamWatermarks,
-) -> Result<StreamWatermarks> {
+fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
     if current.volume != expected.volume
         || current.epoch != expected.epoch
-        || current.position < expected.position
+        || current.position <= expected.position
     {
         return Err(Error::ResetRequired);
     }
-    // Another accepted publication or validated refresh already advanced the
-    // cache. Discard this staged suffix instead of splicing it into that cut.
-    watermarks.accepted = watermarks.accepted.max(current.position);
-    Ok(watermarks)
+    // Discard the staged suffix and resume at the validated shared generation.
+    // A partial advance does not satisfy the accepted tail captured at entry.
+    Ok(current)
 }
