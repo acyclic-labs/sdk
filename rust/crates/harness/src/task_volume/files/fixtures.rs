@@ -8,7 +8,7 @@ use crate::{
 
 #[cfg(not(acyclic_harness_loom))]
 pub(super) fn authority(
-    agent: AgentId,
+    agent: Option<AgentId>,
     volume: &VolumeRef,
     operations: &[VolumeOperation],
 ) -> (AuthorityVerifier, Scope) {
@@ -25,13 +25,7 @@ pub(super) fn authority(
         .map(|operation| volume.capability(*operation, &mut None).unwrap())
         .collect();
     let scope = issuer
-        .issue(
-            "caller",
-            &Capabilities::new(grants),
-            Some(agent),
-            None,
-            &mut None,
-        )
+        .issue("caller", &Capabilities::new(grants), agent, None, &mut None)
         .unwrap();
     (issuer.verifier(&mut None).unwrap(), scope)
 }

@@ -1,7 +1,8 @@
 //! Owner-authorized file access to the private task volume.
 use super::{Cursor, Error, FileKey, FileValue, Generation, Observation, Owner, Query, TaskVolume};
 use crate::{
-    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
+    AgentId,
+    conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AuthorityVerifier, Scope},
 };
 use acyclic_stream::{StreamPath, StreamProvider};
@@ -30,6 +31,11 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         {
             return Err(crate::Error::Invalid(
                 "task files require a private volume and finite file bound".into(),
+            ));
+        }
+        if !owns_volume(volume, scope.agent()) {
+            return Err(crate::Error::Unauthorized(
+                "task files require the owning agent".into(),
             ));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -76,6 +82,10 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     ) -> super::Result<Observation> {
         self.inner.observe(query, cursor, maximum_files).await
     }
+}
+
+fn owns_volume(volume: &VolumeRef, agent: Option<AgentId>) -> bool {
+    matches!(volume.owner(), VolumeOwner::Agent(owner) if agent == Some(*owner))
 }
 
 fn authorize_write(key: &FileKey, bytes: u64, maximum: u64) -> super::Result<()> {
