@@ -46,7 +46,11 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         "acknowledgement overwrote rebuilt generation"
     );
     assert_eq!(
-        index.files.values().cloned().collect::<Vec<_>>(),
+        index
+            .files
+            .range(..)
+            .map(|(_, file)| file.clone())
+            .collect::<Vec<_>>(),
         snapshot.files,
         "acknowledgement overwrote rebuilt files"
     );
