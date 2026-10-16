@@ -28,7 +28,10 @@ impl CheckoutTools {
                         &cancellation,
                     )
                     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                    let mut accounting = KernelAccounting::native(&work, &cancellation);
+                    let mut accounting = KernelAccounting::NativeOriginal {
+                        work: &work,
+                        cancellation: &cancellation,
+                    };
                     let name = format!("task-{task}");
                     let (view, _) = parent
                         .view()

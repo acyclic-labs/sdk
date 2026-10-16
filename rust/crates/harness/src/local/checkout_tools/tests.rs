@@ -160,13 +160,14 @@ fn task_cache(broken: bool) {
                         })
                         .await
                         .unwrap();
-                        assert_eq!(*selected, value, "task view alias");
+                        (*selected, value)
                     }))
                 })
             })
             .collect();
         for worker in workers {
-            worker.join().unwrap();
+            let (actual, expected) = worker.join().unwrap();
+            assert_eq!(actual, expected, "task view alias");
         }
     });
 }

@@ -2,7 +2,10 @@
 use super::*;
 use acyclic_fs::access::*;
 
-pub(super) fn owner(root: &Path, volume: &VolumeRef) -> Result<crate::workspace::MountTable<()>> {
+pub(in crate::local) fn owner(
+    root: &Path,
+    volume: &VolumeRef,
+) -> Result<crate::workspace::MountTable<()>> {
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
