@@ -60,6 +60,26 @@ pub fn assert_stream_invariants(input: &[u8]) {
     let Some((&kind, input)) = input.split_first() else {
         return;
     };
+    if kind == b'F' {
+        if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
+            let marker = crate::files::FileText::Estimate
+                .project(
+                    &file,
+                    &acyclic_harness::model::FileProjectionPolicy::Reference,
+                )
+                .unwrap();
+            let restored: acyclic_harness::conversation::FileRef = serde_json::from_str(
+                marker
+                    .strip_prefix("[file: ")
+                    .unwrap()
+                    .strip_suffix(']')
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(file, restored);
+        }
+        return;
+    }
     if kind == b'L' {
         assert_alloy_invariants(input);
         return;
@@ -216,6 +236,10 @@ fn catalog_round_trip(input: &[u8]) -> bool {
     let canonical = serde_json::to_vec(&spec).unwrap();
     let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
     assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    assert_eq!(
+        crate::registry::validate_spec("fixture", &spec).is_ok(),
+        crate::registry::validate_spec("fixture", &restored).is_ok()
+    );
     true
 }
 

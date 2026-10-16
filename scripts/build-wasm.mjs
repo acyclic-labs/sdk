@@ -49,8 +49,8 @@ const packages = {
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
-    cargo: ["-p", "acyclic-harness", "--features", "browser"],
-    artifact: "acyclic_harness",
+    cargo: ["-p", "acyclic-harness-providers", "--features", "browser"],
+    artifact: "acyclic_harness_providers",
     outName: "acyclic_harness_wasm",
     postprocess: stripHarnessClosureShims,
     targetDirectory: "harness-wasm",

@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 /// Declarative counting endpoint on the provider's own origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct TokenCounterSpec {
     /// Relative path; {model} expands to the selected model name.
     pub path: String,
@@ -19,6 +20,7 @@ pub struct TokenCounterSpec {
 
 /// Count response fields decoded directly as integers, without Value normalization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum TokenCountField {
     /// OpenAI/Anthropic input token count.
     #[serde(rename = "input_tokens")]

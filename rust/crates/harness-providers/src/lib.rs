@@ -19,11 +19,16 @@ mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 mod call_ids;
+#[cfg(any(target_arch = "wasm32", loom))]
+mod cancellation;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
 mod counting;
 mod credentials;
 mod dispatch;
+mod files;
+#[cfg(test)]
+mod fixtures;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
@@ -39,6 +44,8 @@ mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 mod tool_names;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod wasm;
 
 pub use adapter::Adapter;
 pub use alloy::ResolvedAlloy;

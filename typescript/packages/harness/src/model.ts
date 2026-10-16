@@ -113,12 +113,13 @@ export type ModelTokenCount = Readonly<Omit<ModelTokenCountWire, "request_digest
   fixedTokens: ModelTokenCountWire["fixed_tokens"];
   messageTokens: readonly ModelTokenCountWire["message_tokens"][number][];
 }>;
+export type ModelGeneration = Readonly<Pick<ModelAttempt, "operationId" | "step">>;
 export interface ModelProvider {
   /** Synchronous, without dispatch effects; unsupported models must reject explicitly. */
   contextCapacity(model: Model): ModelContextCapacity;
   /** Counts exact projected input before admission; may use the provider tokenizer. */
   countTokens(request: ModelRequest & { readonly serializedInput: Uint8Array }): Promise<ModelTokenCount>;
-  generate(request: ModelRequest & { readonly serializedInput: Uint8Array }): AsyncIterable<ModelEvent>;
+  generate(request: ModelRequest & { readonly serializedInput: Uint8Array }, dispatch: ModelGeneration): AsyncIterable<ModelEvent>;
   reconcile(attempt: ModelAttempt): Promise<readonly ModelEvent[] | undefined>;
 }
 

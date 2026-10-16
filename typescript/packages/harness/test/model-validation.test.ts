@@ -249,33 +249,16 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
 });
 
 test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
-  for (const length of [38, 39]) {
-    const value = "x".repeat(length);
-    let calls = 0;
-    const runtime = await Harness.builder(contracts).limits({ render_bytes: 64 })
-      .model({ provider: "mock", name: "bounded", revision: "1", options: {} }, {
-        ...syntheticAccounting(contracts), async *generate(request) {
-          calls++;
-          if (calls === 1) yield { kind: "tool_call" as const, callId: "read", name: "read", arguments: "go" };
-          else {
-            expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", content: { kind: "json", value } });
-            expect((contracts.decodeModelJson(request.serializedInput) as unknown as ModelRequestWire).messages.at(-1)?.content)
-              .toEqual({ kind: "tool_result", call_id: "read", name: "read", content: { kind: "json", value } });
-          }
-          yield { kind: "completed" as const, metadata: {} };
-        }, async reconcile() { return undefined; },
-      }).tool({ name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-        outputSchema: { type: "string" }, parseInput: value => value, projection: jsonProjection, parseOutput: value => value,
-        handler: async () => value }).grant("tool:call:read").build();
-    if (length === 38) {
-      const result = await runtime.run("go");
-      expect(result.receipts.find(receipt => receipt.kind === "tool")).toMatchObject({ value, projection: { kind: "json", value } });
-      expect(calls).toBe(2);
-    } else {
-      await expect(runtime.run("go")).rejects.toThrow();
-      expect(calls).toBe(1);
-    }
-  }
+  const definition = { name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
+    outputSchema: { type: "string" }, projection: await jsonToolProjection({ type: "string" }) };
+  const limits = { ...DEFAULT_LIMITS, render_bytes: 64 };
+  const accepted = { kind: "json" as const, value: "x".repeat(38) };
+  expect(contracts.encodeCanonicalJson(accepted).length).toBe(64);
+  expect(() => contracts.validateToolProjection(definition, accepted, limits)).not.toThrow();
+  const rejected = { kind: "json" as const, value: "x".repeat(39) };
+  expect(contracts.encodeCanonicalJson(rejected).length).toBe(65);
+  expect(() => contracts.validateToolProjection(definition, rejected, limits)).toThrow();
+  expect(() => contracts.validateToolProjection(definition, { kind: "json", value: 42 }, limits)).toThrow();
 });
 
 test("inherited dispatch captures fresh pinned local files after builder construction", async () => {

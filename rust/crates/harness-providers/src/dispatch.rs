@@ -19,11 +19,14 @@ pub(crate) fn generate(
         }
         let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
+        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+        let body = bytes::Bytes::from(encode(provider,&request,&names,None,&origin).await?);
+        let input_bytes = body.len();
         #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
         let mut recovery = Recovery::default();
         loop {
-            let (response, input_bytes) = send(provider, &request, &names, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
             let failure = if !(200..300).contains(&response.status) {
                 Some(crate::http_error(response.status))
@@ -77,35 +80,40 @@ pub(crate) async fn authenticate<'a>(
 
 pub(crate) async fn send(
     provider: &ResolvedModel,
-    request: &PreparedModelRequest,
-    names: &crate::tool_names::Names<'_>,
+    body: bytes::Bytes,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
-) -> Result<(HttpResponse, usize)> {
-    let (url, headers, body) = self::request(provider, request, names, dispatch, key, account)?;
-    let input_bytes = body.len();
+) -> Result<HttpResponse> {
     let response = provider
         .transport
         .send(HttpRequest {
-            url,
-            headers,
-            body: body.into(),
+            url: projection::endpoint(provider)?,
+            headers: request_headers(provider, dispatch, key, account),
+            body,
         })
         .await?;
-    Ok((response, input_bytes))
+    Ok(response)
 }
 
-pub(crate) fn request(
+pub(crate) async fn encode(
     provider: &ResolvedModel,
     request: &PreparedModelRequest,
     names: &crate::tool_names::Names<'_>,
+    io: Option<&acyclic_harness::conversation::ContentIo>,
+    origin: &acyclic_harness::model::ReasoningOrigin,
+) -> Result<Vec<u8>> {
+    let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
+    let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
+    serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
+}
+
+pub(crate) fn request_headers(
+    provider: &ResolvedModel,
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
-) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
-    let origin = provider.reasoning_origin(key, account);
-    let body = projection::body_named(provider, request.request(), names, &origin)?;
+) -> BTreeMap<String, String> {
     let headers = headers(provider, key, account, true);
     #[cfg(not(target_arch = "wasm32"))]
     let headers = {
@@ -121,8 +129,7 @@ pub(crate) fn request(
         headers
     };
     let _ = dispatch;
-    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-    Ok((projection::endpoint(provider)?, headers, encoded))
+    headers
 }
 
 pub(crate) fn headers(
@@ -131,7 +138,8 @@ pub(crate) fn headers(
     account: Option<&str>,
     streaming: bool,
 ) -> BTreeMap<String, String> {
-    let mut headers = BTreeMap::from([(
+    let mut headers = provider.config.headers.clone();
+    headers.insert(
         "accept".into(),
         if streaming {
             "text/event-stream"
@@ -139,7 +147,7 @@ pub(crate) fn headers(
             "application/json"
         }
         .into(),
-    )]);
+    );
     if let Some(key) = key {
         let (name, value) = match provider.config.adapter {
             Adapter::Anthropic => ("x-api-key", key.into()),

@@ -51,7 +51,7 @@ export { type InteractionHandler, type PolicyDigest, type ComponentIdentity, typ
 export { type ContentBindings, type PrivateDirectoryPage, type PrivateDirectoryBindings, type ContentReader, type ContentMountResolver, composeContentBindings, type InheritedModelPrefix } from "./content.js";
 export { HarnessBuilder } from "./harness-builder.js";
 export { IndeterminateModelTurnError, TerminalModelTurnError, type RunReceipt, type RunOutput, type SelectedAgentInput, AgentHarness, TaskRunError } from "./agent-harness.js";
-export * from "./openai.js";
+export * from "./providers.js";
 export * from "./projection.js";
 export * from "./memory-conversation.js";
 export * from "./browser-history.js";

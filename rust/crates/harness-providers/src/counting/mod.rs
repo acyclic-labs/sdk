@@ -88,7 +88,15 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (bytes, nodes) = crate::native::shape(request.bytes());
+            let (mut bytes, nodes) = crate::native::shape(request.bytes());
+            for message in &request.request().messages {
+                bytes = bytes
+                    .checked_add(crate::files::extra_bytes(
+                        &message.content,
+                        provider.files.maximum_bytes,
+                    )? as u64)
+                    .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
+            }
             crate::native::reserve(
                 work,
                 bytes,
@@ -98,7 +106,15 @@ pub(crate) async fn count(
             )
         })
         .transpose()?;
-    let prepared = (|| {
+    #[cfg(not(target_arch = "wasm32"))]
+    let content_io = work
+        .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let content_io = None;
+    let prepared = async {
+        let mut files =
+            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation = serde_json::to_value(projection::body_named(
@@ -106,6 +122,7 @@ pub(crate) async fn count(
             request.request(),
             &names,
             &origin,
+            &mut files,
         )?)
         .map_err(|_| crate::invalid("cannot encode token count request"))?;
         let body = wire::body(generation, &provider.model.name, spec.adapter)?;
@@ -115,7 +132,8 @@ pub(crate) async fn count(
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
         Ok((url, headers, bytes, plan))
-    })();
+    }
+    .await;
     #[cfg(not(target_arch = "wasm32"))]
     let prepared = match admission.as_mut() {
         Some(hold) => crate::native::diagnostic(prepared, hold),

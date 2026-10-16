@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) files: crate::files::Files,
     pub(crate) estimator: crate::accounting::TokenEstimator,
     /// Immutable harness model identity.
     pub(crate) model: Model,
