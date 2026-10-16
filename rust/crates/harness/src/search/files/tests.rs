@@ -153,7 +153,7 @@ async fn search_file_scenarios() -> Result<()> {
         let input = FileKey::parse(".tasks/scenario/requests/search-one.json").unwrap();
         let result = FileKey::parse(".tasks/scenario/requests/search-one/result.json").unwrap();
         let initial = volume
-            .snapshot(&Query::Task(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 4)
             .await
             .map_err(storage)?;
         let mut client = volume
@@ -199,7 +199,7 @@ async fn search_file_scenarios() -> Result<()> {
         )
         .await;
         let after = volume
-            .snapshot(&Query::Task(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 4)
             .await
             .map_err(storage)?;
         if !case.authorized {
@@ -210,7 +210,7 @@ async fn search_file_scenarios() -> Result<()> {
             first?;
             assert_eq!(
                 after.files.len(),
-                if case.submit { 3 } else { 0 },
+                if case.submit { 4 } else { 0 },
                 "{}",
                 case.name
             );
@@ -233,7 +233,7 @@ async fn search_file_scenarios() -> Result<()> {
                 )
                 .await?;
                 let replay = volume
-                    .snapshot(&Query::Task(task.clone()), 3)
+                    .snapshot(&Query::Task(task.clone()), 4)
                     .await
                     .map_err(storage)?;
                 assert_eq!(replay.generation, after.generation);
@@ -296,7 +296,7 @@ async fn host_worker_follows_requests_and_clients_follow_results() -> Result<()>
                 .map_err(storage)?;
             assert!(client.snapshot.take().unwrap().files.is_empty());
             let initial = volume
-                .snapshot(&Query::Task(task.clone()), 6)
+                .snapshot(&Query::Task(task.clone()), 8)
                 .await
                 .map_err(storage)?;
             volume
@@ -371,7 +371,7 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
         ),
     ] {
         let snapshot = volume
-            .snapshot(&Query::Task(task.clone()), 6)
+            .snapshot(&Query::Task(task.clone()), 8)
             .await
             .map_err(storage)?;
         volume
@@ -412,7 +412,7 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
         SearchOutcome::Indeterminate
     );
     let snapshot = volume
-        .snapshot(&Query::Task(task.clone()), 6)
+        .snapshot(&Query::Task(task.clone()), 8)
         .await
         .map_err(storage)?;
     volume
@@ -490,7 +490,7 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     let task = Component::new(hex::encode(owner.task_id().into_bytes())).unwrap();
     let id = Component::new("search-native").unwrap();
     let initial = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .map_err(storage)?;
     volume
@@ -539,10 +539,10 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     }
     assert_eq!(script.remaining(), 0);
     let snapshot = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .map_err(storage)?;
-    assert_eq!(snapshot.files.len(), 3);
+    assert_eq!(snapshot.files.len(), 4);
     let result = snapshot
         .files
         .iter()
@@ -556,7 +556,9 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         if matches!(
             published.key,
             FileKey::Task {
-                file: TaskFile::RequestStarted(_) | TaskFile::RequestResult(_),
+                file: TaskFile::RequestStarted(_)
+                    | TaskFile::RequestReady(_)
+                    | TaskFile::RequestResult(_),
                 ..
             }
         ) {
@@ -578,7 +580,7 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     .await?;
     assert_eq!(
         volume
-            .snapshot(&Query::Task(task), 3)
+            .snapshot(&Query::Task(task), 4)
             .await
             .map_err(storage)?
             .files,
@@ -594,20 +596,22 @@ async fn request_file_types_keep_host_ownership_and_reset_legacy_cursors() -> Re
     assert_eq!(input.owner(), Owner::Caller);
     for path in [
         ".tasks/t/requests/search-one/started.json",
+        ".tasks/t/requests/search-one/ready.json",
         ".tasks/t/requests/search-one/result.json",
     ] {
         let key = FileKey::parse(path).unwrap();
         assert_eq!(key.path(), path);
         assert_eq!(key.owner(), Owner::Harness);
     }
-    let stream = Arc::new(MemoryStream::default());
-    let path = StreamPath::new("legacy-task-files").unwrap();
-    stream
+    for version in [2, 3] {
+        let stream = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("legacy-task-files").unwrap();
+        stream
         .append(acyclic_stream::AppendRequest {
             path: path.clone(),
             records: vec![
                 serde_json::to_vec(
-                    &json!({"volume":uuid::Uuid::new_v4(),"epoch":uuid::Uuid::new_v4(),"schema":2}),
+                    &json!({"volume":uuid::Uuid::new_v4(),"epoch":uuid::Uuid::new_v4(),"schema":version}),
                 )
                 .unwrap()
                 .into(),
@@ -617,16 +621,17 @@ async fn request_file_types_keep_host_ownership_and_reset_legacy_cursors() -> Re
         })
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let volume = TaskVolume::open(stream, path).await.map_err(storage)?;
-    let snapshot = volume.snapshot(&Query::Root, 0).await.map_err(storage)?;
-    let mut cursor = snapshot.cursor;
-    cursor.schema = 2;
-    let reset = volume
-        .observe(Query::Root, Some(cursor), 0)
-        .await
-        .map_err(storage)?;
-    assert!(reset.reset);
-    assert!(reset.snapshot.unwrap().files.is_empty());
+        let volume = TaskVolume::open(stream, path).await.map_err(storage)?;
+        let snapshot = volume.snapshot(&Query::Root, 0).await.map_err(storage)?;
+        let mut cursor = snapshot.cursor;
+        cursor.schema = version;
+        let reset = volume
+            .observe(Query::Root, Some(cursor), 0)
+            .await
+            .map_err(storage)?;
+        assert!(reset.reset);
+        assert!(reset.snapshot.unwrap().files.is_empty());
+    }
     Ok(())
 }
 
@@ -669,7 +674,7 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
     let maximum_files = requests.len();
     for (index, bytes) in requests.iter().enumerate() {
         let snapshot = volume
-            .snapshot(&Query::Root, maximum_files * 3)
+            .snapshot(&Query::Root, maximum_files * 4)
             .await
             .map_err(storage)?;
         volume
@@ -778,10 +783,10 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
     }
     assert_eq!(script.remaining(), 0);
     let snapshot = volume
-        .snapshot(&Query::Root, maximum_files * 3)
+        .snapshot(&Query::Root, maximum_files * 4)
         .await
         .map_err(storage)?;
-    assert_eq!(snapshot.files.len(), maximum_files * 3);
+    assert_eq!(snapshot.files.len(), maximum_files * 4);
     assert_eq!(
         volume
             .snapshot(&Query::Requests(task.clone()), maximum_files)

@@ -130,8 +130,8 @@ fn run_worker(
 
 fn outcome(volume: &TaskVolume<MemoryStream>) -> SearchOutcome {
     let snapshot =
-        block_on(volume.snapshot(&Query::Task(Component::new("model").unwrap()), 3)).unwrap();
-    assert_eq!(snapshot.files.len(), 3, "unfinished search lifecycle");
+        block_on(volume.snapshot(&Query::Task(Component::new("model").unwrap()), 4)).unwrap();
+    assert_eq!(snapshot.files.len(), 4, "unfinished search lifecycle");
     let result = snapshot
         .files
         .iter()
@@ -286,4 +286,112 @@ fn shared_tail_advance_reauthorizes_the_completed_response() {
 #[should_panic(expected = "completed search response was lost")]
 fn negative_control_detects_discarding_a_completed_response() {
     shared_tail(true);
+}
+
+fn saturated_tail(broken: bool) {
+    model(move || {
+        let (stream, volume) = initialized();
+        let provider = Arc::new(Provider::new(None));
+        let (authorized, advance) = mpsc::channel();
+        let (advanced, released) = mpsc::channel();
+        let competitor = thread::spawn({
+            let stream = stream.clone();
+            move || {
+                while advance.recv().unwrap() {
+                    let tail = block_on(stream.watermarks(StreamPath::new("owner").unwrap()))
+                        .unwrap()
+                        .accepted;
+                    append_owner(&stream, tail);
+                    advanced.send(()).unwrap();
+                }
+            }
+        });
+        let attempts = std::cell::Cell::new(0);
+        let authorize = |settlement| {
+            let state = (&stream, &attempts, &authorized, &released);
+            async move {
+                let (stream, attempts, authorized, released) = state;
+                let tail = stream
+                    .watermarks(StreamPath::new("owner").unwrap())
+                    .await
+                    .unwrap()
+                    .accepted;
+                if settlement {
+                    let next = attempts.get() + 1;
+                    attempts.set(next);
+                    if next > PUBLICATION_ATTEMPTS {
+                        return Err(Error::Storage(
+                            "model detected an unbounded publisher".into(),
+                        ));
+                    }
+                    authorized.send(true).unwrap();
+                    released.recv().unwrap();
+                }
+                Ok(condition(tail))
+            }
+        };
+        let task = Component::new("model").unwrap();
+        let id = Component::new("search-one").unwrap();
+        let mut result = Ok(());
+        for _ in 0..if broken { 2 } else { 1 } {
+            result = block_on(settle(
+                &volume,
+                &task,
+                &id,
+                &fence("old"),
+                &mut || Ok(Some(provider.clone() as Arc<dyn SearchProvider>)),
+                &authorize,
+                None,
+            ));
+            if !matches!(result, Err(Error::SearchPublicationDeferred)) {
+                break;
+            }
+        }
+        authorized.send(false).unwrap();
+        competitor.join().unwrap();
+        assert!(
+            matches!(result, Err(Error::SearchPublicationDeferred)),
+            "publication attempt bound was ignored: {result:?}"
+        );
+        assert_eq!(attempts.get(), PUBLICATION_ATTEMPTS);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        let saved = block_on(volume.snapshot(&Query::File(ready(&task, &id)), 1)).unwrap();
+        assert_eq!(saved.files.len(), 1);
+        assert!(
+            block_on(volume.snapshot(&Query::File(file(&task, &id, true)), 1))
+                .unwrap()
+                .files
+                .is_empty()
+        );
+        let resume = |_| async {
+            let tail = stream
+                .watermarks(StreamPath::new("owner").unwrap())
+                .await
+                .unwrap()
+                .accepted;
+            Ok(condition(tail))
+        };
+        block_on(settle(
+            &volume,
+            &task,
+            &id,
+            &fence("old"),
+            &mut || panic!("resume redispatched a completed response"),
+            &resume,
+            None,
+        ))
+        .unwrap();
+        assert!(matches!(outcome(&volume), SearchOutcome::Succeeded { .. }));
+    });
+}
+
+#[test]
+fn every_conflict_is_bounded_and_resumes_from_the_ready_file() {
+    saturated_tail(false);
+}
+
+#[test]
+#[should_panic(expected = "publication attempt bound was ignored")]
+fn negative_control_detects_ignoring_the_attempt_bound() {
+    saturated_tail(true);
 }

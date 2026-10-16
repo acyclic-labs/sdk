@@ -68,6 +68,9 @@ pub enum Error {
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+    /// Search publication is retryable; its completed response remains in ready.json.
+    #[error("search publication deferred; resume from ready.json")]
+    SearchPublicationDeferred,
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -355,7 +358,7 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
-            Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
@@ -407,6 +410,7 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::SearchPublicationDeferred
                 | Self::TaskFailed { .. }
         )
     }

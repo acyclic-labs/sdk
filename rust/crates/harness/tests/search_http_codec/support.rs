@@ -92,7 +92,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     let request = FileKey::parse(".tasks/codec/requests/search-codec.json").unwrap();
     let result = FileKey::parse(".tasks/codec/requests/search-codec/result.json").unwrap();
     let initial = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .unwrap();
     let mut client = volume
@@ -150,10 +150,10 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     });
     assert_eq!(outcome, expected);
     let before = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .unwrap();
-    assert_eq!(before.files.len(), 3);
+    assert_eq!(before.files.len(), 4);
     for replacement in [false, true] {
         if replacement {
             fence.reservation_id = "replacement".into();
@@ -170,7 +170,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
         .await
         .unwrap();
         let after = volume
-            .snapshot(&Query::Task(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 4)
             .await
             .unwrap();
         assert_eq!(after.files, before.files);
