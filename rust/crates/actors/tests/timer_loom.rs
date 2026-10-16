@@ -20,7 +20,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
-fn lost_ack_restart_and_append() -> Result {
+fn lost_ack_restart_and_append(broken: bool) -> Result {
     let timer = TimerRecord::new(
         "01010101-0101-0101-0101-010101010101".into(),
         "02020202-0202-0202-0202-020202020202".into(),
@@ -51,7 +51,13 @@ fn lost_ack_restart_and_append() -> Result {
         let provider = restarted.clone();
         let inbox = inbox.clone();
         let timer = timer.clone();
-        move || block_on(fire(&provider, &timer, inbox, 2))
+        move || {
+            if broken {
+                block_on(fire(&UnkeyedRetry(&provider), &timer, inbox, 2))
+            } else {
+                block_on(fire(&provider, &timer, inbox, 2))
+            }
+        }
     });
     block_on(restarted.append(AppendRequest {
         path: inbox.clone(),
@@ -90,7 +96,52 @@ fn lost_ack_restart_and_append() -> Result {
 #[test]
 fn timer_fire_survives_lost_ack_restart_and_concurrent_append() {
     loom::model(|| {
-        let result = lost_ack_restart_and_append();
+        let result = lost_ack_restart_and_append(false);
+        assert!(result.is_ok(), "{result:?}");
+    });
+}
+
+struct UnkeyedRetry<'a>(&'a MemoryStream);
+
+macro_rules! delegate {
+    ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
+        #[async_trait::async_trait]
+        impl StreamProvider for UnkeyedRetry<'_> {
+            $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
+                self.0.$name($arg).await
+            })*
+            async fn follow(&self, path: StreamPath, from: u64)
+                -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError>
+            {
+                self.0.follow(path, from).await
+            }
+            async fn append(&self, mut request: AppendRequest)
+                -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
+            {
+                // Deliberately drop the production fire's stable retry key.
+                request.idempotency_key = None;
+                self.0.append(request).await
+            }
+        }
+    };
+}
+
+delegate! {
+    inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
+    tail(path: StreamPath) -> u64;
+    bounds(path: StreamPath) -> acyclic_stream::StreamBounds;
+    fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
+    read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
+    children(request: acyclic_stream::ChildrenRequest) -> acyclic_stream::ChildStream;
+    commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
+    read_commit(id: acyclic_stream::CommitId) -> acyclic_stream::CommittedEnvelope;
+}
+
+#[test]
+#[should_panic(expected = "timer fire retry changed committed receipt")]
+fn missing_retry_key_duplicates_the_restored_timer() {
+    loom::model(|| {
+        let result = lost_ack_restart_and_append(true);
         assert!(result.is_ok(), "{result:?}");
     });
 }

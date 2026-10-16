@@ -23,6 +23,7 @@ dependencies = [
  "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
  "allocation-counter",
+ "async-trait",
  "bytes",
  "futures",
  "http",

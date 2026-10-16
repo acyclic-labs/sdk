@@ -1,65 +1,86 @@
 use super::*;
-use crate::sync::Mutex;
+use crate::sync::atomic::{AtomicBool, Ordering};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommittedEnvelope,
     ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest,
     RecordStream, StreamBounds, StreamError, StreamProvider,
 };
-use std::{
-    future::Future,
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
+use std::cell::Cell;
+use std::future::Future;
 
 const ID: AuthorityId = AuthorityId::from_bytes([61; 16]);
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
-// The provider contract makes each stream operation atomic. This adapter runs
-// the real MemoryStream operations under the modeled boundary mutex; their
-// futures must complete immediately. It models the authority algorithm, not
-// the dependency's uninstrumented Tokio locks. No filesystem call holds this
-// mutex; no other model lock is acquired while it is held.
-struct ModelStream(Mutex<State>, CancellationToken);
-struct State {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    None,
+    ResamplePayload,
+    IgnoreEpoch,
+}
+loom::thread_local! { static FAULT: Cell<Fault> = Cell::new(Fault::None); }
+
+pub(super) fn observed_epoch(epoch: Epoch) -> Epoch {
+    if FAULT.with(Cell::get) == Fault::IgnoreEpoch {
+        Epoch::GENESIS
+    } else {
+        epoch
+    }
+}
+
+pub(super) fn resample_payload() -> bool {
+    FAULT.with(Cell::get) == Fault::ResamplePayload
+}
+
+pub(super) async fn resampled_payload<P: StreamProvider>(
+    store: &StreamAuthorityStore<P>,
+    authority: AuthorityId,
+    work: &mut AuthorityWork<'_>,
+) -> Result<Bytes, AuthorityStoreError> {
+    let tail = store.tail_of(authority, "/records", work).await?;
+    let path = work.path(authority, "/records", None)?;
+    let path_bytes = path.as_str().len() as u64;
+    let latest = store.record(path, tail - 1, work).await;
+    work.release(path_bytes)?;
+    let (record, allocation) = latest?;
+    let decoded = work.decode_durable(&record.value)?;
+    let bytes = work.bytes(decoded.payload)?;
+    drop((record, allocation));
+    Ok(bytes)
+}
+
+struct ModelStream {
     inner: MemoryStream,
-    retired: bool,
-    retired_at_record_read: bool,
-    cancelled_at_record_read: bool,
+    change: Change,
+    completed: AtomicBool,
+    retired_at_record_read: AtomicBool,
+    cancelled_at_record_read: AtomicBool,
+    cancellation: CancellationToken,
 }
 
 fn ready<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => unreachable!("atomic memory-provider operation yielded"),
-    }
+    loom::future::block_on(Box::pin(future))
 }
 
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        ready(self.0.lock().unwrap().inner.tail(path))
+        self.inner.tail(path).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let mut state = self.0.lock().unwrap();
         if request.path.as_str().ends_with("/records") {
-            state.retired_at_record_read |= state.retired;
-            state.cancelled_at_record_read |= self.1.is_cancelled();
+            self.retired_at_record_read.fetch_or(
+                matches!(self.change, Change::Retire) && self.completed.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+            self.cancelled_at_record_read
+                .fetch_or(self.cancellation.is_cancelled(), Ordering::SeqCst);
         }
-        ready(state.inner.read(request))
+        self.inner.read(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let mut state = self.0.lock().unwrap();
-        let retirement = request.mutations.iter().any(|mutation| {
-            matches!(mutation,
-            CommitMutation::Append { path, .. } if path.as_str().ends_with("/retirement"))
-        });
-        let result = ready(state.inner.commit(request));
+        let result = self.inner.commit(request).await;
         if matches!(result, Ok(CommitOutcome::Committed(_))) {
-            state.retired |= retirement;
+            self.completed.store(true, Ordering::SeqCst);
         }
         result
     }
@@ -140,7 +161,7 @@ fn request(
     }
 }
 
-fn model(change: Change, recheck: bool) {
+fn model(change: Change, broken: bool) {
     // Immutable fixture bytes do not depend on any schedule. Build them once;
     // every permutation still gets a fresh provider and cancellation state.
     let first = durable(1, Digest::ZERO, b"old");
@@ -188,21 +209,38 @@ fn model(change: Change, recheck: bool) {
             CommitOutcome::Committed(_)
         ));
         let cancellation = CancellationToken::new();
-        let provider = Arc::new(ModelStream(
-            Mutex::new(State {
-                inner,
-                retired: false,
-                retired_at_record_read: false,
-                cancelled_at_record_read: false,
-            }),
-            cancellation.clone(),
-        ));
+        let provider = Arc::new(ModelStream {
+            inner,
+            change,
+            completed: AtomicBool::new(false),
+            retired_at_record_read: AtomicBool::new(false),
+            cancelled_at_record_read: AtomicBool::new(false),
+            cancellation: cancellation.clone(),
+        });
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let reader = loom::thread::spawn(move || {
+            let completed_at_entry = reader_provider.completed.load(Ordering::SeqCst);
             let store = StreamAuthorityStore::new(reader_provider);
-            let mut work = AuthorityWork::new(BUDGET, &reader_cancel);
-            let result = if recheck {
+            FAULT.with(|fault| {
+                fault.set(if broken {
+                    match change {
+                        Change::Publish => Fault::ResamplePayload,
+                        Change::Fence => Fault::IgnoreEpoch,
+                        _ => Fault::None,
+                    }
+                } else {
+                    Fault::None
+                })
+            });
+            let detached = CancellationToken::new();
+            let token = if broken && matches!(change, Change::Cancel) {
+                &detached
+            } else {
+                &reader_cancel
+            };
+            let mut work = AuthorityWork::new(BUDGET, token);
+            let result = if !broken || !matches!(change, Change::Retire) {
                 ready(crate::heap_future::in_heap(|| {
                     store.head_payload(ID, 32, &mut work)
                 }))
@@ -213,7 +251,7 @@ fn model(change: Change, recheck: bool) {
                 }))
             };
             work.spent().verify(BUDGET).unwrap();
-            result
+            (result, completed_at_entry)
         });
         // Two actors suffice: the reader and this writer. An idle third
         // thread joining both adds schedules without adding a race.
@@ -225,15 +263,15 @@ fn model(change: Change, recheck: bool) {
         } else {
             cancellation.cancel();
         }
-        let result = reader.join().unwrap();
+        let (result, completed_at_entry) = reader.join().unwrap();
         match result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
-                    !provider.0.lock().unwrap().retired_at_record_read,
+                    !provider.retired_at_record_read.load(Ordering::SeqCst),
                     "retired payload escaped the second retirement check"
                 );
                 assert!(
-                    !provider.0.lock().unwrap().cancelled_at_record_read,
+                    !provider.cancelled_at_record_read.load(Ordering::SeqCst),
                     "cancelled payload escaped admission"
                 );
                 let expected = if head.sequence == first.sequence {
@@ -243,7 +281,17 @@ fn model(change: Change, recheck: bool) {
                 };
                 assert_eq!(head.sequence, expected.sequence);
                 assert_eq!(head.digest, expected.digest);
-                assert_eq!(payload, expected.payload);
+                assert_eq!(
+                    payload, expected.payload,
+                    "head and payload came from different publications"
+                );
+                if completed_at_entry && matches!(change, Change::Fence) {
+                    assert_eq!(
+                        head.epoch,
+                        Epoch::new(2).unwrap(),
+                        "completed fence was lost"
+                    );
+                }
                 assert!(
                     head.epoch == Epoch::GENESIS
                         || matches!(change, Change::Fence) && head.epoch == Epoch::new(2).unwrap()
@@ -260,26 +308,44 @@ fn model(change: Change, recheck: bool) {
 
 #[test]
 fn real_head_payload_explores_publication() {
-    model(Change::Publish, true);
+    model(Change::Publish, false);
 }
 
 #[test]
 fn real_head_payload_explores_fencing() {
-    model(Change::Fence, true);
+    model(Change::Fence, false);
 }
 
 #[test]
 fn real_head_payload_explores_retirement() {
-    model(Change::Retire, true);
+    model(Change::Retire, false);
 }
 
 #[test]
 fn real_head_payload_explores_cancellation() {
-    model(Change::Cancel, true);
+    model(Change::Cancel, false);
 }
 
 #[test]
 #[should_panic(expected = "retired payload escaped the second retirement check")]
 fn missing_second_retirement_check_is_detected() {
-    model(Change::Retire, false);
+    model(Change::Retire, true);
+}
+
+#[test]
+#[should_panic(expected = "head and payload came from different publications")]
+fn resampling_the_latest_payload_is_detected() {
+    model(Change::Publish, true);
+}
+
+#[test]
+#[should_panic(expected = "completed fence was lost")]
+fn ignoring_the_published_epoch_is_detected() {
+    model(Change::Fence, true);
+}
+
+#[test]
+#[should_panic(expected = "cancelled payload escaped admission")]
+fn disconnecting_the_operation_cancellation_is_detected() {
+    model(Change::Cancel, true);
 }

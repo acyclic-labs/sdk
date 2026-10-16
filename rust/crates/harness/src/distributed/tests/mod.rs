@@ -35,4 +35,11 @@ pub(super) mod model_checking;
 mod native;
 mod observation;
 mod results;
+#[cfg(all(
+    acyclic_harness_loom,
+    acyclic_loom,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod scheduler_model;
 mod session;

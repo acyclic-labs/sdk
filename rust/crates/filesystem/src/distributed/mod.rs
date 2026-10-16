@@ -72,7 +72,9 @@ mod append;
 mod authority;
 mod bindings;
 mod head_payload;
-#[cfg(all(test, acyclic_fs_loom))]
+#[cfg(all(test, acyclic_fs_loom, not(acyclic_loom)))]
+compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
+#[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
 mod head_payload_loom_tests;
 mod lineage;
 mod replay;
