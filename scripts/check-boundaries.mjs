@@ -54,7 +54,7 @@ for (const [path, content] of [
   ["proto/private/admin.proto", "syntax = \"proto3\";"],
   ["example.rs", "use acyclic_" + "internal::scheduler;"],
   ["credential.txt", "-----BEGIN " + "PRIVATE KEY-----"],
-  ["proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
+  ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
 ]) {
   const before = failures.length;
   inspect(join(root, path), content);

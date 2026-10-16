@@ -144,5 +144,5 @@ mod effects;
 mod extensions;
 mod fork;
 mod model;
-#[cfg(all(feature = "model-checking", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod model_checking;

@@ -29,11 +29,12 @@ pub mod wire {
         clippy::allow_attributes_without_reason,
         reason = "generated protobuf bindings"
     )]
-    include!("generated/acyclic.machines.v1.rs");
+    include!(concat!(env!("OUT_DIR"), "/acyclic.machines.v1.rs"));
 }
 
 /// Canonical public descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-machines-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-machines-v1.bin"));
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.

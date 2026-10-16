@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
+ "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-tonic-web-wasm-client",
  "allocation-counter",
@@ -47,7 +48,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "ts-rs",
@@ -87,6 +87,7 @@ name = "acyclic-auth"
 version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
+ "acyclic-proto-build",
  "allocation-counter",
  "ed25519-dalek",
  "futures",
@@ -166,6 +167,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -198,7 +200,6 @@ dependencies = [
  "proptest",
  "prost",
  "prost-reflect",
- "prost-types",
  "rcgen",
  "rustix 1.1.5",
  "rustls",
@@ -217,7 +218,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -470,9 +470,9 @@ name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-proto-build",
  "proptest",
  "prost",
- "prost-build",
  "prost-reflect",
  "prost-types",
  "serde_json",
@@ -482,7 +482,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -507,6 +506,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
+ "acyclic-proto-build",
  "async-trait",
  "futures",
  "hex",
@@ -626,6 +626,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -709,17 +710,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-proto-build"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "protoc-bin-vendored",
+ "tempfile",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "acyclic-sdk-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-proto-build",
  "libfuzzer-sys",
- "prettyplease 0.2.37",
  "prost",
- "sdk-proto-codegen",
  "serde_json",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -729,6 +741,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-proto-build",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
  "axum",
@@ -746,7 +759,6 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "prost",
- "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
@@ -762,7 +774,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
  "tonic-web",
  "tower",
  "tower-http",
@@ -4709,38 +4720,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
-name = "protoc-gen-prost"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4018e7b5e3a213d241d79a0ef43a442a17dc23dcdd5b81b0c42b2549197897fd"
-dependencies = [
- "once_cell",
- "prost",
- "prost-build",
- "prost-types",
- "regex",
-]
-
-[[package]]
-name = "protoc-gen-tonic"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa40faad46fb55e5c4a3257461c43f6ed0f87b320d11d98b4ea397f6f45896be"
-dependencies = [
- "heck",
- "prettyplease 0.2.37",
- "proc-macro2",
- "prost",
- "prost-build",
- "prost-types",
- "protoc-gen-prost",
- "quote",
- "regex",
- "syn 2.0.119",
- "tonic-build",
-]
-
-[[package]]
 name = "pulldown-cmark"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5622,17 +5601,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
+ "acyclic-proto-build",
  "cargo_metadata",
- "prettyplease 0.2.37",
  "proptest",
  "prost",
  "prost-reflect",
- "protoc-gen-prost",
- "protoc-gen-tonic",
- "quote",
  "serde",
  "serde_json",
- "syn 2.0.119",
 ]
 
 [[package]]
