@@ -19,6 +19,8 @@ pub enum Fault {
     OmitAuthorityConditions,
     /// Publish without the caller's deadline.
     IgnoreDeadline,
+    /// Treat any competing index advance as completing the captured tail.
+    ReturnOnPeerAdvance,
 }
 
 loom::thread_local! {

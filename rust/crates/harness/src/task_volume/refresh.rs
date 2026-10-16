@@ -6,6 +6,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Lock order: index only. Provider calls and stream polls never hold it.
     // Every staged record is applied only to its captured generation.
     pub(super) async fn refresh(&self) -> Result<StreamWatermarks> {
+        #[cfg(acyclic_harness_loom)]
+        if super::model_checking::enabled(super::model_checking::Fault::ReturnOnPeerAdvance) {
+            return self.refresh_to_tail::<false>().await;
+        }
         self.refresh_to_tail::<true>().await
     }
 

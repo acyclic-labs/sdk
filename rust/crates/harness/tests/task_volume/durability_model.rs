@@ -61,6 +61,7 @@ impl StreamProvider for Provider {
         }
         let state = self.0.lock().unwrap();
         let accepted = state.records().len() as u64;
+        refresh_model::capture_tail(accepted);
         Ok(StreamWatermarks {
             accepted,
             durable: accepted - u64::from(!state.replaced),
@@ -110,8 +111,56 @@ impl StreamProvider for Provider {
     async fn children(&self, _: ChildrenRequest) -> std::result::Result<ChildStream, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
-        Err(StreamError::Unsupported)
+    async fn commit(
+        &self,
+        request: CommitRequest,
+    ) -> std::result::Result<CommitOutcome, StreamError> {
+        refresh_model::before_commit().await;
+        let mut state = self.0.lock().unwrap();
+        assert!(!state.replaced, "the refresh writer cannot replace history");
+        let records = &mut state.original;
+        let [
+            CommitCondition::Head {
+                path,
+                expected,
+                commit_id,
+            },
+        ] = request.conditions.as_slice()
+        else {
+            panic!("the model writer requires exactly its production head fence")
+        };
+        assert_eq!(*expected, records.len() as u64);
+        assert_eq!(*commit_id, records.last().unwrap().commit_id);
+        let [
+            CommitMutation::Append {
+                path: destination,
+                records: values,
+            },
+        ] = request.mutations.as_slice()
+        else {
+            panic!("the model writer requires one append")
+        };
+        assert_eq!(path, destination);
+        assert_eq!(values.len(), 1);
+        let commit_id = CommitId::from_bytes(*blake3::hash(&values[0]).as_bytes());
+        let start = records.len() as u64;
+        let record = Record {
+            sequence: start,
+            value: values[0].clone(),
+            commit_id,
+            committed_at_micros: 0,
+        };
+        records.push(record.clone());
+        Ok(CommitOutcome::Committed(CommittedEnvelope {
+            commit_id,
+            mutations: vec![CommittedMutation::Append(CommittedAppend {
+                path: path.clone(),
+                start,
+                end: start + 1,
+                tail: start + 1,
+                records: vec![record],
+            })],
+        }))
     }
     async fn read_commit(
         &self,
@@ -120,6 +169,9 @@ impl StreamProvider for Provider {
         Err(StreamError::Unsupported)
     }
 }
+
+#[path = "refresh_model.rs"]
+mod refresh_model;
 
 async fn histories() -> (Histories, FileValue, StreamPath) {
     let path = StreamPath::new("model/files").unwrap();
