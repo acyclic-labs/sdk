@@ -5,10 +5,15 @@ use crate::tool::ToolRegistry;
     clippy::too_many_lines,
     reason = "one actual parent compaction, child capture, retry and publication scenario"
 )]
-async fn summary_preparation(
-    inputs: [&[u8]; 3],
+async fn summary_parent_inputs(
+    inputs: [&[u8]; 2],
     model: Arc<ScriptedModelProvider>,
-) -> Result<SummaryFixture> {
+) -> Result<(
+    MemoryHarnessStorage,
+    crate::bundle::HarnessBundle,
+    FileRef,
+    Limits,
+)> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
     let limits = Limits {
@@ -65,6 +70,15 @@ async fn summary_preparation(
     )
     .await?
     .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
+    Ok((storage, bundle, reference, limits))
+}
+
+async fn summary_preparation(
+    inputs: [&[u8]; 3],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<SummaryFixture> {
+    let (storage, bundle, reference, limits) =
+        summary_parent_inputs([inputs[0], inputs[1]], model.clone()).await?;
     let later = OperationId::new();
     let later_input = storage
         .stage(
@@ -140,6 +154,24 @@ async fn summary_preparation(
     assert_eq!(retired.resident_after_sequence(), 6);
     assert!(retired.messages().is_empty());
 
+    summary_fork_fixture(storage, aggregate, reference, limits).await
+}
+
+async fn summary_fork_fixture(
+    storage: MemoryHarnessStorage,
+    aggregate: StreamAggregate<MemoryStream>,
+    reference: FileRef,
+    limits: Limits,
+) -> Result<SummaryFixture> {
+    let agent = storage
+        .scope
+        .agent()
+        .ok_or_else(|| Error::Invalid("missing agent".into()))?;
+    let through = aggregate
+        .reducer()
+        .conversation()
+        .ok_or_else(|| Error::Invalid("missing conversation".into()))?
+        .logical_revision();
     let history = HistoryReader::new(
         &storage.stream,
         &storage.conversation,
@@ -203,9 +235,10 @@ async fn summary_preparation(
     let archived = history
         .fork_history(
             aggregate.reducer(),
-            6,
+            through,
             HistoryReadLimits {
-                maximum_events: 6,
+                maximum_events: u32::try_from(through)
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
                 maximum_bytes: 2_097_152,
             },
             &mut None,

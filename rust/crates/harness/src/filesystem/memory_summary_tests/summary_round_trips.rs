@@ -8,15 +8,15 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
 struct Input {
-    turns: [String; 3],
-    responses: [String; 5],
+    turns: [String; 2],
+    responses: [String; 3],
 }
 
 impl Input {
-    fn new(text: [String; 8]) -> Self {
+    fn new(text: [String; 5]) -> Self {
         Self {
             turns: std::array::from_fn(|i| format!("input-{i}:{}", text[i])),
-            responses: std::array::from_fn(|i| format!("response-{i}:{}", text[i + 3])),
+            responses: std::array::from_fn(|i| format!("response-{i}:{}", text[i + 2])),
         }
     }
 
@@ -24,7 +24,7 @@ impl Input {
         Arc::new(
             summary_model_turns(self.responses.iter().cloned().map(ScriptedTurn::Text))
                 // Charge tiny user files like the original fixture's 60 KB inputs.
-                // This admits the same two summaries without copying redundant padding.
+                // This admits the same summary without copying redundant padding.
                 // All filesystem bytes, checkpoints, copies and grants remain real.
                 .with_token_counter(|request| {
                     let counts = request
@@ -71,17 +71,34 @@ struct Case {
 
 impl Case {
     async fn new(input: &Input) -> Result<Self> {
+        let (storage, _, reference, limits) =
+            summary_parent_inputs(input.turns.each_ref().map(|s| s.as_bytes()), input.model())
+                .await?;
+        let aggregate = StreamAggregate::open(
+            &storage.stream,
+            (
+                storage.conversation.clone(),
+                storage.verifier(),
+                SchemaRegistry::new(),
+            ),
+            None,
+            crate::store::default_projection_read_limits(),
+            crate::store::DEFAULT_TERMINAL_EFFECTS,
+            None,
+            &mut None,
+        )
+        .await?
+        .with_content_verifier(storage.content_verifier.clone());
         let SummaryFixture {
             storage,
-            mut aggregate,
+            aggregate,
             preparer,
             request,
             scope: parent_scope,
             stream_provider,
             limits,
             ..
-        } = summary_preparation(input.turns.each_ref().map(|s| s.as_bytes()), input.model())
-            .await?;
+        } = summary_fork_fixture(storage, aggregate, reference, limits).await?;
         let (task_preparation, _invocation) =
             sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728)
                 .await?;
@@ -200,7 +217,7 @@ impl ContentResidencyVerifier for Tampered {
 enum Fault {
     None,
     OmitCopy,
-    LaterSummary,
+    WrongSummary,
     AcceptCut,
     AcceptTamper,
     RejectHealthy,
@@ -236,17 +253,15 @@ async fn check_round_trip(input: &Input, case: &Case, fault: Fault) -> TestCaseR
         }
         messages.push((message.role, bytes));
     }
-    if matches!(fault, Fault::LaterSummary) {
-        messages[0].1 = input.responses[3].as_bytes().to_vec();
+    if matches!(fault, Fault::WrongSummary) {
+        messages[0].1 = input.responses[0].as_bytes().to_vec();
     }
-    // Checkpoint 1 predates answer 2. Its summary must survive the later compaction,
-    // followed by the complete canonical delta at sequences 4, 5 and 6.
+    // The admitted checkpoint predates answer 2. Require its exact summary and
+    // retained input followed by the complete canonical tail (sequence 4).
     let expected = [
         (ModelRole::Assistant, input.responses[1].as_bytes().to_vec()),
         (ModelRole::User, input.turns[1].as_bytes().to_vec()),
         (ModelRole::Assistant, input.responses[2].as_bytes().to_vec()),
-        (ModelRole::User, input.turns[2].as_bytes().to_vec()),
-        (ModelRole::Assistant, input.responses[4].as_bytes().to_vec()),
     ];
     prop_assert!(
         copied && messages == expected,
@@ -284,7 +299,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn generated_capture_publication_and_authenticated_read(
-        text in prop::array::uniform8("[a-z0-9\\x00é🦀]{0,8}"),
+        text in prop::array::uniform5("[a-z0-9\\x00é🦀]{0,8}"),
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let input = Input::new(text);
@@ -311,7 +326,7 @@ async fn capture_and_read_negative_controls() {
             "summary copies or frozen cut differ from input bytes",
         ),
         (
-            Fault::LaterSummary,
+            Fault::WrongSummary,
             "summary copies or frozen cut differ from input bytes",
         ),
         (Fault::AcceptCut, "summary cut mismatch accepted"),
