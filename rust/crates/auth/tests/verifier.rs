@@ -141,7 +141,8 @@ proptest! {
         let parent = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(vec![Caveat { kind: CaveatKind::Limits(limits(parent_limit)) }], &[5;32]).unwrap();
         let child = parent.attenuate(vec![Caveat { kind: CaveatKind::Limits(limits(child_limit)) }, Caveat { kind: CaveatKind::LineageAppend(LineageAppend { ids: ids.clone() }) }], &[6;32]).unwrap();
         let minimum = match (parent_limit, child_limit) { (Some(a),Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
-        prop_assert_eq!(child.effective().limits(), &limits(minimum));
+        let expected = limits(minimum);
+        prop_assert_eq!(child.effective().limits(), &expected);
         prop_assert_eq!(&child.effective().principal().lineage, &ids);
         prop_assert_eq!(&child.effective().principal().groups, &parent.effective().principal().groups);
         prop_assert_eq!(&child.effective().principal().roles, &parent.effective().principal().roles);
