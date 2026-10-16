@@ -74,8 +74,10 @@ export class ActorsClient {
   constructor(options: ActorsOptions) {
     this.#observer = resolveObserver(options.observer);
     this.#endpoint = options.endpoint;
-    this.#credential = credentialProvider(options);
-    this.#renewable = options.credential !== undefined;
+    const callback = options.credential;
+    const token = callback === undefined ? options.token : undefined;
+    this.#credential = credentialProvider(callback === undefined ? (token === undefined ? {} : { token }) : { credential: callback });
+    this.#renewable = callback !== undefined;
     this.#caCertificate = options.caCertificate;
     this.#binding = options.binding ?? (isNodeRuntime() ? nativeBinding() : wasmBinding());
     installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
@@ -87,20 +89,21 @@ export class ActorsClient {
   }
 
   async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
+    const signal = options?.signal;
     const operation = method.localName as Operation;
     requireBigIntCodec();
     const encoded = toBinary(method.input, create(method.input, structuredClone(request) as MessageShape<typeof method.input>));
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
-      throwIfAborted(options?.signal);
-      const token = await this.#credential(options?.signal);
-      const client = await this.#connection(token, options?.signal);
+      throwIfAborted(signal);
+      const token = await this.#credential(signal);
+      const client = await this.#connection(token, signal);
       if (this.#renewable && client.withCredential === undefined) {
         throw new ActorsTransportError("Actors binding does not support per-request credentials", "configuration");
       }
       const response = await abortable(this.#renewable
-        ? client.withCredential!(method.name, encoded, token, options?.signal)
-        : client[operation](encoded, options?.signal), options?.signal);
+        ? client.withCredential!(method.name, encoded, token, signal)
+        : client[operation](encoded, signal), signal);
       if (sizes) sizes.responseBytes = response.byteLength;
       return canonicalSemantic(fromBinary(method.output, response));
     });

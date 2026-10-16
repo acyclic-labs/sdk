@@ -114,3 +114,25 @@ test("Actors never falls back to a stale bridge credential", async () => {
     expect(sent).toBe(0);
   }), settings);
 });
+
+test("Actors snapshots provider selection once even when configuration has getters", async () => {
+  await fc.assert(fc.asyncProperty(fc.array(token, { minLength: 2, maxLength: 8 }), async values => {
+    let calls = 0;
+    let reads = 0;
+    const sent: string[] = [];
+    const options = {
+      endpoint: "https://actors.example.test", token: "stale", credential: () => values[calls++]!,
+      binding: { connect: async () => ({ ...legacyClient(), withCredential: async (_method: string, _request: Uint8Array, value: string) => {
+        sent.push(value);
+        return new Uint8Array();
+      } }) },
+    };
+    const callback = options.credential;
+    Object.defineProperty(options, "credential", { get: () => ++reads === 1 ? callback : undefined });
+    const client = new ActorsClient(options);
+    for (const _value of values) await client.inspectActor(actor);
+    expect(reads).toBe(1);
+    expect(sent).toEqual(values);
+    expect(calls).toBe(values.length);
+  }), settings);
+});
