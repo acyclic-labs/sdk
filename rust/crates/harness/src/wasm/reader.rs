@@ -1,5 +1,5 @@
-use super::to_js;
-use acyclic_harness::{
+use super::to_js_admitted;
+use crate::{
     Error, Result,
     conversation::{BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileRef},
 };
@@ -8,9 +8,11 @@ use js_sys::{Function, Promise, Uint8Array};
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-pub(super) struct Reader(pub Function);
+/// Owner-authenticated browser reads used by model projection and providers.
+/// The callback is scoped to its caller; Rust applies content integrity checks.
+pub struct BrowserContentReader(pub Function);
 
-impl ContentResidencyVerifier for Reader {
+impl ContentResidencyVerifier for BrowserContentReader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
@@ -23,14 +25,13 @@ impl ContentResidencyVerifier for Reader {
             ));
         }
         BoundedContentFuture::new(io, || async move {
-            let encoded =
-                to_js(file).map_err(|_| Error::Invalid("model file encoding failed".into()))?;
-            let file = encoded;
+            let encoded = to_js_admitted(file)
+                .map_err(|_| Error::Invalid("model file encoding failed".into()))?;
             let promise = self
                 .0
                 .call2(
                     &JsValue::UNDEFINED,
-                    &file,
+                    &encoded,
                     &JsValue::from_f64(maximum as f64),
                 )
                 .map_err(|_| Error::Storage("model file read failed".into()))?;

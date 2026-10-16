@@ -1,5 +1,4 @@
 mod cancel;
-mod content;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -114,8 +113,10 @@ impl WasmProviderRegistry {
         let mut registry =
             Registry::with_transport(Credentials::explicit(keys), Arc::new(transport));
         if let Some(reader) = reader {
-            registry =
-                registry.with_content(Arc::new(content::Reader(reader)), limits.render_bytes);
+            registry = registry.with_content(
+                Arc::new(acyclic_harness::BrowserContentReader(reader)),
+                limits.render_bytes,
+            );
         }
         Ok(Self { registry, limits })
     }

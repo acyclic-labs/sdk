@@ -39,7 +39,7 @@ test("ordered reasoning survives tool batches, final answers and the next conver
           for (const [index, item] of blocks.entries()) {
             yield { kind: "reasoning_block" as const, block: item };
             if (index + 1 < blocks.length) yield { kind: "tool_call" as const, callId: `call_${index}`, name: "echo",
-              arguments: {}, metadata: { signature: "opaque", "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } } };
+              arguments: {}, metadata: { signature: "opaque", ["__proto__"]: { literal: true } } };
           }
         } else {
           const parts = request.messages.flatMap(message => typeof message.content === "string" ? []
@@ -69,7 +69,7 @@ test("negative control detects lost opaque reasoning in the same history oracle"
     [block("first"), block("tail")])).toThrow();
 });
 
-async function boundedHandler(stripMetadata: boolean) {
+async function boundedHandler(stripMetadata: boolean, metadata: Record<string, string> = { signature: "x".repeat(1000) }) {
   let executions = 0;
   let step = 0;
   const runtime = await Harness.builder(contracts).limits({ file_bytes: 1024, render_bytes: 1024 }).tool({
@@ -79,7 +79,7 @@ async function boundedHandler(stripMetadata: boolean) {
     ...syntheticAccounting(contracts),
     async *generate() {
       if (step++ === 0) yield { kind: "tool_call" as const, callId: "call", name: "echo", arguments: {},
-        metadata: stripMetadata ? null : { signature: "x".repeat(1000) } };
+        metadata: stripMetadata ? null : metadata };
       yield { kind: "completed" as const, metadata: {} };
     }, async reconcile() { return undefined; },
   }).build();
@@ -93,4 +93,11 @@ test("the complete saved invocation is admitted before invoking the tool handler
 
 test("negative control stripping metadata bypasses the full envelope bound", async () => {
   expect(await boundedHandler(true)).toBe(1);
+});
+
+test("reserved tool artifact markers are rejected before the handler", async () => {
+  const metadata = { signature: "opaque", "$serde_json::private::RawValue": "null" };
+  expect(await boundedHandler(false, metadata)).toBe(0);
+  // Negative control: removing the rejected metadata permits the handler.
+  expect(await boundedHandler(true, metadata)).toBe(1);
 });

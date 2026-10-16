@@ -504,8 +504,9 @@ test("model admission enforces portable tool integers and preserves full-width c
   for (const cursor of [maximum + 1n, value]) {
     expect(() => contracts.admitModelEvent(call(cursor), DEFAULT_LIMITS)).toThrow("inexact number");
   }
-  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
-  expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
+  const literal = { "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } };
+  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
+  expect(completed.event).toEqual({ kind: "completed", metadata: { ...literal, tokens: 1, cursor: value } });
 });
 
 
