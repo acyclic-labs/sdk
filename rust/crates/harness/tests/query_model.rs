@@ -1,8 +1,7 @@
-use acyclic_query_verification::model_checking::{Fault, assert_index_matches, set_fault};
-#[cfg(not(all(acyclic_loom, acyclic_harness_loom)))]
-compile_error!("query models require --cfg acyclic_loom and --cfg acyclic_harness_loom");
+#![cfg(all(acyclic_loom, acyclic_harness_loom))]
+use acyclic_harness::task_volume::model_checking::{Fault, assert_index_matches, set_fault};
 
-use acyclic_query_verification::{
+use acyclic_harness::task_volume::{
     Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
 };
 use acyclic_stream::verification::{block_on, check as model};

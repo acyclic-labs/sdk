@@ -4,6 +4,7 @@ use crate::sync::Mutex;
 /// In-process workflow journal for local authoring.
 #[derive(Default)]
 pub struct MemoryWorkflowJournal {
+    // Lock order: state is the only journal lock; no nested acquisition or I/O.
     pub(super) state: Mutex<MemoryWorkflowState>,
 }
 #[derive(Default)]

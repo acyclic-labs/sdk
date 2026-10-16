@@ -148,7 +148,7 @@ required-features = ["filesystem"]
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = []
-model-checking = ["dep:loom"]
+model-checking = ["dep:loom", "dep:same-file"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex"]
@@ -218,6 +218,7 @@ tonic-prost-build = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
 loom = { version = "=0.7.2", optional = true }
+same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 which = { version = "8.0.6", optional = true }
@@ -256,3 +257,8 @@ workspace = true
 name = "client-diff"
 path = "tests/client_diff.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "query-model"
+path = "tests/query_model.rs"
+required-features = ["model-checking"]

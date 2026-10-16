@@ -6,7 +6,7 @@ mod cached_binding;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(all(not(kani), target_os = "linux", acyclic_fs_loom))]
+#[cfg(all(not(kani), acyclic_fs_loom))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;
     use crate::sync::atomic::{AtomicU8, Ordering};
