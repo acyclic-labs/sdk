@@ -162,6 +162,10 @@ impl LocalHarness {
                 .await
             {
                 Ok((file, bytes, _)) => {
+                    #[cfg(test)]
+                    if let Some(observer) = self.context_read_observer {
+                        observer(self, name).await?;
+                    }
                     ContextDiscoveryLimits {
                         instruction_bytes: maximum,
                         ..Default::default()

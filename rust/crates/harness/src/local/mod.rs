@@ -65,6 +65,10 @@ pub struct LocalHarness {
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
     hook_configuration: Option<crate::conversation::FileRef>,
+    #[cfg(test)]
+    context_read_observer: Option<
+        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    >,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -297,6 +301,8 @@ impl LocalHarness {
                 model,
                 provider,
                 context_manifest: config.context_manifest,
+                #[cfg(test)]
+                context_read_observer: None,
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 #[cfg(feature = "hooks")]
