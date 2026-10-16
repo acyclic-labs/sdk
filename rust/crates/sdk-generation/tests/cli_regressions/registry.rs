@@ -50,6 +50,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                 let (fixture, support) = registry_archive_fixture(false, published, None, true);
                 // These controls differ only in automatic-config location. Keep the
                 // captured source and compiler output immutable between the two runs.
+                let mut discovery = Vec::new();
                 for cargo_home in [true, false] {
                     let directory = support.join("automatic-config");
                     let config_directory = if cargo_home {
@@ -131,8 +132,23 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                             "docsProducer"
                         }
                     );
+                    let output = fixture.output.join("releases/1.0.0");
+                    let manifest: Value = serde_json::from_slice(
+                        &fs::read(output.join("generation-manifest.v1.json")).unwrap(),
+                    )
+                    .unwrap();
+                    discovery.push(manifest["registryCorpus"]["frontier"].clone());
+                    // Each case gets a new admission: its discovery context differs.
+                    // Retain the exact source, receipts and compiler directory only.
+                    fs::remove_file(output.join("generation-manifest.v1.json")).unwrap();
+                    fs::remove_file(output.join("generation-manifest.v1.sha256")).unwrap();
                     fs::remove_file(config_directory.join("config.toml")).unwrap();
                 }
+                assert_eq!(discovery.len(), 2);
+                assert_ne!(
+                    discovery[0], discovery[1],
+                    "both automatic-config authorities must execute"
+                );
                 let _ = fs::remove_dir_all(fixture.root);
                 let _ = fs::remove_dir_all(fixture.output);
             });
