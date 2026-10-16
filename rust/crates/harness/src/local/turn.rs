@@ -5,7 +5,7 @@ use acyclic_stream::BoxProviderFuture;
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
-    /// Stock command bindings for a service-owned fenced worker.
+    /// Stock command bindings using retained task inheritance.
     pub(super) async fn stock_commands(
         &self,
         task: Option<TaskId>,
@@ -338,8 +338,10 @@ impl LocalHarness {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
+        } else {
+            // Advance already refreshes projections; terminal recovery must repair them.
+            self.refresh_command_task(task).await?;
         }
-        self.refresh_command_task(task).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
