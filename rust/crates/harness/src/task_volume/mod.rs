@@ -5,6 +5,7 @@ mod files;
 mod follow;
 mod heads;
 mod plan_name;
+mod refresh;
 mod schema;
 mod segment;
 mod source;
@@ -198,7 +199,7 @@ struct Index {
 pub struct TaskVolume<P: ?Sized> {
     provider: Arc<P>,
     path: StreamPath,
-    // Lock order: index -> provider visibility -> provider state; never held across commit acknowledgement.
+    // Lock order: index only; no provider I/O or stream poll holds this lock.
     index: Mutex<Index>,
 }
 
@@ -275,26 +276,23 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 ..Index::default()
             }),
         };
-        volume.refresh(&mut *volume.index.lock().await).await?;
+        volume.refresh().await?;
         Ok(volume)
     }
 
     /// Current publication fence without copying the file index.
     pub async fn head(&self) -> Result<Generation> {
-        let mut index = self.index.lock().await;
-        self.refresh(&mut index).await?;
+        self.refresh().await?;
+        let index = self.index.lock().await;
         Ok(self.generation(&index))
     }
 
     /// Current query cut without copying the materialized files.
     pub async fn cut(&self, query: &Query) -> Result<Cursor> {
-        let mut index = self.index.lock().await;
-        self.refresh(&mut index).await?;
-        self.cursor(
-            query,
-            self.generation(&index),
-            self.provider.watermarks(self.path.clone()).await?,
-        )
+        let mut watermarks = self.refresh().await?;
+        let index = self.index.lock().await;
+        watermarks.accepted = watermarks.accepted.max(index.next);
+        self.cursor(query, self.generation(&index), watermarks)
     }
 
     fn generation(&self, index: &Index) -> Generation {
@@ -303,56 +301,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             epoch: index.epoch,
             position: index.next,
             commit: *index.commit.as_bytes(),
-        }
-    }
-
-    async fn refresh(&self, index: &mut Index) -> Result<()> {
-        let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
-        if tail < index.next {
-            return Err(Error::ResetRequired);
-        }
-        loop {
-            // Anchor and suffix belong to one immutable provider read. Separate
-            // reads could splice a replaced accepted history into the cached files.
-            let mut records = self
-                .provider
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: index.next - 1,
-                    limit: u32::try_from(
-                        (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64),
-                    )
-                    .map_err(|_| Error::LimitExceeded)?,
-                })
-                .await?;
-            let anchor = records.next().await.ok_or(Error::ResetRequired)??;
-            item_examined();
-            if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
-                return Err(Error::ResetRequired);
-            }
-            let before = index.next;
-            while let Some(record) = records.next().await {
-                item_examined();
-                let record = record?;
-                if record.sequence >= tail {
-                    break;
-                }
-                if record.sequence != index.next {
-                    return Err(Error::ResetRequired);
-                }
-                let files = segment::decode(&record.value)?;
-                validate_file(index, &files)?;
-                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
-                apply(index, files, next);
-                index.commit = record.commit_id;
-                index.next = next;
-            }
-            if index.next == tail {
-                return Ok(());
-            }
-            if index.next == before {
-                return Err(Error::ResetRequired);
-            }
         }
     }
 
@@ -372,8 +320,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         deadline_unix_millis: Option<u64>,
         work: NativeWork<'_>,
     ) -> Result<Generation> {
-        let mut index = self.index.lock().await;
-        self.refresh(&mut index).await?;
+        self.refresh().await?;
+        let index = self.index.lock().await;
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
@@ -411,9 +359,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else {
             self.provider.commit(request).await?
         };
-        let mut index = self.index.lock().await;
         match outcome {
             CommitOutcome::Committed(envelope) => {
+                let mut index = self.index.lock().await;
                 if self.generation(&index) == expected {
                     apply(&mut index, files, next);
                     index.next = next;
@@ -427,7 +375,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
             }
             CommitOutcome::Conflict(_) => {
-                self.refresh(&mut index).await?;
+                self.refresh().await?;
+                let index = self.index.lock().await;
                 if expected == self.generation(&index) {
                     Err(Error::FenceConflict)
                 } else {

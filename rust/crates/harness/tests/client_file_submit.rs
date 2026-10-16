@@ -1,11 +1,11 @@
 //! Request files survive reconnects and checkpoint failures in publication order.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness::{
-    client::{FileClient, FileClientDurability, FileClientLimits},
+    client::{FileClient, FileClientDurability, FileClientError, FileClientLimits},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::*;
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -20,6 +20,12 @@ struct Provider {
     commits: AtomicUsize,
     fail_commit: AtomicUsize,
     durable_through: AtomicUsize,
+    lose_ack: AtomicBool,
+    pause_ack: AtomicBool,
+    defer_commit: AtomicBool,
+    release_after_watermarks: AtomicUsize,
+    // A sequential fault-injection slot; never held during provider I/O.
+    deferred: std::sync::Mutex<Option<CommitRequest>>,
 }
 impl Default for Provider {
     fn default() -> Self {
@@ -29,6 +35,11 @@ impl Default for Provider {
             commits: AtomicUsize::new(0),
             fail_commit: AtomicUsize::new(0),
             durable_through: AtomicUsize::new(usize::MAX),
+            lose_ack: AtomicBool::new(false),
+            pause_ack: AtomicBool::new(false),
+            defer_commit: AtomicBool::new(false),
+            release_after_watermarks: AtomicUsize::new(0),
+            deferred: std::sync::Mutex::new(None),
         }
     }
 }
@@ -48,6 +59,16 @@ impl StreamProvider for Provider {
         self.inner.bounds(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        if self
+            .release_after_watermarks
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            == Ok(1)
+        {
+            let request = { self.deferred.lock().unwrap().take() };
+            if let Some(request) = request {
+                self.inner.commit(request).await?;
+            }
+        }
         let tail = self.inner.tail(path).await?;
         Ok(StreamWatermarks {
             accepted: tail,
@@ -83,7 +104,18 @@ impl StreamProvider for Provider {
         {
             return Err(StreamError::Unavailable);
         }
-        self.inner.commit(request).await
+        if self.defer_commit.swap(false, Ordering::SeqCst) {
+            *self.deferred.lock().unwrap() = Some(request);
+            return futures::future::pending().await;
+        }
+        let outcome = self.inner.commit(request).await?;
+        if self.pause_ack.swap(false, Ordering::SeqCst) {
+            futures::future::pending::<()>().await;
+        }
+        if self.lose_ack.swap(false, Ordering::SeqCst) {
+            return Err(StreamError::Unavailable);
+        }
+        Ok(outcome)
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await
@@ -155,6 +187,172 @@ async fn failed_admission_blocks_later_requests_across_reopen() {
         );
     }
     assert_eq!(client.flush().await.unwrap(), 0);
+}
+
+async fn indeterminate_enqueue_preserves_capacity(id: u8, mode: u8) {
+    let local = Arc::new(Provider::default());
+    let outbox = volume(local.clone(), "client/files").await;
+    let target = volume(Arc::new(Provider::default()), "agent/files").await;
+    let cut = target.cut(&Query::Tasks).await.unwrap();
+    let limits = FileClientLimits {
+        commands: 1,
+        bytes: 1,
+        ..LIMITS
+    };
+    let mut client = FileClient::open(outbox.clone(), target.clone(), limits)
+        .await
+        .unwrap();
+    if mode > 0 {
+        if mode == 1 {
+            local.pause_ack.store(true, Ordering::SeqCst);
+        } else {
+            local.defer_commit.store(true, Ordering::SeqCst);
+        }
+        assert!(client.enqueue(request(id)).now_or_never().is_none());
+    } else {
+        local.lose_ack.store(true, Ordering::SeqCst);
+        assert!(client.enqueue(request(id)).await.is_err());
+    }
+    if mode == 2 {
+        // The abandoned request lands after B's reconciliation, during B's
+        // append refresh. B must retain the old quota-check fence and conflict.
+        local.release_after_watermarks.store(2, Ordering::SeqCst);
+    }
+    let later = id.wrapping_add(1);
+    let error = client.enqueue(request(later)).await.unwrap_err();
+    if mode == 2 {
+        assert!(matches!(error, FileClientError::Harness(_)));
+    } else {
+        assert!(matches!(error, FileClientError::CommandQuota { limit: 1 }));
+    }
+    assert_eq!(client.pending(), 1);
+    let files = outbox.snapshot(&Query::Tasks, 2).await.unwrap().files;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].bytes.as_ref(), &[id]);
+    drop(client);
+    let mut client = FileClient::open(outbox, target.clone(), limits)
+        .await
+        .unwrap();
+    assert_eq!(client.pending(), 1);
+    assert_eq!(client.flush().await.unwrap(), 1);
+    client.enqueue(request(later)).await.unwrap();
+    assert_eq!(client.flush().await.unwrap(), 1);
+    let mut changes = target.follow(Query::Tasks, cut).await.unwrap();
+    for value in [id, later] {
+        assert_eq!(
+            changes
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .file
+                .unwrap()
+                .bytes
+                .as_ref(),
+            &[value]
+        );
+    }
+}
+
+#[tokio::test]
+async fn lost_acknowledgement_and_cancellation_cannot_overfill_the_outbox() {
+    for mode in 0..3 {
+        indeterminate_enqueue_preserves_capacity(7, mode).await;
+    }
+}
+
+#[tokio::test]
+async fn capacity_rejections_are_typed_and_distinct_from_invalid_requests() {
+    for commands in [1, 2] {
+        let outbox = volume(Arc::new(Provider::default()), "client/files").await;
+        let target = volume(Arc::new(Provider::default()), "agent/files").await;
+        let mut client = FileClient::open(
+            outbox,
+            target,
+            FileClientLimits {
+                commands,
+                bytes: 1,
+                ..LIMITS
+            },
+        )
+        .await
+        .unwrap();
+        client.enqueue(request(1)).await.unwrap();
+        match (commands, client.enqueue(request(2)).await.unwrap_err()) {
+            (1, FileClientError::CommandQuota { limit: 1 }) => (),
+            (2, FileClientError::ByteQuota { limit: 1 }) => (),
+            (_, error) => panic!("unexpected quota classification: {error:?}"),
+        }
+        assert!(matches!(
+            client.enqueue(Write::new(FileKey::Goal, vec![])).await,
+            Err(FileClientError::Harness(acyclic_harness::Error::Invalid(_)))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn recovery_classifies_capacity_and_identity_separately() {
+    for commands in [1, 2] {
+        let outbox = volume(Arc::new(Provider::default()), "client/files").await;
+        let target = volume(Arc::new(Provider::default()), "agent/files").await;
+        let mut client = FileClient::open(outbox.clone(), target.clone(), LIMITS)
+            .await
+            .unwrap();
+        client.enqueue(request(1)).await.unwrap();
+        client.enqueue(request(2)).await.unwrap();
+        drop(client);
+        let limits = FileClientLimits {
+            commands,
+            bytes: if commands == 1 { 2 } else { 1 },
+            ..LIMITS
+        };
+        let error = FileClient::open(outbox, target, limits)
+            .await
+            .err()
+            .unwrap();
+        match (commands, error) {
+            (1, FileClientError::CommandQuota { limit: 1 }) => (),
+            (2, FileClientError::ByteQuota { limit: 1 }) => (),
+            (_, error) => panic!("unexpected recovery classification: {error:?}"),
+        }
+    }
+    let provider = Arc::new(Provider::default());
+    let outbox = volume(provider.clone(), "client/files").await;
+    let target = volume(Arc::new(Provider::default()), "agent/files").await;
+    let limits = FileClientLimits {
+        commands: 1,
+        bytes: 1,
+        ..LIMITS
+    };
+    let mut client = FileClient::open(outbox.clone(), target.clone(), limits)
+        .await
+        .unwrap();
+    client.enqueue(request(1)).await.unwrap();
+    let mut records = provider
+        .read(ReadRequest {
+            path: path("client/files"),
+            from: 2,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    let repeated = records.next().await.unwrap().unwrap().value;
+    provider
+        .append(AppendRequest {
+            path: path("client/files"),
+            records: vec![repeated],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await
+        .unwrap();
+    drop(client);
+    assert!(matches!(
+        FileClient::open(outbox, target, limits).await,
+        Err(FileClientError::Harness(acyclic_harness::Error::Conflict(
+            _
+        )))
+    ));
 }
 
 #[tokio::test]
@@ -450,6 +648,10 @@ async fn negative_control_acknowledging_before_target_publication_is_detected() 
 }
 
 proptest::proptest! {
+    #[test]
+    fn indeterminate_publication_never_bypasses_reconciled_quotas(id in proptest::num::u8::ANY, mode in 0u8..3) {
+        futures::executor::block_on(indeterminate_enqueue_preserves_capacity(id, mode));
+    }
     #[test]
     fn restoration_requires_its_own_checkpoint_durability(id in proptest::num::u8::ANY) {
         futures::executor::block_on(reopen_requires_durable_checkpoint(id));

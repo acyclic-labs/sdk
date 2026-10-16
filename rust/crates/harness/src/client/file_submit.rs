@@ -1,9 +1,11 @@
 //! Ordered request files, with the private volume as the sole outbox.
 
-use super::query_error;
+use super::{FileClientError, query_error};
 use crate::{
-    Error, Result,
-    task_volume::{Change, ChangeStream, Cursor, FileKey, Query, TaskFile, TaskVolume, Write},
+    Error,
+    task_volume::{
+        Change, ChangeStream, Cursor, FileKey, Generation, Query, TaskFile, TaskVolume, Write,
+    },
 };
 use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
@@ -12,6 +14,8 @@ use std::{
     collections::{HashSet, VecDeque},
     sync::Arc,
 };
+
+type Result<T> = std::result::Result<T, FileClientError>;
 
 /// The publication prefix required before an outbox entry can be acknowledged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -75,7 +79,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         limits: FileClientLimits,
     ) -> Result<Self> {
         if limits.commands == 0 || limits.bytes == 0 {
-            return Err(Error::Invalid("invalid file client bounds".into()));
+            return Err(Error::Invalid("invalid file client bounds".into()).into());
         }
         let checkpoint = FileKey::parse("workspace/client/outbox.json").map_err(query_error)?;
         let target_head = target.head().await.map_err(query_error)?;
@@ -86,17 +90,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             .await
             .map_err(query_error)?;
         if state.generation.volume == target_id {
-            return Err(Error::Invalid(
-                "outbox and target are the same volume".into(),
-            ));
+            return Err(Error::Invalid("outbox and target are the same volume".into()).into());
         }
         let cursor = if let Some(file) = state.files.first() {
             if limits.durability == FileClientDurability::Durable
                 && !outbox.file_is_durable(file).await.map_err(query_error)?
             {
-                return Err(Error::Conflict(
-                    "outbox checkpoint awaits durability".into(),
-                ));
+                return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
             }
             let state: Checkpoint =
                 serde_json::from_slice(&file.bytes).map_err(|e| Error::Storage(e.to_string()))?;
@@ -104,7 +104,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 || state.target_epoch != target_epoch
                 || state.durability != limits.durability
             {
-                return Err(Error::Conflict("outbox target differs".into()));
+                return Err(Error::Conflict("outbox target differs".into()).into());
             }
             state.cursor
         } else {
@@ -115,7 +115,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 .files
                 .is_empty()
             {
-                return Err(Error::Conflict("outbox requests have no checkpoint".into()));
+                return Err(Error::Conflict("outbox requests have no checkpoint".into()).into());
             }
             let cursor = outbox.cut(&Query::Tasks).await.map_err(query_error)?;
             let bytes = serde_json::to_vec(&Checkpoint {
@@ -189,20 +189,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     }
                 ) || write.channel.is_some()
                 {
-                    return Err(Error::Invalid("outbox contains a non-request file".into()));
+                    return Err(Error::Invalid("outbox contains a non-request file".into()).into());
                 }
-                let bytes = self
-                    .bytes
-                    .checked_add(write.bytes.len() as u64)
-                    .ok_or_else(|| Error::Invalid("outbox bytes overflow".into()))?;
-                if self.pending.len() >= self.limits.commands
-                    || bytes > self.limits.bytes
-                    || !self.keys.insert(write.key.clone())
-                {
-                    return Err(Error::Invalid(
-                        "outbox bound or request identity conflict".into(),
-                    ));
+                if self.keys.contains(&write.key) {
+                    return Err(Error::Conflict("outbox request identity conflict".into()).into());
                 }
+                let bytes = self.capacity(write.bytes.len() as u64)?;
+                self.keys.insert(write.key.clone());
                 self.bytes = bytes;
                 self.pending.push_back(Pending {
                     cursor: change.cursor.clone(),
@@ -215,9 +208,24 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         Ok(())
     }
 
+    fn capacity(&self, bytes: u64) -> Result<u64> {
+        if self.pending.len() >= self.limits.commands {
+            return Err(FileClientError::CommandQuota {
+                limit: self.limits.commands,
+            });
+        }
+        self.bytes
+            .checked_add(bytes)
+            .filter(|bytes| *bytes <= self.limits.bytes)
+            .ok_or(FileClientError::ByteQuota {
+                limit: self.limits.bytes,
+            })
+    }
+
     /// Publishes one immutable request before attempting any target operation.
     /// Resubmitting the same key/content is idempotent, including after reconnect.
     pub async fn enqueue(&mut self, write: Write) -> Result<()> {
+        self.catch_up().await?;
         if !matches!(
             write.key,
             FileKey::Task {
@@ -226,26 +234,31 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             }
         ) || write.channel.is_some()
         {
-            return Err(Error::Invalid(
-                "submit requires an immutable task request file".into(),
-            ));
+            return Err(
+                Error::Invalid("submit requires an immutable task request file".into()).into(),
+            );
         }
-        if write.bytes.len() as u64 > self.limits.bytes
-            || (!self.keys.contains(&write.key)
-                && (self.pending.len() >= self.limits.commands
-                    || self
-                        .bytes
-                        .checked_add(write.bytes.len() as u64)
-                        .is_none_or(|bytes| bytes > self.limits.bytes)))
-        {
-            return Err(Error::Invalid("outbox capacity reached".into()));
+        if !self.keys.contains(&write.key) {
+            self.capacity(write.bytes.len() as u64)?;
+        } else if write.bytes.len() as u64 > self.limits.bytes {
+            return Err(FileClientError::ByteQuota {
+                limit: self.limits.bytes,
+            });
         }
-        let head = self.outbox.head().await.map_err(query_error)?;
-        self.outbox
-            .append(head, &write)
-            .await
-            .map_err(query_error)?;
-        self.catch_up().await
+        // Admission is fenced at the exact reconciled cut. An earlier cancelled
+        // append that lands after catch-up must conflict, never bypass quotas.
+        let head = Generation {
+            volume: self.scanned.volume,
+            epoch: self.scanned.epoch,
+            position: self.scanned.position,
+            commit: self.scanned.commit,
+        };
+        let publication = self.outbox.append(head, &write).await.map_err(query_error);
+        // A failed acknowledgement may follow successful publication. Retain
+        // accepted intent even when returning that indeterminate failure.
+        let reconciled = self.catch_up().await;
+        publication?;
+        reconciled
     }
 
     /// Sends in enqueue order and stops at the first indeterminate publication.
@@ -275,7 +288,8 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             {
                 return Err(Error::Conflict(
                     "outbox checkpoint changed; reopen before publication".into(),
-                ));
+                )
+                .into());
             }
             if self.limits.durability == FileClientDurability::Durable
                 && !self
@@ -284,13 +298,11 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     .await
                     .map_err(query_error)?
             {
-                return Err(Error::Conflict(
-                    "outbox publication awaits durability".into(),
-                ));
+                return Err(Error::Conflict("outbox publication awaits durability".into()).into());
             }
             let head = self.target.head().await.map_err(query_error)?;
             if head.volume != self.target_id || head.epoch != self.target_epoch {
-                return Err(Error::Conflict("outbox target history differs".into()));
+                return Err(Error::Conflict("outbox target history differs".into()).into());
             }
             self.target
                 .append(head, &pending.write)
@@ -303,9 +315,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     .await
                     .map_err(query_error)?
             {
-                return Err(Error::Conflict(
-                    "target publication awaits durability".into(),
-                ));
+                return Err(Error::Conflict("target publication awaits durability".into()).into());
             }
             let state = Checkpoint {
                 target: self.target_id,
@@ -326,9 +336,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     .await
                     .map_err(query_error)?
             {
-                return Err(Error::Conflict(
-                    "outbox checkpoint awaits durability".into(),
-                ));
+                return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
             }
             let done = self
                 .pending

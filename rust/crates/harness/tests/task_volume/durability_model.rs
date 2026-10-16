@@ -2,8 +2,12 @@
 use super::*;
 use crate::task_volume::FileKey;
 use acyclic_stream::*;
+use futures::FutureExt as _;
 use futures::{StreamExt as _, executor::block_on};
-use loom::{sync::Mutex, thread};
+use loom::{
+    sync::{Condvar, Mutex},
+    thread,
+};
 use std::sync::Arc;
 
 struct Histories {
@@ -14,7 +18,7 @@ struct Histories {
 
 // Lock order: task-volume index -> histories. Recovery only acquires histories
 // and never enters TaskVolume; a model deadlock detects the reverse dependency.
-struct Provider(Mutex<Histories>);
+struct Provider(Mutex<Histories>, Option<Arc<Pause>>);
 
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
@@ -34,6 +38,9 @@ impl StreamProvider for Provider {
         &self,
         _: StreamPath,
     ) -> std::result::Result<StreamWatermarks, StreamError> {
+        if let Some(pause) = &self.1 {
+            pause.watermark();
+        }
         let state = self.0.lock().unwrap();
         Ok(StreamWatermarks {
             accepted: 2,
@@ -139,10 +146,10 @@ fn check<const CHECK_ANCHOR: bool>() {
     // bound the state rather than preemptions, permutations or runtime.
     loom::model(|| {
         let (histories, value, path) = block_on(histories());
-        let provider = Arc::new(Provider(Mutex::new(histories)));
+        let provider = Arc::new(Provider(Mutex::new(histories), None));
         let volume = block_on(TaskVolume::open_existing(provider.clone(), path)).unwrap();
         let recovery = thread::spawn(move || provider.0.lock().unwrap().replaced = true);
-        let result = block_on(volume.file_durability::<CHECK_ANCHOR>(&value));
+        let result = block_on(volume.file_durability::<CHECK_ANCHOR, false>(&value));
         assert!(
             !matches!(result, Ok(true)),
             "the original accepted suffix was never durable"
@@ -159,4 +166,78 @@ fn replacement_cannot_confirm_a_different_history() {
 #[test]
 fn negative_control_missing_anchor_is_detected() {
     assert!(std::panic::catch_unwind(check::<false>).is_err());
+}
+
+#[derive(Default)]
+struct Paused {
+    remaining: usize,
+    reached: bool,
+    released: bool,
+}
+
+// The control mutex is never held while entering TaskVolume or provider state.
+// Its condvar releases it while suspended; the model covers all wakeup orders.
+#[derive(Default)]
+struct Pause(Mutex<Paused>, Condvar);
+
+impl Pause {
+    fn watermark(&self) {
+        let mut state = self.0.lock().unwrap();
+        if state.remaining == 0 {
+            return;
+        }
+        state.remaining -= 1;
+        if state.remaining == 0 {
+            state.reached = true;
+            self.1.notify_all();
+            while !state.released {
+                state = self.1.wait(state).unwrap();
+            }
+        }
+    }
+
+    fn reached(&self) {
+        let mut state = self.0.lock().unwrap();
+        while !state.reached {
+            state = self.1.wait(state).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        self.0.lock().unwrap().released = true;
+        self.1.notify_all();
+    }
+}
+
+fn suspended_io<const HOLD_INDEX: bool>() {
+    loom::model(|| {
+        let (histories, value, path) = block_on(histories());
+        let pause = Arc::new(Pause::default());
+        let provider = Arc::new(Provider(Mutex::new(histories), Some(pause.clone())));
+        let volume = Arc::new(block_on(TaskVolume::open_existing(provider, path)).unwrap());
+        pause.0.lock().unwrap().remaining = 2;
+        let reader = volume.clone();
+        let operation =
+            thread::spawn(move || block_on(reader.file_durability::<true, HOLD_INDEX>(&value)));
+        pause.reached();
+        // Poll the real competing operation while the provider is suspended.
+        // Even a read must finish without needing that I/O to be released.
+        let progress = volume.head().now_or_never();
+        pause.release();
+        operation.join().unwrap().unwrap();
+        assert!(
+            matches!(progress, Some(Ok(_))),
+            "provider I/O retained the index lock"
+        );
+    });
+}
+
+#[test]
+fn suspended_provider_does_not_exclude_a_competing_index_operation() {
+    suspended_io::<false>();
+}
+
+#[test]
+fn negative_control_holding_index_across_io_is_detected() {
+    assert!(std::panic::catch_unwind(suspended_io::<true>).is_err());
 }
