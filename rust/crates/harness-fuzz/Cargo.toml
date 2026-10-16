@@ -143,3 +143,10 @@ path = "fuzz_targets/e2e_expectations.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "task_query_case"
+path = "fuzz_targets/task_query_case.rs"
+test = false
+doc = false
+bench = false
