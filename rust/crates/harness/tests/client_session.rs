@@ -815,11 +815,11 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
         .model_event(
             &owner(),
             acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::ToolCall {
-                call_id: "call".into(),
-                name: "bash".into(),
-                arguments: serde_json::json!({"command":"pwd"}),
-            },
+            ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                "call".into(),
+                "bash".into(),
+                serde_json::json!({"command":"pwd"}),
+            )),
         )
         .unwrap();
     views.tool_output(&owner(), "call", "second\n");

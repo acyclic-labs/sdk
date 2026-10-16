@@ -101,7 +101,7 @@ async fn exact_events_preserve_tools_errors_and_missing_completion() -> Result<(
         .await;
     let events = events.into_iter().collect::<Result<Vec<_>>>()?;
     assert!(matches!(events.as_slice(), [ModelEvent::Reasoning { .. },
-        ModelEvent::ToolCall { arguments, .. }, ModelEvent::Completed { metadata }]
+        ModelEvent::ToolCall(crate::model::ToolCall { arguments, .. }), ModelEvent::Completed { metadata }]
         if arguments == &json!({"path":"a"}) && metadata == &json!({"tokens":3})));
     let events = provider
         .generate(request.clone(), dispatch)

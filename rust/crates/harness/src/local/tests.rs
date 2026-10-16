@@ -408,16 +408,16 @@ async fn stock_executor_calls_default_and_custom_tools() -> Result<()> {
     let project = volume(directory.path()).await?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "default".into(),
-                name: "write".into(),
-                arguments: json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
-            }),
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "custom".into(),
-                name: "test.custom".into(),
-                arguments: json!({}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "default".into(),
+                "write".into(),
+                json!({"path":"default.txt","text":"default output","media_type":"text/plain","display_name":"default"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "custom".into(),
+                "test.custom".into(),
+                json!({}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

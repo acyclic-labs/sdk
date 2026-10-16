@@ -134,21 +134,12 @@ impl Decoder<'_, '_, '_> {
         Ok(copied)
     }
 
-    fn grow<T>(&mut self, values: &mut Vec<T>) -> Result<()> {
-        if values.len() == values.capacity() {
-            let bytes = ((values.len() + 1) * std::mem::size_of::<T>()) as u64;
-            self.scope
-                .event(JsonCodecCharge::AllocationOperation { bytes })?;
-            values.try_reserve_exact(1).map_err(Error::Allocation)?;
-        }
-        Ok(())
-    }
-
-    fn entries(&mut self) -> Result<usize> {
+    fn entries(&mut self, close: u8) -> Result<usize> {
+        self.space();
         let mut depth = 0usize;
         let mut string = false;
         let mut escaped = false;
-        let mut entries = 0;
+        let mut entries = usize::from(self.bytes.get(self.position) != Some(&close));
         for byte in &self.bytes[self.position..] {
             self.scope.event(JsonCodecCharge::Inspect { items: 1 })?;
             if string {
@@ -164,9 +155,9 @@ impl Decoder<'_, '_, '_> {
             match byte {
                 b'"' => string = true,
                 b'{' | b'[' => depth += 1,
-                b'}' if depth == 0 => return Ok(entries),
+                byte if *byte == close && depth == 0 => return Ok(entries),
                 b'}' | b']' => depth = depth.checked_sub(1).ok_or_else(invalid)?,
-                b':' if depth == 0 => entries += 1,
+                b',' if depth == 0 => entries += 1,
                 _ => {}
             }
         }
@@ -174,7 +165,7 @@ impl Decoder<'_, '_, '_> {
     }
 
     fn object(&mut self) -> Result<Value> {
-        let count = self.entries()?;
+        let count = self.entries(b'}')?;
         let bytes = super::checked(
             (count as u64).checked_mul(std::mem::size_of::<(String, Value, usize)>() as u64),
             "JSON object scratch overflow",
@@ -243,11 +234,23 @@ impl Decoder<'_, '_, '_> {
             }
             b'[' => {
                 self.position += 1;
+                let count = self.entries(b']')?;
+                let bytes = super::checked(
+                    (count as u64).checked_mul(std::mem::size_of::<Value>() as u64),
+                    "JSON array storage overflow",
+                )?;
+                if bytes != 0 {
+                    self.scope
+                        .event(JsonCodecCharge::AllocationOperation { bytes })?;
+                }
                 let mut values = Vec::new();
+                values.try_reserve_exact(count).map_err(Error::Allocation)?;
                 if !self.take(b']') {
                     loop {
                         let value = self.value()?;
-                        self.grow(&mut values)?;
+                        if values.len() == count {
+                            return Err(invalid());
+                        }
                         values.push(value);
                         if self.take(b']') {
                             break;

@@ -28,6 +28,7 @@ tempfile = "3.27.0"
 bytes.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
 which = "=8.0.6"
@@ -168,6 +169,13 @@ bench = false
 [[bin]]
 name = "client_queries"
 path = "fuzz_targets/client_queries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recorded_invocation"
+path = "fuzz_targets/recorded_invocation.rs"
 test = false
 doc = false
 bench = false
