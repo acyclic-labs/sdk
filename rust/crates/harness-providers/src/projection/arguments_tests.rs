@@ -57,7 +57,7 @@ fn assert_projection(value: &Value) {
             &request,
             &names,
             &origin,
-            &mut crate::files::FileText::Estimate,
+            &mut crate::files::FileText::default(),
         )
         .unwrap();
         let ModelContent::Part(ModelContentPart::ToolCall(source)) = &request.messages[2].content

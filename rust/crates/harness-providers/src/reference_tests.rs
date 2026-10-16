@@ -1,7 +1,7 @@
 use super::*;
 
 fn marker(file: &FileRef) -> String {
-    crate::files::FileText::Estimate
+    crate::files::FileText::default()
         .project(file, &FileProjectionPolicy::Reference)
         .unwrap()
 }
@@ -65,7 +65,7 @@ proptest! {
                 let (provider, _) = provider(adapter, 200);
                 let request = with_parts(&provider, [original.clone(), different.clone()].into_iter()
                     .map(|file| ModelContentPart::File { file, policy: FileProjectionPolicy::Reference }).collect()).unwrap();
-                let body = crate::projection::body_with_files(&provider, request.request(), &mut crate::files::FileText::Estimate).unwrap();
+                let body = crate::projection::body_with_files(&provider, request.request(), &mut crate::files::FileText::default()).unwrap();
                 prop_assert!(contains(&body, &original_marker));
                 prop_assert!(contains(&body, &other_marker));
             }

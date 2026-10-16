@@ -313,7 +313,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
             &provider.reasoning_origin(None, None),
-            &mut crate::files::FileText::Estimate,
+            &mut crate::files::FileText::default(),
         )?)
         .unwrap();
         for message in &history {

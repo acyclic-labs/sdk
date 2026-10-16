@@ -50,7 +50,7 @@ mod tool_name_tests;
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;
 
-use crate::fixtures::fixtures;
+use crate::fixtures::{CHAT, fixtures};
 
 fn chunks(
     input: impl AsRef<[u8]>,

@@ -24,10 +24,8 @@ impl Default for Files {
     }
 }
 
-pub(crate) enum FileText {
-    Estimate,
-    Ready(std::vec::IntoIter<String>),
-}
+#[derive(Default)]
+pub(crate) struct FileText(pub(crate) std::vec::IntoIter<String>);
 
 impl FileText {
     pub(crate) fn project(
@@ -37,12 +35,10 @@ impl FileText {
     ) -> Result<String> {
         match policy {
             FileProjectionPolicy::Reference => reference(file),
-            FileProjectionPolicy::BoundedFull => match self {
-                Self::Estimate => Ok(String::new()),
-                Self::Ready(text) => text
-                    .next()
-                    .ok_or_else(|| invalid("missing resolved model file")),
-            },
+            FileProjectionPolicy::BoundedFull => self
+                .0
+                .next()
+                .ok_or_else(|| invalid("missing resolved model file")),
             FileProjectionPolicy::Native(_) => Err(Error::Unsupported(
                 "native model media is unsupported by this adapter".into(),
             )),
@@ -97,7 +93,7 @@ pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize>
     for (file, policy) in parts(content) {
         validate(file, policy, maximum)?;
         if matches!(policy, FileProjectionPolicy::BoundedFull) {
-            // Counting never performs I/O. Six bytes covers JSON escaping of
+            // Planning never performs I/O. Six bytes covers JSON escaping of
             // every source byte, including control characters.
             let bytes = usize::try_from(file.descriptor().byte_length())
                 .ok()
@@ -142,7 +138,7 @@ pub(crate) async fn resolve(
             text.push(value);
         }
     }
-    Ok(FileText::Ready(text.into_iter()))
+    Ok(FileText(text.into_iter()))
 }
 
 fn reference(file: &FileRef) -> Result<String> {

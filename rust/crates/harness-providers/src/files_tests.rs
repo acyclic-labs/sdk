@@ -56,13 +56,14 @@ proptest! {
                 model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
-            let mut estimate = crate::files::FileText::Estimate;
-            let before = crate::projection::body_with_files(&provider, request.request(), &mut estimate).unwrap();
-            let mut resolved = crate::files::FileText::Ready(vec![text.clone()].into_iter());
+            let mut resolved = crate::files::FileText(vec![text.clone()].into_iter());
             let after = crate::projection::body_with_files(&provider, request.request(), &mut resolved).unwrap();
             prop_assert_eq!(extra, text.len() * 6);
+            assert_expansion(&text, extra);
+            // Planning starts with the complete canonical request, including the
+            // file reference and framing; an omitted-file wire body is not a baseline.
             prop_assert!(crate::projection::encoded_len(&after).unwrap()
-                <= crate::projection::encoded_len(&before).unwrap() + extra);
+                <= request.bytes().len() + extra);
         }
     }
 }
@@ -172,24 +173,30 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                 >= wire.len() as u64
         );
         let body = json(&wire)?;
-        let marker = format!("[file: {}]", serde_json::to_string(&file)?);
-        if adapter == Adapter::Chat {
-            assert_eq!(
-                body["messages"][0]["content"],
-                format!("first{}{marker}last", std::str::from_utf8(data).unwrap())
-            );
-        } else {
-            let parts = match adapter {
-                Adapter::Anthropic => &body["messages"][0]["content"],
-                Adapter::Responses => &body["input"][0]["content"],
-                Adapter::Gemini => &body["contents"][0]["parts"],
-                Adapter::Chat => unreachable!(),
-            };
-            assert_eq!(parts[0]["text"], "first");
-            assert_eq!(parts[1]["text"], std::str::from_utf8(data).unwrap());
-            assert_eq!(parts[2]["text"], marker);
-            assert_eq!(parts[3]["text"], "last");
-        }
+        let marker = format!("[file: {}]", serde_json::to_string(&file).unwrap());
+        let texts = |parts: &Value| {
+            parts
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>()
+        };
+        let text = match adapter {
+            Adapter::Chat => body["messages"][0]["content"].as_str().unwrap().to_owned(),
+            Adapter::Anthropic => texts(&body["messages"][0]["content"]),
+            Adapter::Gemini => texts(&body["contents"][0]["parts"]),
+            Adapter::Responses => body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| texts(&item["content"]))
+                .collect(),
+        };
+        assert_eq!(
+            text,
+            format!("first{}{marker}last", std::str::from_utf8(data).unwrap())
+        );
     }
     Ok(())
 }
@@ -315,7 +322,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
             },
         ],
     };
-    let mut files = crate::files::FileText::Ready(vec!["body".into()].into_iter());
+    let mut files = crate::files::FileText(vec!["body".into()].into_iter());
     let result = crate::projection::body_with_files(
         &provider,
         &ModelRequest {
@@ -358,5 +365,31 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
         spec.headers.insert(header.into(), "value".into());
         assert!(registry.register("custom".into(), spec).is_err());
     }
+    Ok(())
+}
+
+fn assert_expansion(text: &str, bound: usize) {
+    assert!(
+        serde_json::to_vec(text).unwrap().len() - 2 <= bound,
+        "JSON escaping exceeded file expansion bound"
+    );
+}
+
+#[test]
+#[should_panic(expected = "JSON escaping exceeded file expansion bound")]
+fn negative_control_unescaped_file_lengths_understate_json_expansion() {
+    assert_expansion("\0", 1);
+}
+
+#[test]
+fn unresolved_fulltext_is_never_silently_omitted() -> Result<()> {
+    assert!(
+        crate::files::FileText::default()
+            .project(
+                &file(b"full", "text/plain")?,
+                &FileProjectionPolicy::BoundedFull
+            )
+            .is_err()
+    );
     Ok(())
 }

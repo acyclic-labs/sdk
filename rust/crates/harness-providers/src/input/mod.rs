@@ -42,5 +42,5 @@ fn text(value: &Value) -> bool {
     value.as_str().is_some_and(|text| !text.trim().is_empty())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

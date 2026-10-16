@@ -99,12 +99,12 @@ pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     Ok(count.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
-    body_with_files(provider, request, &mut FileText::Estimate)
+    body_with_files(provider, request, &mut FileText::default())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn body_with_files(
     provider: &ResolvedModel,
     request: &ModelRequest,

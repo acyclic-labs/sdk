@@ -62,7 +62,7 @@ pub fn assert_stream_invariants(input: &[u8]) {
     };
     if kind == b'F' {
         if let Ok(file) = serde_json::from_slice::<acyclic_harness::conversation::FileRef>(input) {
-            let marker = crate::files::FileText::Estimate
+            let marker = crate::files::FileText::default()
                 .project(
                     &file,
                     &acyclic_harness::model::FileProjectionPolicy::Reference,
