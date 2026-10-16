@@ -77,6 +77,7 @@ proptest! {
     fn admission_matches_the_independent_wire_contract((delivery, next, data) in inputs()) {
         prop_assert_eq!(wire::SessionData::decode(data.encode_to_vec().as_slice()).ok(), Some(data.clone()));
         check(delivery, next, &data, Fault::None).map_err(TestCaseError::fail)?;
+        checks::exercise(next, 2, &data.encode_to_vec(), false);
     }
     #[test]
     fn untrusted_positions_and_watermarks_obey_the_same_contract(

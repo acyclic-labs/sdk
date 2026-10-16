@@ -18,15 +18,29 @@ pub(super) struct Progress {
     cancelled: AtomicU64,
 }
 impl Progress {
+    #[cfg(any(test, acyclic_stream_loom))]
     pub(super) fn new(from: u64) -> Self {
         Self::with_preceding(from, None)
     }
+    #[cfg(any(test, acyclic_stream_loom))]
     pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
+        Self::from_cursor(
+            crate::wire::SessionCursor {
+                next: from,
+                opaque: Default::default(),
+            },
+            preceding,
+        )
+    }
+    pub(super) fn from_cursor(
+        cursor: crate::wire::SessionCursor,
+        preceding: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             state: Mutex::new(State {
                 position: Position {
-                    next: from,
-                    opaque: Vec::new(),
+                    next: cursor.next,
+                    opaque: cursor.opaque.to_vec(),
                     preceding,
                 },
                 generation: 1,
@@ -71,6 +85,14 @@ impl Progress {
         commit: [u8; 32],
     ) -> Result<bool, StreamError> {
         self.consume_cut(generation, sequence, &[], Some(commit), false)
+    }
+    pub(super) fn current(&self, generation: u64) -> Result<bool, StreamError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .generation
+            == generation)
     }
     pub(super) fn consume_opaque(
         &self,

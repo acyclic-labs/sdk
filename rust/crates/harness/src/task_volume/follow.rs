@@ -6,10 +6,13 @@ use uuid::Uuid;
 
 /// Serializable next-record cursor. Never infer continuity from a native watch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct Cursor {
     /// Volume identity bound to its provider path.
     pub volume: [u8; 32],
     /// History incarnation, persisted in the volume header.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub epoch: Uuid,
     /// Namespace and segment format.
     pub schema: u32,

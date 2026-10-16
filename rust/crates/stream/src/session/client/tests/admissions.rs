@@ -8,6 +8,8 @@ fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
     route_a.node = "good".into();
     route_a.records = records;
     let client = Client {
+        connections: super::super::super::Connections::new(),
+        executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         commands: mpsc::channel(2).0,
         removed: Arc::clone(&pool.removed),
         next_id: Arc::new(AtomicU64::new(5)),
@@ -50,7 +52,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
     let held = std::sync::Arc::new(Mutex::new(Some(held)));
     let called = std::sync::Arc::new(AtomicUsize::new(0));
     let observed = called.clone();
-    pool.credential = Some(grpc::CredentialProvider::new(move || {
+    let credential = grpc::CredentialProvider::new(move || {
         observed.fetch_add(1, Ordering::Relaxed);
         let held = held.lock().unwrap().take();
         async move {
@@ -59,7 +61,9 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
                 .map_err(|_| grpc::CredentialError::Invalid)?;
             Ok("fixture".into())
         }
-    }));
+    });
+    pool.links.get_mut("good").unwrap().channel =
+        native::endpoint(fixture.channel.clone(), None, Some(credential));
     pool.reconnect("good")?;
     assert!(
         futures::poll!(future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))).is_pending()

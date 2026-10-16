@@ -28,8 +28,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(error)) if grpc::retryable(&error) => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&grpc::status(&error)),
+                            Some(Err(StreamError::Unavailable)) => self.reconnect(&node)?,
+                            Some(Err(error)) => self.fail_link(&node,&error),
                             None => self.reconnect(&node)?,
                         }
                     }
@@ -155,6 +155,7 @@ impl Pool {
                 attempt_epoch,
                 acknowledge,
                 kind,
+                raw,
                 progress,
                 records,
                 ready,
@@ -179,6 +180,8 @@ impl Pool {
                         node: self.home.clone(),
                         attempt_epoch,
                         kind,
+                        raw,
+                        watermark: None,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
@@ -217,7 +220,10 @@ impl Pool {
             epoch,
             generation,
         } = released;
-        self.release(&node, epoch, bytes)?;
+        if bytes != 0 {
+            self.release(&node, epoch, bytes)?;
+        }
+        self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
             return Ok(());
         };
@@ -288,9 +294,9 @@ impl Pool {
                         }
                         let records = route.records.clone();
                         self.remove(id)?;
-                        tokio::spawn(async move {
+                        self.executor.spawn(Box::pin(async move {
                             let _ = records.send(Err(error)).await;
-                        });
+                        }));
                         return Ok(());
                     }
                 }
@@ -317,9 +323,9 @@ impl Pool {
                     let _ = ready.send(Ok(id));
                 }
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = route.records.send(Err(error)).await;
-                });
+                }));
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
@@ -340,7 +346,14 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => Ok(()),
+            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
+                if route.raw {
+                    route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
+                    self.flush_watermark(id)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -376,19 +389,13 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let (item, sequence, after) = match &route.kind {
-            Kind::Follow(follow) => {
-                let sequence =
-                    wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?;
-                let after = data.after.clone().ok_or(StreamError::Unavailable)?;
-                (Received::Data(data), sequence, after)
+        let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+        let sequence = match (&route.kind, data.item.as_ref()) {
+            (Kind::Follow(follow), _) => {
+                wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
-            Kind::Children(request) => {
-                let after = data.after.ok_or(StreamError::Unavailable)?;
-                let Some(Item::Child(child)) = data.item else {
-                    return Err(StreamError::Unavailable);
-                };
-                let path = StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?;
+            (Kind::Children(request), Some(Item::Child(child))) => {
+                let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
                 if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
                     || after.next
                         != route
@@ -400,20 +407,28 @@ impl Pool {
                 {
                     return Err(StreamError::Unavailable);
                 }
-                (
-                    Received::Child(crate::Child { path }),
-                    route.received,
-                    after,
-                )
+                route.received
             }
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
+        let opaque = after.opaque.clone();
+        let item = if route.raw {
+            Received::Frame(frame(id, generation, Body::Data(data)))
+        } else if matches!(route.kind, Kind::Follow(_)) {
+            Received::Data(data)
+        } else if let Some(Item::Child(child)) = data.item {
+            Received::Child(crate::Child {
+                path: StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?,
+            })
+        } else {
+            return Err(StreamError::Unavailable);
+        };
         let delivery = Delivery {
             item,
             sequence,
-            opaque: after.opaque,
+            opaque,
             generation,
             credit: Credit::new(
                 self.release_sender.clone(),
@@ -433,15 +448,55 @@ impl Pool {
         }
     }
 
+    fn flush_watermark(&mut self, id: u64) -> Result<(), StreamError> {
+        let Some(route) = self.routes.get_mut(&id) else {
+            return Ok(());
+        };
+        // Reserve slots for every data frame already granted to the peer.
+        // Control-only durability updates occupy at most one additional pending value.
+        if route.records.capacity() <= route.credit.frames as usize {
+            return Ok(());
+        }
+        let Some(value) = route.watermark.take() else {
+            return Ok(());
+        };
+        let epoch = self
+            .links
+            .get(&route.node)
+            .ok_or(StreamError::Unavailable)?
+            .epoch;
+        let delivery = Delivery {
+            item: Received::Frame(value),
+            sequence: route.received,
+            opaque: route.received_opaque.clone(),
+            generation: route.generation,
+            credit: Credit::new(
+                self.release_sender.clone(),
+                Released {
+                    id,
+                    node: route.node.clone(),
+                    bytes: 0,
+                    epoch,
+                    generation: route.generation,
+                },
+            ),
+        };
+        match route.records.try_send(Ok(delivery)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
+        }
+    }
+
     pub(super) fn reject(&mut self, id: u64, error: StreamError) {
         if let Some(mut route) = self.routes.remove(&id) {
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
@@ -458,9 +513,9 @@ impl Pool {
                 }
                 let error = error.clone();
                 let records = route.records;
-                tokio::spawn(async move {
+                self.executor.spawn(Box::pin(async move {
                     let _ = records.send(Err(error)).await;
-                });
+                }));
             }
         }
     }
@@ -472,9 +527,9 @@ impl Pool {
             }
             let error = error.clone();
             let records = route.records;
-            tokio::spawn(async move {
+            self.executor.spawn(Box::pin(async move {
                 let _ = records.send(Err(error)).await;
-            });
+            }));
         }
     }
 }
