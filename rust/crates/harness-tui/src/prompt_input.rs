@@ -2,7 +2,10 @@ use crate::key_decode::{DecodedKey, decode_key, event_chord};
 use crate::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use crate::{Action, Editor, InputKeymap, Motion, PromptHistory, Viewport, history::Navigation};
+use crate::{
+    Action, CompletionMenu, CompletionProvider, Editor, InputKeymap, Motion, PromptHistory,
+    Viewport, history::Navigation,
+};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -72,6 +75,8 @@ pub struct PromptInput {
     pub transcript_selection: Option<String>,
     /// User overrides used by both dispatch and help.
     pub keymap: InputKeymap,
+    /// Completion results folded from the host's current file-query snapshots.
+    pub completion: CompletionMenu,
     pending_chord: Option<(String, u64, Option<DecodedKey>)>,
     last_interrupt: Option<u64>,
     search: Option<Search>,
@@ -93,6 +98,11 @@ impl PromptInput {
         self.history.replace(snapshot);
     }
 
+    /// Refresh after edits or command/file-query updates. Providers own no
+    /// editor state; the host supplies the latest catalog and file snapshots.
+    pub fn refresh_completions(&mut self, providers: &[&dyn CompletionProvider]) {
+        self.completion.refresh(&self.editor, providers);
+    }
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
         Self {
@@ -352,6 +362,15 @@ impl PromptInput {
                 _ => self.finish_search(now_ms, true),
             }
         }
+        if let DecodedKey::Action { action, select } = &decoded {
+            if !(*action == Action::Escape && self.editing.is_some())
+                && self
+                    .completion
+                    .action(&mut self.editor, *action, *select, now_ms)
+            {
+                return effects;
+            }
+        }
         match decoded {
             DecodedKey::Text(text) => self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms),
             DecodedKey::Action { action, select } => match action {
@@ -480,6 +499,7 @@ impl PromptInput {
                     if let Some(edit) = self.editing.take() {
                         self.editor = edit.draft;
                         self.history.restore_navigation(edit.navigation);
+                        self.completion.dismiss(&self.editor);
                     }
                 }
                 Action::Escape if !self.busy && !self.editor.selection().is_empty() => {

@@ -1,6 +1,8 @@
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod completion_edit;
+
 use crate::{
     Layout, PromptHistory,
     buffer::{Buffer, normalize},
