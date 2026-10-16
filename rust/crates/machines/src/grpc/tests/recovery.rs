@@ -3,24 +3,30 @@ use proptest::prelude::*;
 
 #[test]
 fn credential_failure_preserves_admitted_recovery_keys() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(16))
         .run(&(0..3usize, any::<u32>()), |(fail_at, seed)| {
             runtime.block_on(async {
-                let (mut service, script, machine) = scripted_operation_service(
-                    vec![WatchReply::Items(vec![])], vec![],
-                );
-                let key = IdempotencyKey::parse(&format!("{seed:08x}-0000-0000-0000-000000000041")).unwrap();
+                let (mut service, script, machine) =
+                    scripted_operation_service(vec![WatchReply::Items(vec![])], vec![]);
+                let key = IdempotencyKey::parse(&format!("{seed:08x}-0000-0000-0000-000000000041"))
+                    .unwrap();
                 service.expected_key = key;
                 let (provider, shutdown, server) = serve_operation_service(service).await.unwrap();
                 let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let next = calls.clone();
-                let provider = provider.with_credential_provider(CredentialProvider::new(move || {
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    std::future::ready(if index == fail_at {
-                        Err(acyclic_auth::credential::CredentialError::Invalid)
-                    } else { Ok("opaque.account+/=".into()) })
-                }));
+                let provider =
+                    provider.with_credential_provider(CredentialProvider::new(move || {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        std::future::ready(if index == fail_at {
+                            Err(acyclic_auth::credential::CredentialError::Invalid)
+                        } else {
+                            Ok("opaque.account+/=".into())
+                        })
+                    }));
                 let outcome = provider.suspend(machine, key).await;
                 let _ = shutdown.send(());
                 server.await.unwrap().unwrap();
@@ -29,15 +35,25 @@ fn credential_failure_preserves_admitted_recovery_keys() {
                 } else {
                     prop_assert_eq!(outcome, Err(ProviderError::Indeterminate(key)));
                 }
-                prop_assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), fail_at + 1);
-                prop_assert_eq!(script.lock().unwrap().calls.clone(), if fail_at == 2 { vec!["watch"] } else { vec![] });
+                prop_assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::Relaxed),
+                    fail_at + 1
+                );
+                prop_assert_eq!(
+                    script.lock().unwrap().calls.clone(),
+                    if fail_at == 2 { vec!["watch"] } else { vec![] }
+                );
                 // Rejected discards the key; the same post-admission assertion rejects it.
                 if fail_at > 0 {
-                    prop_assert_ne!(Err::<(), _>(ProviderError::Rejected("renewal failed".into())), Err(ProviderError::Indeterminate(key)));
+                    prop_assert_ne!(
+                        Err::<(), _>(ProviderError::Rejected("renewal failed".into())),
+                        Err(ProviderError::Indeterminate(key))
+                    );
                 }
                 Ok(())
             })
-        }).unwrap();
+        })
+        .unwrap();
 }
 
 #[tokio::test]
