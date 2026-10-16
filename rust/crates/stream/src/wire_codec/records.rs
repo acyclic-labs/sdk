@@ -1,4 +1,5 @@
-pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
+/// Validates and converts a canonical wire record without copying its payload.
+pub fn record(value: wire::Record) -> Result<Record, StreamError> {
     Ok(Record {
         sequence: value.sequence,
         value: value.value.into(),
