@@ -10,7 +10,11 @@ use std::sync::{
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn credential_admission_matches_the_bounded_header_contract(value in any::<String>()) {
+    fn credential_admission_matches_the_bounded_header_contract(value in prop_oneof![
+        any::<String>(),
+        (0..=MAX_CREDENTIAL_BYTES + 2, any::<bool>()).prop_map(|(length, unicode)|
+            if unicode { "é".repeat(length) } else { "a".repeat(length) }),
+    ]) {
         let expected = value.len() <= 12288 && value.chars().any(|c| !c.is_whitespace())
             && !value.bytes().any(|c| [0, 10, 13].contains(&c));
         prop_assert_eq!(valid_credential(&value), expected);

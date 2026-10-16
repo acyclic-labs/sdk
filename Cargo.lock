@@ -373,6 +373,8 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
+ "proptest",
  "prost",
  "prost-build",
  "prost-reflect",

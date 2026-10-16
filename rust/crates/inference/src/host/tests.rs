@@ -359,7 +359,10 @@ async fn request_metadata_marks_the_ephemeral_bearer_copy_sensitive() -> Result<
         .get("authorization")
         .ok_or(Error::Invalid("missing authorization"))?;
     assert!(bearer.is_sensitive());
-    assert_eq!(client.0.authorization.as_ref().map(|value| value.as_str()), Some("Bearer secret"));
+    assert_eq!(
+        client.0.authorization.as_ref().map(|value| value.as_str()),
+        Some("Bearer secret")
+    );
     Ok(())
 }
 

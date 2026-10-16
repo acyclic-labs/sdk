@@ -97,7 +97,11 @@ impl Inference {
     }
 
     /// Establish TLS without resolving a credential until a request is ready.
-    pub async fn connect_with_credential(endpoint: &str, credential: CredentialProvider, ca_pem: &[u8]) -> Result<Self, Error> {
+    pub async fn connect_with_credential(
+        endpoint: &str,
+        credential: CredentialProvider,
+        ca_pem: &[u8],
+    ) -> Result<Self, Error> {
         Self::connect_inner(endpoint, None, Some(credential), ca_pem).await
     }
 
@@ -106,7 +110,12 @@ impl Inference {
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
     )]
-    async fn connect_inner(endpoint: &str, api_key: Option<&str>, credential: Option<CredentialProvider>, ca_pem: &[u8]) -> Result<Self, Error> {
+    async fn connect_inner(
+        endpoint: &str,
+        api_key: Option<&str>,
+        credential: Option<CredentialProvider>,
+        ca_pem: &[u8],
+    ) -> Result<Self, Error> {
         obs::finish(
             async {
                 let endpoint = Endpoint::new(endpoint.to_owned())?;
@@ -190,9 +199,12 @@ impl Inference {
                 nonzero(&revision)?;
                 let view = self
                     .rpc()
-                    .inspect(self.request(wire::InspectContextRequest {
-                        revision: revision.to_vec(),
-                    }).await?)
+                    .inspect(
+                        self.request(wire::InspectContextRequest {
+                            revision: revision.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_context_view(&view, revision)?;
@@ -369,9 +381,12 @@ impl Inference {
                 nonzero(&evaluation_id)?;
                 let view = self
                     .evaluations()
-                    .inspect(self.request(wire::InspectEvaluationRequest {
-                        evaluation_id: evaluation_id.to_vec(),
-                    }).await?)
+                    .inspect(
+                        self.request(wire::InspectEvaluationRequest {
+                            evaluation_id: evaluation_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_evaluation_view(&view, evaluation_id)?;
@@ -479,9 +494,12 @@ impl Inference {
             async {
                 let view = self
                     .runs()
-                    .inspect(self.request(wire::InspectRunRequest {
-                        run_id: run_id.to_vec(),
-                    }).await?)
+                    .inspect(
+                        self.request(wire::InspectRunRequest {
+                            run_id: run_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_run_view(&view, run_id)?;
@@ -515,10 +533,13 @@ impl Inference {
                 }
                 let stream = self
                     .runs()
-                    .watch(self.request(wire::WatchRunRequest {
-                        run_id: run_id.to_vec(),
-                        from_sequence,
-                    }).await?)
+                    .watch(
+                        self.request(wire::WatchRunRequest {
+                            run_id: run_id.to_vec(),
+                            from_sequence,
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 Ok(RunEvents {
@@ -541,9 +562,12 @@ impl Inference {
             async {
                 let view = self
                     .runs()
-                    .cancel(self.request(wire::InspectRunRequest {
-                        run_id: run_id.to_vec(),
-                    }).await?)
+                    .cancel(
+                        self.request(wire::InspectRunRequest {
+                            run_id: run_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_run_view(&view, run_id)?;
@@ -590,9 +614,12 @@ impl Inference {
                 nonzero(&commitment)?;
                 let view = self
                     .warm()
-                    .inspect(self.request(wire::InspectWarmRequest {
-                        commitment: commitment.to_vec(),
-                    }).await?)
+                    .inspect(
+                        self.request(wire::InspectWarmRequest {
+                            commitment: commitment.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_warm_view(&view, None, Some(commitment))?;
@@ -665,17 +692,23 @@ impl Inference {
         let renewed = if let Some(provider) = &self.0.credential {
             let token = provider.resolve().await?;
             Some(authorization(&token)?)
-        } else { None };
-        let value_header = renewed.as_ref().or(self.0.authorization.as_ref()).ok_or(Error::Invalid("missing API key"))?;
+        } else {
+            None
+        };
+        let value_header = renewed
+            .as_ref()
+            .or(self.0.authorization.as_ref())
+            .ok_or(Error::Invalid("missing API key"))?;
         let mut authorization = MetadataValue::<Ascii>::try_from(value_header.as_str())
             .map_err(|_| Error::Invalid("invalid API key"))?;
         authorization.set_sensitive(true);
         let mut request = Request::new(value);
-        request.metadata_mut().insert("authorization", authorization);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
         request.set_timeout(Duration::from_secs(60));
         Ok(request)
     }
-
 }
 
 include!("values.rs");

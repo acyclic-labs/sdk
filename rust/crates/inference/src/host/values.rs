@@ -132,4 +132,3 @@ pub fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
         continuation_profile: Vec::new(),
     }
 }
-
