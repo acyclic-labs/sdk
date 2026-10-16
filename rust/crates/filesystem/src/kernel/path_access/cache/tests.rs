@@ -1,6 +1,18 @@
 use super::*;
 use proptest::prelude::*;
 
+std::thread_local! {
+    static SLOT_ACCESSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn record_slot_access() {
+    SLOT_ACCESSES.with(|count| count.set(count.get() + 1));
+}
+
+fn take_slot_accesses() -> u64 {
+    SLOT_ACCESSES.with(|count| count.replace(0))
+}
+
 fn id(value: u8) -> ObjectId {
     let mut bytes = [0; 32];
     bytes[0] = value;
@@ -75,7 +87,9 @@ impl ProbeModel {
     }
 }
 
-fn compare<const CHARGE_REHASH: bool>(keys: &[u8]) -> proptest::test_runner::TestCaseResult {
+fn compare<const CHARGE_REHASH: bool, const EXTRA_UNCHARGED_PROBE: bool>(
+    keys: &[u8],
+) -> proptest::test_runner::TestCaseResult {
     let cancellation = CancellationToken::new();
     let mut setup = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let cache = OperationReadCache::new(&(), 32, &mut setup, None).unwrap();
@@ -85,20 +99,36 @@ fn compare<const CHARGE_REHASH: bool>(keys: &[u8]) -> proptest::test_runner::Tes
         let object = id(key);
         let expected = model.admit(object);
         let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        take_slot_accesses();
+        if EXTRA_UNCHARGED_PROBE {
+            let state = cache.lock_state();
+            let _ = probe_slots_with_charge::<false>(&state.slots.value, object, &mut work, None)
+                .unwrap();
+        }
         let inserted = cache
             .admit_with_rehash::<true, CHARGE_REHASH>(object, &bytes, 0, &mut work)
             .unwrap();
+        let observed = take_slot_accesses();
         prop_assert_eq!(inserted, expected.0);
         prop_assert_eq!(work.spent().items_examined, expected.1);
+        prop_assert_eq!(
+            observed,
+            work.spent().items_examined,
+            "slot visits must match charged items"
+        );
+        prop_assert_eq!(observed, expected.1);
         for previous in model.slots.iter().flatten().copied() {
             let (_, found, visits) = ProbeModel::find(&model.slots, previous);
             let mut read = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
             prop_assert!(found);
+            take_slot_accesses();
             prop_assert_eq!(
                 cache.probe(previous, &mut read).unwrap().unwrap().bytes,
                 bytes.clone()
             );
-            prop_assert_eq!(read.spent().items_examined, visits);
+            let observed = take_slot_accesses();
+            prop_assert_eq!(observed, visits);
+            prop_assert_eq!(read.spent().items_examined, observed);
         }
     }
     Ok(())
@@ -109,7 +139,7 @@ proptest! {
     fn vacant_slot_reuse_keeps_exact_probes_and_all_prior_entries(
         keys in prop::collection::vec(any::<u8>(), 1..97),
     ) {
-        compare::<true>(&keys)?;
+        compare::<true, false>(&keys)?;
     }
 }
 
@@ -123,14 +153,25 @@ fn collision_growth_duplicates_and_capacity_match_independent_counts() {
     keys.extend(colliding.iter().copied());
     keys.extend(0..40);
     keys.extend(0..40);
-    compare::<true>(&keys).unwrap();
+    compare::<true, false>(&keys).unwrap();
 }
 
 #[test]
 fn independent_counts_detect_uncharged_rehash_probes() {
     let keys: Vec<_> = (0..17).collect();
-    compare::<true>(&keys).unwrap();
-    assert!(compare::<false>(&keys).is_err());
+    compare::<true, false>(&keys).unwrap();
+    assert!(compare::<false, false>(&keys).is_err());
+}
+
+#[test]
+fn actual_slot_observer_detects_an_extra_discarded_uncharged_probe() {
+    compare::<true, false>(&[1]).unwrap();
+    let error = compare::<true, true>(&[1]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("slot visits must match charged items")
+    );
 }
 
 #[test]

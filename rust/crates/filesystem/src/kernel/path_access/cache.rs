@@ -272,17 +272,23 @@ fn probe_slots_with_charge<const CHARGE: bool>(
     let mut index = object_hash(object_id) & mask;
     for _ in 0..slots.len() {
         let slot = slots.get(index).ok_or(ObjectStoreError::Corrupt)?;
-        let examine = || match slot {
-            Some(entry) if entry.object_id == object_id => (
-                Some(ObjectRead {
-                    bytes: entry.bytes.clone(),
-                    retention: ObjectReadRetention::Shared,
-                }),
-                index,
-                false,
-            ),
-            Some(_) => (None, (index + 1) & mask, false),
-            None => (None, index, true),
+        let examine = || {
+            // Observe the actual inspection, including deliberately uncharged
+            // probes, after admission and independently of accounting.
+            #[cfg(all(test, not(acyclic_fs_loom)))]
+            tests::record_slot_access();
+            match slot {
+                Some(entry) if entry.object_id == object_id => (
+                    Some(ObjectRead {
+                        bytes: entry.bytes.clone(),
+                        retention: ObjectReadRetention::Shared,
+                    }),
+                    index,
+                    false,
+                ),
+                Some(_) => (None, (index + 1) & mask, false),
+                None => (None, index, true),
+            }
         };
         let (found, next, vacant) = if CHARGE {
             examine_item(accounting, custody, examine)?
