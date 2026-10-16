@@ -215,7 +215,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     assert_eq!(rendered.metadata.get("context.manifest"), Some(&reference));
     assert_eq!(
         rendered.current_input_index,
-        Some(6 + manifest.conventions.len())
+        Some(u32::try_from(6 + manifest.conventions.len()).expect("bounded message count"))
     );
     assert_eq!(
         rendered.messages.last().map(|message| message.role),
@@ -324,7 +324,10 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
             };
             assert!(text.contains(&format!("name: {name}\n")));
         }
-        assert_eq!(context.current_input_index, Some(7 + offset));
+        assert_eq!(
+            context.current_input_index,
+            Some(u32::try_from(7 + offset).expect("bounded message count"))
+        );
         assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
     }
     assert!(
