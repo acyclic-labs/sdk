@@ -85,55 +85,149 @@ proptest! {
     fn reducer_rejection_replay_and_restore_preserve_state(
         steps in prop::collection::vec((0..6_u8, any::<bool>(), any::<bool>()), 1..32),
     ) {
-        let mut reducer = reducer_fixture();
-        let mut replay = reducer_fixture();
-        for (index, (target, stale, unauthorized)) in steps.into_iter().enumerate() {
-            let before = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
-            let from = reducer.lifecycle();
-            let to = lifecycle(target);
-            let mut cmd = command(operation(index as u8 + 1), reducer.revision(),
-                Action::TransitionLifecycle { to, reason: Some(format!("step-{index}")) });
-            if stale { cmd.expected_revision += 1; }
-            if unauthorized {
-                cmd.scope = issuer().issue("empty", &Capabilities::default(), None, None, &mut None).unwrap();
-            }
-            let planned = reducer.plan(&cmd);
-            prop_assert_eq!(&reducer.snapshot(usize::MAX, &mut None).unwrap().0, &before);
-            // Independent lifecycle oracle, including absorbing terminal states.
-            let legal = match from {
-                LifecycleState::Pending => matches!(to, LifecycleState::Active | LifecycleState::Cancelled),
-                LifecycleState::Active => matches!(to, LifecycleState::Waiting | LifecycleState::Completed | LifecycleState::Failed | LifecycleState::Cancelled),
-                LifecycleState::Waiting => matches!(to, LifecycleState::Active | LifecycleState::Completed | LifecycleState::Failed | LifecycleState::Cancelled),
-                _ => false,
-            };
-            prop_assert_eq!(planned.is_ok(), legal && !stale && !unauthorized);
-            match reducer.apply(&cmd) {
-                Ok(ApplyResult::Applied { event }) => {
-                    prop_assert_eq!(reducer.revision(), before.revision + 1);
-                    prop_assert_eq!(reducer.lifecycle(), to);
-                    replay.apply_committed(event.clone(), &mut None).unwrap();
-                    let settled = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
-                    prop_assert!(matches!(reducer.apply(&cmd).unwrap(), ApplyResult::Replayed { .. }), "exact retry must replay");
-                    let mut collision = cmd.clone();
-                    collision.action = Action::TransitionLifecycle { to: from, reason: None };
-                    prop_assert!(reducer.apply(&collision).is_err());
-                    let mut tampered = event;
-                    tampered.revision += 1;
-                    prop_assert!(reducer.apply_committed(tampered, &mut None).is_err());
-                    prop_assert_eq!(reducer.snapshot(usize::MAX, &mut None).unwrap().0, settled);
-                }
-                Err(_) => prop_assert_eq!(&reducer.snapshot(usize::MAX, &mut None).unwrap().0, &before),
-                Ok(ApplyResult::Replayed { .. }) => prop_assert!(false, "fresh operation replayed"),
-            }
-            prop_assert_eq!(&reducer, &replay);
-            prop_assert_eq!(&restore(&reducer, &issuer()).unwrap(), &reducer);
-        }
+        lifecycle_history(steps, LifecycleFault::None)?;
     }
 
     #[test]
     fn reducer_rejects_forged_events_and_snapshots(field in 0..8_u8) {
         forged_event_property(field, false)?;
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LifecycleFault {
+    None,
+    RejectAll,
+    ReopenTerminal,
+    DuplicateRetry,
+}
+
+fn lifecycle_history(
+    steps: Vec<(u8, bool, bool)>,
+    fault: LifecycleFault,
+) -> proptest::test_runner::TestCaseResult {
+    let mut reducer = reducer_fixture();
+    let mut replay = reducer_fixture();
+    // These are updated solely from submitted inputs, before production admission.
+    let mut phase = LifecycleState::Pending;
+    let mut revision = 0;
+    prop_assert_eq!(reducer.lifecycle(), phase, "initial lifecycle differs");
+    prop_assert_eq!(reducer.revision(), revision, "initial revision differs");
+    for (index, (target, stale, unauthorized)) in steps.into_iter().enumerate() {
+        let from = phase;
+        let to = lifecycle(target);
+        let legal = match from {
+            LifecycleState::Pending => {
+                matches!(to, LifecycleState::Active | LifecycleState::Cancelled)
+            }
+            LifecycleState::Active | LifecycleState::Waiting => matches!(
+                (from, to),
+                (LifecycleState::Active, LifecycleState::Waiting)
+                    | (LifecycleState::Waiting, LifecycleState::Active)
+                    | (
+                        _,
+                        LifecycleState::Completed
+                            | LifecycleState::Failed
+                            | LifecycleState::Cancelled
+                    )
+            ),
+            _ => false,
+        };
+        let accepted = legal && !stale && !unauthorized;
+        let mut cmd = command(
+            operation(index as u8 + 1),
+            revision + u64::from(stale),
+            Action::TransitionLifecycle {
+                to,
+                reason: Some(format!("step-{index}")),
+            },
+        );
+        if unauthorized || fault == LifecycleFault::RejectAll {
+            cmd.scope = issuer()
+                .issue("empty", &Capabilities::default(), None, None, &mut None)
+                .unwrap();
+        }
+        if fault == LifecycleFault::ReopenTerminal
+            && matches!(
+                from,
+                LifecycleState::Completed | LifecycleState::Failed | LifecycleState::Cancelled
+            )
+            && to == LifecycleState::Active
+        {
+            reducer.projection.lifecycle = LifecycleState::Waiting;
+        }
+        let before = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+        if accepted {
+            phase = to;
+            revision += 1;
+        }
+        let planned = reducer.plan(&cmd);
+        prop_assert_eq!(&reducer.snapshot(usize::MAX, &mut None).unwrap().0, &before);
+        prop_assert_eq!(
+            planned.is_ok(),
+            accepted,
+            "lifecycle admission differs from independent history"
+        );
+        let applied = reducer.apply(&cmd);
+        prop_assert_eq!(
+            applied.is_ok(),
+            accepted,
+            "lifecycle application differs from independent history"
+        );
+        match applied {
+            Ok(ApplyResult::Applied { event }) => {
+                prop_assert_eq!(event.revision, revision);
+                prop_assert_eq!(reducer.lifecycle(), phase);
+                prop_assert_eq!(reducer.revision(), revision);
+                replay.apply_committed(event.clone(), &mut None).unwrap();
+                prop_assert_eq!(replay.lifecycle(), phase);
+                prop_assert_eq!(replay.revision(), revision);
+                let settled = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+                prop_assert!(
+                    matches!(reducer.apply(&cmd).unwrap(), ApplyResult::Replayed { .. }),
+                    "exact retry must replay"
+                );
+                if fault == LifecycleFault::DuplicateRetry {
+                    // Mutant commits an already recorded event a second time.
+                    reducer.revision += 1;
+                    reducer.events.push_back(event.clone());
+                }
+                prop_assert_eq!(
+                    reducer.revision(),
+                    revision,
+                    "exact retry advanced independent history"
+                );
+                let mut collision = cmd.clone();
+                collision.action = Action::TransitionLifecycle {
+                    to: from,
+                    reason: None,
+                };
+                prop_assert!(reducer.apply(&collision).is_err());
+                let mut tampered = event;
+                tampered.revision += 1;
+                prop_assert!(reducer.apply_committed(tampered, &mut None).is_err());
+                prop_assert_eq!(reducer.snapshot(usize::MAX, &mut None).unwrap().0, settled);
+            }
+            Err(_) => prop_assert_eq!(&reducer.snapshot(usize::MAX, &mut None).unwrap().0, &before),
+            Ok(ApplyResult::Replayed { .. }) => prop_assert!(false, "fresh operation replayed"),
+        }
+        let restored = restore(&reducer, &issuer()).unwrap();
+        for observed in [&reducer, &replay, &restored] {
+            prop_assert_eq!(
+                observed.lifecycle(),
+                phase,
+                "lifecycle differs from independent history"
+            );
+            prop_assert_eq!(
+                observed.revision(),
+                revision,
+                "revision differs from independent history"
+            );
+        }
+        prop_assert_eq!(&reducer, &replay);
+        prop_assert_eq!(&restored, &reducer);
+    }
+    Ok(())
 }
 
 fn scope_field_property(
@@ -234,8 +328,19 @@ fn forged_event_property(
     prop_assert!(reducer.apply_committed(candidate, &mut None).is_err());
     prop_assert_eq!(reducer.snapshot(usize::MAX, &mut None).unwrap().0, before);
     reducer.apply_committed(event, &mut None).unwrap();
-    let mut snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    snapshot_property(&reducer, false)
+}
+
+fn snapshot_property(
+    reducer: &Reducer,
+    restore_original: bool,
+) -> proptest::test_runner::TestCaseResult {
+    let original = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let mut snapshot = original.clone();
     snapshot.revision += 1;
+    if restore_original {
+        snapshot = original;
+    }
     prop_assert!(
         Reducer::restore(
             snapshot,
@@ -243,7 +348,8 @@ fn forged_event_property(
             schemas(),
             &mut None
         )
-        .is_err()
+        .is_err(),
+        "forged snapshot revision was accepted"
     );
     Ok(())
 }
@@ -269,6 +375,86 @@ fn negative_control_detects_replaying_the_original_event() {
         result,
         Err(proptest::test_runner::TestError::Fail(..))
     ));
+}
+
+#[test]
+fn lifecycle_histories_cover_every_terminal_and_rejected_retry() {
+    for terminal in 3..6 {
+        let steps = vec![
+            (1, false, false),
+            (2, true, false),
+            (2, false, true),
+            (2, false, false),
+            (1, false, false),
+            (terminal, false, false),
+            (1, false, false),
+        ];
+        lifecycle_history(steps, LifecycleFault::None).unwrap();
+    }
+    lifecycle_history(
+        vec![(5, false, false), (1, false, false)],
+        LifecycleFault::None,
+    )
+    .unwrap();
+}
+
+fn detects_lifecycle_fault(fault: LifecycleFault, steps: Vec<(u8, bool, bool)>, message: &str) {
+    let result =
+        negative_control_runner().run(&Just(steps), |steps| lifecycle_history(steps, fault));
+    let Err(proptest::test_runner::TestError::Fail(reason, _)) = result else {
+        panic!("lifecycle mutant survived: {message}");
+    };
+    assert!(
+        reason.to_string().contains(message),
+        "wrong invariant failed: {reason}"
+    );
+}
+
+#[test]
+fn negative_control_detects_rejecting_all_lifecycle_transitions() {
+    detects_lifecycle_fault(
+        LifecycleFault::RejectAll,
+        vec![(1, false, false)],
+        "lifecycle admission differs from independent history",
+    );
+}
+
+#[test]
+fn negative_control_detects_reopening_each_terminal_lifecycle() {
+    for terminal in 3..6 {
+        detects_lifecycle_fault(
+            LifecycleFault::ReopenTerminal,
+            vec![
+                (1, false, false),
+                (terminal, false, false),
+                (1, false, false),
+            ],
+            "lifecycle admission differs from independent history",
+        );
+    }
+}
+
+#[test]
+fn negative_control_detects_double_committing_an_exact_lifecycle_retry() {
+    detects_lifecycle_fault(
+        LifecycleFault::DuplicateRetry,
+        vec![(1, false, false)],
+        "exact retry advanced independent history",
+    );
+}
+
+#[test]
+fn negative_control_detects_restoring_the_original_snapshot() {
+    let result =
+        negative_control_runner().run(&Just(()), |()| snapshot_property(&reducer_fixture(), true));
+    let Err(proptest::test_runner::TestError::Fail(reason, _)) = result else {
+        panic!("snapshot mutant survived");
+    };
+    assert!(
+        reason
+            .to_string()
+            .contains("forged snapshot revision was accepted")
+    );
 }
 
 fn negative_control_runner() -> proptest::test_runner::TestRunner {
