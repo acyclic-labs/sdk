@@ -19,11 +19,12 @@ const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 // futures must complete immediately. It models the authority algorithm, not
 // the dependency's uninstrumented Tokio locks. No filesystem call holds this
 // mutex; no other model lock is acquired while it is held.
-struct ModelStream(Mutex<State>);
+struct ModelStream(Mutex<State>, CancellationToken);
 struct State {
     inner: MemoryStream,
     retired: bool,
     retired_at_record_read: bool,
+    cancelled_at_record_read: bool,
 }
 
 fn ready<F: Future>(future: F) -> F::Output {
@@ -46,6 +47,7 @@ impl StreamProvider for ModelStream {
         let mut state = self.0.lock().unwrap();
         if request.path.as_str().ends_with("/records") {
             state.retired_at_record_read |= state.retired;
+            state.cancelled_at_record_read |= self.1.is_cancelled();
         }
         ready(state.inner.read(request))
     }
@@ -150,12 +152,16 @@ fn model(change: Change, recheck: bool) {
             ready(inner.commit(initial)).unwrap(),
             CommitOutcome::Committed(_)
         ));
-        let provider = Arc::new(ModelStream(Mutex::new(State {
-            inner,
-            retired: false,
-            retired_at_record_read: false,
-        })));
         let cancellation = CancellationToken::new();
+        let provider = Arc::new(ModelStream(
+            Mutex::new(State {
+                inner,
+                retired: false,
+                retired_at_record_read: false,
+                cancelled_at_record_read: false,
+            }),
+            cancellation.clone(),
+        ));
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let reader = loom::thread::spawn(move || {
@@ -205,6 +211,10 @@ fn model(change: Change, recheck: bool) {
                 assert!(
                     !provider.0.lock().unwrap().retired_at_record_read,
                     "retired payload escaped the second retirement check"
+                );
+                assert!(
+                    !provider.0.lock().unwrap().cancelled_at_record_read,
+                    "cancelled payload escaped admission"
                 );
                 let expected = if head.sequence == first.sequence {
                     &first
