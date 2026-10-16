@@ -131,6 +131,7 @@ required-features = ["notifications"]
 test = false
 doc = false
 bench = false
+
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
@@ -216,6 +217,13 @@ allocation-counter = "0.8.1"
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
 
 [[bench]]
 name = "memory_directory_page"

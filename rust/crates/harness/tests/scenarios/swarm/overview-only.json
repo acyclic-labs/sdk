@@ -1,0 +1,5 @@
+{
+  "layouts":[{"visible":[0,0],"prefetch":[0,0]},{"visible":[0,0],"prefetch":[0,0]}],
+  "expect":{"wire":{"content_follows":0,"removed":0,"snapshots":0,"peak_heads":0,
+    "retained_full":0,"peak_full":0,"visible_updates":0,"fold_items":0,"full_records":0}}
+}

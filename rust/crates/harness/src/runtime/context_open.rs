@@ -228,7 +228,7 @@ impl AgentHarness {
 }
 
 impl TaskContext {
-    pub(super) fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
+    pub(crate) fn preparation_io(&self) -> Result<Option<crate::executor::PreparationIo>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_custody.is_some() || self.model_steps.1.is_some() {
             return crate::executor::PreparationIo::from_native_work(self.native_work()?).map(Some);

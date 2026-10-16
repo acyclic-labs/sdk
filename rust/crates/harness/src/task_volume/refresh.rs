@@ -92,7 +92,7 @@ fn complete<const RESUME: bool>(position: u64, tail: u64, peer_advanced: bool) -
     position >= tail || (!RESUME && peer_advanced)
 }
 
-fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
+pub(super) fn advanced(current: Generation, expected: &Generation) -> Result<Generation> {
     if current.volume != expected.volume
         || current.epoch != expected.epoch
         || current.position <= expected.position

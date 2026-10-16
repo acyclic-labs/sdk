@@ -15,9 +15,9 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
-    /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
-    pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
+    pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
@@ -41,6 +41,7 @@ impl LocalHarnessConfig {
         Self {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
+            state_directory: None,
             model,
             context_manifest: None,
             tools: Vec::new(),
@@ -70,6 +71,12 @@ impl LocalHarnessConfig {
             LocalProject::Volume { directory, .. } => directory,
         };
         self.project = LocalProject::Volume { directory, volume };
+        self
+    }
+    /// Selects the caller-owned durable state directory, outside the checkout.
+    #[must_use]
+    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(directory.into());
         self
     }
     /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
@@ -112,6 +119,15 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn session_limits(mut self, limits: SessionLimits) -> Self {
         self.session_limits = limits;
+        self
+    }
+    /// Selects the finite goal admission policy; `None` disables automatic continuations.
+    #[must_use]
+    pub fn goal_continuations(
+        mut self,
+        policy: Option<crate::goal::GoalContinuationPolicy>,
+    ) -> Self {
+        self.goal_continuations = policy;
         self
     }
     /// Selects maximum concurrent local tasks.

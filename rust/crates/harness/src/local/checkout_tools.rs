@@ -11,6 +11,7 @@ use acyclic_stream::BoxProviderFuture;
 mod bash;
 mod capture;
 mod git;
+mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
 #[cfg(all(test, acyclic_harness_loom))]
@@ -23,15 +24,18 @@ pub(super) struct CheckoutTools {
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
     state: StateArc<AsyncMutex<State>>,
 }
 
-struct State {
-    active: Option<workspace::View>,
-    watcher: Option<capture::Cursor>,
+pub(in crate::local) struct State {
+    pub(in crate::local) active: Option<workspace::View>,
+    pub(in crate::local) watcher: Option<capture::Cursor>,
+    pub(in crate::local) mounts: Arc<workspace::Mounts>,
+    pub(in crate::local) initialized: bool,
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -43,31 +47,41 @@ async fn serialized<T, R>(
     command(lock_owned(StateArc::clone(state)).await).await
 }
 
-// A submitted blocking job owns the guard until its body and cleanup finish,
-// even when its awaiting task is cancelled.
-fn guarded<T, R>(
-    mut state: OwnedMutexGuard<T>,
-    operation: impl FnOnce(&mut T) -> R,
-) -> (R, OwnedMutexGuard<T>) {
-    let result = operation(&mut *state);
-    (result, state)
-}
-
 impl CheckoutTools {
     pub(super) async fn new(
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
     ) -> Result<Self> {
-        let (active, pending) = workspace.selected_view().await?;
+        if workspace
+            .filesystem
+            .workspace_id(&project.storage_name(&mut None)?)
+            .map_err(acyclic_fs::WorkspaceError::from)?
+            != workspace.view().workspace().id()
+        {
+            return Err(Error::Unauthorized(
+                "workspace differs from the bound project volume".into(),
+            ));
+        }
         let (capture_options, capture_policy) = capture::configuration(&workspace)?;
-        let view = active.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) }).await?;
-        let watcher = if workspace.fresh {
-            Some(capture::Cursor::initial(&workspace, &capture_policy)?)
-        } else {
-            None
-        };
+        let shared = StateArc::clone(&workspace.state);
+        {
+            let mut state = lock_owned(StateArc::clone(&shared)).await;
+            if !state.initialized {
+                let (active, pending) = workspace.selected_view().await?;
+                state.active = active;
+                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
+                    .await?;
+                state.watcher = if workspace.fresh {
+                    Some(capture::Cursor::initial(&workspace, &capture_policy)?)
+                } else {
+                    None
+                };
+                state.initialized = true;
+            }
+        }
         Ok(Self {
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
@@ -75,7 +89,8 @@ impl CheckoutTools {
             capture_policy,
             workspace,
             clock,
-            state: StateArc::new(AsyncMutex::new(State { active, watcher })),
+            task_files,
+            state: shared,
         })
     }
 }
@@ -122,21 +137,43 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let command = invocation
-                .arguments
-                .as_object_mut()
-                .and_then(|arguments| arguments.remove("command"));
-            let Some(serde_json::Value::String(command)) = command else {
-                return Err(Error::Invalid("checkout command must be text".into()));
+            let request = if invocation.name == "bash" {
+                serde_json::to_vec(&invocation).map_err(storage)?
+            } else {
+                Vec::new()
             };
-            if command.is_empty() || command.contains('\0') {
-                return Err(Error::Invalid(
-                    "checkout command is empty or contains NUL".into(),
-                ));
-            }
+            let bash = if invocation.name == "bash" {
+                let input: crate::tools::BashInput =
+                    serde_json::from_value(std::mem::take(&mut invocation.arguments))
+                        .map_err(|cause| Error::Invalid(cause.to_string()))?;
+                input.validate()?;
+                Some(input)
+            } else {
+                None
+            };
+            let command = if bash.is_none() {
+                let command = invocation
+                    .arguments
+                    .as_object_mut()
+                    .and_then(|arguments| arguments.remove("command"));
+                let Some(serde_json::Value::String(command)) = command else {
+                    return Err(Error::Invalid("checkout command must be text".into()));
+                };
+                Some(command)
+            } else {
+                None
+            };
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            let fs = if let Some(command) = command {
+                match self.fs_arguments(&command, context.effective_scope()) {
+                    Ok(parsed) => Some(parsed),
+                    Err(error) => return Ok(argument_error(error)),
+                }
+            } else {
+                None
+            };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let result = serialized(&self.state, async |mut state| {
@@ -155,10 +192,13 @@ impl ToolExecutor for CheckoutTools {
                 {
                     state.watcher = None;
                 }
-                if invocation.name == "fs" {
-                    self.fs(&command, context, &mut state).await
+                workspace::volumes::sync(&state.mounts).await?;
+                if let Some(parsed) = fs {
+                    self.fs(parsed, context, &mut state).await
                 } else {
-                    let State { active, watcher } = &mut *state;
+                    let State {
+                        active, watcher, ..
+                    } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
                         view,
@@ -168,8 +208,17 @@ impl ToolExecutor for CheckoutTools {
                         PublicationPermit::Unrestricted,
                     )
                     .await?;
-                    let (result, mut state) = self.bash(command, maximum, state).await?;
-                    let State { active, watcher } = &mut *state;
+                    let input =
+                        bash.ok_or_else(|| Error::Invalid("bash input is absent".into()))?;
+                    let files =
+                        output::Output::open(context, Arc::clone(&self.task_files), request)
+                            .await?;
+                    let (result, mut state, mut files) =
+                        self.bash(input, maximum, state, files).await?;
+                    workspace::volumes::sync(&state.mounts).await?;
+                    let State {
+                        active, watcher, ..
+                    } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
                         view,
@@ -180,6 +229,9 @@ impl ToolExecutor for CheckoutTools {
                     )
                     .await?;
                     owner.verify_owner(None)?.await?;
+                    if let Ok(result) = &result {
+                        files.finish(result).await?;
+                    }
                     result
                 }
             })
@@ -202,5 +254,11 @@ impl ToolExecutor for CheckoutTools {
             // A dispatched process must never be launched again after a lost ack.
             Ok(None)
         })
+    }
+}
+
+fn argument_error(error: Error) -> ToolResult {
+    ToolResult {
+        value: serde_json::json!({"error": error.to_string()}),
     }
 }

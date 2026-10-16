@@ -13,15 +13,11 @@ fn invocation(arguments: Value) -> ToolInvocation {
     ToolInvocation {
         operation_id: OperationId::from_bytes([13; 16]),
         call_id: "read-1".into(),
-        name: "acyclic.read_file_range".into(),
+        name: "read".into(),
         arguments,
     }
 }
 
-const READ: ReadOptions = ReadOptions {
-    maximum_input_bytes: 4096,
-    maximum_text_bytes: 32,
-};
 const SEARCH: SearchOptions = SearchOptions {
     maximum_input_bytes: 4096,
     maximum_query_bytes: 32,
@@ -47,23 +43,14 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     let mut work = super::super::edit::allocation(None, 0)?;
     let file = crate::tool::tests::file(b"ababa")?;
     let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
-    let read = ReadResult {
-        file: file.clone(),
-        selection: super::super::text::read_range(
-            "ababa",
-            TextRange { start: 1, end: 4 },
-            READ,
-            &mut work,
-        )?,
-    };
     let result = ToolResult {
-        value: serde_json::to_value(&read).map_err(|error| Error::Invalid(error.to_string()))?,
+        value: json!("bab"),
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
-        let projector = FileProjection::Range(mode);
+        let projector = FileProjection::Read(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
-            &mode.schema::<ReadResult>()?,
+            &mode.schema::<String>()?,
             &projected,
             "read projection",
             &mut None,
@@ -104,22 +91,23 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
 
 #[test]
 fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Result<()> {
-    let full = read_file_range(READ, 4096, ProjectionMode::Full)?;
-    let reference = read_file_range(READ, 4096, ProjectionMode::Reference)?;
+    let full = FileTool::Read.assemble(ProjectionMode::Full)?;
+    let reference = FileTool::Read.assemble(ProjectionMode::Reference)?;
     assert_ne!(full.definition.digest()?, reference.definition.digest()?);
     assert_eq!(
         full.definition.output_schema,
         reference.definition.output_schema
     );
-    let changed = read_file_range(
-        ReadOptions {
-            maximum_text_bytes: 31,
-            ..READ
+    let search = search_file(SEARCH, 4096, ProjectionMode::Full)?;
+    let changed = search_file(
+        SearchOptions {
+            maximum_matches: 1,
+            ..SEARCH
         },
         4096,
         ProjectionMode::Full,
     )?;
-    assert_ne!(full.definition.digest()?, changed.definition.digest()?);
+    assert_ne!(search.definition.digest()?, changed.definition.digest()?);
     for tool in [
         full,
         reference,
@@ -136,7 +124,7 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
             .is_err()
         );
     }
-    assert!(read_file_range(READ, 0, ProjectionMode::Full).is_err());
+    assert!(search_file(SEARCH, 0, ProjectionMode::Full).is_err());
     assert!(
         search_file(
             SearchOptions {
@@ -154,10 +142,7 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
 #[test]
 fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Result<()> {
     let file = crate::tool::tests::file(b"ababa")?;
-    let adapter = FileTool::ReadRange {
-        options: READ,
-        maximum_result_bytes: 4096,
-    };
+    let adapter = FileTool::Read;
     let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
     let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     assert!(adapter.authorize(None, None, &input, None).is_err());
@@ -182,14 +167,14 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
                 .is_err()
         );
     }
-    let bounded = FileTool::ReadRange {
-        options: ReadOptions {
-            maximum_input_bytes: 4,
-            ..READ
+    let bounded = RuntimeScope::new(
+        scope.grants().clone(),
+        Limits {
+            render_bytes: 2,
+            ..Limits::default()
         },
-        maximum_result_bytes: 4096,
-    };
-    assert!(bounded.preflight(&scope, &input, None).is_err());
+    )?;
+    assert!(adapter.preflight(&bounded, &input, None).is_err());
     let bounded = FileTool::Search {
         options: SEARCH,
         maximum_result_bytes: 1,

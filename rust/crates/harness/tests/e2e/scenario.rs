@@ -113,33 +113,7 @@ impl Scenario {
     }
 }
 
-pub(super) fn load_value(root: &Path, path: &Path) -> Result<Value, String> {
-    let relative = path.strip_prefix(root).map_err(|e| e.to_string())?;
-    let mut merged = Value::Object(serde_json::Map::new());
-    let mut directory = root.to_path_buf();
-    let parents = relative.parent().ok_or("scenario has no parent")?;
-    for component in std::iter::once(None).chain(parents.components().map(Some)) {
-        if let Some(component) = component {
-            directory.push(component);
-        }
-        let defaults = directory.join("_defaults.json");
-        match std::fs::read(&defaults) {
-            Ok(bytes) => merge(
-                &mut merged,
-                serde_json::from_slice(&bytes)
-                    .map_err(|e| format!("{}: {e}", defaults.display()))?,
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", defaults.display())),
-        }
-    }
-    merge(
-        &mut merged,
-        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?,
-    );
-    Ok(merged)
-}
+pub(super) use super::scenario_data::load_value;
 
 #[test]
 fn scenarios_reject_typos_and_vacuous_results() {
@@ -190,17 +164,6 @@ fn limit_overrides_preserve_defaults_and_reject_unknown_keys() -> Result<(), Str
         Scenario::parse(br#"{"prompt":"x","turns":[],"limits":{"typo":2},"expect":{"text":"x"}}"#)?;
     assert!(typo.execution_limits().is_err());
     Ok(())
-}
-
-fn merge(base: &mut Value, delta: Value) {
-    match (base, delta) {
-        (Value::Object(base), Value::Object(delta)) => {
-            for (key, value) in delta {
-                merge(base.entry(key).or_insert(Value::Null), value);
-            }
-        }
-        (base, delta) => *base = delta,
-    }
 }
 
 #[test]

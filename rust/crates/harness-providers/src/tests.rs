@@ -17,6 +17,8 @@ use std::{
 };
 #[path = "counting/admission_tests.rs"]
 mod admission_tests;
+#[path = "alloy_tests.rs"]
+mod alloy_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
@@ -34,7 +36,7 @@ mod gemini_replay_tests;
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
-mod native_tests;
+pub(crate) mod native_tests;
 #[path = "tool_name_tests.rs"]
 mod tool_name_tests;
 
@@ -80,8 +82,11 @@ fn fixtures() -> [(Adapter, &'static str); 4] {
     ]
 }
 
-fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
-    let bytes = Bytes::copy_from_slice(input.as_bytes());
+fn chunks(
+    input: impl AsRef<[u8]>,
+    width: usize,
+) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
+    let bytes = Bytes::copy_from_slice(input.as_ref());
     let chunks: Vec<_> = (0..bytes.len())
         .step_by(width)
         .map(|start| Ok(bytes.slice(start..(start + width).min(bytes.len()))))
@@ -292,11 +297,15 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         },
         key: Some("scripted-key".into()),
         transport: script.clone(),
+        #[cfg(not(target_arch = "wasm32"))]
+        codex_count: crate::codex_count::Counter::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        codex_login: None,
     };
     (provider, script)
 }
 
-fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
+pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: provider.model.clone(),
@@ -454,9 +463,12 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         base_url: "https://example.test/v1".into(),
         models: BTreeMap::from([(
             "org/model".into(),
-            ModelContextCapacity {
-                context_tokens: 8192,
-                output_tokens: 1024,
+            ModelSpec {
+                capacity: ModelContextCapacity {
+                    context_tokens: 8192,
+                    output_tokens: 1024,
+                },
+                features: ModelFeatures::default(),
             },
         )]),
         token_counter: Some(crate::TokenCounterSpec {

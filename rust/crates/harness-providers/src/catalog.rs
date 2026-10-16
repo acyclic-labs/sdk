@@ -1,4 +1,6 @@
-use crate::{Adapter, Authentication, ProviderSpec, TokenCountField, TokenCounterSpec};
+use crate::{
+    Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCountField, TokenCounterSpec,
+};
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
@@ -12,7 +14,7 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
         "openai",
         Adapter::Responses,
-        Authentication::ApiKey,
+        Authentication::ApiKeyOrCodexLogin,
         "https://api.openai.com/v1",
     ),
     (
@@ -68,18 +70,59 @@ const COUNTERS: &[(&str, &str, Adapter, TokenCountField)] = &[
     ),
 ];
 
-const MODELS: &[(&str, &str, u32, u32)] = &[
-    ("anthropic", "claude-sonnet-4-5", 200_000, 64_000),
-    ("anthropic", "claude-sonnet-4-5-20250929", 200_000, 64_000),
-    ("gemini", "gemini-2.5-pro", 1_048_576, 65_536),
-    ("gemini", "gemini-2.5-flash", 1_048_576, 65_536),
-    ("openai", "gpt-4.1", 1_047_576, 32_768),
-    ("openai", "gpt-4.1-2025-04-14", 1_047_576, 32_768),
-    ("openai", "gpt-5", 400_000, 128_000),
-    ("openai", "gpt-5-2025-08-07", 400_000, 128_000),
+const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
+    tools: true,
+    images: true,
+};
+
+const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
+    (
+        "anthropic",
+        "claude-sonnet-4-5",
+        200_000,
+        64_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+        200_000,
+        64_000,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-2.5-pro",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    (
+        "gemini",
+        "gemini-2.5-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+    ),
+    ("openai", "gpt-4.1", 1_047_576, 32_768, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-4.1-2025-04-14",
+        1_047_576,
+        32_768,
+        TOOLS_AND_IMAGES,
+    ),
+    ("openai", "gpt-5", 400_000, 128_000, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-5-2025-08-07",
+        400_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+    ),
 ];
 
-/// Standard endpoint policies and exact model capacities as ordinary data.
+/// Standard endpoint policies, model capacities and capabilities as ordinary data.
 pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
     ENDPOINTS
         .iter()
@@ -87,12 +130,15 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
             let models = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
-                .map(|&(_, name, context_tokens, output_tokens)| {
+                .map(|&(_, name, context_tokens, output_tokens, features)| {
                     (
                         name.into(),
-                        ModelContextCapacity {
-                            context_tokens,
-                            output_tokens,
+                        crate::ModelSpec {
+                            capacity: ModelContextCapacity {
+                                context_tokens,
+                                output_tokens,
+                            },
+                            features,
                         },
                     )
                 })

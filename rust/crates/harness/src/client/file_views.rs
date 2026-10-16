@@ -3,7 +3,11 @@
 use crate::task_volume::{
     Change, Channel, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
 };
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::btree_map::Entry;
+#[cfg(feature = "test-support")]
+type Files = crate::test_support::TaskVolumeFiles<HeadFile>;
+#[cfg(not(feature = "test-support"))]
+type Files = std::collections::BTreeMap<FileKey, HeadFile>;
 
 /// Bounds for one selected file query, including every retained segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -20,7 +24,7 @@ pub struct QueryViewLimits {
 /// One query's materialized files; snapshots and deltas never concatenate text.
 pub struct FileViews {
     cursor: Cursor,
-    files: BTreeMap<FileKey, HeadFile>,
+    files: Files,
     limits: QueryViewLimits,
     segments: usize,
     bytes: u64,
@@ -49,7 +53,7 @@ impl FileViews {
         }
         let mut view = Self {
             cursor: snapshot.cursor,
-            files: BTreeMap::new(),
+            files: Files::default(),
             limits,
             segments: 0,
             bytes: 0,

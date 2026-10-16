@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "partial_admission.rs"]
+mod partial_admission;
+
 #[test]
 fn exhausted_child_revision_rejects_cancellation_atomically() -> Result<()> {
     let mut scheduler = Scheduler::new();

@@ -15,6 +15,9 @@ use crate::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
+#[path = "persistent_diff/ordered.rs"]
+pub(super) mod ordered;
+
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
@@ -895,7 +898,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
     cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F>(
+    let result = diff_with_accounting::<S, F, true, true>(
         store,
         before,
         after,

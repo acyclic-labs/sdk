@@ -52,11 +52,10 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
         super::checked_commands::call(8, "bash", "cat note.txt shell.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(volume_config(
-        directory.path(),
-        project.clone(),
-        provider.clone(),
-    )?)
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project.clone(), provider.clone())?
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
@@ -96,8 +95,11 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
     let view = checkout.path.clone();
     drop(head);
     drop(harness);
-    let harness =
-        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
+    .await?;
     assert_eq!(harness.workspace().unwrap().path, view);
     super::checkout_reopen::run(&harness).await?;
     assert_eq!(

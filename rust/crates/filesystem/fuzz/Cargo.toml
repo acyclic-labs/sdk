@@ -28,6 +28,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "git_markers"
+path = "fuzz_targets/git_markers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_pending"
+path = "fuzz_targets/git_pending.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "paths"
 path = "fuzz_targets/paths.rs"
 test = false

@@ -3,6 +3,7 @@ mod binding;
 mod content;
 mod fork;
 mod publication;
+mod ranges;
 pub(in crate::objects) use content::{content_identity, storage};
 
 /// One authenticated Objects bucket/volume binding. The bucket identity is

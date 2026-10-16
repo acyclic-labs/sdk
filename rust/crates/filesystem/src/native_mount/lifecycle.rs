@@ -164,6 +164,23 @@ pub fn mount_native_over_existing(
     }
 }
 
+/// Exact provider metadata beside an absolute, canonical mount destination.
+/// Composed namespaces exclude these files from their parent volume's capture.
+pub fn native_mount_control_paths(destination: &Path) -> Result<[PathBuf; 2], NativeMountError> {
+    if !destination.is_absolute()
+        || destination.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(NativeMountError::InvalidDestination);
+    }
+    let (fence, registry) = MountDestinationGuard::paths_for_canonical(destination)?;
+    Ok([fence, registry])
+}
+
 /// Reclaims the process fence for one externally detached destination.
 pub fn reclaim_native_mount_destination_fence(destination: &Path) -> Result<(), NativeMountError> {
     let canonical = destination
