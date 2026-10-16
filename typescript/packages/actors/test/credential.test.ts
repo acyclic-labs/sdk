@@ -197,17 +197,17 @@ test("synchronous provider cancellation always consumes its rejection", () => {
   `;
   fc.assert(fc.property(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), value => {
     for (const mode of ["return", "throw", "reject"]) {
-    const run = (variant: string) => spawnSync("node", ["--unhandled-rejections=strict", "--input-type=module", "-e", fixture, variant, mode, value], {
-      encoding: "utf8", timeout: 1000, windowsHide: true,
-    });
-    const fixed = run("fixed");
-    expect(fixed.error).toBeUndefined();
-    expect(fixed.stderr).toBe("");
-    expect(fixed.status).toBe(0);
-    const broken = run("broken");
-    expect(broken.error).toBeUndefined();
-    expect(broken.status).toBe(1);
-    expect(broken.stderr).toMatch(/AbortError|late credential failure/);
+      const run = (variant: string) => spawnSync("node", ["--unhandled-rejections=strict", "--input-type=module", "-e", fixture, variant, mode, value], {
+        encoding: "utf8", timeout: 1000, windowsHide: true,
+      });
+      const fixed = run("fixed");
+      expect(fixed.error).toBeUndefined();
+      expect(fixed.stderr).toBe("");
+      expect(fixed.status).toBe(0);
+      const broken = run("broken");
+      expect(broken.error).toBeUndefined();
+      expect(broken.status).toBe(1);
+      expect(broken.stderr).toMatch(/AbortError|late credential failure/);
     }
   }), { numRuns: 4 });
 }, 8000);
