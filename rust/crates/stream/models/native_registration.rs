@@ -11,7 +11,6 @@ fn registration(broken: bool) {
     loom::model(move || {
         let active = Arc::new(AtomicU64::new(1)); // A is waiting before Welcome.
         let welcome = Arc::new(gate::Gate::new());
-        let cancelled = Arc::new(signal::Signal::new());
         let registering = Arc::clone(&active);
         let pending_welcome = Arc::clone(&welcome);
         let work = async move {
@@ -26,15 +25,12 @@ fn registration(broken: bool) {
             futures::future::Either::Right(eager::start(work))
         };
         let abandoning = Arc::clone(&active);
-        let notify = Arc::clone(&cancelled);
         let first = loom::thread::spawn(move || {
             let observed = abandoning.fetch_sub(1, Ordering::SeqCst);
-            notify.send(()).unwrap();
-            observed
-        });
-        let releasing = loom::thread::spawn(move || {
-            loom::future::block_on(cancelled.next()).unwrap();
+            // Welcome follows A's cancellation. The worker can poll before,
+            // between or after these actions; no third participant is needed.
             welcome.set(true).unwrap();
+            observed
         });
         // Welcome can arrive before or after the worker replaces the temporary
         // waker. Both orders must complete without losing the notification.
@@ -44,7 +40,6 @@ fn registration(broken: bool) {
             2,
             "a pending sibling must register before cancellation"
         );
-        releasing.join().unwrap();
         assert_eq!(active.load(Ordering::SeqCst), 0);
     });
 }
