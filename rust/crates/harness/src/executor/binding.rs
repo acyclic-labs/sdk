@@ -101,7 +101,7 @@ impl StockExecution<'_> {
         }
         let io = self.io;
         let contracts = self.context_pipeline().contracts(io)?;
-        let tools = self.stock.tools.definitions(io)?;
+        let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         let task_context = self.context.map(|(context, operation)| IssuedContext {
             admission_operation: context.id(),
             execution_operation: operation,

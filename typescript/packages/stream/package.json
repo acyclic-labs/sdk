@@ -31,6 +31,10 @@
     "./native": {
       "default": "./dist/native.js",
       "types": "./dist/native.d.ts"
+    },
+    "./session/proto": {
+      "types": "./generated/proto/stream/v1/session_pb.d.ts",
+      "default": "./generated/proto/stream/v1/session_pb.js"
     }
   },
   "types": "./dist/index.d.ts",

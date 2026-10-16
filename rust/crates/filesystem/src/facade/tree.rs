@@ -73,7 +73,7 @@ pub(super) async fn list_directory_to_file_root_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) async fn stage_empty_tree_with_accounting(
+    pub(crate) async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -137,24 +137,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if matches!(after, std::ops::Bound::Included(_)) && self.tracks_observations() {
             return Err(FsError::UnsupportedCheckout);
         }
+        let (lookup, _allocation) = self
+            .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+            .await?;
+        self.list_directory_record_with_accounting(
+            lookup.record.ok_or(FsError::NotFound)?,
+            after,
+            maximum_entries,
+            accounting,
+            cancellation,
+        )
+        .await
+    }
+
+    // Alias resolution already knows the exact parent record. Keeping the
+    // listing and observation body independent of path resolution avoids
+    // recursively resolving aliases while scanning their siblings.
+    pub(super) async fn list_directory_record_with_accounting(
+        &mut self,
+        record: FileRecord,
+        after: std::ops::Bound<&LogicalName>,
+        maximum_entries: u32,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            DirectoryPage,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        FsError,
+    > {
         accounting.check()?;
         let before = readonly_standalone_live(accounting);
         // The future is destroyed before its exact physical frame claim.
         let mut frame_allocation = None;
         let (mut future, frame_bytes) = crate::heap_future::in_heap_admitted(
-            (&mut *self, path, after, &mut *accounting, cancellation),
+            (&mut *self, record, after, &mut *accounting, cancellation),
             |(_, _, _, accounting, _), bytes| {
                 frame_allocation = Some(accounting.claim_owned(bytes, u64::from(bytes != 0))?);
                 Ok::<_, FsError>(())
             },
-            |(this, path, after, accounting, cancellation)| async move {
-                let lookup = {
-                    let (lookup, _lookup_allocation) = this
-                        .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
-                        .await?;
-                    lookup
-                };
-                let record = lookup.record.ok_or(FsError::NotFound)?;
+            |(this, record, after, accounting, cancellation)| async move {
                 let FilePayload::Directory { entries } = record.payload else {
                     return Err(FsError::NotDirectory);
                 };

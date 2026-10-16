@@ -211,7 +211,7 @@ impl ProjectionState {
                 work.charge(Items.delta(1))?;
                 if let Some(held) = binding.kernel
                     && !source.unchanged_since_with_meter(
-                        &binding.path,
+                        binding.native_path(),
                         Some(file_id),
                         held,
                         work,

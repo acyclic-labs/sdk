@@ -1,6 +1,10 @@
 //! Shared Ed25519 capability contract for hosted and in-process runtimes.
+#[cfg(test)]
+extern crate self as acyclic_auth;
 pub mod authority;
 pub mod contract;
+pub mod crypto;
+pub mod verify;
 mod resource;
 pub mod socket;
 mod validation;

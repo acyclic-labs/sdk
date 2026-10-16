@@ -71,6 +71,7 @@ proptest! {
     fn random_edits_match_string_model(ops in prop::collection::vec(operation(), 0..80)) {
         let mut editor = Editor::default();
         let mut model = Model::default();
+        let mut history = acyclic_harness_tui::PromptHistory::default();
         let mut undo = vec![];
         let mut redo = vec![];
         let mut recalled_draft = None;
@@ -114,9 +115,9 @@ proptest! {
                 }
                 9 => {
                     let entry = format!("saved{text}");
-                    editor.history().push(entry.clone());
+                    history.push(entry.clone());
                     recalled_draft = None;
-                    prop_assert_eq!(editor.recall(true, step as u64), model.cursor == 0);
+                    prop_assert_eq!(editor.recall(&mut history, true, step as u64), model.cursor == 0);
                     if model.cursor == 0 {
                         recalled_draft = Some(model.text.clone());
                         model.text = normalize_reference(&entry);
@@ -125,7 +126,7 @@ proptest! {
                 }
                 _ => {
                     let expected = model.cursor == model.text.len() && recalled_draft.is_some();
-                    prop_assert_eq!(editor.recall(false, step as u64), expected);
+                    prop_assert_eq!(editor.recall(&mut history, false, step as u64), expected);
                     if expected {
                         model.text = recalled_draft.take().unwrap();
                         model.cursor = model.text.len();

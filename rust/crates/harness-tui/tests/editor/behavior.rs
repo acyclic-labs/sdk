@@ -168,12 +168,13 @@ fn history_preserves_draft_and_reverse_search_order() {
     assert_eq!(history.reverse_search("first"), Some("first".into()));
     assert_eq!(history.reverse_search("first"), None);
     let mut editor = Editor::new("draft");
-    editor.history().push("older".into());
-    assert!(!editor.recall(true, 0));
+    let mut history = acyclic_harness_tui::PromptHistory::default();
+    history.push("older".into());
+    assert!(!editor.recall(&mut history, true, 0));
     editor.set_cursor(0, false);
-    assert!(editor.recall(true, 0));
+    assert!(editor.recall(&mut history, true, 0));
     editor.move_cursor(Motion::End, false, 10);
-    assert!(editor.recall(false, 0));
+    assert!(editor.recall(&mut history, false, 0));
     assert_eq!(editor.text(), "draft");
 }
 

@@ -41,7 +41,7 @@ pub struct Config {
     #[serde(default)]
     pub tools: crate::native_tools::NativeToolsConfig,
     #[serde(default)]
-    pub context: WorkflowContext,
+    pub context_manifest: Option<acyclic_harness::conversation::FileRef>,
     #[serde(default)]
     pub native_publications: Vec<crate::native_writeback::NativePublicationConfig>,
     #[serde(default)]
@@ -101,46 +101,4 @@ impl Config {
 pub struct ForkSourceConfig {
     pub caller: TaskId,
     pub request: acyclic_harness::fork::ForkRequest,
-}
-
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkflowContext {
-    pub discovery: Option<ContextDiscovery>,
-    pub discovered: Option<DiscoveredContext>,
-    #[serde(default)]
-    pub attributes: Vec<ContextAttribute>,
-    pub attribute_mode: Option<ContextRenderMode>,
-}
-impl WorkflowContext {
-    pub(super) fn pipeline(&self) -> Result<ContextPipeline> {
-        let mut pipeline = ContextPipeline::default();
-        if let Some(discovered) = &self.discovered {
-            pipeline = pipeline.with(Arc::new(
-                discovered.clone().stage(ContextPlacement::Prepend)?,
-            ));
-        }
-        let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
-        for attribute in &self.attributes {
-            attribute.validate(&mut None)?;
-            let text = serde_json::to_string(attribute).map_err(invalid)?;
-            pipeline = pipeline.with(Arc::new(SourceStage::new(
-                attribute.type_name.clone(),
-                attribute.state_revision.clone(),
-                Arc::new(Context {
-                    messages: vec![ModelMessage {
-                        role: ModelRole::System,
-                        content: ModelContent::Text(format!("{mode:?}:{text}")),
-                    }],
-                    ..Context::default()
-                }),
-                if mode == ContextRenderMode::Update {
-                    ContextPlacement::Append
-                } else {
-                    ContextPlacement::Prepend
-                },
-            )));
-        }
-        Ok(pipeline)
-    }
 }

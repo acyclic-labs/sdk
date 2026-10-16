@@ -448,14 +448,12 @@ impl LocalMount {
         permit: PublicationPermit,
     ) -> Result<(), String> {
         let name = std::str::from_utf8(name).map_err(display)?;
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| display(cause))?;
-        self.routes
+        let mount = self
+            .routes
             .get(name)
-            .ok_or_else(|| "mounted root route is missing".to_owned())?
+            .ok_or_else(|| "mounted root route is missing".to_owned())?;
+        let work = mount.native_work().map_err(display)?;
+        mount
             .sync_with_permit(permit, &work, |_| {
                 std::future::ready(Ok::<(), acyclic_fs::native_mount::MountLifecycleError>(()))
             })
@@ -466,14 +464,22 @@ impl LocalMount {
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.sync().await.map_err(display)?;
+            if let Err(error) = mount.sync().await {
+                return Err(mount
+                    .take_callback_failure()
+                    .map_or_else(|| display(error), |(cause, _work)| display(cause)));
+            }
         }
         Ok(())
     }
 
     pub(crate) async fn advance_to_head(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.advance_to_head().await.map_err(display)?;
+            if let Err(error) = mount.advance_to_head().await {
+                return Err(mount
+                    .take_callback_failure()
+                    .map_or_else(|| display(error), |(cause, _work)| display(cause)));
+            }
         }
         Ok(())
     }
@@ -565,7 +571,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
         if workspace.id() != physical.workspace_id {
             return Ok(());
         }
-        let directory = root_materialization_directory(&physical.path, operation_id)
+        let directory = NativeDirectory(&physical.path)
+            .publication_directory(operation_id)
             .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
@@ -623,7 +630,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .remove_materialization_async(operation_id)
             .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        let directory = root_materialization_directory(&physical.path, operation_id)
+        let directory = NativeDirectory(&physical.path)
+            .publication_directory(operation_id)
             .map_err(PluginRootMaterializerError)?;
         match fs::remove_dir_all(&directory) {
             Ok(()) => {}
@@ -631,33 +639,5 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             Err(error) => return Err(PluginRootMaterializerError(error.to_string())),
         }
         Ok(())
-    }
-}
-
-pub(crate) fn existing_tracked_paths<'a>(
-    generation: &'a LocalGeneration,
-    candidates: &'a BTreeSet<String>,
-) -> impl std::future::Future<Output = Result<BTreeSet<String>, PluginGitError>> + Send + 'a {
-    async move {
-        let mut tracked = BTreeSet::new();
-        for path in candidates {
-            match generation
-                .stat(
-                    &format!("/{path}"),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-            {
-                Ok(stat) if stat.kind != FileKind::Directory => {
-                    tracked.insert(path.clone());
-                }
-                Ok(_) | Err(WorkspaceError::NotFound) => {}
-                Err(error) => return Err(PluginGitError(display(error))),
-            }
-        }
-        Ok(tracked)
     }
 }
