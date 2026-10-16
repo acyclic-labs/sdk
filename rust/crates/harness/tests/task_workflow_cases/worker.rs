@@ -850,7 +850,7 @@ pub(super) async fn worker_restart_with_options(
                             .send(task, task, probe, input.payload.clone())
                     );
                     stock?;
-                    legacy?;
+                    assert!(legacy?);
                     let command = WorkflowCommand {
                         operation_id: OperationId::from_bytes([26; 16]),
                         kind: MAIL_SEND_TASK_COMMAND_KIND.into(),
@@ -906,7 +906,7 @@ pub(super) async fn worker_restart_with_options(
                         runtime.task_host().wait_until(task, &fence, probe, 1, None)
                     );
                     assert!(stock?);
-                    legacy?;
+                    assert!(legacy?);
                     assert!(matches!(
                         runtime.task_host().wait_until(task, &fence, probe, 2, None).await,
                         Err(Error::Conflict(_))

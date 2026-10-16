@@ -39,7 +39,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         .await
     }
 
-    /// Retains an absolute wait under the caller's lease, then waits once for its deadline.
+    /// Retains a scoped absolute wait and reports readiness on the injected clock.
+    /// The runtime owns waiting for timer delivery; this entry point never polls time.
     #[cfg(feature = "filesystem")]
     pub async fn wait_until(
         self: &Arc<Self>,
@@ -48,21 +49,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation: OperationId,
         deadline_unix_ms: u64,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        if !self
-            .poll_timer(task, fence, operation, deadline_unix_ms, io)
-            .await?
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(
-                deadline_unix_ms.saturating_sub(self.now_unix_millis()),
-            ))
-            .await;
-        }
-        let mut history = io.map(|io| io.history_io());
-        let mut work = history
-            .as_mut()
-            .map(|io| io as &mut dyn crate::store::HistoryIo);
-        self.verify_owner(task, fence, false, &mut work).await
+    ) -> Result<bool> {
+        self.poll_timer(task, fence, operation, deadline_unix_ms, io)
+            .await
     }
 
     /// Retains the exact timer identity under the current task fence.

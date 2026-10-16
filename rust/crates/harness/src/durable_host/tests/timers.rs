@@ -23,11 +23,11 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
         } else if first == 1 {
             assert!(f.host.poll_timer(task, &fence, operation, 1, None).await?);
         } else {
-            f.host.wait_until(task, &fence, operation, 1, None).await?;
+            assert!(f.host.wait_until(task, &fence, operation, 1, None).await?);
         }
         assert!(f.host.schedule_timer(task, &fence, &record, None).await?);
         assert!(f.host.poll_timer(task, &fence, operation, 1, None).await?);
-        f.host.wait_until(task, &fence, operation, 1, None).await?;
+        assert!(f.host.wait_until(task, &fence, operation, 1, None).await?);
         let (tail, found) = f.host.timer_state(task, operation, 1, &mut None).await?;
         assert!(found);
         assert_eq!(tail, u64::from(index - 1));
@@ -62,10 +62,14 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
                 .poll_timer(task, &fence, operation, 1, None)
                 .await
                 .map(|_| ()),
-            _ => f.host.wait_until(task, &fence, operation, 1, None).await,
+            _ => f
+                .host
+                .wait_until(task, &fence, operation, 1, None)
+                .await
+                .map(|_| ()),
         };
         assert!(
-            rejected.is_err(),
+            matches!(rejected, Err(Error::Conflict(_))),
             "stale entry point {entry} retained a timer"
         );
         let (tail, found) = f.host.timer_state(task, operation, 1, &mut None).await?;
@@ -78,6 +82,31 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
                 .await?
         );
     }
+    let pending_operation = OperationId::from_bytes([8; 16]);
+    // Retention returns readiness; it must not wait for or poll the runtime's clock.
+    let ready = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        f.host
+            .wait_until(task, replacement_fence, pending_operation, u64::MAX, None),
+    )
+    .await
+    .expect("scoped retention waited for the deadline")?;
+    assert!(!ready);
+    assert!(
+        !f.host
+            .poll_timer(task, replacement_fence, pending_operation, u64::MAX, None)
+            .await?
+    );
+    let pending = acyclic_actors::timers::TimerRecord::new(
+        task.to_string(),
+        pending_operation.to_string(),
+        u64::MAX,
+    )?;
+    assert!(
+        !f.host
+            .schedule_timer(task, replacement_fence, &pending, None)
+            .await?
+    );
     let other = acyclic_actors::timers::TimerRecord {
         task_id: TaskId::from_bytes([9; 16]).to_string(),
         ..record
