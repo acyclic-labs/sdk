@@ -141,11 +141,11 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     std::fs::create_dir(&directory)?;
     let (host, volume, workspace, reader) = diff_workspace::seed(&directory, &case.seed).await?;
     let provider = Arc::new(resolve(&case, transport.clone())?);
-    let mut config = local_harness_config(&directory, (provider.model().clone(), provider))?
+    let config = local_harness_config(&directory, (provider.model().clone(), provider))?
         .state_directory(temporary.path().join("state"))
         .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled);
-    config.goal_continuations = None;
+        .compaction(CompactionPolicy::Disabled)
+        .goal_continuations(None);
     let harness = LocalHarness::open(config).await?;
     let operation = OperationId::new();
     let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =

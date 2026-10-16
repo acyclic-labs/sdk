@@ -1,8 +1,8 @@
 use super::provider_case::{Protocol, ProviderCase};
 use acyclic_harness::{Error, NativeFutureBundle, Result, context::ModelContextCapacity};
 use acyclic_harness_providers::{
-    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ProviderSpec,
-    Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
+    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
+    ModelSpec, ProviderSpec, Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
 };
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
@@ -125,9 +125,15 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             base_url: "https://recorded.invalid/v1".into(),
             models: BTreeMap::from([(
                 "model".into(),
-                ModelContextCapacity {
-                    context_tokens: 8192,
-                    output_tokens: 1024,
+                ModelSpec {
+                    capacity: ModelContextCapacity {
+                        context_tokens: 8192,
+                        output_tokens: 1024,
+                    },
+                    features: ModelFeatures {
+                        tools: true,
+                        images: false,
+                    },
                 },
             )]),
             token_counter: Some(TokenCounterSpec {
