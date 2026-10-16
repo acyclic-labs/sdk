@@ -2,6 +2,26 @@
 #![cfg(all(acyclic_stream_loom, feature = "grpc"))]
 
 #[test]
+fn provider_source_publication_cannot_lose_its_wake() {
+    acyclic_stream::session::verify_source_wakes(false);
+}
+#[test]
+#[should_panic(expected = "provider source lost its publication wake")]
+fn negative_control_omits_the_source_wake() {
+    acyclic_stream::session::verify_source_wakes(true);
+}
+
+#[test]
+fn cancelled_follow_is_removed_before_replacement_admission() {
+    acyclic_stream::session::verify_cancel_before_open(false);
+}
+#[test]
+#[should_panic(expected = "cancelled follow survived replacement admission")]
+fn negative_control_new_open_overtakes_cancellation() {
+    acyclic_stream::session::verify_cancel_before_open(true);
+}
+
+#[test]
 fn latest_cursor_fencing_and_conflated_watermarks_use_the_real_pool() {
     acyclic_stream::session::verify_follow_data(0);
 }

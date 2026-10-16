@@ -1,7 +1,5 @@
 use super::sync::Mutex;
 use crate::StreamError;
-#[cfg(not(target_arch = "wasm32"))]
-use futures::{Stream, StreamExt, future};
 use std::{
     future::poll_fn,
     task::{Context, Poll, Waker},
@@ -17,10 +15,6 @@ impl Gate {
         Self {
             state: Mutex::new((false, None)),
         }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn current(&self) -> Result<bool, StreamError> {
-        Ok(self.state.lock().map_err(|_| StreamError::Unavailable)?.0)
     }
     pub(super) fn set(&self, enabled: bool) -> Result<(), StreamError> {
         let wake = {
@@ -52,23 +46,5 @@ impl Gate {
     }
     pub(super) async fn changed(&self, expected: bool) -> Result<(), StreamError> {
         poll_fn(|cx| self.poll_changed(expected, cx)).await
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn next<S: Stream + Unpin>(
-        &self,
-        records: &mut S,
-    ) -> Result<Option<S::Item>, StreamError> {
-        loop {
-            if !self.current()? {
-                self.changed(false).await?;
-                continue;
-            }
-            let changed = self.changed(true);
-            futures::pin_mut!(changed);
-            match future::select(changed, records.next()).await {
-                future::Either::Left((changed, _)) => changed?,
-                future::Either::Right((record, _)) => return Ok(record),
-            }
-        }
     }
 }
