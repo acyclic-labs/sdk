@@ -7,6 +7,25 @@ use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+const PUBLICATION_ATTEMPTS: usize = 4;
+
+fn attempt(work: NativeWork<'_>) -> Result<()> {
+    if let Some(work) = work {
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+    }
+    Ok(())
+}
+
+fn ready(task: &Component, id: &Component) -> FileKey {
+    FileKey::Task {
+        task: task.clone(),
+        file: TaskFile::RequestReady(id.clone()),
+    }
+}
+
 /// Contents of `requests/search-<id>/result.json`. Credentials are never published.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
@@ -91,20 +110,12 @@ fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::
     }
     let (decoded, custody) = if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let decoded: SearchRequest =
-            io.decode_json(bytes).map_err(|error| match error {
-                Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason:
-                        "invalid JSON nesting"
-                        | "incomplete JSON document"
-                        | "JSON nesting limit exceeded",
-                }
-                | Error::NativeJson { .. } => {
-                    super::rejection(Some(work), "invalid search request file")
-                }
-                error => error,
-            })?;
+        let decoded: SearchRequest = io.decode_json(bytes).map_err(|error| match error {
+            Error::NativeJsonAdmission { .. } | Error::NativeJson { .. } => {
+                super::rejection(Some(work), "invalid search request file")
+            }
+            error => error,
+        })?;
         let retained = (std::mem::size_of::<SearchRequest>() + decoded.query.capacity()) as u64;
         (decoded, Some(io.into_native_custody(retained)?))
     } else {
@@ -247,7 +258,7 @@ where
 {
     let started = file(task, id, false);
     let result = file(task, id, true);
-    let outcome = loop {
+    let (outcome, retain) = loop {
         let completed = volume
             .snapshot(&Query::File(result.clone()), 1)
             .await
@@ -271,9 +282,35 @@ where
                 })?;
             }
             if claim.bytes == encode(fence, work)? {
-                return Ok(());
+                let retained = volume
+                    .snapshot(&Query::File(ready(task, id)), 1)
+                    .await
+                    .map_err(storage)?;
+                let retained = if retained.files.is_empty() {
+                    let completion = volume
+                        .file_volume(&ready(task, id))
+                        .await
+                        .map_err(storage)?;
+                    completion
+                        .snapshot(&Query::File(ready(task, id)), 1)
+                        .await
+                        .map_err(storage)?
+                } else {
+                    retained
+                };
+                let Some(response) = retained.files.first() else {
+                    return Err(Error::SearchPublicationDeferred);
+                };
+                if let Some(work) = work {
+                    work.charge(acyclic_fs::WorkCounters {
+                        source_bytes_read: response.bytes.len() as u64,
+                        items_examined: 1,
+                        ..Default::default()
+                    })?;
+                }
+                return finish(volume, result, response.bytes.clone(), authorize, work).await;
             }
-            break SearchOutcome::Indeterminate;
+            break (SearchOutcome::Indeterminate, false);
         }
         let key = FileKey::Task {
             task: task.clone(),
@@ -289,6 +326,11 @@ where
         let Some(input) = snapshot.files.first() else {
             return Ok(());
         };
+        // A failed open must leave the request unclaimed and safe to retry.
+        let completion = volume
+            .file_volume(&ready(task, id))
+            .await
+            .map_err(storage)?;
         let claim = FileValue::new(started.clone(), encode(fence, work)?);
         match volume
             .append_if(
@@ -353,28 +395,108 @@ where
         }
         .await;
         match dispatch {
-            Ok(encoded) => {
-                match publish(volume, result.clone(), encoded, authorize, work).await {
-                    Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
-                        break SearchOutcome::Rejected;
-                    }
-                    other => other?,
+            Ok(encoded) => match retain_response(&completion, ready(task, id), encoded, work).await
+            {
+                Ok(encoded) => return finish(volume, result, encoded, authorize, work).await,
+                Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+                    break (SearchOutcome::Rejected, true);
                 }
-                return Ok(());
+                Err(error) => return Err(error),
+            },
+            Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+                break (SearchOutcome::Rejected, true);
             }
-            Err(Error::ToolRejected(_) | Error::Invalid(_)) => break SearchOutcome::Rejected,
             Err(
                 Error::Storage(_)
                 | Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Storage,
                     ..
                 },
-            ) => break SearchOutcome::Indeterminate,
+            ) => break (SearchOutcome::Indeterminate, true),
             Err(error) if error.is_native_failure() => return Err(error),
-            Err(_) => break SearchOutcome::Failed,
+            Err(_) => break (SearchOutcome::Failed, true),
         }
     };
-    publish(volume, result, encode(&outcome, work)?, authorize, work).await
+    let encoded = encode(&outcome, work)?;
+    let encoded = if retain {
+        let completion = volume
+            .file_volume(&ready(task, id))
+            .await
+            .map_err(storage)?;
+        retain_response(&completion, ready(task, id), encoded, work).await?
+    } else {
+        encoded
+    };
+    finish(volume, result, encoded, authorize, work).await
+}
+
+async fn retain_response<P: StreamProvider>(
+    volume: &TaskVolume<P>,
+    key: FileKey,
+    bytes: OwnedBytes,
+    work: NativeWork<'_>,
+) -> Result<OwnedBytes> {
+    for _ in 0..PUBLICATION_ATTEMPTS {
+        attempt(work)?;
+        let snapshot = volume
+            .snapshot(&Query::File(key.clone()), 1)
+            .await
+            .map_err(storage)?;
+        if let Some(saved) = snapshot.files.first() {
+            return Ok(saved.bytes.clone());
+        }
+        match volume
+            .append_if(
+                snapshot.generation,
+                &FileValue::new(key.clone(), bytes.clone()),
+                vec![],
+                None,
+                work,
+            )
+            .await
+        {
+            Ok(_) => return Ok(bytes),
+            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(crate::task_volume::Error::LimitExceeded) => {
+                return Err(super::rejection(
+                    work,
+                    "search file exceeds packed byte limit",
+                ));
+            }
+            Err(error) => return Err(storage(error)),
+        }
+    }
+    Err(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Storage,
+        reason: "cannot persist completed search response",
+    })
+}
+
+async fn finish<P, A, Fut>(
+    volume: &TaskVolume<P>,
+    key: FileKey,
+    bytes: OwnedBytes,
+    authorize: &A,
+    work: NativeWork<'_>,
+) -> Result<()>
+where
+    P: StreamProvider,
+    A: Fn(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
+{
+    match publish(volume, key.clone(), bytes, authorize, work).await {
+        Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+            publish(
+                volume,
+                key,
+                encode(&SearchOutcome::Rejected, work)?,
+                authorize,
+                work,
+            )
+            .await
+        }
+        other => other,
+    }
 }
 
 async fn publish<P, A, Fut>(
@@ -389,7 +511,8 @@ where
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {
-    loop {
+    for _ in 0..PUBLICATION_ATTEMPTS {
+        attempt(work)?;
         let snapshot = volume
             .snapshot(&Query::File(key.clone()), 1)
             .await
@@ -408,7 +531,9 @@ where
             .await
         {
             Ok(_) => return Ok(()),
-            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(
+                crate::task_volume::Error::Conflict(_) | crate::task_volume::Error::FenceConflict,
+            ) => continue,
             Err(crate::task_volume::Error::LimitExceeded) => {
                 return Err(super::rejection(
                     work,
@@ -418,6 +543,7 @@ where
             Err(error) => return Err(storage(error)),
         }
     }
+    Err(Error::SearchPublicationDeferred)
 }
 
 /// Drives the actual file worker once over scripted task-volume fixtures.
@@ -451,5 +577,11 @@ pub async fn drive_for_test<P: StreamProvider>(
 
 #[cfg(all(test, acyclic_loom))]
 mod model;
+#[cfg(test)]
+mod native_retry_tests;
+#[cfg(test)]
+mod retry_tests;
+#[cfg(test)]
+mod staging_tests;
 #[cfg(test)]
 mod tests;

@@ -2,6 +2,12 @@
 #[path = "../../conformance/benches/filesystem.rs"]
 mod filesystem;
 
+#[path = "support/admission.rs"]
+mod admission;
+
+#[path = "support/lazy_nodes.rs"]
+mod lazy_nodes;
+
 fn main() {
     filesystem::main();
 }

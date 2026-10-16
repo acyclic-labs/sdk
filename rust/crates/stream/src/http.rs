@@ -432,6 +432,16 @@ impl StreamProvider for HttpStream {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         self.session_client()?.follow(path, from).await
     }
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.session_client()?
+            .follow_checked(path, from, preceding)
+            .await
+    }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
         self.session_client()?.children(request).await
     }

@@ -128,6 +128,7 @@ async fn paused_peer() -> Result<
         Fixture {
             controls,
             channel,
+            tls_client: None,
             counts,
             server,
         },

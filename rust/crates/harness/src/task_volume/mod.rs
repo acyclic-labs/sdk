@@ -4,6 +4,8 @@ mod durability;
 mod files;
 mod follow;
 mod heads;
+#[cfg(acyclic_harness_loom)]
+pub mod model_checking;
 mod plan_name;
 mod refresh;
 mod schema;
@@ -111,7 +113,7 @@ pub struct Generation {
 }
 
 /// One logical file backed by a shared immutable slice of its publication segment.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileValue {
     /// Logical immutable identity or mutable state location.
     pub key: FileKey,
@@ -131,7 +133,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if !matches!(header.schema, 2 | SCHEMA) {
+            if !matches!(header.schema, 2 | 3 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -213,6 +215,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
     }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
+        // A separate file stream cannot contend with unrelated parent-volume writes.
+        // Release the parent index before opening/locking the child volume.
+        let identity = {
+            let index = self.index.lock().await;
+            let mut hash = blake3::Hasher::new();
+            hash.update(&index.volume);
+            hash.update(index.epoch.as_bytes());
+            hash.update(key.path().as_bytes());
+            hash.finalize()
+        };
+        let path = StreamPath::new(format!(
+            "{}/files/{}",
+            self.path.as_str(),
+            identity.to_hex()
+        ))?;
+        Self::open(self.provider.clone(), path).await
+    }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {
@@ -258,7 +280,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if !matches!(header.schema, 2 | SCHEMA) {
+        if !matches!(header.schema, 2 | 3 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
@@ -338,11 +360,25 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .checked_add(1)
             .ok_or(Error::LimitExceeded)?;
         let (segment, files) = segment::encode(write, work)?;
-        conditions.push(CommitCondition::Head {
+        #[cfg(acyclic_harness_loom)]
+        if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
+            conditions.clear();
+        }
+        let fence = CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
             commit_id: CommitId::from_bytes(expected.commit),
-        });
+        };
+        #[cfg(acyclic_harness_loom)]
+        let fence = if model_checking::enabled(model_checking::Fault::ResamplePublicationFence) {
+            CommitCondition::Tail {
+                path: self.path.clone(),
+                expected: self.provider.watermarks(self.path.clone()).await?.accepted,
+            }
+        } else {
+            fence
+        };
+        conditions.push(fence);
         let request = CommitRequest {
             conditions,
             mutations: vec![CommitMutation::Append {
@@ -354,6 +390,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
+        #[cfg(acyclic_harness_loom)]
+        let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
+        {
+            None
+        } else {
+            deadline_unix_millis
+        };
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {
@@ -362,7 +405,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         match outcome {
             CommitOutcome::Committed(envelope) => {
                 let mut index = self.index.lock().await;
-                if self.generation(&index) == expected {
+                let unchanged = self.generation(&index) == expected;
+                #[cfg(acyclic_harness_loom)]
+                let unchanged = unchanged
+                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
+                if unchanged {
                     apply(&mut index, files, next);
                     index.next = next;
                     index.commit = envelope.commit_id;

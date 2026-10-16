@@ -100,10 +100,15 @@ fn decode(bytes: &[u8], exa: bool) -> Option<SearchResponse> {
     Some(SearchResponse { results })
 }
 
-pub fn agrees(expected: &Option<SearchResponse>, actual: Result<&SearchResponse, &Error>) -> bool {
+pub fn agrees(
+    expected: &Option<SearchResponse>,
+    actual: Result<&SearchResponse, &Error>,
+    native: bool,
+) -> bool {
     match (expected, actual) {
         (Some(expected), Ok(actual)) => expected == actual,
-        (None, Err(Error::ToolRejected(_))) => true,
+        (None, Err(Error::ToolRejected(_))) => native,
+        (None, Err(Error::Invalid(_))) => !native,
         _ => false,
     }
 }
@@ -133,11 +138,19 @@ fn oracle_detects_broken_decoding_and_bounds() {
         // An always-rejecting decoder must fail on an accepted document.
         assert!(!agrees(
             &wanted,
-            Err(&Error::ToolRejected("broken decoder"))
+            Err(&Error::ToolRejected("broken decoder")),
+            true,
+        ));
+        assert!(!agrees(
+            &wanted,
+            Err(&Error::Invalid("broken decoder".into())),
+            false,
         ));
         let mut broken = wanted.clone().unwrap();
         broken.results[0].snippet.push_str("wrong");
-        assert!(!agrees(&wanted, Ok(&broken)));
+        for native in [false, true] {
+            assert!(!agrees(&wanted, Ok(&broken), native));
+        }
         let deep = format!(
             "{{\"results\":[],\"metadata\":{}0{}}}",
             "[".repeat(258),
@@ -147,11 +160,22 @@ fn oracle_detects_broken_decoding_and_bounds() {
             "{{\"results\":[],\"metadata\":\"{}\"}}",
             "x".repeat(1_048_576)
         );
-        for bytes in [deep.as_bytes(), oversized.as_bytes()] {
+        let ordinary_bypass = format!(
+            "{{\"results\":[],\"metadata\":{}0{}}}",
+            "[".repeat(4_096),
+            "]".repeat(4_096)
+        );
+        for bytes in [
+            deep.as_bytes(),
+            ordinary_bypass.as_bytes(),
+            oversized.as_bytes(),
+        ] {
             assert!(expected(bytes, exa).is_none());
             // A decoder bypassing either fixed bound accepts these documents.
             let broken = decode(bytes, exa).unwrap();
-            assert!(!agrees(&expected(bytes, exa), Ok(&broken)));
+            for native in [false, true] {
+                assert!(!agrees(&expected(bytes, exa), Ok(&broken), native));
+            }
         }
     }
 }

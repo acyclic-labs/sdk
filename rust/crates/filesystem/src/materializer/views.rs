@@ -58,7 +58,7 @@ impl NativeMaterializationWork {
         work.bind_invocation(cancellation.clone(), NativeResourceCredit::ReadBytes)?;
         Ok((self.retain_source(work)?, cancellation))
     }
-    fn bind_invocation(
+    pub(crate) fn bind_invocation(
         &mut self,
         cancellation: crate::CancellationToken,
         read_credit: NativeResourceCredit,

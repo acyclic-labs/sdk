@@ -78,24 +78,7 @@ proptest! {
     fn authority_authenticates_every_scope_field(
         mask in 0..16_u8, field in 0..6_u8, byte in 0..32_usize, bit in 0..8_u8,
     ) {
-        let owner = issuer();
-        let original = owner.issue("root", &capabilities(mask), None, None, &mut None).unwrap();
-        let mut tampered = original.clone();
-        match field {
-            0 => tampered.id.push('x'),
-            1 => tampered.issuer.push('x'),
-            2 => tampered.agent = Some(AgentId::from_bytes([3; 16])),
-            3 => tampered.parent_proof = Some([4; 32]),
-            4 => tampered.capabilities = capabilities(mask ^ 1),
-            _ => tampered.proof[byte] ^= 1 << bit,
-        }
-        prop_assert!(owner.verifier(&mut None).unwrap().verify(&tampered, &mut None).is_err());
-        let mut foreign = owner.clone();
-        foreign.audience.id.push('x');
-        prop_assert!(foreign.verifier(&mut None).unwrap().verify(&original, &mut None).is_err());
-        foreign = owner.clone();
-        foreign.key[byte] ^= 1 << bit;
-        prop_assert!(foreign.verifier(&mut None).unwrap().verify(&original, &mut None).is_err());
+        scope_field_property(mask, field, byte, bit, false)?;
     }
 
     #[test]
@@ -149,30 +132,151 @@ proptest! {
 
     #[test]
     fn reducer_rejects_forged_events_and_snapshots(field in 0..8_u8) {
-        let mut reducer = reducer_fixture();
-        let before = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
-        let cmd = command(operation(1), 0,
-            Action::BindConversation { agent: AgentId::from_bytes([1; 16]) });
-        let ApplyResult::Applied { event } = reducer.plan(&cmd).unwrap() else {
-            prop_assert!(false, "fresh command replayed");
-            return Ok(());
-        };
-        let mut forged = event.clone();
-        match field {
-            0 => forged.revision += 1,
-            1 => forged.operation_id = operation(2),
-            2 => forged.intent_digest[0] ^= 1,
-            3 => forged.scope.id.push('x'),
-            4 => forged.scope.capabilities = Capabilities::default(),
-            5 => forged.causal_parent = Some(EventReference { authority: issuer().audience, revision: 1 }),
-            6 => forged.payload = EventPayload::ConversationBound { agent: AgentId::from_bytes([2; 16]) },
-            _ => forged.attestation[0] ^= 1,
-        }
-        prop_assert!(reducer.apply_committed(forged, &mut None).is_err());
-        prop_assert_eq!(reducer.snapshot(usize::MAX, &mut None).unwrap().0, before);
-        reducer.apply_committed(event, &mut None).unwrap();
-        let mut snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
-        snapshot.revision += 1;
-        prop_assert!(Reducer::restore(snapshot, issuer().verifier(&mut None).unwrap(), schemas(), &mut None).is_err());
+        forged_event_property(field, false)?;
     }
+}
+
+fn scope_field_property(
+    mask: u8,
+    field: u8,
+    byte: usize,
+    bit: u8,
+    verify_original: bool,
+) -> proptest::test_runner::TestCaseResult {
+    let owner = issuer();
+    let original = owner
+        .issue("root", &capabilities(mask), None, None, &mut None)
+        .unwrap();
+    let mut tampered = original.clone();
+    match field {
+        0 => tampered.id.push('x'),
+        1 => tampered.issuer.push('x'),
+        2 => tampered.agent = Some(AgentId::from_bytes([3; 16])),
+        3 => tampered.parent_proof = Some([4; 32]),
+        4 => tampered.capabilities = capabilities(mask ^ 1),
+        _ => tampered.proof[byte] ^= 1 << bit,
+    }
+    let candidate = if verify_original {
+        &original
+    } else {
+        &tampered
+    };
+    prop_assert!(
+        owner
+            .verifier(&mut None)
+            .unwrap()
+            .verify(candidate, &mut None)
+            .is_err()
+    );
+    let mut foreign = owner.clone();
+    foreign.audience.id.push('x');
+    prop_assert!(
+        foreign
+            .verifier(&mut None)
+            .unwrap()
+            .verify(&original, &mut None)
+            .is_err()
+    );
+    foreign = owner.clone();
+    foreign.key[byte] ^= 1 << bit;
+    prop_assert!(
+        foreign
+            .verifier(&mut None)
+            .unwrap()
+            .verify(&original, &mut None)
+            .is_err()
+    );
+    Ok(())
+}
+
+fn forged_event_property(
+    field: u8,
+    replay_original: bool,
+) -> proptest::test_runner::TestCaseResult {
+    let mut reducer = reducer_fixture();
+    let before = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let cmd = command(
+        operation(1),
+        0,
+        Action::BindConversation {
+            agent: AgentId::from_bytes([1; 16]),
+        },
+    );
+    let ApplyResult::Applied { event } = reducer.plan(&cmd).unwrap() else {
+        prop_assert!(false, "fresh command replayed");
+        return Ok(());
+    };
+    let mut forged = event.clone();
+    match field {
+        0 => forged.revision += 1,
+        1 => forged.operation_id = operation(2),
+        2 => forged.intent_digest[0] ^= 1,
+        3 => forged.scope.id.push('x'),
+        4 => forged.scope.capabilities = Capabilities::default(),
+        5 => {
+            forged.causal_parent = Some(EventReference {
+                authority: issuer().audience,
+                revision: 1,
+            })
+        }
+        6 => {
+            forged.payload = EventPayload::ConversationBound {
+                agent: AgentId::from_bytes([2; 16]),
+            }
+        }
+        _ => forged.attestation[0] ^= 1,
+    }
+    let candidate = if replay_original {
+        event.clone()
+    } else {
+        forged
+    };
+    prop_assert!(reducer.apply_committed(candidate, &mut None).is_err());
+    prop_assert_eq!(reducer.snapshot(usize::MAX, &mut None).unwrap().0, before);
+    reducer.apply_committed(event, &mut None).unwrap();
+    let mut snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    snapshot.revision += 1;
+    prop_assert!(
+        Reducer::restore(
+            snapshot,
+            issuer().verifier(&mut None).unwrap(),
+            schemas(),
+            &mut None
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn negative_control_detects_verifying_the_original_scope() {
+    let mut runner = negative_control_runner();
+    let result = runner.run(
+        &(0..16_u8, 0..6_u8, 0..32_usize, 0..8_u8),
+        |(mask, field, byte, bit)| scope_field_property(mask, field, byte, bit, true),
+    );
+    assert!(matches!(
+        result,
+        Err(proptest::test_runner::TestError::Fail(..))
+    ));
+}
+
+#[test]
+fn negative_control_detects_replaying_the_original_event() {
+    let result =
+        negative_control_runner().run(&(0..8_u8), |field| forged_event_property(field, true));
+    assert!(matches!(
+        result,
+        Err(proptest::test_runner::TestError::Fail(..))
+    ));
+}
+
+fn negative_control_runner() -> proptest::test_runner::TestRunner {
+    let config = ProptestConfig {
+        cases: 128,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    };
+    let rng = proptest::test_runner::TestRng::deterministic_rng(config.rng_algorithm);
+    proptest::test_runner::TestRunner::new_with_rng(config, rng)
 }

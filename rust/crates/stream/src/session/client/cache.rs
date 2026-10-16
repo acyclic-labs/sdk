@@ -18,6 +18,8 @@ pub fn verify_cache(broken: bool) {
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
             active: Arc::new(AtomicU64::new(0)),
+            attempt_epoch: Arc::new(AtomicU64::new(0)),
+            abandoned: Arc::new(gate::Gate::new()),
         };
         let run = || {
             let cache = Arc::clone(&cache);
@@ -68,5 +70,14 @@ impl Cache {
         let created = create();
         *client = Some(created.clone());
         Ok(created)
+    }
+    pub(crate) fn abandon_pending(&self) -> Result<(), StreamError> {
+        let client = self
+            .client
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .clone();
+        // Release the cache lock before touching the pool's wakeup gate.
+        client.map_or(Ok(()), |client| client.abandon_pending())
     }
 }

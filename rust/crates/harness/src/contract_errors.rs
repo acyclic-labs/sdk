@@ -36,6 +36,9 @@ pub enum Error {
         /// The task's retained failure diagnostic.
         message: String,
     },
+    /// Automatic admission stopped with a file-driven blocked goal.
+    #[error("goal blocked: {0}")]
+    GoalBlocked(crate::goal::GoalBlockedReason),
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -68,6 +71,9 @@ pub enum Error {
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+    /// Search publication is retryable; its completed response remains in ready.json.
+    #[error("search publication deferred; resume from ready.json")]
+    SearchPublicationDeferred,
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -107,6 +113,15 @@ pub enum Error {
         message: String,
         /// Existing custody, released after the diagnostic is dropped.
         custody: acyclic_fs::NativeAllocation,
+    },
+    /// A fixed JSON input failure without an allocated diagnostic.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{kind}")]
+    NativeJsonAdmission {
+        /// The original boundary classification.
+        code: crate::wire::ErrorCode,
+        /// The parser's typed source rejection.
+        kind: crate::executor::json::JsonInputError,
     },
     /// A JSON failure preserving its original cause and classification.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -331,7 +346,7 @@ impl Error {
         match self {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) => ErrorCode::Unsupported,
+            Self::Unsupported(_) | Self::GoalBlocked(_) => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
@@ -346,9 +361,10 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
-            Self::Indeterminate(_) => ErrorCode::Indeterminate,
+            Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
+            | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
@@ -397,7 +413,9 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::SearchPublicationDeferred
                 | Self::TaskFailed { .. }
+                | Self::GoalBlocked(_)
         )
     }
 }

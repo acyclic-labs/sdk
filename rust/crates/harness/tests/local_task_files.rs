@@ -1,8 +1,10 @@
 //! The bound file writer and query use the same durable private provider.
 use acyclic_harness::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
 use acyclic_harness::{
-    Error, LocalHarness, LocalHarnessConfig, Result, conversation::VolumeClass, model::Model,
-    test_support::ScriptedModelProvider,
+    Error, LocalHarness, Result,
+    conversation::VolumeClass,
+    model::Model,
+    test_support::{ScriptedModelProvider, local_harness_config},
 };
 use futures::StreamExt as _;
 use std::sync::Arc;
@@ -17,10 +19,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
         "1".into(),
         serde_json::Value::Null,
     )?;
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(local_harness_config(
         directory.path(),
         (model.clone(), provider.clone()),
-    ))
+    )?)
     .await?;
     let files = harness.task_files();
     assert_eq!(files.volume().class(), VolumeClass::AgentPrivate);
@@ -74,7 +76,7 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
     drop(harness);
 
     let harness =
-        LocalHarness::open(LocalHarnessConfig::new(directory.path(), (model, provider))).await?;
+        LocalHarness::open(local_harness_config(directory.path(), (model, provider))?).await?;
     let reopened = harness
         .task_files()
         .observe(Query::Requests(task.clone()), None, 8)

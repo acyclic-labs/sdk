@@ -23,6 +23,7 @@ impl Pool {
         let identity = self.identity.clone();
         let authorization = self.authorization.clone();
         let credential = self.credential.clone();
+        let epoch = self.dial_epoch;
         self.dials.push(Box::pin(async move {
             let outcome = async {
                 let channel = match channel {
@@ -32,7 +33,7 @@ impl Pool {
                 open_link(channel, &name, identity, authorization, credential).await
             }
             .await;
-            (name, outcome)
+            (name, epoch, outcome)
         }));
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
@@ -77,7 +78,15 @@ impl Pool {
         if route.progress.cancelled() {
             return self.remove(id);
         }
-        let (next, opaque) = route.progress.position()?;
+        let progress::Position {
+            next,
+            opaque,
+            preceding,
+        } = route.progress.subscription()?;
+        if let Kind::Follow(follow) = &mut route.kind {
+            follow.preceding_commit_id =
+                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+        }
         route.received = next;
         route.received_opaque = opaque.clone().into();
         route.opened = false;
