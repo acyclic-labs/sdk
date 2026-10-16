@@ -3,14 +3,14 @@ use super::*;
 impl Markdown {
     pub(super) fn advance_budget(&mut self) -> usize {
         if self.source.len().max(100_000) == self.reference_limit {
-            return self.stable_lines;
+            return self.visible_lines;
         }
         let changed = self.resolve(&HashSet::new());
         let remaining = self.reference_limit.saturating_sub(self.reference_cost);
         if self
             .inline
             .as_ref()
-            .is_some_and(|inline| !inline.valid.contains(&remaining))
+            .is_some_and(|inline| !inline.checkpoint.valid.contains(&remaining))
             || self
                 .table
                 .as_ref()
@@ -85,13 +85,13 @@ impl Markdown {
             .unwrap_or(self.cached.len())
             .min(budget_first);
         if first == self.cached.len() {
-            return self.stable_lines;
+            return self.visible_lines;
         }
         let mut cost = first
             .checked_sub(1)
             .and_then(|index| self.cached.get(index))
             .map_or(0, |cache| cache.cumulative);
-        let mut changed = self.stable_lines;
+        let mut changed = self.visible_lines;
         let mut replacements = HashMap::new();
         let mut length = self.lines.len();
         let mut resize = false;

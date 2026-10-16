@@ -4,6 +4,11 @@ use std::{collections::HashSet, sync::Arc};
 fn retained(markdown: &Markdown) -> (usize, usize) {
     let mut targets = HashSet::new();
     let mut bytes = markdown.source.capacity() + markdown.visibility.retained();
+    bytes += markdown
+        .context
+        .iter()
+        .map(|container| container.opening.capacity() + container.continuation.capacity())
+        .sum::<usize>();
     for line in &markdown.lines {
         for span in &line.spans {
             bytes += span.text.capacity();
@@ -42,6 +47,8 @@ fn retained(markdown: &Markdown) -> (usize, usize) {
         .map_or((0, 0), |table| table.retained(&mut targets));
     bytes += table_payload;
     let metadata = table_metadata
+        + markdown.inline.as_ref().map_or(0, inline::Inline::retained)
+        + markdown.context.capacity() * std::mem::size_of::<Container>()
         + markdown.lines.capacity() * std::mem::size_of::<Line>()
         + markdown
             .lines
@@ -65,6 +72,7 @@ fn measure(
     count: usize,
     destination: &str,
     padding: usize,
+    separators: &[u8],
     copies: usize,
 ) -> (usize, usize) {
     let mut markdown = Markdown::default();
@@ -120,15 +128,17 @@ fn measure(
         source.push_str(delta);
         assert!(
             consumer == full_parse(&source),
-            "consumer differs after {delta:?}"
+            "consumer differs after {delta:?}, source {:?}",
+            source.chars().take(256).collect::<String>()
         );
     };
     for index in 0..count * copies {
-        for action in actions {
+        for (position, action) in actions.iter().enumerate() {
             production(*action, index, padding, &mut push);
+            push(["", " ", "\n", "!", "x"][separators[position % separators.len()] as usize]);
         }
     }
-    if actions.iter().any(|action| matches!(action % 16, 3 | 15)) {
+    if actions.iter().any(|action| matches!(action, 3 | 15)) {
         push(&format!("\n\n[r]: /{destination}\n\n"));
     } else {
         push("\n\n");
@@ -143,29 +153,29 @@ fn measure(
 }
 
 fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&str)) {
-    match action % 16 {
-        0 => push("word "),
-        1 => push("*em* **strong** ~~gone~~ "),
-        2 => push("[label](u) "),
-        3 => push("[x][r] "),
+    match action {
+        0 => push("word"),
+        1 => push("*em* **strong** ~~gone~~"),
+        2 => push("[label](u)"),
+        3 => push("[x][r]"),
         4 => push("![](u)\n\n"),
         5 => {
             push(&format!("![][i{index:08x}]\n\n"));
             push(&format!("[i{index:08x}]: /u\n\n"));
         }
         6 => {
-            push(&format!("\n\n-{}parent\n\n", " ".repeat(padding)));
-            push(&format!("{}child\n\n", " ".repeat(padding + 3)));
+            push(&format!("-{}parent\n\n", " ".repeat(padding)));
+            push(&format!("{}child\n", " ".repeat(padding + 3)));
         }
         7 => {
-            push("\n\n```rust\n");
+            push("```rust\n");
             push("let x = 1;\n");
-            push("```\n\n");
+            push("```\n");
         }
         8 => push("\n\n"),
-        9 => push("![alt](u) "),
-        10 => push("[outer [inner](u)](v) "),
-        11 => push("a &amp; b "),
+        9 => push("![alt](u)"),
+        10 => push("[outer [inner](u)](v)"),
+        11 => push("a &amp; b"),
         12 => push("[label](u)"),
         13 => push("word\n"),
         14 => {
@@ -174,10 +184,28 @@ fn production(action: u8, index: usize, padding: usize, push: &mut impl FnMut(&s
             }
             push("| x | y |\n");
         }
-        _ => {
+        15 => {
             push("word ![](u)\n\n");
             push("![][r]\n\n");
         }
+        16 => push("`code`"),
+        17 => push("*em*"),
+        18 => push("**bold**"),
+        19 => push("~~strike~~"),
+        20 => push("<https://example.org>"),
+        21 => push("<i>"),
+        22 => push("\\*"),
+        23 => push("&amp;"),
+        24 => push("![](u)"),
+        25 => push("[a][]"),
+        26 => push("_em_"),
+        27 => push("__bold__"),
+        28 => push("</i>"),
+        29 => push("<a@example.org>"),
+        30 => push("&#42;"),
+        31 => push("\\\\"),
+        32 => push("&#10;"),
+        _ => push("  \n"),
     }
 }
 
@@ -196,13 +224,16 @@ proptest! {
             prop::collection::vec(0u8..16, 1..5),
             prop::collection::vec(12u8..16, 1..5),
             prop::sample::select(vec![vec![12u8], vec![13], vec![14]]),
+            prop::collection::vec(0u8..34, 1..5),
+            prop::collection::vec(16u8..34, 1..5),
         ],
         count in 1usize..65,
         destination in "[a-z]{64,1024}",
         padding in 1usize..5,
+        separators in prop::collection::vec(0u8..5, 1..5),
     ) {
-        let small = measure(&actions, count, &destination, padding, 1);
-        let large = measure(&actions, count, &destination, padding, 2);
+        let small = measure(&actions, count, &destination, padding, &separators, 1);
+        let large = measure(&actions, count, &destination, padding, &separators, 2);
         prop_assert!(large.0 <= 2 * small.0 + 1024, "work {} -> {}", small.0, large.0);
         prop_assert!(large.1 <= 2 * small.1 + 1024, "storage {} -> {}", small.1, large.1);
     }
