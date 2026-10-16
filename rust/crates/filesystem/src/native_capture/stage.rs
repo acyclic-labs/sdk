@@ -243,7 +243,7 @@ pub(super) fn accept_native_source_chunk(
     )
     .map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-            original.runtime_error(error).into()
+            crate::FsError::from(original.runtime_error(error))
         }
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
             crate::NativeTreeMaterializationError::InvalidLayout.into()
