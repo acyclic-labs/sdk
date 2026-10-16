@@ -17,7 +17,8 @@ use std::fmt;
 mod execution;
 mod receipts;
 pub use execution::{
-    execute_profile, load_metadata, CargoExecutionContext, LockSelection, RustdocTarget,
+    execute_profile, load_metadata, rustdoc_targets, CargoExecutionContext, LockSelection,
+    RustdocTarget,
 };
 pub use receipts::{
     extract_owned_api, local_item_names, observe_binary_rustdoc, observe_rustdoc,

@@ -661,3 +661,13 @@ test("host qualification initializes runner-local tools before both Bun installe
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("docs and generation provision nightly targets on free runners after stable", () => {
+  const steps = YAML.parse(readFileSync(".github/actions/qualification-lane/action.yml", "utf8")).runs.steps;
+  const stable = steps.findIndex(step => step.uses === "./.github/actions/rust-toolchain");
+  const nightly = steps.findIndex(step => step.name === "Install pinned Rustdoc toolchain");
+  assert.ok(stable >= 0 && nightly > stable);
+  assert.equal(steps[nightly].if, "inputs.lane == 'docs' || inputs.lane == 'generation'");
+  assert.equal(steps[nightly].run, "rustup toolchain install nightly-2026-07-01 --profile minimal --target wasm32-unknown-unknown --no-self-update");
+  for (const name of ["docs", "generation"]) assert.equal(lanes.find(lane => lane.lane === name).runner, "ubuntu-24.04");
+});

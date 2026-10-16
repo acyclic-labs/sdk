@@ -328,6 +328,30 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
     )
     .unwrap();
     assert!(local_item_names(&receipt).unwrap().contains("Witness"));
+    let browser = ProfileSpec {
+        target: "wasm32-unknown-unknown".into(),
+        ..profile.clone()
+    };
+    let browser_receipt = root.join("browser.json");
+    let observed = execute_profile(
+        root.join("Cargo.toml"),
+        &metadata,
+        &browser,
+        &BTreeSet::from([browser.target.clone()]),
+        root.join("target"),
+        &browser_receipt,
+        CargoExecutionContext {
+            cargo_path: Some(&cargo),
+            lock_selection: None,
+        },
+        &RustdocTarget::Library,
+    )
+    .unwrap();
+    assert_eq!(observed.target, browser.target);
+    assert!(local_item_names(&browser_receipt)
+        .unwrap()
+        .contains("Witness"));
+
     let plain = ProfileSpec {
         features: BTreeSet::new(),
         ..profile.clone()

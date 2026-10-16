@@ -86,7 +86,58 @@ pub fn load_metadata(
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 
-fn nightly_rustdoc_command() -> Result<Command, ProfileError> {
+/// Queries and provisions targets on the toolchain producing Rustdoc JSON.
+pub fn rustdoc_targets(required: &[&str]) -> Result<BTreeSet<String>, ProfileError> {
+    let installed = Command::new("rustup")
+        .args([
+            "target",
+            "list",
+            "--installed",
+            "--toolchain",
+            RUSTDOC_TOOLCHAIN,
+        ])
+        .output()
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+    if !installed.status.success() {
+        return Err(ProfileError::InvalidRustdoc(format!(
+            "cannot query {RUSTDOC_TOOLCHAIN} targets: {}",
+            String::from_utf8_lossy(&installed.stderr)
+        )));
+    }
+    let mut targets = String::from_utf8_lossy(&installed.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    for &target in required {
+        if targets.contains(target) {
+            continue;
+        }
+        let added = Command::new("rustup")
+            .args([
+                "target",
+                "add",
+                "--toolchain",
+                RUSTDOC_TOOLCHAIN,
+                "--",
+                target,
+            ])
+            .output()
+            .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+        if !added.status.success() {
+            return Err(ProfileError::InvalidRustdoc(format!(
+                "cannot install {target} for {RUSTDOC_TOOLCHAIN}: {}",
+                String::from_utf8_lossy(&added.stderr)
+            )));
+        }
+        targets.insert(target.to_owned());
+    }
+    Ok(targets)
+}
+
+fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
+    rustdoc_targets(&[target])?;
     let output = Command::new("rustup")
         .args(["which", "cargo", "--toolchain", RUSTDOC_TOOLCHAIN])
         .output()
@@ -176,7 +227,7 @@ pub fn execute_profile(
     fs::create_dir_all(target_dir).map_err(|error| {
         ProfileError::InvalidRustdoc(format!("cannot create target directory: {error}"))
     })?;
-    let mut command = nightly_rustdoc_command()?;
+    let mut command = nightly_rustdoc_command(&profile.target)?;
     command
         .arg("rustdoc")
         .arg("--locked")
