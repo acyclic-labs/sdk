@@ -17,6 +17,19 @@ use std::{
 
 type Result<T> = std::result::Result<T, FileClientError>;
 
+pub(crate) fn validate_request_key(key: &FileKey) -> Result<()> {
+    if !matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::Request(_),
+            ..
+        }
+    ) {
+        return Err(Error::Invalid("submit requires an immutable task request file".into()).into());
+    }
+    Ok(())
+}
+
 /// The publication prefix required before an outbox entry can be acknowledged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -257,17 +270,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         produce: impl FnOnce() -> crate::Result<acyclic_stream::OwnedBytes>,
     ) -> Result<()> {
         self.catch_up().await?;
-        if !matches!(
-            key,
-            FileKey::Task {
-                file: TaskFile::Request(_),
-                ..
-            }
-        ) {
-            return Err(
-                Error::Invalid("submit requires an immutable task request file".into()).into(),
-            );
-        }
+        validate_request_key(&key)?;
         let existing = self
             .outbox
             .snapshot(&Query::File(key.clone()), 1)

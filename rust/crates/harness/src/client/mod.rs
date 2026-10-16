@@ -73,6 +73,8 @@ mod query;
 pub use query::ClientQuery;
 mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use file_submit::validate_request_key;
 mod file_error;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod retry;

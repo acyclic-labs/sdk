@@ -4,6 +4,21 @@ import { HarnessClient, TaskVolume, WasmStream, initializeClientQueries } from "
 
 beforeAll(initializeClientQueries);
 
+for (const resizable of [false, true]) {
+test(`waiting quotas bound the backing buffer, including growth: ${resizable}`, async () => {
+  const stream = new WasmStream();
+  const outbox = await TaskVolume.create(stream, "client/files");
+  const target = await TaskVolume.create(stream, "agent/files");
+  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: 3n, durability: "Accepted" });
+  const buffer = resizable ? Reflect.construct(ArrayBuffer, [3, { maxByteLength: 16384 }]) as ArrayBuffer : new ArrayBuffer(16384);
+  const bytes = new Uint8Array(buffer, 0, 3);
+  const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
+  await expect(client.enqueue(key, bytes)).rejects.toEqual({ kind: "ByteQuota", detail: { limit: 3n } });
+  expect(client.pending()).toBe(0);
+  client.free(); outbox.free(); target.free(); stream.free();
+});
+}
+
 for (const quota of ["CommandQuota", "ByteQuota"] as const) {
 test(`waiting ${quota} is reserved before futures retain caller buffers`, async () => {
   const stream = new WasmStream();
