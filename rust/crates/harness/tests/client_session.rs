@@ -30,7 +30,6 @@ fn session() -> ClientSession<MemoryClientState> {
         .unwrap();
     session
 }
-
 #[tokio::test]
 async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically() {
     use acyclic_harness::{
@@ -197,6 +196,20 @@ fn admission(command: &wire::CommandEnvelope, state: wire::AdmissionState) -> wi
         state: state as i32,
         error: None,
     }
+}
+
+async fn submit<S: ClientStateStore>(
+    client: &mut HarnessClient<S>,
+    command: wire::CommandEnvelope,
+) -> Result<Vec<wire::Admission>> {
+    let mut responses = Vec::new();
+    client
+        .submit(command, |response| {
+            responses.push(response);
+            Ok(())
+        })
+        .await?;
+    Ok(responses)
 }
 
 #[test]
@@ -584,7 +597,7 @@ async fn reconnect_resends_verbatim_and_resumes_the_committed_cut() {
         .await
         .unwrap();
     let command = command();
-    assert!(client.submit(command.clone()).await.is_err());
+    assert!(submit(&mut client, command.clone()).await.is_err());
     assert_eq!(client.session().pending().count(), 1);
     let recovered = ClientSession::open(client.into_session().into_store()).unwrap();
     let mut client = HarnessClient::connect(host.clone(), recovered)
@@ -753,7 +766,7 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     );
     assert_eq!(
         views.tools["AGGREGATE_KIND_TASK:task"]["call"].output,
-        "first\nsecond\n"
+        tool_text("first\nsecond\n")
     );
     assert_eq!(views.tools["AGGREGATE_KIND_TASK:task"]["call"].name, "bash");
     assert_eq!(views.usage["AGGREGATE_KIND_TASK:task"], usage);
@@ -776,8 +789,28 @@ mod headless;
 #[path = "client_session_recovery.rs"]
 mod recovery;
 
+#[path = "client_session_admissions.rs"]
+mod admissions;
+
 #[path = "client_session_lifecycle.rs"]
 mod lifecycle;
 
 #[path = "client_session_review.rs"]
 mod review;
+
+fn tool_text(text: &str) -> acyclic_harness::model::ToolResultContent {
+    acyclic_harness::model::ToolResultContent::Parts {
+        parts: vec![acyclic_harness::model::ModelDataPart::Text { text: text.into() }],
+    }
+}
+
+#[path = "support/client_files.rs"]
+#[cfg(feature = "filesystem")]
+mod client_files;
+#[path = "client_session_files.rs"]
+#[cfg(feature = "filesystem")]
+mod files;
+
+#[path = "client_session_usage.rs"]
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+mod usage;

@@ -46,6 +46,79 @@ fn admission_boundary(padding: usize) -> ClientSession<MemoryClientState> {
     state
 }
 
+async fn stdin_recovers_both_admissions(first_id: u128, second_id: u128) -> Vec<wire::Admission> {
+    use futures::StreamExt as _;
+    let host = Arc::new(Host::default());
+    host.requires_admission.store(true, Ordering::Relaxed);
+    let mut first = command();
+    first.operation.as_mut().unwrap().operation_id = uuid::Uuid::from_u128(first_id).to_string();
+    let mut second = next_command();
+    second.operation.as_mut().unwrap().operation_id = uuid::Uuid::from_u128(second_id).to_string();
+    let mut target = target();
+    target.operation_id = second.operation.as_ref().unwrap().operation_id.clone();
+    let input = futures::stream::iter([first.clone(), second.clone()])
+        .enumerate()
+        .map({
+            let host = host.clone();
+            move |(index, command)| {
+                *host.admission_state.lock().unwrap() = Some(if index == 0 {
+                    wire::AdmissionState::Indeterminate
+                } else {
+                    wire::AdmissionState::Accepted
+                });
+                Ok(jsonl::client_frame(&wire::ClientFrame {
+                    frame: Some(wire::client_frame::Frame::Command(command)),
+                })
+                .unwrap())
+            }
+        });
+    let mut client = HarnessClient::connect(host.clone(), session())
+        .await
+        .unwrap();
+    let mut output = Vec::new();
+    assert_eq!(
+        run_jsonl(&mut client, target, input, &mut output)
+            .await
+            .unwrap(),
+        HeadlessOutcome::Completed
+    );
+    assert_eq!(client.session().pending().count(), 0);
+    assert_eq!(
+        host.commands.lock().unwrap().as_slice(),
+        &[first, command_with_id(first_id), second]
+    );
+    String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .filter_map(
+            |line| match jsonl::parse_server_frame(line).unwrap().frame {
+                Some(wire::server_frame::Frame::Admission(admission)) => Some(admission),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+fn command_with_id(id: u128) -> wire::CommandEnvelope {
+    let mut command = command();
+    command.operation.as_mut().unwrap().operation_id = uuid::Uuid::from_u128(id).to_string();
+    command
+}
+
+#[tokio::test]
+async fn stdin_emits_a_recovered_predecessor_before_the_new_commands_admission() {
+    let first = command_with_id(1);
+    let second = next_command();
+    assert_eq!(
+        stdin_recovers_both_admissions(1, 2).await,
+        [
+            admission(&first, wire::AdmissionState::Indeterminate),
+            admission(&first, wire::AdmissionState::Accepted),
+            admission(&second, wire::AdmissionState::Accepted),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
     for after_replace in [false, true] {
@@ -117,6 +190,18 @@ async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
 }
 
 proptest::proptest! {
+    // Property: every produced admission is emitted once and in order, including
+    // definitive recovery of an older indeterminate command during a later submit.
+    #[test]
+    fn stdin_admission_stream_preserves_both_operation_identities(first_id in 1u128..=u128::MAX - 1) {
+        let responses = futures::executor::block_on(stdin_recovers_both_admissions(first_id, first_id + 1));
+        let ids: Vec<_> = responses.iter().map(|response| response.operation.as_ref().unwrap().operation_id.as_str()).collect();
+        let first = uuid::Uuid::from_u128(first_id).to_string();
+        let second = uuid::Uuid::from_u128(first_id + 1).to_string();
+        proptest::prop_assert_eq!(ids, [first.as_str(), first.as_str(), second.as_str()]);
+        proptest::prop_assert_eq!(responses.iter().map(|response| response.state).collect::<Vec<_>>(), [wire::AdmissionState::Indeterminate as i32, wire::AdmissionState::Accepted as i32, wire::AdmissionState::Accepted as i32]);
+    }
+
     // Property: admission failure leaves retry intent recoverable, regardless of
     // record position, decision, or a replacement committed before reporting failure.
     #[test]
@@ -228,11 +313,14 @@ async fn new_submissions_drain_earlier_pending_commands_in_order() {
     let mut client = HarnessClient::connect(host.clone(), session())
         .await
         .unwrap();
-    assert!(client.submit(command()).await.is_err());
+    assert!(submit(&mut client, command()).await.is_err());
     let next = next_command();
     assert_eq!(
-        client.submit(next.clone()).await.unwrap(),
-        admission(&next, wire::AdmissionState::Accepted)
+        submit(&mut client, next.clone()).await.unwrap(),
+        [
+            admission(&command(), wire::AdmissionState::Accepted),
+            admission(&next, wire::AdmissionState::Accepted)
+        ]
     );
     assert_eq!(
         host.commands.lock().unwrap().as_slice(),
@@ -248,12 +336,12 @@ async fn indeterminate_admission_blocks_submission_and_outbox_drain() {
     let mut client = HarnessClient::connect(host.clone(), session())
         .await
         .unwrap();
-    assert!(client.submit(command()).await.is_err());
+    assert!(submit(&mut client, command()).await.is_err());
     *host.admission_state.lock().unwrap() = Some(wire::AdmissionState::Indeterminate);
     let next = next_command();
-    assert!(
-        matches!(client.submit(next.clone()).await, Err(Error::Indeterminate(id))
-        if id.to_string() == command().operation.unwrap().operation_id)
+    assert_eq!(
+        submit(&mut client, next.clone()).await.unwrap(),
+        [admission(&command(), wire::AdmissionState::Indeterminate)]
     );
     assert_eq!(
         host.commands.lock().unwrap().as_slice(),
@@ -333,8 +421,8 @@ async fn resubmitting_an_earlier_intent_leaves_later_intents_queued() {
     state.queue(next.clone()).unwrap();
     let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
     assert_eq!(
-        client.submit(command()).await.unwrap(),
-        admission(&command(), wire::AdmissionState::Accepted)
+        submit(&mut client, command()).await.unwrap(),
+        [admission(&command(), wire::AdmissionState::Accepted)]
     );
     assert_eq!(host.commands.lock().unwrap().as_slice(), &[command()]);
     assert_eq!(
@@ -342,8 +430,8 @@ async fn resubmitting_an_earlier_intent_leaves_later_intents_queued() {
         [next.clone()]
     );
     assert_eq!(
-        client.submit(next.clone()).await.unwrap(),
-        admission(&next, wire::AdmissionState::Accepted)
+        submit(&mut client, next.clone()).await.unwrap(),
+        [admission(&next, wire::AdmissionState::Accepted)]
     );
     assert_eq!(host.commands.lock().unwrap().as_slice(), &[command(), next]);
     assert_eq!(client.session().pending().count(), 0);

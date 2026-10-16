@@ -283,10 +283,10 @@ dependencies = [
  "loom",
  "proptest",
  "prost",
+ "pulldown-cmark",
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
- "pulldown-cmark",
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
@@ -332,8 +332,11 @@ name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness",
+ "acyclic-stream",
+ "futures",
  "libfuzzer-sys",
  "prost",
+ "serde_json",
  "tempfile",
 ]
 

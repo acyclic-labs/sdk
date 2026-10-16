@@ -431,14 +431,22 @@ async fn dispatch<S: ClientStateStore>(
             if is_target && command.authority != target.owner {
                 return Err(Error::Invalid("headless command owner differs".into()));
             }
-            let response = client.submit(command).await?;
-            if is_target {
-                admission = Some(
-                    wire::AdmissionState::try_from(response.state)
-                        .map_err(|error| Error::Conflict(error.to_string()))?,
-                );
-            }
-            wire::server_frame::Frame::Admission(response)
+            client
+                .submit(command, |response| {
+                    if response
+                        .operation
+                        .as_ref()
+                        .is_some_and(|operation| operation.operation_id == target.operation_id)
+                    {
+                        admission = Some(
+                            wire::AdmissionState::try_from(response.state)
+                                .map_err(|error| Error::Conflict(error.to_string()))?,
+                        );
+                    }
+                    emit(output, wire::server_frame::Frame::Admission(response))
+                })
+                .await?;
+            return Ok(admission);
         }
         Frame::Observe(request) => {
             wire::server_frame::Frame::Status(client.observe(request).await?)

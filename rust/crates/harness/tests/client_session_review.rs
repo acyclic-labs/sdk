@@ -157,7 +157,10 @@ async fn incoming_model_and_tool_streams_update_session_owned_views() {
     assert_eq!(views.transcripts[key].streaming_text, "first second");
     assert_eq!(views.transcripts[key].reasoning, "thinking");
     assert_eq!(views.tools[key]["call"].name, "bash");
-    assert_eq!(views.tools[key]["call"].output, "stdout\nstderr\n");
+    assert_eq!(
+        views.tools[key]["call"].output,
+        tool_text("stdout\nstderr\n")
+    );
     assert_eq!(views.usage[key], serde_json::json!({"tokens":5}));
     // Streaming and committed replay share one session, without journaling tails.
     client.replay().await.unwrap();
