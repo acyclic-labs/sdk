@@ -6,7 +6,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static OMIT_NOTIFY: Cell<bool> = Cell::new(false);
-    static DROP_TAIL: Cell<bool> = Cell::new(false);
     static INVALIDATOR_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
     static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
     static PASS_FINISHED: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
@@ -14,10 +13,6 @@ loom::thread_local! {
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
     OMIT_NOTIFY.with(Cell::get)
-}
-
-pub(super) fn drop_refused_tail() -> bool {
-    DROP_TAIL.with(Cell::get)
 }
 
 pub(in crate::native_mount::fuse) fn before_invalidator_wait() {
@@ -155,7 +150,7 @@ fn production_waiter_retries_refused_notifications_in_fifo_order() {
             let invalidator = loom::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    DROP_TAIL.with(|fault| fault.set(broken));
+                    OMIT_NOTIFY.with(|fault| fault.set(broken));
                     PASS_FINISHED.with(|hook| *hook.borrow_mut() = Some(finished));
                     let notifier = RefusesFirst::default();
                     run_invalidator(&core, &notifier);
@@ -187,12 +182,9 @@ fn production_waiter_retries_refused_notifications_in_fifo_order() {
     };
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
-        .expect_err("discarding refused notifications must lose the original tail");
+        .expect_err("a missing completion notification must strand the retry waiter");
     let message = error
         .downcast_ref::<String>()
-        .expect("tail assertion message");
-    assert!(
-        message.contains("refused notification tail was lost"),
-        "{message}"
-    );
+        .expect("Loom deadlock message");
+    assert!(message.contains("deadlock"), "{message}");
 }
