@@ -45,6 +45,8 @@ mod mentions;
 pub use mentions::*;
 mod notifications;
 pub use notifications::*;
+mod interests;
+pub use interests::{ClientInterests, InterestChanges, InterestTier};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 
