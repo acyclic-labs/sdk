@@ -77,18 +77,13 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         return Err("harness did not use the fixture-owned state directory".into());
     }
     let stream = local_task_stream(&harness);
-    let operation = OperationId::new();
-    let acyclic_harness::Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
-        task_id,
-        ..
-    }) = harness.submit(operation, &case.prompt).await?
-    else {
-        return Err("local admission rejected".into());
-    };
+    let (operation, task_id, status) =
+        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
     let output = harness.resume(task_id).await?;
+    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     if output.text != case.expect.text || provider.remaining() != 0 {
         return Err("local turn output or model script differs".into());
     }

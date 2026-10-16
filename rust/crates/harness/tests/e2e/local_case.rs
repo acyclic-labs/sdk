@@ -19,6 +19,7 @@ pub(super) struct Expectations {
     pub text: String,
     pub wire: Vec<Value>,
     pub frames: Vec<Value>,
+    pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
@@ -30,6 +31,10 @@ impl LocalCase {
             || self.turns.is_empty()
             || self.expect.files.is_empty()
             || self.expect.frames.is_empty()
+            || self.expect.statuses.len() < 2
+            || self.expect.statuses.iter().any(|status| {
+                status["state"].as_str().is_none() || !status["attention"].is_boolean()
+            })
             || self
                 .expect
                 .frames

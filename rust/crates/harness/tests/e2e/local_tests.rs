@@ -85,7 +85,7 @@ fn local_schema_requires_outcome_frames_files_and_known_fields() -> crate::TestR
                 .map_or(true, |case| case.validate().is_err())
         );
     }
-    for key in ["files", "frames"] {
+    for key in ["files", "frames", "statuses"] {
         let mut broken = baseline.clone();
         broken["expect"][key] = if key == "files" { json!({}) } else { json!([]) };
         assert!(
@@ -133,5 +133,31 @@ proptest::proptest! {
         proptest::prop_assert!(super::local_execution::check_frames(&expected,&frames,acyclic_harness::OperationId::from_bytes(foreign)).is_err());
         let mut reordered = frames;reordered.swap(0,1);
         proptest::prop_assert!(super::local_execution::check_frames(&expected,&reordered,operation).is_err());
+    }
+}
+
+proptest::proptest! {
+    // A status view must preserve the exact ordered publication list and bind
+    // every state to its admitted task. Extra, missing and reordered states fail.
+    #[test]
+    fn status_oracle_binds_identity_attention_and_every_publication(
+        id in proptest::array::uniform16(proptest::num::u8::ANY),
+    ) {
+        use serde_json::json;
+        let task = acyclic_harness::TaskId::from_bytes(id);
+        let expected = vec![json!({"state":"pending","attention":false}),json!({"state":"completed","attention":true})];
+        let actual = vec![json!({"task":task,"state":"pending","attention":false}),json!({"task":task,"state":"completed","attention":true})];
+        proptest::prop_assert!(super::local_admission::check_statuses(&expected,&actual,task).is_ok());
+        proptest::prop_assert!(super::local_admission::check_statuses(&expected,&actual[..1],task).is_err());
+        let mut duplicate = actual.clone();duplicate.insert(1,actual[0].clone());
+        proptest::prop_assert!(super::local_admission::check_statuses(&expected,&duplicate,task).is_err());
+        let mut reordered = actual.clone();reordered.swap(0,1);
+        proptest::prop_assert!(super::local_admission::check_statuses(&expected,&reordered,task).is_err());
+        let mut foreign = id;foreign[0]^=1;
+        proptest::prop_assert!(super::local_admission::check_statuses(&expected,&actual,acyclic_harness::TaskId::from_bytes(foreign)).is_err());
+        for (field,value) in [("attention",json!(false)),("state",json!("pending")),("task",json!(null))] {
+            let mut broken = actual.clone();broken[1][field]=value;
+            proptest::prop_assert!(super::local_admission::check_statuses(&expected,&broken,task).is_err());
+        }
     }
 }

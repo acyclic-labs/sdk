@@ -5,6 +5,7 @@ mod drivers;
 mod execution;
 mod expectations;
 mod limits_tests;
+mod local_admission;
 mod local_case;
 mod local_execution;
 mod local_tests;

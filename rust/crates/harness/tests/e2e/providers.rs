@@ -4,14 +4,13 @@ use super::{
     provider_http::{Recorded, resolve},
 };
 use acyclic_harness::{
-    Admission, LocalHarness, OperationId,
+    LocalHarness, OperationId,
     context::CompactionPolicy,
     conversation::Limits,
     model::{
         ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider as _, ModelRequest,
         ModelRole, PreparedModelRequest,
     },
-    runtime::RuntimeTask,
     test_support::{local_harness_config, local_task_stream},
 };
 use acyclic_stream::{StreamPath, StreamProvider as _};
@@ -150,16 +149,13 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
     let harness = LocalHarness::open(config).await?;
-    let operation = OperationId::new();
-    let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
-        harness.submit(operation, &case.prompt).await?
-    else {
-        return Err("provider task was not admitted".into());
-    };
+    let (operation, task_id, status) =
+        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let mut frames = stream.follow(path.clone(), 0).await?;
     let output = harness.resume(task_id).await?;
+    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     if output.text != case.expect.text || output.steps as usize != case.responses.len() {
         return Err(format!("provider task output differs: {output:?}").into());
     }
