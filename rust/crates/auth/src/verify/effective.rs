@@ -47,6 +47,7 @@ impl VerifiedCapability {
     pub(super) fn evaluate(&mut self) {
         self.limits = unbounded_limits(); self.not_before = 0; self.expires_at = u64::MAX;
         if let Some(certificates) = &self.blocks[0].certificates {
+            self.not_before = certificates.birth.birth.issued_at_unix_seconds;
             if let Some(leaf) = certificates.keys.last() { self.principal = leaf.key.principal.clone(); }
             for cert in &certificates.keys {
                 self.not_before = self.not_before.max(cert.key.validity.not_before_unix_seconds);

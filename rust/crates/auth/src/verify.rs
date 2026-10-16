@@ -67,8 +67,8 @@ pub enum RevocationCheck<'a> {
 /// Read-only authenticated trust snapshot. Implementations must fail closed on
 /// missing/stale state; metering and network refresh belong outside these hooks.
 pub trait Trust {
-    /// Trusted environment key for authenticating the public Birth claims.
-    fn environment_key(&self, environment: &str) -> Result<BlockId, VerifyError>;
+    /// Still-trusted environment issuers, including historical Birth signers.
+    fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError>;
     /// Authenticated current account keyring, anchored in environment trust.
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError>;
     /// Check key/block revocations; errors are denials, never soft failures.
@@ -77,7 +77,7 @@ pub trait Trust {
 
 enum Proof { Append(SigningKey), Sealed([u8; 64]) }
 
-// Wire proof buffers are scrubbed on every return path, including malformed input.
+// Owned wire proof buffers are scrubbed on return, including failed merges.
 struct Envelope(CapabilityProto);
 impl Drop for Envelope {
     fn drop(&mut self) {
@@ -92,6 +92,8 @@ pub struct VerifiedCapability {
     signed: Vec<SignedBlockProto>,
     ids: Vec<BlockId>,
     issuers: Vec<BlockId>,
+    environment_issuer: BlockId,
+    signing_keys: HashSet<BlockId>,
     proof: Proof,
     principal: Principal,
     limits: Limits,
@@ -102,7 +104,8 @@ pub struct VerifiedCapability {
 /// Verify signatures before semantic certificate subset admission. The returned
 /// authority must still be checked against current trust/time at each admission.
 pub fn verify(bytes: &[u8], trust: &impl Trust, now_unix_seconds: u64) -> Result<VerifiedCapability, VerifyError> {
-    let mut envelope = Envelope(CapabilityProto::decode(bytes).map_err(|_| VerifyError::Malformed)?);
+    let mut envelope = Envelope(CapabilityProto::default());
+    envelope.0.merge(bytes).map_err(|_| VerifyError::Malformed)?;
     if envelope.0.version != VERSION { return Err(VerifyError::Version(envelope.0.version)); }
     let canonical = Zeroizing::new(envelope.0.encode_to_vec());
     if canonical.as_slice() != bytes || envelope.0.blocks.is_empty() { return Err(VerifyError::Malformed); }
@@ -110,15 +113,15 @@ pub fn verify(bytes: &[u8], trust: &impl Trust, now_unix_seconds: u64) -> Result
     let certificates = wire[0].certificates.as_ref().ok_or(VerifyError::Malformed)?;
     let birth = certificates.birth.as_ref().ok_or(VerifyError::Malformed)?;
     let claims = birth.birth.as_ref().ok_or(VerifyError::Malformed)?;
-    let environment = trust.environment_key(&claims.environment)?;
+    let environments = trust.environment_keys(&claims.environment)?;
     let mut message = Vec::new();
     claims_message(&mut message, BIRTH_DOMAIN, claims)?;
-    verify_signature(&public_key(&environment)?, &message, &birth.signature)?;
+    let environment = environments.iter().find(|issuer| public_key(*issuer).is_ok_and(|key| verify_signature(&key, &message, &birth.signature).is_ok())).copied().ok_or(VerifyError::Signature)?;
     if claims.issued_at_unix_seconds > now_unix_seconds { return Err(VerifyError::Time); }
     let account = trust.account(&claims.account_id)?;
     let mut issuers = Vec::with_capacity(certificates.keys.len());
     let mut seen = HashSet::new();
-    seen.insert(environment);
+    for issuer in environments { seen.insert(public_key(issuer)?.to_bytes()); }
     seen.insert(public_key(&claims.genesis_public_key)?.to_bytes());
     for issuer in account.issuer_keys { seen.insert(public_key(issuer)?.to_bytes()); }
     for certificate in &certificates.keys {
@@ -159,7 +162,7 @@ pub fn verify(bytes: &[u8], trust: &impl Trust, now_unix_seconds: u64) -> Result
     // No expensive claims/subset conversion happens until every signature is valid.
     let blocks = wire.into_iter().map(Block::try_from).collect::<Result<Vec<_>, _>>()?;
     if !authority::valid_chain(&blocks) { return Err(VerifyError::Malformed); }
-    let mut verified = VerifiedCapability { blocks, signed: std::mem::take(&mut envelope.0.blocks), ids, issuers, proof,
+    let mut verified = VerifiedCapability { blocks, signed: std::mem::take(&mut envelope.0.blocks), ids, issuers, environment_issuer: environment, signing_keys: seen, proof,
         principal: Principal { kind: PrincipalKind::Anonymous, id: String::new(), lineage: vec![], groups: vec![], roles: vec![], attributes: vec![] },
         limits: effective::unbounded_limits(), not_before: 0, expires_at: u64::MAX };
     verified.evaluate();
@@ -178,6 +181,7 @@ impl VerifiedCapability {
         if now_unix_seconds < self.not_before || now_unix_seconds >= self.expires_at { return Err(VerifyError::Time); }
         let certificates = self.blocks[0].certificates.as_ref().ok_or(VerifyError::Malformed)?;
         let id = &certificates.birth.birth.account_id;
+        if !trust.environment_keys(&certificates.birth.birth.environment)?.contains(&self.environment_issuer) { return Err(VerifyError::Trust); }
         let account = trust.account(id)?;
         if !self.issuers.iter().all(|issuer| account.issuer_keys.contains(issuer)) { return Err(VerifyError::Trust); }
         for cert in &certificates.keys {
@@ -205,11 +209,7 @@ impl VerifiedCapability {
         let Proof::Append(signer) = &self.proof else { return Err(VerifyError::Sealed); };
         let next = SigningKey::from_bytes(next_secret);
         let public = next.verifying_key().to_bytes();
-        let certificates = self.blocks[0].certificates.as_ref().ok_or(VerifyError::Malformed)?;
-        if self.blocks.iter().any(|block| block.next_public_key.as_slice() == public)
-            || certificates.keys.iter().any(|cert| cert.key.public_key.as_slice() == public)
-            || certificates.birth.birth.genesis_public_key.as_slice() == public
-            || self.issuers.contains(&public) { return Err(VerifyError::RepeatedKey); }
+        if self.signing_keys.contains(&public) { return Err(VerifyError::RepeatedKey); }
         let blocks = authority::attenuate(&self.blocks, caveats, public.to_vec())?;
         let block = blocks.last().ok_or(VerifyError::Malformed)?;
         let payload = BlockProto::from(block.clone()).encode_to_vec();
@@ -218,7 +218,8 @@ impl VerifiedCapability {
         let signature = signer.sign(&message).to_bytes();
         let mut signed = self.signed.clone(); signed.push(SignedBlockProto { payload, signature: signature.to_vec() });
         let mut ids = self.ids.clone(); ids.push(block_id(&message, &signature));
-        let mut child = Self { blocks, signed, ids, issuers: self.issuers.clone(), proof: Proof::Append(next), principal: self.principal.clone(), limits: self.limits.clone(), not_before: self.not_before, expires_at: self.expires_at };
+        let mut signing_keys = self.signing_keys.clone(); signing_keys.insert(public);
+        let mut child = Self { blocks, signed, ids, issuers: self.issuers.clone(), environment_issuer: self.environment_issuer, signing_keys, proof: Proof::Append(next), principal: self.principal.clone(), limits: self.limits.clone(), not_before: self.not_before, expires_at: self.expires_at };
         child.evaluate();
         Ok(child)
     }
