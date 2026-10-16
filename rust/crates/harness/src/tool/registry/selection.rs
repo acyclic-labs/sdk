@@ -141,7 +141,7 @@ impl ToolRegistry {
         &self,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        self.definitions_for_names(self.data.selected.keys().map(String::as_str), io)
+        self.definitions_for_names(|| self.data.selected.keys().map(String::as_str), io)
     }
 
     pub(crate) fn definitions_for_grants(
@@ -150,35 +150,44 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
         self.definitions_for_names(
-            grants
-                .iter()
-                .filter_map(|grant| grant.strip_prefix("tool:call:")),
+            || {
+                grants
+                    .iter()
+                    .filter_map(|grant| grant.strip_prefix("tool:call:"))
+            },
             io,
         )
     }
 
-    fn definitions_for_names<'a>(
+    fn definitions_for_names<'a, I: Iterator<Item = &'a str>>(
         &self,
-        names: impl Iterator<Item = &'a str>,
+        names: impl Fn() -> I,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
         }
-        let mut definitions = Vec::new();
-        for name in names {
-            let revision = match self.data.selected.get(name) {
-                Some(ModelSelection::Revision(revision)) => revision,
-                Some(ModelSelection::Hidden) | None => continue,
-                Some(ModelSelection::Ambiguous) => {
-                    return Err(crate::executor::stock_boundary(
+        let admitted = || {
+            names().filter_map(move |name| {
+                if let Err(error) = crate::model::charge_items(io, 1) {
+                    return Some(Err(error));
+                }
+                match self.data.selected.get(name) {
+                    Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
+                    Some(ModelSelection::Hidden) | None => None,
+                    Some(ModelSelection::Ambiguous) => Some(Err(crate::executor::stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
                         "tool requires an explicit model revision",
-                    ));
+                    ))),
                 }
-            };
+            })
+        };
+        let count = admitted().try_fold(0usize, |count, selection| selection.map(|_| count + 1))?;
+        let mut definitions = crate::model::vec_with_capacity(count, io)?;
+        for selection in admitted() {
+            let (name, revision) = selection?;
             let tool = self.get(name, Some(revision), io)?.ok_or_else(|| {
                 crate::executor::stock_boundary(
                     io,
@@ -187,7 +196,7 @@ impl ToolRegistry {
                 )
             })?;
             let definition = crate::model::clone_tool_definition(&tool.definition, io)?;
-            crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+            definitions.push(definition);
         }
         Ok(definitions)
     }
