@@ -1,8 +1,6 @@
+use super::super::model::check;
 use super::*;
-use acyclic_stream::{
-    MemoryStream, StreamPath,
-    verification::{block_on, check},
-};
+use acyclic_stream::{MemoryStream, StreamPath, verification::block_on};
 
 fn activity_race(broken: bool) {
     check(move || {

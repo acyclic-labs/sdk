@@ -1,9 +1,7 @@
+use super::super::model::check;
 use super::*;
 use crate::task_volume::{FileKey, FileValue, Query, TaskVolume};
-use acyclic_stream::{
-    MemoryStream, StreamPath,
-    verification::{block_on, check},
-};
+use acyclic_stream::{MemoryStream, StreamPath, verification::block_on};
 use std::{
     future::Future as _,
     task::{Context, Poll},
