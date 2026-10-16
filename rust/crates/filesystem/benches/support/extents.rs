@@ -2,12 +2,13 @@ use acyclic_fs::kernel::{
     DecodeLimits, Extent, ExtentKind, ExtentMutation, ExtentPage, apply_extent_mutations,
     encode_extent_page,
 };
-use acyclic_fs::memory::MemoryObjectStore;
 use acyclic_fs::storage::{HashedObject, ObjectKind};
-use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken};
+use acyclic_fs::{AsyncObjectStore, AuthorityWork, CancellationToken, LogicalObjectStore};
+use acyclic_objects::v1::MemoryObjects;
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::future::Future;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
@@ -28,7 +29,8 @@ fn complete<T>(future: impl Future<Output = T>) -> T {
 
 #[divan::bench(args = [1, 2], threads = [1, 4])]
 fn extent_replace(bencher: Bencher, patches: usize) {
-    let store = MemoryObjectStore::default();
+    let (provider, bucket) = MemoryObjects::with_default_bucket();
+    let store = LogicalObjectStore::new(Arc::new(provider), bucket);
     let cancellation = CancellationToken::new();
     let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
     let page = ExtentPage::Leaf(vec![Extent {
