@@ -4,6 +4,14 @@
 mod callback_path;
 
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {
+    let raw_parts: Vec<_> = input
+        .split(|byte| *byte == 0xff)
+        .map(<[u8]>::to_vec)
+        .collect();
+    if let Some(wide) = callback_path::wide_components(&raw_parts) {
+        let wide: Vec<_> = wide.collect();
+        assert_eq!(callback_path::components(&wide).as_ref(), Some(&raw_parts));
+    }
     if input.len() % 2 != 0 {
         return;
     }
@@ -25,6 +33,9 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
                 part.chunks_exact(2)
                     .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
             );
+        }
+        if let Some(direct) = callback_path::wide_components(&parts) {
+            assert_eq!(direct.collect::<Vec<_>>(), canonical);
         }
         assert_eq!(callback_path::components(&canonical), Some(parts));
     }

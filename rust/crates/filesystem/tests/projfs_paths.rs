@@ -1,4 +1,4 @@
-//! Exact callback path decoding with no intermediate platform string.
+//! Callback path codecs without intermediate platform strings.
 
 #[path = "../src/native_mount/projfs/callback_path.rs"]
 mod callback_path;
@@ -37,7 +37,7 @@ fn callback_paths_keep_windows_component_rules() {
         ("a\\b/./c/", Some(vec![units("a"), units("b"), units("c")])),
         ("a//b\\\\c", Some(vec![units("a"), units("b"), units("c")])),
         ("1:a", Some(vec![units("1:a")])),
-        ("é:a", Some(vec![units("é:a")])),
+        ("ÃƒÂ©:a", Some(vec![units("ÃƒÂ©:a")])),
         ("a/.:", Some(vec![units("a"), units(".:")])),
         (".", None),
         (".\\a", None),
@@ -86,10 +86,61 @@ proptest! {
         }
     }
 
+    #[test]
+    fn direct_metadata_paths_round_trip(parts in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..64), 0..8)) {
+        if let Some(wide) = callback_path::wide_components(&parts) {
+            let wide: Vec<_> = wide.collect();
+            prop_assert_eq!(callback_path::components(&wide).as_ref(), Some(&parts));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn direct_metadata_paths_match_windows_paths(wide in wide_paths()) {
+        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+        if let Some(parts) = callback_path::components(&wide)
+            && let Some(direct) = callback_path::wide_components(&parts)
+        {
+            let mut host = std::path::PathBuf::new();
+            for part in &parts {
+                let wide: Vec<_> = part.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+                host.push(std::ffi::OsString::from_wide(&wide));
+            }
+            prop_assert_eq!(direct.collect::<Vec<_>>(), host.as_os_str().encode_wide().collect::<Vec<_>>());
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn callback_paths_match_windows_standard_components(wide in wide_paths()) {
         let expected = legacy::components(&wide);
         prop_assert_eq!(callback_path::components(&wide), expected);
     }
+}
+
+#[test]
+fn noncanonical_metadata_parts_keep_the_platform_fallback() {
+    for part in [
+        vec![],
+        vec![1],
+        vec![46, 0],
+        vec![46, 0, 46, 0],
+        vec![0, 0],
+        vec![47, 0],
+        vec![58, 0],
+        vec![92, 0],
+    ] {
+        assert!(callback_path::wide_components(&[part]).is_none());
+    }
+    assert_eq!(
+        callback_path::wide_components(&[]).expect("root").count(),
+        0
+    );
+    let parts = vec![vec![0, 0xd8], vec![0, 0xdc]];
+    assert_eq!(
+        callback_path::wide_components(&parts)
+            .expect("surrogates")
+            .collect::<Vec<_>>(),
+        [0xd800, 92, 0xdc00]
+    );
 }
