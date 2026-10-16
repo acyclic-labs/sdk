@@ -2,7 +2,7 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
-import { createClient, ConnectError, Code, type Interceptor, type Client } from "@connectrpc/connect";
+import { createClient, ConnectError, Code, type Interceptor, type Client, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
@@ -25,10 +25,17 @@ export interface StreamGrpcOptions {
   readonly acknowledgeDeliveries?: boolean;
 }
 
-/** Complete Stream v1 gRPC client, including streaming reads/follow and atomic Commit. */
+/** Virtual follows support cancellation/deadlines; metadata belongs to the shared session. */
+export type StreamFollowCallOptions = Pick<CallOptions, "signal" | "timeoutMs"> & {
+  [Option in Exclude<keyof CallOptions, "signal" | "timeoutMs">]?: never;
+};
+type Follow = (request: Parameters<Client<typeof StreamService>["follow"]>[0],
+  options?: StreamFollowCallOptions) => ReturnType<Client<typeof StreamService>["follow"]>;
+
+/** Stream v1 client; virtual follow accepts only signal and timeoutMs call options. */
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
-  const follow: Client<typeof StreamService>["follow"] = async function* (request, callOptions) {
+  const follow: Follow = async function* (request, callOptions) {
     const path = request.path ?? "";
     const from = request.from ?? 0n;
     await validateWireRequest({ kind: "follow", path, from });
@@ -43,7 +50,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
       if (controller.signal.aborted) throw ConnectError.from(controller.signal.reason, Code.Canceled);
     } finally { controller.abort(); deadline.cleanup(); }
   };
-  return Object.assign(client, { follow });
+  return { ...client, follow };
 }
 
 function createStreamGrpcTransport(options: StreamGrpcOptions) {

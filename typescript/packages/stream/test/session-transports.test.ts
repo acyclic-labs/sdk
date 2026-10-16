@@ -32,7 +32,12 @@ async function grpcFixture() {
   const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
   const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
-      tail() { return { tail: 0n }; },
+      tail(_request, context) {
+        const echo = context.requestHeader.get("x-follow-options") ?? "";
+        context.responseHeader.set("x-follow-options", echo);
+        context.responseTrailer.set("x-follow-options", echo);
+        return { tail: 0n };
+      },
       async *follow() { counts.legacyFollows += 1; throw new Error("legacy Follow RPC is forbidden"); },
     });
     router.service(StreamSessionService, { async *session(input, context) {
@@ -80,6 +85,15 @@ test("raw gRPC follow deadlines remove only their logical channel", async () => 
   const controller = new AbortController();
   try {
     const client = createStreamGrpcClient(options);
+    let header = "";
+    let trailer = "";
+    expect((await client.tail({ path: "unary" }, {
+      timeoutMs: 500, headers: { "x-follow-options": "unary" },
+      onHeader: headers => { header = headers.get("x-follow-options") ?? ""; },
+      onTrailer: trailers => { trailer = trailers.get("x-follow-options") ?? ""; },
+    })).tail).toBe(0n);
+    expect(header).toBe("unary");
+    expect(trailer).toBe("unary");
     const expired = client.follow({ path: "deadline", from: 0n }, { timeoutMs: 100 })[Symbol.asyncIterator]();
     const live = client.follow({ path: "live", from: 0n }, { timeoutMs: 0, signal: controller.signal })[Symbol.asyncIterator]();
     const expiry = expired.next().then(() => { throw new Error("deadline did not reject"); }, error => error);
