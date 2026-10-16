@@ -5,7 +5,7 @@ mod cache;
 static PACKAGE: cache::Mutex<Option<cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)>>> =
     cache::Mutex::new(None);
 
-fn package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
+fn shared_package() -> cache::Arc<(Fixture, BTreeMap<String, Vec<u8>>)> {
     cache::get_or_try_init(&PACKAGE, || {
         let (fixture, support) = historical_source_fixture(None);
         let source = fixture.root.join("rust/crates/demo");
@@ -57,7 +57,7 @@ pub(super) fn include_sources(package: &Path) {
 }
 
 pub(super) fn source_fixture() -> (Fixture, PathBuf) {
-    let template = package();
+    let template = shared_package();
     let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
     let root = template.0.root.with_extension(format!("case-{id}"));
     let output = template.0.output.with_extension(format!("case-{id}"));
@@ -75,7 +75,7 @@ pub(super) fn source_fixture() -> (Fixture, PathBuf) {
 }
 
 pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) -> PathBuf {
-    let template = package();
+    let template = shared_package();
     let source = support.join(format!("cargo-packaged-source/{package_name}-1.0.0"));
     for (name, bytes) in &template.1 {
         let file = source.join(name);
@@ -99,7 +99,7 @@ pub(super) fn materialize(package: &Path, support: &Path, package_name: &str) ->
     source
 }
 pub(super) fn transport() -> PathBuf {
-    package()
+    shared_package()
         .0
         .output
         .join("test-support")

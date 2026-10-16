@@ -107,7 +107,8 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(components(&result, true).unwrap(), expected.clone());
                 proptest::prop_assert_eq!(rebase(&result, &new, &old, true).and_then(|p| components(&p, true)), components(&format!("{old}/{leaf}"), true));
             }
-            proptest::prop_assert!(rebase(&format!("{old}-sibling/{leaf}"), &old, &new, true).is_none());
+            let sibling = format!("{old}-sibling/{leaf}");
+            proptest::prop_assert!(rebase(&sibling, &old, &new, true).is_none());
         }
         proptest::prop_assert!(rebase("/OLD/item", "/old", "/new", false).is_none());
         proptest::prop_assert!(rebase("/old/../other", "/old", "/new", false).is_none());
