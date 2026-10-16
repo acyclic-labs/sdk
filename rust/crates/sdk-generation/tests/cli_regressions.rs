@@ -346,13 +346,15 @@ fn invoke(command: &mut Command) -> std::process::Output {
         command.env("PATH", runtime::path());
     }
     let mut stdout = Vec::new();
-    let result = sdk_docs::with_command_environment(command, || {
-        sdk_generation::run(
-            command
-                .get_args()
-                .map(|arg| arg.to_str().unwrap().to_owned()),
-            &mut stdout,
-        )
+    let result = commands::execute(|| {
+        sdk_docs::with_command_environment(command, || {
+            sdk_generation::run(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_str().unwrap().to_owned()),
+                &mut stdout,
+            )
+        })
     });
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;

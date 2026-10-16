@@ -82,10 +82,13 @@ fn joined_owners_share_one_immutable_plan() {
         let plan = parallel::Arc::new(vec![17, 29]);
         let shared = parallel::Arc::clone(&plan);
         let identity = parallel::Arc::as_ptr(&plan) as usize;
-        assert_eq!(parallel::map(vec![0, 1], move |release| {
-            assert_eq!(parallel::Arc::as_ptr(&shared) as usize, identity);
-            shared[release]
-        }), vec![17, 29]);
+        assert_eq!(
+            parallel::map(vec![0, 1], move |release| {
+                assert_eq!(parallel::Arc::as_ptr(&shared) as usize, identity);
+                shared[release]
+            }),
+            vec![17, 29]
+        );
         assert_eq!(parallel::Arc::strong_count(&plan), 1);
     });
 }
@@ -461,4 +464,35 @@ fn validated_identity_hits_never_open_the_exclusive_lock() {
 #[should_panic(expected = "cached reader opened the exclusive lock")]
 fn negative_control_detects_serialized_identity_hits() {
     warm_identity(true);
+}
+
+#[test]
+fn cargo_and_fixture_tool_outputs_publish_as_one_initialization() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        let slot = Arc::new(Mutex::new(None));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let jobs = (0..2)
+            .map(|_| {
+                let slot = Arc::clone(&slot);
+                let calls = Arc::clone(&calls);
+                loom::thread::spawn(move || {
+                    let setup = get_or_try_init(&slot, || {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok::<_, ()>((17, vec![29, 31, 37]))
+                    })
+                    .unwrap();
+                    assert_eq!(*setup, (17, vec![29, 31, 37]));
+                    setup
+                })
+            })
+            .collect::<Vec<_>>();
+        let outputs = jobs
+            .into_iter()
+            .map(|job| job.join().unwrap())
+            .collect::<Vec<_>>();
+        assert!(Arc::ptr_eq(&outputs[0], &outputs[1]));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    });
 }

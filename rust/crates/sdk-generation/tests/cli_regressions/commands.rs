@@ -105,11 +105,37 @@ fn compiler_outputs(command: &Command) -> std::io::Result<Vec<(PathBuf, Vec<u8>)
     Ok(artifacts)
 }
 
+thread_local! { static ACTIVE: Cell<bool> = const { Cell::new(false) }; }
+
+pub(super) fn execute<T>(operation: impl FnOnce() -> T) -> T {
+    if ACTIVE.get() {
+        return operation();
+    }
+    sdk_docs::with_command_executor(
+        |command| {
+            runtime::tool_output(command)
+                .map(Ok)
+                .unwrap_or_else(|| command.output())
+        },
+        operation,
+    )
+}
+
 impl Queries {
     pub(super) fn run<T>(&self, operation: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE.set(self.0);
+            }
+        }
+        let _restore = Restore(ACTIVE.replace(true));
         let state = Rc::clone(&self.0);
         sdk_docs::with_command_executor(
             move |command| {
+                if let Some(output) = runtime::tool_output(command) {
+                    return Ok(output);
+                }
                 let Some(key) = query(command) else {
                     return command.output();
                 };
