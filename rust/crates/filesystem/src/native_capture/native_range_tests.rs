@@ -131,3 +131,121 @@ async fn original_native_byte_and_copy_refusals_precede_io()
     }
     Ok(())
 }
+
+#[test]
+fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
+-> Result<(), Box<dyn std::error::Error>> {
+    use proptest::prelude::*;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let temporary = tempfile::tempdir()?;
+    let file = temporary.path().join("owned-range");
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 128,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    });
+    // Property: successful owned reads retain exactly the bounded source prefix
+    // on the original ledger, initialize one buffer, and retire every claim.
+    // Short files fail without advancing the cursor or losing physical charges.
+    runner.run(
+        &(
+            proptest::collection::vec(any::<u8>(), 0..96),
+            0_usize..128,
+            0_usize..128,
+            0_usize..128,
+        ),
+        |(body, offset, length, maximum)| {
+            std::fs::write(&file, &body).unwrap();
+            let cancellation = CancellationToken::new();
+            let setup =
+                NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+            let native = std::sync::Arc::new(
+                native_positional_file(fixture_file(&file).unwrap(), &setup).unwrap(),
+            );
+            let requested = length.min(maximum);
+            let allowance = WorkBudget {
+                source_bytes_read: requested as u64,
+                bytes_copied: requested as u64,
+                ..WorkBudget::UNBOUNDED
+            };
+            let original = NativeMaterializationWork::new(allowance, &cancellation).unwrap();
+            let initial = original.live_allocation_bytes();
+            let mut source =
+                acyclic_native_runtime::AsyncRangeReader::new(native, offset as u64, length as u64);
+            let expected = body.len().saturating_sub(offset).min(requested);
+            let result = runtime.block_on(source.read_owned_with_native_work(
+                maximum,
+                &original,
+                &cancellation,
+            ));
+            if expected != requested {
+                prop_assert!(matches!(result, Err(crate::FsError::SourceSnapshotStale)));
+                prop_assert_eq!(source.remaining(), length as u64);
+            } else {
+                let chunk = result.unwrap().unwrap();
+                prop_assert_eq!(
+                    chunk.bytes.as_ref(),
+                    body.get(offset..offset + expected).unwrap_or_default()
+                );
+                prop_assert_eq!(source.remaining(), (length - expected) as u64);
+                prop_assert!(chunk.logical_owned_bytes >= requested as u64);
+                if requested != 0 {
+                    prop_assert!(chunk.bytes.matches_meter(&original.runtime_meter()));
+                }
+                prop_assert_eq!(original.receipt().bytes_copied, chunk.logical_owned_bytes);
+                drop(chunk);
+            }
+            prop_assert_eq!(original.receipt().source_bytes_read, expected as u64);
+            prop_assert!(original.receipt().verify(allowance).is_ok());
+            prop_assert_eq!(original.live_allocation_bytes(), initial);
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn owned_native_refusals_and_cancellation_precede_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("owned-denied");
+    std::fs::write(&path, b"abc")?;
+    for counter in ["source_bytes_read", "bytes_copied", "cancelled"] {
+        let cancellation = CancellationToken::new();
+        let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &setup)?);
+        let mut limit = budget();
+        match counter {
+            "source_bytes_read" => limit.source_bytes_read = 2,
+            "bytes_copied" => limit.bytes_copied = 2,
+            _ => {}
+        }
+        let original =
+            NativeMaterializationWork::new(limit, &cancellation).map_err(|(error, _)| error)?;
+        let initial = original.live_allocation_bytes();
+        if counter == "cancelled" {
+            cancellation.cancel();
+        }
+        let mut source = acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3);
+        let result = source
+            .read_owned_with_native_work(8, &original, &cancellation)
+            .await;
+        if counter == "cancelled" {
+            assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
+        } else {
+            assert!(matches!(result, Err(crate::FsError::NativeKernel(
+                crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { counter: refused, .. })
+            )) if refused == counter));
+        }
+        assert_eq!(source.remaining(), 3);
+        assert_eq!(original.receipt().source_bytes_read, 0);
+        assert_eq!(original.receipt().backend_read_operations, 0);
+        assert_eq!(original.live_allocation_bytes(), initial);
+    }
+    Ok(())
+}

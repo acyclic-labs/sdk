@@ -126,6 +126,60 @@ pub(super) fn native_positional_file(
 }
 
 impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader {
+    async fn read_owned_with_native_work(
+        &mut self,
+        maximum: usize,
+        original: &crate::NativeMaterializationWork,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, crate::FsError> {
+        cancellation.check()?;
+        original.admit(WorkCounters::UNCHARGED)?;
+        let maximum = maximum.min(usize::try_from(self.remaining()).unwrap_or(usize::MAX));
+        if maximum == 0 {
+            return Ok(Some(crate::kernel::OwnedSourceChunk::intrinsic(
+                acyclic_stream::OwnedBytes::new(),
+                0,
+            )));
+        }
+        original
+            .admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(maximum as u64))?;
+        let mut accounting = crate::kernel::KernelAccounting::native(original, cancellation);
+        let mut storage = crate::kernel::Owned::<Vec<u8>>::allocate(maximum, &mut accounting)?;
+        let capacity = storage.value.capacity();
+        let zeroed = crate::materializer::NativeResourceCredit::Copy.delta(capacity as u64);
+        let copying = original.reserve_work(zeroed)?;
+        storage.value.resize(capacity, 0);
+        copying.record_completed(zeroed)?;
+        let runtime = original.runtime_meter();
+        let storage =
+            acyclic_stream::PreparedOwnedBytes::new(storage.value, storage.allocation, &runtime)
+                .map_err(|failure| match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        crate::FsError::from(original.runtime_error(error))
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        crate::NativeTreeMaterializationError::InvalidLayout.into()
+                    }
+                })?;
+        let (storage, filled) = self
+            .read_prepared(storage, maximum, runtime, true)
+            .await
+            .map_err(|error| native_source_read_error(error, original))?;
+        if filled != maximum {
+            return Err(crate::FsError::SourceSnapshotStale);
+        }
+        let bytes = storage.freeze(filled).map_err(|failed| {
+            drop(failed);
+            crate::FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
+        })?;
+        cancellation.check()?;
+        original.admit(WorkCounters::UNCHARGED)?;
+        Ok(Some(crate::kernel::OwnedSourceChunk::intrinsic(
+            bytes,
+            capacity as u64,
+        )))
+    }
+
     async fn read<'a>(
         &'a mut self,
         _destination: &'a mut [u8],
@@ -159,24 +213,10 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
         let copy = original
             .reserve_work(crate::materializer::NativeResourceCredit::Copy.delta(maximum as u64))?;
         let runtime = original.runtime_meter();
-        let result = reader.read(maximum, runtime, true).await.map_err(|error| {
-            original
-                .state
-                .take_native_io_failure()
-                .map(crate::materializer::native_materialization_work_error)
-                .map_or_else(
-                    || {
-                        if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                            crate::FsError::SourceSnapshotStale
-                        } else {
-                            crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(
-                                error,
-                            ))
-                        }
-                    },
-                    crate::FsError::NativeKernel,
-                )
-        })?;
+        let result = reader
+            .read(maximum, runtime, true)
+            .await
+            .map_err(|error| native_source_read_error(error, original))?;
         if result.0.len() != maximum {
             return Err(crate::FsError::SourceSnapshotStale);
         }
@@ -193,4 +233,24 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
         original.admit(WorkCounters::UNCHARGED)?;
         Ok(maximum)
     }
+}
+
+fn native_source_read_error(
+    error: std::io::Error,
+    original: &NativeMaterializationWork,
+) -> crate::FsError {
+    original
+        .state
+        .take_native_io_failure()
+        .map(crate::materializer::native_materialization_work_error)
+        .map_or_else(
+            || {
+                if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    crate::FsError::SourceSnapshotStale
+                } else {
+                    crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(error))
+                }
+            },
+            crate::FsError::NativeKernel,
+        )
 }

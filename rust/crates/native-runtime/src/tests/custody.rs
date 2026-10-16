@@ -177,14 +177,33 @@ fn denied_file_import_returns_original_handle_without_fabricated_io() -> io::Res
 #[test]
 fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io::Result<()> {
     let (_directory, file) = prepared_read_fixture()?;
-    for (offset, expected) in [(0, 3), (3, 0)] {
+    let file = Arc::new(file);
+    for (ranged, offset, expected, length) in [
+        (false, 0, 3, 8),
+        (false, 3, 0, 8),
+        (true, 0, 3, 8),
+        (true, 3, 0, 8),
+        (true, 0, 0, 0),
+    ] {
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let storage = vec![0x55; 8];
         let identity = storage.as_ptr();
-        let read = file.read_prepared_bounded_async(offset, storage, 8, false, meter.clone())?;
         let (storage, filled) = {
             let _blocking = InlineBlocking::enter();
-            complete(read)
+            if ranged {
+                let mut range = AsyncRangeReader::new(Arc::clone(&file), offset, length as u64);
+                let result = complete(range.read_prepared(storage, length, meter.clone(), false))?;
+                assert_eq!(range.remaining(), (length - expected) as u64);
+                Ok(result)
+            } else {
+                complete(file.read_prepared_bounded_async(
+                    offset,
+                    storage,
+                    length,
+                    false,
+                    meter.clone(),
+                )?)
+            }
         }?;
         assert_eq!(filled, expected);
         assert_eq!(storage.as_ptr(), identity);
@@ -219,15 +238,22 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
 #[test]
 fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Result<()> {
     let (_directory, file) = prepared_read_fixture()?;
-    for (prepared, late_cancel) in [(true, false), (true, true), (false, true)] {
+    let file = Arc::new(file);
+    for (prepared, late_cancel) in [(0, false), (0, true), (1, true), (2, false), (2, true)] {
         let mut limits = ReadBudgetMeter::new(8, 8);
         limits.cancel_after_read = late_cancel;
         let meter = Arc::new(limits);
         let error = {
             let _blocking = InlineBlocking::enter();
-            if prepared {
+            if prepared == 0 {
                 complete(file.read_prepared_bounded_async(0, [0x55; 8], 8, true, meter.clone())?)
                     .unwrap_err()
+            } else if prepared == 2 {
+                let mut range = AsyncRangeReader::new(Arc::clone(&file), 0, 8);
+                let error =
+                    complete(range.read_prepared([0x55; 8], 8, meter.clone(), true)).unwrap_err();
+                assert_eq!(range.remaining(), 8);
+                error
             } else {
                 complete(file.read_bounded_async(0, 8, meter.clone(), false)?)
                     .err()

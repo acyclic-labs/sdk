@@ -78,6 +78,35 @@ impl AsyncRangeReader {
         self.remaining
     }
 
+    /// Reads into owned storage, advancing the range only after success.
+    pub async fn read_prepared<B>(
+        &mut self,
+        storage: B,
+        maximum: usize,
+        meter: Arc<dyn NativeReadMeter>,
+        require_full: bool,
+    ) -> io::Result<(B, usize)>
+    where
+        B: AsMut<[u8]> + Send + 'static,
+    {
+        meter.check()?;
+        let length = usize::try_from(self.remaining.min(maximum as u64))
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        if length == 0 {
+            return Ok((storage, 0));
+        }
+        let result = self
+            .file
+            .read_prepared_bounded_async(self.offset, storage, length, require_full, meter)?
+            .await?;
+        self.offset = self
+            .offset
+            .checked_add(result.1 as u64)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        self.remaining -= result.1 as u64;
+        Ok(result)
+    }
+
     /// Reads a bounded chunk, returning its bytes before their allocation custody.
     pub async fn read(
         &mut self,
