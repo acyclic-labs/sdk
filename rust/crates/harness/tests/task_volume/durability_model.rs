@@ -56,6 +56,9 @@ impl StreamProvider for Provider {
         &self,
         _: StreamPath,
     ) -> std::result::Result<StreamWatermarks, StreamError> {
+        if let Some(pauses) = &self.2 {
+            refresh_model::before_watermarks(pauses);
+        }
         if let Some(pause) = &self.1 {
             pause.hit();
         }
@@ -70,7 +73,9 @@ impl StreamProvider for Provider {
     async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
         let records = self.0.lock().unwrap().records().to_vec();
         let pauses = self.2.clone();
-        let read = pauses.as_ref().map_or(0, |pauses| pauses.begin());
+        let read = pauses.as_ref().map_or(0, |pauses| {
+            refresh_model::read_number().unwrap_or_else(|| pauses.begin())
+        });
         let limit = if pauses
             .as_ref()
             .is_some_and(|pauses| pauses.short_first && read == 1)
@@ -334,6 +339,7 @@ struct ReadPauses {
     first: Pause,
     second: Pause,
     short_first: bool,
+    entry: Option<Arc<refresh_model::Entries>>,
 }
 
 impl ReadPauses {
