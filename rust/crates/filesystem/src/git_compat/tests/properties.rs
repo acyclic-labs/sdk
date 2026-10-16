@@ -39,6 +39,9 @@ proptest! {
                 prop_assert!(executor.operations.lock().unwrap().is_empty());
                 let retained = repository.pending_transition().await.unwrap();
                 prop_assert_eq!(retained.as_ref(), Some(&pending));
+            } else {
+                let inspected = repository.execute(GitCommand::Status, GitTreeRef::exact(main, generation(2))).await;
+                prop_assert!(matches!(inspected, Err(GitCompatError::TransitionPending(id)) if id == transition));
             }
             Ok(())
         })?;

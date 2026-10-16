@@ -162,7 +162,7 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
         .expect("pending transition")
         .expect("durable pending transition");
     let executor = TestExecutor::returning(GitFilesystemResult::Applied {
-        tree: Some(tree(1)),
+        tree: Some(GitTreeRef::exact(child, generation(1))),
         tracked_paths: None,
     });
     assert!(

@@ -1,5 +1,15 @@
 use super::*;
 
+fn inspected_join(pending: &GitPendingTransition) -> bool {
+    matches!(
+        &pending.mutation,
+        GitPendingMutation::Join {
+            conflicts: Some(_),
+            ..
+        }
+    )
+}
+
 impl<S: GitCompatStore> GitCompatRepository<S> {
     /// Executes a typed command and completes its filesystem transition.
     pub async fn run<E: GitFilesystemExecutor>(
@@ -61,17 +71,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         executor: &E,
     ) -> Result<Option<GitCommandOutput>, GitCompatRunError<S::Error, E::Error>> {
         match self.pending_transition().await? {
-            Some(pending)
-                if matches!(
-                    pending.mutation,
-                    GitPendingMutation::Join {
-                        conflicts: Some(_),
-                        ..
-                    }
-                ) =>
-            {
-                Ok(None)
-            }
+            Some(pending) if inspected_join(&pending) => Ok(None),
             Some(pending) => self
                 .finish(pending.id, &pending.action, executor)
                 .await
@@ -201,6 +201,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
+            if let Some(pending) = state
+                .pending
+                .as_ref()
+                .filter(|pending| !inspected_join(pending))
+            {
+                return Err(GitCompatError::TransitionPending(pending.id));
+            }
             let before = state.clone();
             let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
             if let Some(pending) = &before.pending {
