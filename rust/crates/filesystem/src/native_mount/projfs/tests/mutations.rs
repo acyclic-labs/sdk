@@ -22,7 +22,8 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
     }
     let (_root, destination, mut session) = mount_source(&source)?;
     let mut writers = Vec::new();
-    for (_, relative) in &paths {
+    for (path, relative) in &paths {
+        assert_eq!(source.read_range(path, 0, 4)?.as_ref(), b"seed");
         let projected = destination.join(relative);
         assert_eq!(std::fs::read(&projected)?, b"seed");
         writers.push(
@@ -38,15 +39,20 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
         "the live provider must retire with held writers"
     );
 
+    let stopped_table = source.shared_checkout().lock().await.root().file_table;
     for mut late in writers {
         late.rewind()?;
         late.write_all(b"late")?;
         late.flush()?;
     }
-    for (path, relative) in &paths {
+    for (_, relative) in &paths {
         assert_eq!(std::fs::read(destination.join(relative))?, b"late");
-        assert_eq!(source.read_range(path, 0, 4)?.as_ref(), b"seed");
     }
+    assert_eq!(
+        source.shared_checkout().lock().await.root().file_table,
+        stopped_table,
+        "late writes must leave the authenticated source records unchanged"
+    );
     assert!(!session.stop()?, "retirement must be idempotent");
     Ok(())
 }
