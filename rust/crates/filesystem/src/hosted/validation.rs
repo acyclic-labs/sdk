@@ -92,4 +92,3 @@ fn exact_len(value: &[u8], expected: usize, message: &'static str) -> Result<(),
         Err(HostedFsError::InvalidResponse(message))
     }
 }
-

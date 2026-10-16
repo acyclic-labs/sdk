@@ -485,8 +485,14 @@ async fn connect_native(
 impl NativeStreamClient {
     /// Resolves JavaScript credentials inside each Rust retry and reconnect.
     #[napi(js_name = "withCredentialProvider")]
-    pub fn with_credential_provider(&self, callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>) -> Self {
-        Self::from_client(self.provider.with_credential_provider(credentials::provider(callback)))
+    pub fn with_credential_provider(
+        &self,
+        callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>,
+    ) -> Self {
+        Self::from_client(
+            self.provider
+                .with_credential_provider(credentials::provider(callback)),
+        )
     }
 
     /// Establishes TLS without calling the provider until a physical RPC starts.
@@ -499,10 +505,19 @@ impl NativeStreamClient {
     ) -> Result<NativeStreamConnectResult> {
         let credential = credentials::provider(callback);
         let certificate = ca_certificate_pem.map(|bytes| bytes.to_vec());
-        let result = run_with_cancellation(async move {
-            grpc::Client::connect_eager_with_credential(&endpoint, credential, certificate.as_deref())
-                .await.map_err(|error| connect_error(&error))
-        }, cancellation_state(cancellation)).await;
+        let result = run_with_cancellation(
+            async move {
+                grpc::Client::connect_eager_with_credential(
+                    &endpoint,
+                    credential,
+                    certificate.as_deref(),
+                )
+                .await
+                .map_err(|error| connect_error(&error))
+            },
+            cancellation_state(cancellation),
+        )
+        .await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
             Err(error) => NativeStreamConnectResult::failure(error),
@@ -721,8 +736,8 @@ impl NativeStreamClient {
     }
 }
 
-mod operations;
 mod credentials;
+mod operations;
 use operations::*;
 
 #[cfg(test)]

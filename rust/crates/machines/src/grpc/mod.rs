@@ -1,5 +1,5 @@
-pub use acyclic_auth::credential::CredentialProvider;
 use super::*;
+pub use acyclic_auth::credential::CredentialProvider;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
@@ -93,22 +93,37 @@ impl GrpcProvider {
     }
 
     /// Establish mutual TLS without obtaining a bearer until the first request.
-    pub async fn connect_with_credential(uri: &str, tls: Tls<'_>, credential: CredentialProvider) -> Result<Self, ProviderError> {
-        Ok(Self::connect(uri, tls, None).await?.with_credential_provider(credential))
+    pub async fn connect_with_credential(
+        uri: &str,
+        tls: Tls<'_>,
+        credential: CredentialProvider,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self::connect(uri, tls, None)
+            .await?
+            .with_credential_provider(credential))
     }
 
     async fn authorization(&self) -> Result<BearerAuth, ProviderError> {
         if let Some(provider) = &self.credential {
-            let token = provider.resolve().await.map_err(|_| ProviderError::Rejected("Machines credential renewal failed".into()))?;
+            let token = provider.resolve().await.map_err(|_| {
+                ProviderError::Rejected("Machines credential renewal failed".into())
+            })?;
             BearerAuth::new(&token)
-        } else { Ok(self.authorization.clone()) }
+        } else {
+            Ok(self.authorization.clone())
+        }
     }
 
     async fn client(&self) -> Result<Client, ProviderError> {
         let authorization = self.authorization().await?;
-        Ok(wire::machines_service_client::MachinesServiceClient::with_interceptor(self.channel.clone(), authorization)
+        Ok(
+            wire::machines_service_client::MachinesServiceClient::with_interceptor(
+                self.channel.clone(),
+                authorization,
+            )
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES))
+            .max_encoding_message_size(MAX_MESSAGE_BYTES),
+        )
     }
 
     /// Connects with mutual TLS and an optional account bearer.
@@ -198,9 +213,12 @@ impl GrpcProvider {
     }
 
     fn grpc_with_auth(channel: Channel, authorization: BearerAuth) -> Self {
-        Self { channel, authorization, credential: None }
+        Self {
+            channel,
+            authorization,
+            credential: None,
+        }
     }
-
 }
 
 mod guest;

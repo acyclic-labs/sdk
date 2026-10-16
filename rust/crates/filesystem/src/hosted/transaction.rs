@@ -204,14 +204,17 @@ impl HostedTransaction {
                     .require_page_bound(maximum_conflicts, "transaction conflicts")?;
                 let mut client = self.workspace.filesystem.client.clone();
                 Ok(client
-                    .apply_transaction(self.workspace.filesystem.request(
-                        wire::ApplyTransactionRequest {
-                            base: Some(self.base),
-                            mutations: self.mutations,
-                            operation: Some(operation(self.idempotency_key)),
-                            maximum_conflicts,
-                        },
-                    ).await?)
+                    .apply_transaction(
+                        self.workspace
+                            .filesystem
+                            .request(wire::ApplyTransactionRequest {
+                                base: Some(self.base),
+                                mutations: self.mutations,
+                                operation: Some(operation(self.idempotency_key)),
+                                maximum_conflicts,
+                            })
+                            .await?,
+                    )
                     .await?
                     .into_inner())
             })
@@ -241,10 +244,10 @@ impl HostedTransaction {
                         mutations: self.mutations.clone(),
                         maximum_conflicts,
                         operation: Some(operation(self.idempotency_key)),
-                    }).await?,
+                    })
+                    .await?,
             )
             .await?
             .into_inner())
     }
 }
-

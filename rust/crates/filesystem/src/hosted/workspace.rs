@@ -30,9 +30,13 @@ impl HostedWorkspace {
     pub async fn head(&self) -> Result<HostedGeneration, HostedFsError> {
         let mut client = self.filesystem.client.clone();
         let response = client
-            .get_head(self.filesystem.request(wire::GetHeadRequest {
-                workspace: Some(self.reference.clone()),
-            }).await?)
+            .get_head(
+                self.filesystem
+                    .request(wire::GetHeadRequest {
+                        workspace: Some(self.reference.clone()),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         self.generation_handle(response.generation)
@@ -43,9 +47,13 @@ impl HostedWorkspace {
         self.require_source_reconciliation()?;
         let mut client = self.filesystem.client.clone();
         let response = client
-            .get_source_state(self.filesystem.request(wire::SourceStateRequest {
-                workspace: Some(self.reference.clone()),
-            }).await?)
+            .get_source_state(
+                self.filesystem
+                    .request(wire::SourceStateRequest {
+                        workspace: Some(self.reference.clone()),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         self.source_result(&response)
@@ -77,10 +85,14 @@ impl HostedWorkspace {
         self.require_source_reconciliation()?;
         let mut client = self.filesystem.client.clone();
         let response = client
-            .seal_source(self.filesystem.request(wire::SourceOperationRequest {
-                workspace: Some(self.reference.clone()),
-                operation: Some(operation(idempotency_key)),
-            }).await?)
+            .seal_source(
+                self.filesystem
+                    .request(wire::SourceOperationRequest {
+                        workspace: Some(self.reference.clone()),
+                        operation: Some(operation(idempotency_key)),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         let result = self.source_result(&response)?;
@@ -108,10 +120,13 @@ impl HostedWorkspace {
         kind: SourceOperation,
     ) -> Result<HostedSourceResult, HostedFsError> {
         self.require_source_reconciliation()?;
-        let request = self.filesystem.request(wire::SourceOperationRequest {
-            workspace: Some(self.reference.clone()),
-            operation: Some(operation(idempotency_key)),
-        }).await?;
+        let request = self
+            .filesystem
+            .request(wire::SourceOperationRequest {
+                workspace: Some(self.reference.clone()),
+                operation: Some(operation(idempotency_key)),
+            })
+            .await?;
         let mut client = self.filesystem.client.clone();
         let response = match kind {
             SourceOperation::Reconcile => client.reconcile_source(request).await?.into_inner(),
@@ -205,9 +220,13 @@ impl HostedWorkspace {
         validate_generation(&selected, &self.reference)?;
         let mut client = self.filesystem.client.clone();
         let response = client
-            .get_generation(self.filesystem.request(wire::GetGenerationRequest {
-                generation: Some(selected),
-            }).await?)
+            .get_generation(
+                self.filesystem
+                    .request(wire::GetGenerationRequest {
+                        generation: Some(selected),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         self.generation_handle(response.generation)
@@ -242,10 +261,14 @@ impl HostedWorkspace {
     ) -> Result<wire::MutationResponse, HostedFsError> {
         let mut client = self.filesystem.client.clone();
         Ok(client
-            .delete_workspace(self.filesystem.request(wire::DeleteWorkspaceRequest {
-                workspace: Some(self.reference.clone()),
-                operation: Some(operation(idempotency_key)),
-            }).await?)
+            .delete_workspace(
+                self.filesystem
+                    .request(wire::DeleteWorkspaceRequest {
+                        workspace: Some(self.reference.clone()),
+                        operation: Some(operation(idempotency_key)),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -266,13 +289,17 @@ impl HostedWorkspace {
             .require_page_bound(maximum_conflicts, "rebase conflicts")?;
         let mut client = self.filesystem.client.clone();
         Ok(client
-            .rebase(self.filesystem.request(wire::RebaseRequest {
-                workspace: Some(self.reference.clone()),
-                maximum_conflicts,
-                operation: Some(operation(idempotency_key)),
-                maximum_generations,
-                maximum_changes,
-            }).await?)
+            .rebase(
+                self.filesystem
+                    .request(wire::RebaseRequest {
+                        workspace: Some(self.reference.clone()),
+                        maximum_conflicts,
+                        operation: Some(operation(idempotency_key)),
+                        maximum_generations,
+                        maximum_changes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -351,13 +378,16 @@ impl HostedWorkspace {
         s3: bool,
     ) -> Result<wire::CredentialResponse, HostedFsError> {
         self.filesystem.require_owner(&generation.workspace)?;
-        let request = self.filesystem.request(wire::CredentialRequest {
-            workspace: Some(self.reference.clone()),
-            generation: Some(generation.reference.clone()),
-            writable,
-            expires_after_seconds,
-            operation: Some(operation(idempotency_key)),
-        }).await?;
+        let request = self
+            .filesystem
+            .request(wire::CredentialRequest {
+                workspace: Some(self.reference.clone()),
+                generation: Some(generation.reference.clone()),
+                writable,
+                expires_after_seconds,
+                operation: Some(operation(idempotency_key)),
+            })
+            .await?;
         let mut client = self.filesystem.client.clone();
         if s3 {
             Ok(client.issue_s3_credential(request).await?.into_inner())
@@ -400,4 +430,3 @@ fn hosted_s3_access(response: wire::CredentialResponse) -> Result<HostedS3Access
         session_token: credential.session_token,
     })
 }
-

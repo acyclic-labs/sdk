@@ -25,12 +25,17 @@ impl HostedGeneration {
             .require_response_bound(maximum_bytes, "read bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
-            .read(self.workspace.filesystem.request(wire::ReadRequest {
-                generation: Some(self.reference.clone()),
-                path: path.into(),
-                range: Some(wire::ByteRange { offset, length }),
-                maximum_bytes,
-            }).await?)
+            .read(
+                self.workspace
+                    .filesystem
+                    .request(wire::ReadRequest {
+                        generation: Some(self.reference.clone()),
+                        path: path.into(),
+                        range: Some(wire::ByteRange { offset, length }),
+                        maximum_bytes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -47,12 +52,17 @@ impl HostedGeneration {
             .require_response_bound(maximum_bytes, "read bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
-            .read(self.workspace.filesystem.request(wire::ReadRequest {
-                generation: Some(self.reference.clone()),
-                path: path.into(),
-                range: None,
-                maximum_bytes,
-            }).await?)
+            .read(
+                self.workspace
+                    .filesystem
+                    .request(wire::ReadRequest {
+                        generation: Some(self.reference.clone()),
+                        path: path.into(),
+                        range: None,
+                        maximum_bytes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -62,10 +72,15 @@ impl HostedGeneration {
     pub async fn stat(&self, path: impl Into<String>) -> Result<wire::FileStat, HostedFsError> {
         let mut client = self.workspace.filesystem.client.clone();
         client
-            .stat(self.workspace.filesystem.request(wire::StatRequest {
-                generation: Some(self.reference.clone()),
-                path: path.into(),
-            }).await?)
+            .stat(
+                self.workspace
+                    .filesystem
+                    .request(wire::StatRequest {
+                        generation: Some(self.reference.clone()),
+                        path: path.into(),
+                    })
+                    .await?,
+            )
             .await?
             .into_inner()
             .stat
@@ -94,7 +109,8 @@ impl HostedGeneration {
                             maximum_items,
                             after,
                         }),
-                    }).await?,
+                    })
+                    .await?,
             )
             .await?
             .into_inner()
@@ -113,11 +129,16 @@ impl HostedGeneration {
             .require_response_bound(maximum_bytes, "symbolic-link bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         let response = client
-            .read_link(self.workspace.filesystem.request(wire::ReadLinkRequest {
-                generation: Some(self.reference.clone()),
-                path: path.into(),
-                maximum_bytes,
-            }).await?)
+            .read_link(
+                self.workspace
+                    .filesystem
+                    .request(wire::ReadLinkRequest {
+                        generation: Some(self.reference.clone()),
+                        path: path.into(),
+                        maximum_bytes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -136,12 +157,17 @@ impl HostedGeneration {
             .require_page_bound(maximum_extents, "extent items")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
-            .plan_extents(self.workspace.filesystem.request(wire::PlanExtentsRequest {
-                generation: Some(self.reference.clone()),
-                path: path.into(),
-                range: Some(wire::ByteRange { offset, length }),
-                maximum_extents,
-            }).await?)
+            .plan_extents(
+                self.workspace
+                    .filesystem
+                    .request(wire::PlanExtentsRequest {
+                        generation: Some(self.reference.clone()),
+                        path: path.into(),
+                        range: Some(wire::ByteRange { offset, length }),
+                        maximum_extents,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -158,11 +184,16 @@ impl HostedGeneration {
             .require_page_bound(maximum_changes, "diff changes")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
-            .diff(self.workspace.filesystem.request(wire::DiffRequest {
-                from: Some(self.reference.clone()),
-                to: Some(to.reference.clone()),
-                maximum_changes,
-            }).await?)
+            .diff(
+                self.workspace
+                    .filesystem
+                    .request(wire::DiffRequest {
+                        from: Some(self.reference.clone()),
+                        to: Some(to.reference.clone()),
+                        maximum_changes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -188,14 +219,19 @@ impl HostedGeneration {
             .require_page_bound(maximum_conflicts, "join conflicts")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
-            .plan_join(self.workspace.filesystem.request(wire::PlanJoinRequest {
-                source: Some(self.reference.clone()),
-                target: Some(target.reference.clone()),
-                maximum_changes,
-                maximum_conflicts,
-                maximum_generations,
-                history: history as i32,
-            }).await?)
+            .plan_join(
+                self.workspace
+                    .filesystem
+                    .request(wire::PlanJoinRequest {
+                        source: Some(self.reference.clone()),
+                        target: Some(target.reference.clone()),
+                        maximum_changes,
+                        maximum_conflicts,
+                        maximum_generations,
+                        history: history as i32,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -215,12 +251,17 @@ impl HostedGeneration {
             .require_response_bound(maximum_bytes, "export bytes")?;
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
-            .export(self.workspace.filesystem.request(wire::ExportRequest {
-                generation: Some(self.reference.clone()),
-                after,
-                maximum_objects,
-                maximum_bytes,
-            }).await?)
+            .export(
+                self.workspace
+                    .filesystem
+                    .request(wire::ExportRequest {
+                        generation: Some(self.reference.clone()),
+                        after,
+                        maximum_objects,
+                        maximum_bytes,
+                    })
+                    .await?,
+            )
             .await?
             .into_inner())
     }
@@ -242,18 +283,20 @@ impl HostedGeneration {
             &span,
             crate::obs::in_span(&span, async move {
                 let mut client = self.workspace.filesystem.client.clone();
-                let response =
-                    client
-                        .fork_workspace(self.workspace.filesystem.request(
-                            wire::ForkWorkspaceRequest {
+                let response = client
+                    .fork_workspace(
+                        self.workspace
+                            .filesystem
+                            .request(wire::ForkWorkspaceRequest {
                                 source: Some(self.reference.clone()),
                                 destination_name: destination_name.into(),
                                 operation: Some(operation(idempotency_key)),
                                 selection: paths.map(|paths| wire::ForkPathSelection { paths }),
-                            },
-                        ).await?)
-                        .await?
-                        .into_inner();
+                            })
+                            .await?,
+                    )
+                    .await?
+                    .into_inner();
                 self.workspace.filesystem.workspace(response.workspace)
             })
             .await,
@@ -291,7 +334,8 @@ impl HostedGeneration {
                 generation: Some(self.reference.clone()),
                 identity,
                 operation: Some(operation(idempotency_key)),
-            }).await?;
+            })
+            .await?;
         let mut client = self.workspace.filesystem.client.clone();
         if pin {
             Ok(client.pin(request).await?.into_inner())
@@ -300,4 +344,3 @@ impl HostedGeneration {
         }
     }
 }
-
