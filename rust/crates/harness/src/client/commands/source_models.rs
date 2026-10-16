@@ -64,6 +64,9 @@ fn source_wakeup(broken: bool) {
         } else {
             let mut next = Box::pin(sources.changed());
             let first = next.as_mut().poll(&mut Context::from_waker(&waker));
+            if let Poll::Ready(result) = &first {
+                assert!(result.is_ok(), "source follow failed: {result:?}");
+            }
             publisher
                 .join()
                 .map_err(|_| "source publisher panicked")??;

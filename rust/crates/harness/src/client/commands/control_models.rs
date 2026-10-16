@@ -60,6 +60,9 @@ fn resume_wakeup(broken: bool) {
             let lineage = [task];
             let mut wait = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
             let first = wait.as_mut().poll(&mut Context::from_waker(&waker));
+            if let Poll::Ready(result) = &first {
+                assert!(result.is_ok(), "control follow failed: {result:?}");
+            }
             publisher
                 .join()
                 .map_err(|_| "resume publisher panicked")??;
