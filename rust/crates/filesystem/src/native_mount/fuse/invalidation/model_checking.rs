@@ -6,7 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static OMIT_NOTIFY: Cell<bool> = Cell::new(false);
-    static INVALIDATOR_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
+    static INVALIDATOR_WAIT: RefCell<Option<(mpsc::Sender<()>, u8)>> = RefCell::new(None);
     static WAITER_WAIT: RefCell<Option<mpsc::Sender<()>>> = RefCell::new(None);
 }
 
@@ -16,8 +16,13 @@ pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
 
 pub(in crate::native_mount::fuse) fn before_invalidator_wait() {
     INVALIDATOR_WAIT.with(|hook| {
-        if let Some(ready) = hook.borrow_mut().take() {
+        let mut checkpoint = hook.borrow_mut();
+        if let Some((ready, remaining)) = checkpoint.as_mut() {
             ready.send(()).unwrap();
+            *remaining -= 1;
+            if *remaining == 0 {
+                *checkpoint = None;
+            }
         }
     });
 }
@@ -71,7 +76,7 @@ fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
             let invalidator = loom::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
+                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 1)));
                     let notifier = RefusesFirst {
                         first_gate: Some((attempted, released)),
                         ..Default::default()
@@ -140,7 +145,7 @@ fn production_waiter_retries_refused_notifications_in_fifo_order() {
                 let core = Arc::clone(&core);
                 move || {
                     OMIT_NOTIFY.with(|fault| fault.set(broken));
-                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
+                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 2)));
                     let notifier = RefusesFirst::default();
                     run_invalidator(&core, &notifier);
                     notifier.sent.into_inner()
@@ -159,6 +164,10 @@ fn production_waiter_retries_refused_notifications_in_fifo_order() {
             assert!(state.invalidation.is_pending(None));
             assert!(state.invalidation.deferred.is_empty());
             core.wait_for_invalidation(state, None, &work).unwrap();
+            // Retry completion and its real wake have been observed. Let the
+            // invalidator finish the pass and park before unrelated stop/teardown
+            // bookkeeping; those operations add no FIFO or waiter-wake coverage.
+            asleep.recv().unwrap();
             core.stop();
             assert_eq!(
                 invalidator.join().unwrap(),
