@@ -114,7 +114,7 @@ fn offloaded_cleanup(broken: bool) {
             }));
         } else {
             backend = Some(thread::spawn(move || {
-                guarded(guard, |_| {
+                crate::filesystem::native_process::capture::with_custody(guard, |_| {
                     thread::yield_now();
                     completed.store(true, Ordering::SeqCst);
                 });

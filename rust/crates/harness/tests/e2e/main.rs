@@ -14,9 +14,18 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+#[path = "../support/quiescent.rs"]
+mod quiescent;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+mod swarm;
+mod swarm_case;
+mod swarm_publish;
+mod swarm_provider;
+mod swarm_tests;
+mod swarm_views;
+mod swarm_wire;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;
@@ -209,9 +218,33 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn scenarios() -> TestResult {
+#[test]
+fn scenarios() -> TestResult {
     let started = Instant::now();
+    scenario_runtime()?.block_on(run_scenarios(started))
+}
+
+fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return Err("scenario services must start before the async runtime".into());
+    }
+    acyclic_native_runtime::initialize_native_io_services()?;
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?)
+}
+
+#[tokio::test]
+async fn scenario_bootstrap_rejects_an_already_running_runtime() {
+    let error = scenario_runtime().expect_err("bootstrapped inside the runtime");
+    assert!(
+        error
+            .to_string()
+            .contains("services must start before the async runtime")
+    );
+}
+
+async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;

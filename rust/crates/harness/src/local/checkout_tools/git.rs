@@ -2,14 +2,73 @@
 use super::*;
 
 impl CheckoutTools {
-    pub(super) async fn fs(
+    pub(super) fn fs_arguments(
         &self,
         command: &str,
+        scope: &RuntimeScope,
+    ) -> Result<crate::tools::FsCommand> {
+        let parsed = crate::tools::parse_fs_command(command)?;
+        self.fs_source(&parsed, scope)?;
+        Ok(parsed)
+    }
+
+    fn fs_source(
+        &self,
+        parsed: &crate::tools::FsCommand,
+        scope: &RuntimeScope,
+    ) -> Result<&Option<Arc<workspace::MountedVolume>>> {
+        use acyclic_fs::access::Action;
+        let (relative, mount) = self.workspace.mounts.named(parsed.volume.as_deref())?;
+        let read_only = matches!(
+            parsed.arguments[0].as_str(),
+            "diff" | "log" | "show" | "status"
+        );
+        for (action, operation) in std::iter::once((Action::Read, VolumeOperation::Read))
+            .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
+        {
+            mount.check(action, "", self.clock.now_unix_millis() / 1000)?;
+            if !scope
+                .grants()
+                .contains(&mount.view.volume.capability(operation, &mut None)?)
+            {
+                return Err(Error::Unauthorized(
+                    "fs target volume is not granted".into(),
+                ));
+            }
+        }
+        if !relative.is_empty() && !read_only && parsed.arguments[0] != "merge" {
+            return Err(Error::Unsupported(
+                "--volume supports diff, log, show, status and merge".into(),
+            ));
+        }
+        if !relative.is_empty()
+            && mount
+                .view
+                .source
+                .as_ref()
+                .and_then(|source| source.native.as_ref())
+                .is_none()
+        {
+            return Err(Error::NotFound("volume mount is not bound".into()));
+        }
+        Ok(&mount.view.source)
+    }
+
+    pub(super) async fn fs(
+        &self,
+        parsed: crate::tools::FsCommand,
         context: &ToolContext,
         state: &mut State,
     ) -> Result<ToolResult> {
-        let State { active, watcher } = state;
-        let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+        let source = self.fs_source(&parsed, context.effective_scope())?.clone();
+        let native = source.as_ref().and_then(|source| source.native.as_ref());
+        let State {
+            active, watcher, ..
+        } = state;
+        let checkout = active.as_ref().unwrap_or_else(|| self.workspace.view());
+        let view = source
+            .as_ref()
+            .map_or_else(|| checkout.into(), |source| source.workspace.view());
         let owner = context
             .task()
             .owned_mailbox
@@ -26,8 +85,10 @@ impl CheckoutTools {
             &acyclic_stream::SystemUnixMillisClock,
         );
         let before_recovery = head(view).await?;
-        self.prepare_reconciliation(context, b"recover", &before_recovery)
-            .await?;
+        if native.is_none() {
+            self.prepare_reconciliation(context, b"recover", &before_recovery)
+                .await?;
+        }
         // A previous worker can disappear after opening its lease. Expiry
         // fences it; complete its durable reconciliation before opening ours.
         let recovery = coordinator
@@ -42,7 +103,11 @@ impl CheckoutTools {
             Some(outcome) => reconciliation_generation(outcome)?,
             None => before_recovery.clone(),
         };
-        self.publish_reconciliation(context).await?;
+        if native.is_none() {
+            self.publish_reconciliation(context).await?;
+        } else if let Some(native) = native {
+            native.advance_to_head().await?;
+        }
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(
@@ -57,21 +122,44 @@ impl CheckoutTools {
             .map_err(storage)?;
         let result = async {
             owner.verify_owner(None)?.await?;
-            self.capture(
-                view,
-                watcher,
-                context.operation_id(),
-                0,
-                lease.publication_permit(),
+            if native.is_none() {
+                self.capture(
+                    checkout,
+                    watcher,
+                    context.operation_id(),
+                    0,
+                    lease.publication_permit(),
+                )
+                .await?;
+            }
+            crate::tools::git::run_with_guard(
+                crate::tools::git::Workspace {
+                    filesystem: &self.workspace.filesystem,
+                    store: &self.workspace.store,
+                    view,
+                    root: native.map_or(self.workspace.path.as_path(), |mount| mount.path()),
+                    repository: if native.is_some() {
+                        workspace.id()
+                    } else {
+                        self.workspace.view().workspace().id()
+                    },
+                    lease: Some(lease.clone()),
+                    checkout: native.is_none().then_some(self.workspace.identity),
+                    author: "LocalHarness",
+                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                        .unwrap_or(i64::MAX),
+                },
+                &parsed.arguments,
+                || async { owner.verify_owner(None)?.await },
             )
-            .await?;
-            self.fs_leased(view, command, context, &lease).await
+            .await
         }
         .await;
         let before_close = head(view).await?;
-        if !result
-            .as_ref()
-            .is_ok_and(|output| output.switched.is_some())
+        if native.is_none()
+            && !result
+                .as_ref()
+                .is_ok_and(|output| output.switched.is_some())
         {
             self.prepare_reconciliation(context, b"close", &before_close)
                 .await?;
@@ -93,6 +181,7 @@ impl CheckoutTools {
         let publication = match closed {
             Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
                 match reconciliation_generation(outcome) {
+                    Ok(_) if native.is_some() => Ok(()),
                     Ok(_)
                         if !result
                             .as_ref()
@@ -107,9 +196,30 @@ impl CheckoutTools {
             Ok(_) => Ok(()),
             Err(error) => Err(error),
         };
-        let output = result?;
+        // A conflict is an intentional publication, even when the command
+        // returns an error. Refresh the selected mount before propagating it.
+        if let Some(native) = native {
+            native.advance_to_head().await?;
+        }
+        owner.verify_owner(None)?.await?;
+        let output = match result {
+            Ok(output) => output,
+            Err(
+                error @ (Error::Conflict(_)
+                | Error::Invalid(_)
+                | Error::NotFound(_)
+                | Error::Unsupported(_)),
+            ) => {
+                // Acknowledged facade refusals and projected merge conflicts
+                // are feedback for the model. Failed publication or ownership
+                // checks remain execution failures and never enter this branch.
+                publication?;
+                return Ok(argument_error(error));
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(switched) = output.switched {
-            *active = Some(switched);
+            *active = Some(switched.into_checkout()?);
         }
         // Persist the selected view in memory even when a recovered transition
         // has no command result or closing the old workspace failed.
@@ -120,41 +230,6 @@ impl CheckoutTools {
         Ok(ToolResult {
             value: serde_json::json!({"result": command}),
         })
-    }
-
-    async fn fs_leased(
-        &self,
-        view: &workspace::View,
-        command: &str,
-        context: &ToolContext,
-        lease: &acyclic_fs::OperationWindowLease,
-    ) -> Result<crate::tools::git::Output> {
-        let mut argv = crate::tools::parse_command(command)?;
-        if argv.first().is_some_and(|arg| arg == "git") {
-            argv.remove(0);
-        }
-        crate::tools::git::run_with_guard(
-            crate::tools::git::Workspace {
-                filesystem: &self.workspace.filesystem,
-                store: &self.workspace.store,
-                view,
-                root: &self.workspace.path,
-                repository: self.workspace.view().workspace().id(),
-                lease: Some(lease.clone()),
-                checkout: Some(self.workspace.identity),
-                author: "LocalHarness",
-                authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                    .unwrap_or(i64::MAX),
-            },
-            &argv,
-            || async {
-                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                    Error::Unauthorized("git command has no execution owner".into())
-                })?;
-                owner.verify_owner(None)?.await
-            },
-        )
-        .await
     }
 
     async fn prepare_reconciliation(
@@ -223,7 +298,7 @@ fn reconciliation_operation(
 }
 
 async fn head(
-    view: &workspace::View,
+    view: crate::tools::git::View<'_>,
 ) -> Result<acyclic_fs::Generation<LocalAuthorityBackend, LocalObjectBackend>> {
     view.workspace()
         .head(

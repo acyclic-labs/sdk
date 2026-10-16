@@ -109,7 +109,7 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             provider.clone(),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -557,7 +557,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             model.clone(),
         )
         .grant(capability::MODEL_GENERATE)
-        .tool(storage.list_files_tool(limits)?)?
+        .tool(storage.list_files_tool(limits)?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -574,12 +574,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
     );
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
-    assert!(
-        requests[0]
-            .tools
-            .iter()
-            .any(|tool| tool.name == "read")
-    );
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "read"));
     assert!(requests[1].messages.iter().any(|message| matches!(
         &message.content,
         crate::model::ModelContent::Part(crate::model::ModelContentPart::ToolResult { .. })
@@ -597,7 +592,7 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
             provider.clone(),
         )
-        .tool(storage.list_files_tool(Limits::default())?)?
+        .tool(storage.list_files_tool(Limits::default())?)
         .grant("tool:call:read")
         .grant("tool:call:write")
         .grant("tool:call:edit")
@@ -638,7 +633,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let provider = Arc::new(text_model(2));
     let bundle = storage
         .builder()
-        .default_tools(false)
+        .without_default_tools()
         .compaction(crate::context::CompactionPolicy::Disabled)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,

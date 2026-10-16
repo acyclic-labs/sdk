@@ -84,6 +84,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         candidate: &UnpublishedMergeCandidate,
         permit: crate::PublicationPermit,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
+        let resolutions = self.prepare_candidate(candidate).await?;
+        self.apply(options, resolutions, permit)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Validates a candidate and stages immutable records without publishing.
+    /// Callers may recheck their execution owner before applying the returned map.
+    pub async fn prepare_candidate(
+        &self,
+        candidate: &UnpublishedMergeCandidate,
+    ) -> Result<BTreeMap<MergeConflict, crate::kernel::MergeConflictResolution>, DrivenJoinError>
+    {
         let conflict_keys = candidate
             .plan
             .conflicts
@@ -156,6 +169,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                     return Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone()));
                 }
             };
+            let resolution = self.git_resolution(&conflict.key, resolution).await?;
+            self.git_delete_binding(conflict, &resolution, &mut resolutions)
+                .await?;
             resolutions.insert(
                 kernel_conflict(
                     &conflict.key,
@@ -169,9 +185,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 resolution,
             );
         }
-        self.apply(options, resolutions, permit)
-            .await
-            .map_err(Into::into)
+        Ok(resolutions)
     }
 }
 

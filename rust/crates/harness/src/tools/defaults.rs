@@ -13,43 +13,76 @@ use std::sync::Arc;
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::default();
-    for tool in [
-        command(
-            "bash",
-            "Run a bash command in the calling agent's workspace view",
-        ),
-        command(
-            "fs",
-            "Run one git facade command, including diff, merge and discard of agents/<ref>",
-        ),
-        crate::tool::files::read()?,
-        crate::tool::files::write()?,
-        crate::tool::files::edit()?,
-    ] {
-        registry.register((tool, None), &mut None, None)?;
-    }
+    bind_defaults(&mut registry, &mut Vec::new(), None, true, true)?;
     Ok(registry)
 }
 
-fn command(name: &'static str, description: &str) -> Tool {
+pub(crate) fn bind_defaults(
+    registry: &mut ToolRegistry,
+    grants: &mut Vec<String>,
+    bound: Option<&RuntimeScope>,
+    volume: bool,
+    workspace: bool,
+) -> Result<()> {
+    for (name, available) in [
+        ("bash", workspace),
+        ("fs", workspace),
+        ("read", volume),
+        ("write", volume),
+        ("edit", volume),
+    ] {
+        if !available {
+            continue;
+        }
+        let capability = crate::contract::capability::tool_call(name);
+        if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
+            continue;
+        }
+        let tool = match name {
+            "bash" => command(
+                name,
+                "Run a bash command in the calling task's composed workspace view. No OS sandbox in release 1; writes outside the task view are not captured",
+            )?,
+            "fs" => command(
+                name,
+                "Run one git facade command, including diff and merge of agents/<ref>; --volume <name> selects a granted mount for diff, log, show, status or merge",
+            )?,
+            "read" => crate::tool::files::read()?,
+            "write" => crate::tool::files::write()?,
+            "edit" => crate::tool::files::edit()?,
+            _ => unreachable!(),
+        };
+        registry.register((tool, None), &mut None, None)?;
+        if bound.is_none() && !grants.contains(&capability) {
+            grants.push(capability);
+        }
+    }
+    Ok(())
+}
+
+fn command(name: &'static str, description: &str) -> Result<Tool> {
     let output = json!({"type":"object"});
-    Tool {
-        hook_names: &[],
+    Ok(Tool {
+        hook_names: if name == "bash" { &["Bash"] } else { &[] },
         definition: ToolDefinition {
             name: name.into(),
             revision: "1".into(),
             description: description.into(),
-            input_schema: json!({
-                "type":"object", "required":["command"],
-                "properties":{"command":{"type":"string","minLength":1}},
-                "additionalProperties":false
-            }),
+            input_schema: if name == "bash" {
+                crate::tool::schema::input::<super::BashInput>()?
+            } else {
+                json!({
+                    "type":"object", "required":["command"],
+                    "properties":{"command":{"type":"string","minLength":1}},
+                    "additionalProperties":false
+                })
+            },
             output_schema: output.clone(),
             projection_schema: crate::tool::json_projection_schema(output),
         },
         executor: Arc::new(WorkspaceExecutor { name }),
         projection: Arc::new(JsonToolProjection),
-    }
+    })
 }
 
 pub(crate) fn workspace<'a>(

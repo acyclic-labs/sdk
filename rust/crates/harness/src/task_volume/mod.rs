@@ -7,6 +7,8 @@ mod heads;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
 mod plan_name;
+mod publication;
+pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;

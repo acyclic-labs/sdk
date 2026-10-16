@@ -276,8 +276,12 @@ pub(super) async fn default_manifest(
     publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
     tools: &ToolRegistry,
     limits: Limits,
+    mounts: Option<&str>,
 ) -> Result<crate::conversation::FileRef> {
-    let manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
+    let mut manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
+    if let Some(mounts) = mounts {
+        manifest.conventions.push(mounts.to_owned());
+    }
     let bytes = manifest.encode(limits)?;
     let digest = blake3::hash(&bytes);
     let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());

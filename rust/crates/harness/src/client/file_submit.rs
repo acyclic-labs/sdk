@@ -363,11 +363,16 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             if head.volume != self.target_id || head.epoch != self.target_epoch {
                 return Err(Error::Conflict("outbox target history differs".into()).into());
             }
-            let rejected = match self.target.append(head, &pending.write).await {
-                Ok(_) => None,
-                Err(error) if terminal_rejection(&error) => Some(error.to_string()),
-                Err(error) => return Err(FileClientError::publication(error)),
-            };
+            let rejected =
+                match crate::task_volume::publish(&self.target, head, &pending.write, || {
+                    std::future::ready(Ok::<_, crate::task_volume::Error>((Vec::new(), None)))
+                })
+                .await
+                {
+                    Ok(_) => None,
+                    Err(error) if terminal_rejection(&error) => Some(error.to_string()),
+                    Err(error) => return Err(FileClientError::publication(error)),
+                };
             if rejected.is_none()
                 && self.limits.durability == FileClientDurability::Durable
                 && !self

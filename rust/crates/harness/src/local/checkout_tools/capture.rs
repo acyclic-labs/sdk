@@ -15,7 +15,7 @@ const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub(super) struct Cursor {
+pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
     #[cfg(target_os = "macos")]
@@ -70,7 +70,7 @@ impl Cursor {
 }
 
 impl CheckoutTools {
-    pub(super) async fn capture(
+    pub(in crate::local) async fn capture(
         &self,
         view: &workspace::View,
         slot: &mut Option<Cursor>,
@@ -234,18 +234,30 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
         maximum_paths: MAXIMUM_PATHS,
         maximum_extent_spans: 65_536,
     };
-    let policy = CapturePolicy::excluding(
-        EXCLUDED
-            .iter()
-            .map(|name| {
-                let path =
-                    acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
-                        .map_err(storage)?;
-                NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
-                    .map_err(storage)
-            })
-            .collect::<Result<Vec<_>>>()?,
-    )
-    .map_err(storage)?;
+    let mut excluded = EXCLUDED
+        .iter()
+        .map(|name| {
+            let path = acyclic_fs::path::PortablePath::parse(&format!("/{name}"), config.limits)
+                .map_err(storage)?;
+            NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
+                .map_err(storage)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (relative, mount) in workspace.mounts.mounts() {
+        if !relative.is_empty()
+            && mount
+                .view
+                .source
+                .as_ref()
+                .is_some_and(|source| source.native.is_some())
+        {
+            excluded.extend(workspace::volumes::excluded(
+                &workspace.path,
+                config,
+                relative,
+            )?);
+        }
+    }
+    let policy = CapturePolicy::excluding(excluded).map_err(storage)?;
     Ok((options, policy))
 }

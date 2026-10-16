@@ -43,6 +43,10 @@ path = "tests/default_tools.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "task_view"
+path = "tests/task_view.rs"
+
+[[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
 

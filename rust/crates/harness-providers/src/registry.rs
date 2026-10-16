@@ -94,9 +94,13 @@ impl Registry {
             .get(provider)
             .ok_or_else(|| invalid("unknown model provider"))?
             .clone();
-        let capacity = config.models.get(name).copied().ok_or_else(|| {
-            invalid("register the exact selected model context and output capacities")
-        })?;
+        let capacity = config
+            .models
+            .get(name)
+            .map(|entry| entry.capacity)
+            .ok_or_else(|| {
+                invalid("register the exact selected model context and output capacities")
+            })?;
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -185,8 +189,8 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         }
         crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
     }
-    for capacity in config.models.values() {
-        capacity.validate()?;
+    for model in config.models.values() {
+        model.capacity.validate()?;
     }
     Ok(())
 }
