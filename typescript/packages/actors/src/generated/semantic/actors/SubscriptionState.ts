@@ -2,6 +2,5 @@
 
 /**
  * Known subscription states. Unknown protobuf integers are rejected rather
- * than normalized to `Unspecified`.
  */
 export type SubscriptionState = 0 | 1 | 2;

@@ -46,12 +46,12 @@ proptest! {
         history.push(format!("saved:{expected}"));
         prop_assert_eq!(history.entries().len(), 1);
 
-        editor.history().push(format!("saved:{raw}"));
+        history.push(format!("saved:{raw}"));
         editor.set_cursor(0, false);
-        prop_assert!(editor.recall(true, 4));
+        prop_assert!(editor.recall(&mut history, true, 4));
         prop_assert_eq!(editor.text(), format!("saved:{expected}"));
         editor.move_cursor(Motion::End, false, 80);
-        prop_assert!(editor.recall(false, 5));
+        prop_assert!(editor.recall(&mut history, false, 5));
         prop_assert_eq!(editor.text(), expected);
     }
 
@@ -60,18 +60,19 @@ proptest! {
         raw in incoming_text(), draft in incoming_text()
     ) {
         let mut editor = Editor::new(&draft);
-        editor.history().push(format!("older:{raw}"));
-        editor.history().push(format!("newer:{raw}"));
+        let mut history = PromptHistory::default();
+        history.push(format!("older:{raw}"));
+        history.push(format!("newer:{raw}"));
         editor.set_cursor(0, false);
         let before = state(&editor);
-        prop_assert!(editor.recall(true, 0));
+        prop_assert!(editor.recall(&mut history, true, 0));
         let after = state(&editor);
         prop_assert_eq!((after.1, after.2), (0, 0));
         prop_assert!(editor.undo());
         prop_assert_eq!(state(&editor), before);
         prop_assert!(editor.redo());
         prop_assert_eq!(state(&editor), after);
-        prop_assert!(editor.recall(true, 1));
+        prop_assert!(editor.recall(&mut history, true, 1));
         prop_assert!(editor.text().starts_with("older:"));
         prop_assert!(!editor.text().contains('\r'));
     }
@@ -83,8 +84,9 @@ proptest! {
     ) {
         let separator = ["\r\n", "\r", "\n"][ending];
         let mut editor = Editor::default();
-        editor.history().push(format!("{first}{separator}{second}{separator}{third}"));
-        prop_assert!(editor.recall(true, 0));
+        let mut history = PromptHistory::default();
+        history.push(format!("{first}{separator}{second}{separator}{third}"));
+        prop_assert!(editor.recall(&mut history, true, 0));
         let expected = format!("{first}\n{second}\n{third}");
         prop_assert_eq!(editor.text(), &expected);
         prop_assert_eq!(editor.layout(usize::MAX).rows.len(), 3);

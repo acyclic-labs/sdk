@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod sampling_allocations;
+
 use serde_json::json;
 
 fn uncompacted_executor(

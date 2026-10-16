@@ -24,12 +24,18 @@ pub fn valid_resource(value: &str) -> bool {
     let Some((product, path)) = value.split_once(":/") else {
         return false;
     };
-    valid_product(product)
-        && (path.is_empty()
-            || path.split('/').enumerate().all(|(i, part)| {
-                (!part.is_empty() || i + 1 == path.split('/').count())
-                    && decode_component(part).is_ok()
-            }))
+    if !valid_product(product) {
+        return false;
+    }
+    let mut parts = path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        if part.is_empty() && parts.peek().is_some()
+            || !component_bytes(part).all(|byte| byte.is_ok())
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn valid_product(value: &str) -> bool {
@@ -59,28 +65,34 @@ pub fn encode_component(value: &[u8]) -> String {
 
 /// Decode only the unique canonical spelling; reject alternate escapes.
 pub fn decode_component(value: &str) -> Result<Vec<u8>, crate::Error> {
+    component_bytes(value).collect()
+}
+
+// Validation consumes this iterator without collecting; decoding collects the
+// same canonical bytes. No syntax-only caller allocates a component buffer.
+fn component_bytes(value: &str) -> impl Iterator<Item = Result<u8, crate::Error>> + '_ {
     let mut bytes = value.bytes();
-    let mut result = Vec::new();
-    while let Some(b) = bytes.next() {
-        if unreserved(b) {
-            result.push(b);
-        } else if b == b'%' {
-            let hex = |b| match b {
-                b'0'..=b'9' => Ok(b - b'0'),
-                b'A'..=b'F' => Ok(b - b'A' + 10),
-                _ => Err(crate::Error::Invalid),
-            };
-            let value = hex(bytes.next().ok_or(crate::Error::Invalid)?)? * 16
-                + hex(bytes.next().ok_or(crate::Error::Invalid)?)?;
-            if unreserved(value) {
-                return Err(crate::Error::Invalid);
+    std::iter::from_fn(move || {
+        bytes.next().map(|b| {
+            if unreserved(b) {
+                Ok(b)
+            } else if b == b'%' {
+                let hex = |b| match b {
+                    b'0'..=b'9' => Ok(b - b'0'),
+                    b'A'..=b'F' => Ok(b - b'A' + 10),
+                    _ => Err(crate::Error::Invalid),
+                };
+                let value = hex(bytes.next().ok_or(crate::Error::Invalid)?)? * 16
+                    + hex(bytes.next().ok_or(crate::Error::Invalid)?)?;
+                if unreserved(value) {
+                    return Err(crate::Error::Invalid);
+                }
+                Ok(value)
+            } else {
+                Err(crate::Error::Invalid)
             }
-            result.push(value);
-        } else {
-            return Err(crate::Error::Invalid);
-        }
-    }
-    Ok(result)
+        })
+    })
 }
 
 /// Bucket and opaque key are separate components; slashes IN a key are %2F.

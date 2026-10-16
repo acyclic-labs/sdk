@@ -49,6 +49,8 @@ pub enum Action {
     TranscriptUp,
     /// Scroll transcript downwards.
     TranscriptDown,
+    /// Toggle host voice dictation.
+    Voice,
 }
 
 /// Binding data shared by dispatch, overrides and generated help.
@@ -76,6 +78,7 @@ const fn bind(chord: &'static str, action: Action, help: &'static str, repeat: b
 /// Default keymap. Shift extends any motion. The application must reserve these
 /// while input is focused; Ctrl+Y and Ctrl+K are exclusively editor actions.
 pub const KEYMAP: &[Binding] = &[
+    bind("Ctrl+;", Action::Voice, "Toggle voice dictation", false),
     bind(
         "Left",
         Action::Move(Motion::Left),

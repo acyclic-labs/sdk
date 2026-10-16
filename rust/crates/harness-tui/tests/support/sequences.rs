@@ -3,6 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 pub fn exercise(data: &[u8]) -> Editor {
     let mut editor = Editor::default();
+    let mut history = acyclic_harness_tui::PromptHistory::default();
     for (step, chunk) in data.chunks(8).enumerate() {
         let op = chunk[0];
         let text = String::from_utf8_lossy(&chunk[1..]);
@@ -27,15 +28,17 @@ pub fn exercise(data: &[u8]) -> Editor {
             14 => editor.yank(step as u64),
             15 => editor.rotate_yank(step as u64),
             16 => {
-                editor.enter(op > 128, step as u64);
+                if let Some(text) = editor.enter(op > 128, step as u64) {
+                    history.push(text);
+                }
             }
             17 => editor.set_cursor(usize::from(op), op > 128),
             18 => editor.delete_word(op > 128, step as u64),
             19 => {
-                recalled = editor.recall(op > 128, step as u64);
+                recalled = editor.recall(&mut history, op > 128, step as u64);
             }
             20 => editor.set_text(&text, step as u64),
-            _ => editor.history().push(text.into_owned()),
+            _ => history.push(text.into_owned()),
         }
         assert!(!editor.text().contains('\r'));
         let boundaries: Vec<_> = editor

@@ -19,12 +19,27 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 [dependencies]
 acyclic-harness = { path = ".." }
 libfuzzer-sys = "0.4"
+prost = "0.14.4"
 bytes = "1"
 rmcp = { version = "=3.5.1", default-features = false, features = ["client", "transport-async-rw"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
+
+[[bin]]
+name = "protocol_identity"
+path = "fuzz_targets/protocol_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_output"
+path = "fuzz_targets/hook_output.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "goal_parser"

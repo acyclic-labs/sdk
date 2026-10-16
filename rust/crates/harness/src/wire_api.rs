@@ -10,7 +10,9 @@ use crate::{
     core::{Authority, Scope},
     scheduler::{OperationPhase, OperationState},
     wire,
-    wire_codec::{decode_authority, decode_scope, encode_authority, validate_protocol},
+    wire_codec::{
+        COMPILED_PROTOCOL, decode_authority, decode_scope, encode_authority, validate_protocol,
+    },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::BoxProviderStream as BoxStream;
@@ -65,14 +67,12 @@ pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
 }
 
 fn validate_request_protocol(protocol: Option<&wire::ProtocolIdentity>) -> Result<()> {
-    let expected = current_protocol();
-    validate_protocol(
-        protocol,
-        (&expected.version, &expected.descriptor_digest),
-        wire::ErrorCode::Invalid,
-        &None,
-    )
+    validate_protocol(protocol, COMPILED_PROTOCOL, wire::ErrorCode::Invalid, &None)
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "wire_api_protocol_tests.rs"]
+mod protocol_tests;
 
 /// Decoded operation-control request shared by all server adapters.
 pub struct OperationControlRequest {
