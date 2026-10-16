@@ -9,9 +9,13 @@ use std::{
 
 thread_local! {
     static BROKEN_PARENT: Cell<bool> = const { Cell::new(false) };
+    static UNCHECKED_ADMISSION: Cell<bool> = const { Cell::new(false) };
 }
 pub(super) fn broken_parent() -> bool {
     BROKEN_PARENT.with(Cell::get)
+}
+pub(super) fn unchecked_admission() -> bool {
+    UNCHECKED_ADMISSION.with(Cell::get)
 }
 fn values() -> Value {
     json!({"model":null,"summary":null})
@@ -44,6 +48,7 @@ fn assert_paused(volume: &TaskVolume<MemoryStream>, task: TaskId) {
 
 fn race(interrupted: u8, broken: bool) {
     BROKEN_PARENT.with(|flag| flag.set(false));
+    UNCHECKED_ADMISSION.with(|flag| flag.set(false));
     let provider = Arc::new(MemoryStream::default());
     let path = StreamPath::new("parent-admission-model").unwrap();
     let volume = Arc::new(block_on(TaskVolume::open(provider.clone(), path.clone())).unwrap());
@@ -55,16 +60,34 @@ fn race(interrupted: u8, broken: bool) {
     for root in [a, b] {
         block_on(claim_parent(&volume, root, None, 1024)).unwrap();
     }
-    if interrupted != 0 {
+    let admitted = Arc::new(loom::sync::Mutex::new((interrupted == 3).then_some(a)));
+    if interrupted == 3 {
+        block_on(CommandControl::change(
+            &volume,
+            Some(a),
+            &[],
+            Some(true),
+            1024,
+        ))
+        .unwrap();
+    }
+    if matches!(interrupted, 1 | 2) {
         let gate = GateArc::new(GateMutex::new(()));
         let reached = loom::sync::atomic::AtomicBool::new(false);
-        let preparation = Box::pin(prepare(&volume, task, Some(a), 1024, async || {
-            if interrupted == 1 {
-                reached.store(true, std::sync::atomic::Ordering::SeqCst);
-                futures::future::pending::<()>().await;
-            }
-            Ok(values())
-        }));
+        let preparation = Box::pin(prepare(
+            &volume,
+            task,
+            Some(a),
+            1024,
+            Box::pin(async { Ok(None) }),
+            async || {
+                if interrupted == 1 {
+                    reached.store(true, std::sync::atomic::Ordering::SeqCst);
+                    futures::future::pending::<()>().await;
+                }
+                Ok(values())
+            },
+        ));
         let mut attempt = admit_prepared(
             &gate,
             preparation,
@@ -90,7 +113,6 @@ fn race(interrupted: u8, broken: bool) {
     let gate = GateArc::new(GateMutex::new(()));
     // The owner boundary retains one immutable admission parent. It is a leaf
     // beneath the production admission gate, never held over volume/provider I/O.
-    let admitted = Arc::new(loom::sync::Mutex::new(None::<TaskId>));
     let peers: Vec<_> = [a, b]
         .into_iter()
         .map(|requested| {
@@ -98,11 +120,16 @@ fn race(interrupted: u8, broken: bool) {
             let volume = volume.clone();
             let admitted = admitted.clone();
             loom::thread::spawn(move || {
-                BROKEN_PARENT.with(|flag| flag.set(broken));
-                let preparation =
-                    Box::pin(prepare(&volume, task, Some(requested), 1024, async || {
-                        Ok(values())
-                    }));
+                BROKEN_PARENT.with(|flag| flag.set(broken && interrupted != 3));
+                UNCHECKED_ADMISSION.with(|flag| flag.set(broken && interrupted == 3));
+                let preparation = Box::pin(prepare(
+                    &volume,
+                    task,
+                    Some(requested),
+                    1024,
+                    Box::pin(async { Ok(admitted.lock().unwrap().map(Some)) }),
+                    async || Ok(values()),
+                ));
                 let result = block_on(admit_prepared(
                     &gate,
                     preparation,
@@ -173,4 +200,14 @@ fn negative_control_detects_a_broken_parent_after_partial_preparation() {
 #[should_panic(expected = "admitted task followed a different parent")]
 fn negative_control_detects_a_broken_parent_after_complete_preparation() {
     loom::model(|| race(2, true));
+}
+
+#[test]
+fn competing_legacy_retries_validate_admission_before_publishing_inheritance() {
+    loom::model(|| race(3, false));
+}
+#[test]
+#[should_panic(expected = "admitted task followed a different parent")]
+fn negative_control_detects_an_unchecked_legacy_admission() {
+    loom::model(|| race(3, true));
 }

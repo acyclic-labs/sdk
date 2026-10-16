@@ -122,8 +122,21 @@ async fn prepare<P: StreamProvider + ?Sized>(
     task: TaskId,
     parent: Option<TaskId>,
     maximum: u64,
+    admission: BoxProviderFuture<'_, Result<Option<Option<TaskId>>>>,
     resolve: impl AsyncFnOnce() -> Result<Value>,
 ) -> Result<()> {
+    // The owner is authoritative even when a legacy/crashed admission has no
+    // inheritance files. Reject its changed parent before any cache publication.
+    let admitted = admission.await?;
+    #[cfg(all(test, acyclic_harness_loom))]
+    let admitted = if model::unchecked_admission() {
+        None
+    } else {
+        admitted
+    };
+    if let Some(admitted) = admitted {
+        require_parent(&json!(admitted), parent)?;
+    }
     if let Some(saved) = read_inheritance(volume, task, maximum).await? {
         return require_parent(&saved["parent"], parent);
     }
@@ -199,6 +212,13 @@ impl LocalHarness {
             task,
             parent,
             self.limits.file_bytes,
+            Box::pin(async {
+                match self.runtime.task_host().observe_admission(task).await {
+                    Ok(record) => Ok(Some(record.parent)),
+                    Err(Error::NotFound(_)) => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }),
             async || match parent {
                 Some(parent) => self.resolved_inheritance(parent).await,
                 None => Ok(json!({"model":null,"summary":null})),

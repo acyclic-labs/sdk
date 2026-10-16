@@ -408,3 +408,107 @@ async fn retried_operation_cannot_change_its_prepared_parent_or_bypass_subtree_p
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn legacy_retry_cannot_publish_a_parent_that_disagrees_with_owner_admission() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let local = open(directory.path()).await?;
+    let root = child(&local, None).await?;
+    let a = child(&local, Some(root)).await?;
+    let b = child(&local, Some(root)).await?;
+    // Admit through the public runtime without LocalHarness inheritance, as in
+    // an older installation or admission recovered after interrupted publication.
+    let runtime = local.task_runtime();
+    let record = runtime.task_host().observe_admission(a).await?;
+    let definition = runtime
+        .harness()
+        .task::<Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+    let operation = OperationId::new();
+    let task = crate::runtime::task_id_for_admission(operation);
+    assert!(
+        matches!(runtime.harness().durable_context(a, record.operation_id, None)
+        .await?.admit(operation, &definition, record.input).await?,
+        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) if task_id == task)
+    );
+    drop(local);
+    let local = open(directory.path()).await?;
+    local
+        .dispatch_command(
+            OperationId::new(),
+            Some(a),
+            CommandResolution::Submit {
+                request: CommandRequest::Pause {
+                    scope: CommandTaskScope::Subtree,
+                },
+            },
+        )
+        .await?;
+    assert!(matches!(
+        local
+            .dispatch_command(
+                operation,
+                Some(b),
+                CommandResolution::Prompt {
+                    text: "continue".into(),
+                    source: None,
+                    mentions: Vec::new(),
+                }
+            )
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    // Reject before publishing even the parent claim, not just before admission.
+    for name in ["inherited", "inherited-model", "inherited-summary"] {
+        assert_eq!(
+            read(
+                &local.task_files.inner,
+                &key(task, name)?,
+                local.limits.file_bytes
+            )
+            .await?,
+            None
+        );
+    }
+    assert_eq!(
+        local
+            .task_runtime()
+            .task_host()
+            .observe_admission(task)
+            .await?
+            .parent,
+        Some(a)
+    );
+    drop(local);
+    let local = open(directory.path()).await?;
+    assert!(local.command_has_ancestor(Some(task), a).await?);
+    assert!(!local.command_has_ancestor(Some(task), b).await?);
+    let matched = std::sync::atomic::AtomicBool::new(false);
+    let mut waiting = Box::pin(CommandControl::wait_matching(
+        &local.task_files.inner,
+        |scope| {
+            let local = &local;
+            let matched = &matched;
+            Box::pin(async move {
+                let applies = local.command_has_ancestor(Some(task), scope).await?;
+                if applies {
+                    matched.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok(applies)
+            })
+        },
+        local.limits.file_bytes,
+    ));
+    futures::future::poll_fn(|cx| {
+        assert!(
+            std::future::Future::poll(waiting.as_mut(), cx).is_pending(),
+            "legacy task bypassed its admitted parent's subtree pause"
+        );
+        if matched.load(std::sync::atomic::Ordering::Acquire) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    Ok(())
+}
