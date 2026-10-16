@@ -11,6 +11,19 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn compare(&self, other: &Self) -> proptest::test_runner::TestCaseResult {
+        prop_assert_eq!(self.root.receipt(), other.root.receipt());
+        prop_assert_eq!(
+            self.root.live_allocation_bytes(),
+            other.root.live_allocation_bytes()
+        );
+        prop_assert_eq!(
+            self.view.remaining().map_err(|error| format!("{error:?}")),
+            other.view.remaining().map_err(|error| format!("{error:?}"))
+        );
+        Ok(())
+    }
+
     fn new(limits: &[(u8, u16)], invocation: bool) -> Self {
         let cancellation = CancellationToken::new();
         let root =
@@ -97,15 +110,39 @@ proptest! {
             }
             let delta = delta(field, amount, items);
             prop_assert_eq!(current.apply(kind, recheck, delta, bytes, false), legacy.apply(kind, recheck, delta, bytes, true));
-            prop_assert_eq!(current.root.receipt(), legacy.root.receipt());
-            prop_assert_eq!(current.root.live_allocation_bytes(), legacy.root.live_allocation_bytes());
-            prop_assert_eq!(current.view.remaining().map_err(|error| format!("{error:?}")), legacy.view.remaining().map_err(|error| format!("{error:?}")));
+            current.compare(&legacy)?;
         }
         current.claims.clear();
         legacy.claims.clear();
         prop_assert_eq!(current.root.live_allocation_bytes(), legacy.root.live_allocation_bytes());
         prop_assert_eq!(current.root.receipt(), legacy.root.receipt());
     }
+}
+
+#[test]
+fn comparison_detects_bypassing_the_recheck_projection() {
+    let mut correct = Fixture::new(&[], false);
+    let broken = Fixture::new(&[], false);
+    let delta = WorkCounters {
+        items_examined: 3,
+        ..WorkCounters::UNCHARGED
+    };
+    correct.apply(1, true, delta, 0, false).unwrap();
+    broken
+        .view
+        .recheck_admitted()
+        .state(|state| {
+            // Broken variant: ignore the installed recheck policy in the ledger.
+            state.scope(
+                |work| &mut work.recheck_items,
+                false,
+                |state| state.charge(delta),
+            )
+        })
+        .unwrap();
+    assert_eq!(correct.root.receipt().items_examined, 0);
+    assert_eq!(broken.root.receipt().items_examined, 3);
+    assert!(correct.compare(&broken).is_err());
 }
 
 #[test]
