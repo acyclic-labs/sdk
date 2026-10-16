@@ -4,6 +4,5 @@ import type { Header } from "./Header.js";
 
 /**
  * Typed invocation request. Method, URL, headers, and body preserve the
- * existing wire contract without adding new validation rules.
  */
 export type InvokeActorRequest = { actorId: ActorId, method: string, url: string, body: import("../../readonly.js").ReadonlyBytes, headers: Array<Header>, };

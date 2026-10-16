@@ -1,0 +1,4 @@
+{"records":[{"task":"task-1","sequence":1,"event":"task_settled","detail":"goal done; task blocked"}],
+ "expect":{"applied":[true],"presented":1,"output":"\u001b]9;Task settled: task-1: goal done  task blocked\u0007",
+ "view":{"latest":{"task-1":{"task":"task-1","sequence":1,"event":"task_settled",
+ "detail":"goal done; task blocked"}}}}}

@@ -1,3 +1,4 @@
+import { sharedDescriptorAuthority } from "../../../shared/tests/package-fixture.mjs";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,14 +11,7 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "ruby-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
-    put(join(authority, source), source);
-    return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
-  });
-  put(join(authority, "shared.bin"), "descriptors"); put(join(authority, "import.proto"), "import");
-  families.push({ source: "import.proto", source_sha256: sha256("import") });
-  const manifest = Buffer.from(JSON.stringify({ schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families }));
-  put(join(authority, "rust-authority.json"), manifest);
+  const manifest = sharedDescriptorAuthority(authority);
   const packageRoot = join(root, "package");
   const spec = readFileSync(new URL("../templates/package/acyclic-sdk-transport.gemspec", import.meta.url), "utf8").replace("@RUST_SOURCE_REVISION@", "a".repeat(40));
   const payload = { "acyclic-sdk-transport.gemspec": spec, LICENSE: "license", NOTICE: "notice", "authority/rust-authority.json": manifest, "lib/bindings.rb": "generated binding" };

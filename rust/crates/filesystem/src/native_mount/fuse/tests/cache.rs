@@ -434,6 +434,89 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
 }
 
 #[test]
+pub(super) fn a_refused_kernel_notification_stays_pending_until_a_later_pass_delivers_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::PoisonError;
+    struct RefusesFirst {
+        refused: AtomicBool,
+        sent: Mutex<Vec<(u64, bool)>>,
+    }
+    impl crate::native_mount::fuse::KernelCacheNotifier for RefusesFirst {
+        fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+            let accepted = self.refused.swap(true, Ordering::AcqRel);
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((inode, accepted));
+            if accepted {
+                Ok(())
+            } else {
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            }
+        }
+
+        fn inval_entry(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(libc::EINVAL))
+        }
+    }
+    let queued = [
+        KernelCacheItem::Inode(ROOT_INODE),
+        KernelCacheItem::Inode(ROOT_INODE + 1),
+    ];
+    let (source, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(source),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let notifier = Arc::new(RefusesFirst {
+        refused: AtomicBool::new(false),
+        sent: Mutex::new(Vec::new()),
+    });
+    let work = fuse_fixture_work();
+    // Held until the waiter sleeps, so the waiter sees the refusal happen.
+    let mut state = core.state().map_err(|_| "stopped")?;
+    state.invalidation.deferred.extend([
+        KernelCacheItem::Inode(ROOT_INODE),
+        KernelCacheItem::Inode(ROOT_INODE + 1),
+    ]);
+    let invalidator = std::thread::spawn({
+        let (core, notifier) = (Arc::clone(&core), Arc::clone(&notifier));
+        move || crate::native_mount::fuse::run_invalidator(&core, &*notifier)
+    });
+    let refused = core.wait_for_invalidation(state, None, &work);
+    assert!(
+        matches!(refused, Err(NativeMountError::Lifecycle(_))),
+        "a refused notification settled: {refused:?}"
+    );
+    {
+        let state = core.state().map_err(|_| "stopped")?;
+        assert!(state.invalidation.is_pending(None));
+        assert_eq!(state.invalidation.pending_tail.as_slice(), &queued);
+    }
+    let retried = core.wait_for_invalidation(core.state().map_err(|_| "stopped")?, None, &work);
+    assert!(retried.is_ok(), "the retry failed: {retried:?}");
+    assert!(
+        !core
+            .state()
+            .map_err(|_| "stopped")?
+            .invalidation
+            .is_pending(None)
+    );
+    core.stop();
+    invalidator.join().map_err(|_| "invalidator panicked")?;
+    assert_eq!(
+        *notifier.sent.lock().map_err(|_| "poisoned")?,
+        [
+            (ROOT_INODE, false),
+            (ROOT_INODE, true),
+            (ROOT_INODE + 1, true)
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 #[allow(
     clippy::mutable_key_type,
     reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."

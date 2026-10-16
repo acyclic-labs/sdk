@@ -13,7 +13,8 @@ export const packagedTypeScriptBindings = [
   ["harness/v2/harness_pb", ["harness"]],
   ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
   // inference_pb imports the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["inference"]],
+  ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"]],
+  ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],
@@ -22,6 +23,10 @@ export const packagedTypeScriptBindings = [
 ];
 
 export const compatibilityArtifacts = {
+  auth: {
+    schemaDigest: "proto/auth/v1/auth.proto",
+    descriptorDigest: "rust/crates/auth/src/generated/acyclic-auth-v1.bin",
+  },
   harness: {
     schemaDigest: "proto/harness/v2/harness.proto",
     conformanceDigest: "conformance/vectors/core.json",
@@ -58,6 +63,7 @@ export const compatibilityArtifacts = {
 };
 
 export const generatedDescriptors = [
+  ["proto/auth", compatibilityArtifacts.auth.descriptorDigest],
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
   ["proto/objects/v1", "rust/crates/objects/src/generated/acyclic-objects-v1.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
@@ -75,6 +81,8 @@ export const packagedRustBindings = [
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
+  ["proto/validation/v1/options.proto", "rust/crates/contract-derive/proto/validation/v1/options.proto"],
+  ["proto/validation/v1/options.proto", "rust/crates/stream/proto/validation/v1/options.proto"],
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant", "execution-placement", "task-admission", "workflow-admission",
@@ -106,4 +114,16 @@ export const normalizeGeneratedRust = (relative, source) => {
   return include ? normalized.replace(include, `#[cfg(${gate})]\n${include}`) : normalized;
 };
 
-export const normalizeGeneratedTypeScript = source => `${source.trimEnd()}\n`;
+export const normalizeGeneratedTypeScript = source => {
+  let normalized = `${source.trimEnd()}\n`;
+  // Preserve documentation while keeping large generated projections within
+  // the source-file bound. Repeated normalization is byte-idempotent.
+  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto")) && normalized.split("\n").length > 800) {
+    normalized = normalized.replaceAll("\n\n", "\n");
+    if (normalized.split("\n").length > 800) {
+      normalized = normalized.replace(/\/\*\*([\s\S]*?)\*\//g, (_, body) =>
+        `/** ${body.split("\n").map(line => line.trim().replace(/^\* ?/, "")).filter(Boolean).join(" ")} */`);
+    }
+  }
+  return normalized;
+};

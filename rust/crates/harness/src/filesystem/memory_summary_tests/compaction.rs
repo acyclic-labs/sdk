@@ -116,7 +116,7 @@ async fn staging_growth(storages: &[MemoryHarnessStorage]) -> Result<()> {
 async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
     const TURNS: u16 = 12;
     let mut storage = continuation_storage(usize::from(TURNS)).await?;
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(usize::from(TURNS) * 2));
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
@@ -210,11 +210,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
             bundle = build_bundle(&storage)?;
         }
     }
-    let requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
+    let requests = model.dispatches().len();
     assert!(
         requests > usize::from(TURNS),
         "count pressure must admit summary requests"
@@ -227,13 +223,6 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
             .await?,
         expected
     );
-    assert_eq!(
-        model
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        requests
-    );
+    assert_eq!(model.dispatches().len(), requests);
     Ok(())
 }

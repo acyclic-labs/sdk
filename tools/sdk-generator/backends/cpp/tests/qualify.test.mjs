@@ -4,11 +4,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { qualify } from "../src/qualify.mjs";
 import { fixture } from "./fixtures/qualification.mjs";
-import { compatibilityArtifacts } from "../../../../../scripts/generated-bindings.mjs";
+import { canonicalRPCs } from "../../../shared/tests/proto-rpcs.mjs";
 
 test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", t => {
   const f = fixture(t), result = qualify(f.args, f.options);
-  assert.equal(result.native_rpc_method_calls, 19); assert.equal(result.independent_negative_compiles, 2);
+  assert.equal(result.native_rpc_method_calls, 20); assert.equal(result.independent_negative_compiles, 2);
   assert.equal(result.host_sdk_files, 9); assert.equal(result.runtime_files, 1); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(f.calls.length, 11);
   for (const [name, bytes] of f.pkg.payload) assert.deepEqual(readFileSync(join(f.args.output, "sdk-source", name)), bytes);
@@ -59,12 +59,12 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
   const consumer = readFileSync(new URL("./fixtures/consumer/message_consumer.cc", import.meta.url), "utf8");
   const printed = consumer.match(/std::cout\s*<<\s*("(?:[^"\\]|\\.)*")\s*<<\s*methods\s*<<\s*("(?:[^"\\]|\\.)*")/);
   assert.ok(printed, "consumer must print its measured RPC count");
-  const methods = ["actors", "stream"].reduce((count, family) => {
-    const contract = readFileSync(new URL("../../../../../" + compatibilityArtifacts[family].schemaDigest, import.meta.url), "utf8");
-    const services = [...contract.matchAll(/^service \w+\s*\{([\s\S]*?)^\}/gm)];
-    assert.equal(services.length, 1, "each maintained contract must name one service");
-    return count + [...services[0][1].matchAll(/^\s*rpc\s+\w+\s*\(/gm)].length;
-  }, 0);
+  const methods = canonicalRPCs().length;
+  const rpc = readFileSync(new URL("./fixtures/consumer/rpc_consumer.cc", import.meta.url), "utf8");
+  const expected = canonicalRPCs().map(method => method.name).sort();
+  assert.deepEqual([...rpc.matchAll(/_client->(\w+)\(/g)].map(([, name]) => name).sort(), expected);
+  assert.deepEqual([...rpc.matchAll(/grpc::Status (\w+)\(grpc::ServerContext\*/g)].map(([, name]) => name).sort(), expected);
+  for (const method of canonicalRPCs()) assert.ok(rpc.includes(`observed.at("/${method.path}")`), method.path);
   const marker = JSON.parse(printed[1]) + methods + JSON.parse(printed[2]);
   const f = fixture(t);
   f.hooks.consumer = result => { result.stdout = marker + result.stdout.slice(result.stdout.indexOf("\n") + 1); };
@@ -73,6 +73,6 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
 
 test("qualifier rejects the retired 25-pair completion marker", t => {
   const f = fixture(t);
-  f.hooks.consumer = result => { result.stdout = result.stdout.replace("19 RPC message pairs", "25 RPC message pairs"); };
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("20 RPC message pairs", "25 RPC message pairs"); };
   assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
 });
