@@ -345,9 +345,6 @@ fn invoke(command: &mut Command) -> std::process::Output {
     {
         command.env("PATH", runtime::path());
     }
-    if command.get_current_dir().is_some() {
-        return command.output().unwrap();
-    }
     let mut stdout = Vec::new();
     let result = sdk_docs::with_command_environment(command, || {
         sdk_generation::run(
@@ -980,3 +977,6 @@ mod packaging;
 
 #[path = "cli_regressions/runtime.rs"]
 mod runtime;
+
+#[path = "cli_regressions/commands.rs"]
+mod commands;

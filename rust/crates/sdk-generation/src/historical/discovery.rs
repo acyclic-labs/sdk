@@ -318,7 +318,7 @@ pub(super) fn discover_owner(
         .other_options(vec!["--locked".into(), "--offline".into()])
         .no_deps();
     let metadata = owner_metadata(&root, cargo, &source, || {
-        discovery.exec().map_err(|e| e.to_string())
+        sdk_docs::execute_metadata(&discovery).map_err(|e| e.to_string())
     })?;
     if metadata
         .workspace_root

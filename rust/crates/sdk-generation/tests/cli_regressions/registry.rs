@@ -53,6 +53,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                 // These controls differ only in automatic-config location. Keep the
                 // captured source and compiler output immutable between the two runs.
                 let mut discovery = Vec::new();
+                let queries = commands::Queries::default();
                 for cargo_home in [true, false] {
                     let directory = support.join("automatic-config");
                     let config_directory = if cargo_home {
@@ -107,13 +108,15 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     );
                     let archive = support.join("registry/demo-1.0.0.crate");
                     let original_archive = fs::read(&archive).unwrap();
-                    let result = run_historical_generate_mode_with_authority(
-                        &fixture,
-                        &support,
-                        Some("registry-archives"),
-                        None,
-                        Some((&directory, cargo_home)),
-                    );
+                    let result = queries.run(|| {
+                        run_historical_generate_mode_with_authority(
+                            &fixture,
+                            &support,
+                            Some("registry-archives"),
+                            None,
+                            Some((&directory, cargo_home)),
+                        )
+                    });
                     assert!(result.status.success(), "{}", output_message(&result));
                     assert_eq!(fs::read(&foreign).unwrap(), foreign_bytes);
                     assert_eq!(fs::read(&archive).unwrap(), original_archive);
@@ -147,6 +150,11 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     fs::remove_file(config_directory.join("config.toml")).unwrap();
                 }
                 assert_eq!(discovery.len(), 2);
+                let (executed, replayed) = queries.counts();
+                assert!(
+                    executed > 0 && replayed > 0,
+                    "both real recording and policy replay must run"
+                );
                 assert_ne!(
                     discovery[0], discovery[1],
                     "both automatic-config authorities must execute"
@@ -393,7 +401,9 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     .unwrap();
     write_registry_transport(support);
     runtime::phase("anchors");
-    let generated = run_historical_generate_mode(fixture, support, Some("registry-archives"));
+    let queries = commands::Queries::default();
+    let generated =
+        queries.run(|| run_historical_generate_mode(fixture, support, Some("registry-archives")));
     runtime::phase("generated");
     assert!(generated.status.success(), "{}", output_message(&generated));
     let output = fixture.output.join("releases/1.0.0");
@@ -443,14 +453,16 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
             .join(item["source"]["path"].as_str().unwrap())
             .is_file());
     }
-    let drift = run_historical_drift(
-        &Fixture {
-            root: fixture.root.clone(),
-            rustdoc: output.join(".rustdoc"),
-            output: output.clone(),
-        },
-        support,
-    );
+    let drift = queries.run(|| {
+        run_historical_drift(
+            &Fixture {
+                root: fixture.root.clone(),
+                rustdoc: output.join(".rustdoc"),
+                output: output.clone(),
+            },
+            support,
+        )
+    });
     assert!(drift.status.success(), "{}", output_message(&drift));
     runtime::phase("drifted");
     fs::remove_dir_all(&template.0.root).unwrap();
@@ -879,7 +891,8 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
         .any(|package| matches!(package.name.as_ref(), "demo-macros" | "demo-helper")));
     let locked_bytes = fs::read(fixture.root.join("Cargo.lock")).unwrap();
     let macro_locked_bytes = fs::read(fixture.root.join("rust/vendor/macros/Cargo.lock")).unwrap();
-    let generated = run_generate_execute_profiles(&fixture);
+    let queries = commands::Queries::default();
+    let generated = queries.run(|| run_generate_execute_profiles(&fixture));
     assert!(generated.status.success(), "{}", output_message(&generated));
     assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
     assert_executed_profiles(
@@ -940,7 +953,7 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
             .unwrap();
         assert_eq!(item["source"]["path"], source);
     }
-    let drift = run_drift_execute_profiles(&fixture);
+    let drift = queries.run(|| run_drift_execute_profiles(&fixture));
     assert!(drift.status.success(), "{}", output_message(&drift));
     assert_eq!(
         fs::read(fixture.root.join("Cargo.lock")).unwrap(),

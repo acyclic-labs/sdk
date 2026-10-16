@@ -14,7 +14,7 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
         let top = sdk_docs::command("git")
             .current_dir(&root)
             .args(["rev-parse", "--show-toplevel"])
-            .output()
+            .run_output()
             .map_err(io_error)?;
         if !top.status.success()
             || canonical(Path::new(String::from_utf8_lossy(&top.stdout).trim()))? != root

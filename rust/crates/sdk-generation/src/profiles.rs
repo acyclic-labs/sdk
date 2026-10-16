@@ -33,9 +33,8 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     }
     .configure_metadata(&mut command)
     .map_err(profile_error)?;
-    let resolved = command
-        .manifest_path(root.join("Cargo.toml"))
-        .exec()
+    command.manifest_path(root.join("Cargo.toml"));
+    let resolved = sdk_docs::execute_metadata(&command)
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;
     for name in missing {
@@ -188,7 +187,14 @@ pub(super) fn execute_historical_profiles(
             .map(|(target, _)| target.name.as_str()),
     );
     let executed = if plan.released_packages.len() < 2 || !disjoint {
-        compile_historical_profiles(root, output, rustdoc_dir, metadata, cargo, (plan, &plan.released_packages))?
+        compile_historical_profiles(
+            root,
+            output,
+            rustdoc_dir,
+            metadata,
+            cargo,
+            (plan, &plan.released_packages),
+        )?
     } else {
         let jobs = plan.released_packages.clone();
         let plan = crate::parallel::Arc::clone(plan);
@@ -203,8 +209,14 @@ pub(super) fn execute_historical_profiles(
         crate::parallel::map(
             jobs,
             sdk_docs::rustdoc_worker(move |release| {
-                compile_historical_profiles(&root, &output, &rustdoc_dir, &metadata, &cargo,
-                    (&plan, std::slice::from_ref(&release)))
+                compile_historical_profiles(
+                    &root,
+                    &output,
+                    &rustdoc_dir,
+                    &metadata,
+                    &cargo,
+                    (&plan, std::slice::from_ref(&release)),
+                )
             }),
         )
         .into_iter()
