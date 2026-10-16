@@ -22,6 +22,7 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 
 [dependencies]
 libfuzzer-sys = "0.4"
+futures = "0.3.32"
 acyclic-harness = { path = "..", features = ["filesystem", "search-http", "test-support"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory"] }
 acyclic-stream = { path = "../../stream" }

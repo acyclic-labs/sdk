@@ -87,7 +87,7 @@ impl HttpSearch {
 }
 
 impl Exa {
-    /// Binds a host-resolved key. It is never included in tool definitions.
+    /// Binds a host-resolved key. It is never written to task files.
     pub fn new(key: &str) -> Result<Self> {
         Self::with_endpoint(key, "https://api.exa.ai/search")
     }

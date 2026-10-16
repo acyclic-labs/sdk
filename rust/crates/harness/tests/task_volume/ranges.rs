@@ -14,6 +14,8 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         ".tasks/t/status.json",
         "plans/main.md",
         ".tasks/t/requests/r.json",
+        ".tasks/t/requests/r/started.json",
+        ".tasks/t/requests/r/result.json",
         ".tasks/t/context/c/manifest.json",
         ".tasks/t/approvals/a/request.json",
         ".tasks/t/approvals/a/decisions/p.json",
@@ -27,6 +29,7 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         index.insert(FileKey::parse(path)?, ());
     }
     for (query, expected) in [
+        (Query::Requests(Component::new("t")?), 3),
         (Query::Approvals(Component::new("t")?), 4),
         (Query::Notifications(Component::new("t")?), 2),
         (Query::Approvals(Component::new("empty")?), 0),
