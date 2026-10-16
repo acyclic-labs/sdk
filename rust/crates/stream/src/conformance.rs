@@ -113,6 +113,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
             limit: 8,
         })
         .await?
+        .take(2)
         .try_collect::<Vec<_>>()
         .await?;
     let mut child_paths = children

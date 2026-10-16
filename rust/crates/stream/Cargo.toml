@@ -22,7 +22,7 @@ required-features = ["http"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt"]
+grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["dep:reqwest"]
 local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
@@ -67,6 +67,9 @@ rustls-platform-verifier = { workspace = true, optional = true }
 [build-dependencies]
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
+
+[target.'cfg(acyclic_stream_loom)'.dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
 
 [dev-dependencies]
 proptest.workspace = true

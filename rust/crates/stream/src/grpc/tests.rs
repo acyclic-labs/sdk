@@ -3,7 +3,7 @@ use crate::{MemoryStream, OwnedBytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+pub(super) type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// An in-process HTTP/2 channel to one service.
 fn channel<S: StreamService + Clone>(service: S) -> Channel {
@@ -25,11 +25,36 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
-    Ok(Client::from_channel(
-        channel(Service::new(Arc::new(provider))),
-        authorization("fixture")?,
-    ))
+pub(super) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+    let provider = Arc::new(provider);
+    let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
+        tower::service_fn(move |_| {
+            let provider = Arc::clone(&provider);
+            async move {
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
+                    let _ = tonic::transport::Server::builder()
+                        .add_service(StreamServiceServer::new(Service::new(Arc::clone(
+                            &provider,
+                        ))))
+                        .add_service(
+                            wire::stream_session_service_server::StreamSessionServiceServer::new(
+                                crate::session::Service::new(
+                                    provider,
+                                    "fixture".into(),
+                                    crate::session::Limits::default(),
+                                ),
+                            ),
+                        )
+                        .serve_with_incoming(incoming)
+                        .await;
+                });
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+            }
+        }),
+    );
+    Ok(Client::from_channel(channel, authorization("fixture")?))
 }
 
 fn unconnected() -> Result<Client, ConnectError> {
@@ -44,6 +69,7 @@ struct EndingFollow {
     inner: MemoryStream,
     follows: AtomicUsize,
     deny: bool,
+    finite: bool,
 }
 
 #[async_trait]
@@ -70,7 +96,22 @@ impl StreamProvider for EndingFollow {
         self.inner.read(request).await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        if self.follows.fetch_add(1, Ordering::SeqCst) == 0 {
+        let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
+        if self.finite {
+            return if attempt == 0 {
+                self.inner
+                    .read(ReadRequest {
+                        path,
+                        from,
+                        limit: u32::try_from(crate::MAX_ITEMS)
+                            .map_err(|_| StreamError::LimitExceeded)?,
+                    })
+                    .await
+            } else {
+                Ok(stream::empty().boxed())
+            };
+        }
+        if attempt == 0 {
             return Ok(stream::empty().boxed());
         }
         if self.deny {
@@ -175,6 +216,7 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         inner: MemoryStream::default(),
         follows: AtomicUsize::new(0),
         deny: false,
+        finite: false,
     };
     let path = StreamPath::new("accounts/events")?;
     provider
@@ -201,6 +243,7 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
         inner: MemoryStream::default(),
         follows: AtomicUsize::new(0),
         deny: true,
+        finite: false,
     })?;
     let items = tokio::time::timeout(
         Duration::from_secs(1),
@@ -295,24 +338,28 @@ async fn persistent_unknown_expires_at_the_operation_deadline() -> TestResult {
 
 #[tokio::test]
 async fn retry_attempts_record_independent_spans() -> TestResult {
+    use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
-    let _default = tracing::subscriber::set_default(
-        tracing_subscriber::Registry::default().with(captured.clone()),
-    );
-    let client = unconnected()?;
-    let mut first = true;
-    let response = client
-        .unary(ATTEMPT_TIMEOUT, (), |_, _| {
-            let result = if std::mem::take(&mut first) {
-                Err(Status::unavailable("retry"))
-            } else {
-                Ok(Response::new(()))
-            };
-            Box::pin(async move { result })
-        })
-        .await?;
-    decode_response(response, Ok)?;
+    let subscriber = tracing_subscriber::Registry::default().with(captured.clone());
+    async {
+        let client = unconnected()?;
+        let mut first = true;
+        let response = client
+            .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                let result = if std::mem::take(&mut first) {
+                    Err(Status::unavailable("retry"))
+                } else {
+                    Ok(Response::new(()))
+                };
+                Box::pin(async move { result })
+            })
+            .await?;
+        decode_response(response, Ok)?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .with_subscriber(subscriber)
+    .await?;
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
     for (attempt, (number, outcome, code)) in
@@ -426,5 +473,81 @@ async fn translating_client_does_not_ack_before_downstream_delivery() -> TestRes
             .await,
         Err(StreamError::Unsupported)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_eof_never_discards_records_queued_before_terminal_close() -> TestResult {
+    let provider = EndingFollow {
+        inner: MemoryStream::default(),
+        follows: AtomicUsize::new(0),
+        deny: false,
+        finite: true,
+    };
+    let path = StreamPath::new("finite")?;
+    provider
+        .inner
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![OwnedBytes::from_static(b"record"); 20],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
+    let client = client(provider)?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.follow(path, 0).await?.collect::<Vec<_>>(),
+    )
+    .await?;
+    assert_eq!(result.len(), 21);
+    for (sequence, item) in result.iter().take(20).enumerate() {
+        assert_eq!(
+            item.as_ref().map(|record| record.sequence),
+            Ok(u64::try_from(sequence)?)
+        );
+    }
+    assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let first = acyclic_grpc_observability::tests::Capture::default();
+    let second = acyclic_grpc_observability::tests::Capture::default();
+    let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
+        async {
+            let client = unconnected()?;
+            let mut first = true;
+            let response = client
+                .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                    let result = if std::mem::take(&mut first) {
+                        Err(Status::unavailable("retry"))
+                    } else {
+                        Ok(Response::new(()))
+                    };
+                    Box::pin(async move {
+                        tokio::task::yield_now().await;
+                        result
+                    })
+                })
+                .await?;
+            decode_response(response, Ok)?;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        }
+        .with_subscriber(tracing_subscriber::Registry::default().with(captured))
+        .await
+    };
+    let (one, two) = tokio::join!(capture(first.clone()), capture(second.clone()));
+    one?;
+    two?;
+    for capture in [first, second] {
+        let attempts = capture.all("acyclic.stream.grpc.call");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].get("attempt").map(String::as_str), Some("1"));
+        assert_eq!(attempts[1].get("attempt").map(String::as_str), Some("2"));
+    }
     Ok(())
 }

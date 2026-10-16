@@ -458,6 +458,8 @@ export declare const SessionAckSchema: GenMessage<SessionAck>;
  * and window, are exempt from data credit; they remain separately admission-bounded.
  * A channel-0 grant replenishes aggregate session credit. A nonzero-channel grant
  * replenishes that channel's additional credit; data must satisfy both windows.
+ * Each opened generation starts with zero channel credit; its receiver grants
+ * the initial window after opened. Replaced generations do not inherit credit.
  * Overflow is a protocol error, with neither balance changed.
  *
  * @generated from message acyclic.stream.v1.SessionWindow

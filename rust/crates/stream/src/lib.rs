@@ -19,6 +19,8 @@ pub mod http_response;
 pub mod persistence;
 pub mod preparation;
 pub mod request;
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+pub mod session;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
