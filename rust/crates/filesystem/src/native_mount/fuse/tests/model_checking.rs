@@ -54,14 +54,13 @@ fn checkout(volume: &Volume) -> Box<MemoryCheckout> {
             std::mem::size_of_val(&future),
         )
     });
-    Box::new(
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(future)
-            .unwrap()
-            .value,
-    )
+    // Box the output before the executor carries it through its own frames.
+    let future = Box::pin(async move { future.await.map(|receipt| Box::new(receipt.value)) });
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(future)
+        .unwrap()
 }
 
 #[inline(never)]
