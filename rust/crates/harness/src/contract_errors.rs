@@ -108,6 +108,15 @@ pub enum Error {
         /// Existing custody, released after the diagnostic is dropped.
         custody: acyclic_fs::NativeAllocation,
     },
+    /// A fixed JSON input failure without an allocated diagnostic.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{kind}")]
+    NativeJsonAdmission {
+        /// The original boundary classification.
+        code: crate::wire::ErrorCode,
+        /// The parser's typed source rejection.
+        kind: crate::executor::json::JsonInputError,
+    },
     /// A JSON failure preserving its original cause and classification.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -349,6 +358,7 @@ impl Error {
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
+            | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }

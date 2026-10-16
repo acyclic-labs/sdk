@@ -7,6 +7,112 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use serde_json::json;
 use std::cell::Cell;
 
+async fn shared_coordinator_tail_advance(broken: bool) -> Result<()> {
+    let stream = Arc::new(MemoryStream::default());
+    let fixture = Fixture::new(
+        stream.clone(),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[],
+    )
+    .await?;
+    let owner = fixture.running(1).await?;
+    let volume = TaskVolume::open(stream, StreamPath::new("tail-advance").unwrap())
+        .await
+        .map_err(storage)?;
+    let task = Component::new(hex::encode(owner.task_id().into_bytes())).unwrap();
+    let id = Component::new("search-tail").unwrap();
+    let initial = volume.snapshot(&Query::Root, 0).await.map_err(storage)?;
+    volume
+        .append(
+            initial.generation,
+            &FileValue::new(
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::Request(id.clone()),
+                },
+                br#"{"query":"tail"}"#.as_slice(),
+            ),
+        )
+        .await
+        .map_err(storage)?;
+    let provider = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
+        request: SearchRequest {
+            query: "tail".into(),
+            max_results: 5,
+        },
+        response: Some(SearchResponse { results: vec![] }),
+        error: None,
+    }])?);
+    let cached = std::cell::RefCell::new(None::<Vec<CommitCondition>>);
+    let state = (&fixture, &owner, &cached);
+    let authorize = |settlement| async move {
+        let (fixture, owner, cached) = state;
+        if broken
+            && settlement
+            && let Some(stale) = cached.borrow().clone()
+        {
+            return Ok(stale);
+        }
+        let authorized = condition(owner, None, settlement).await?;
+        if settlement && cached.borrow().is_none() {
+            cached.replace(Some(authorized.clone()));
+            fixture.running(2).await?;
+        }
+        Ok(authorized)
+    };
+    let result = settle(
+        &volume,
+        &task,
+        &id,
+        owner.task_binding().1,
+        &mut || Ok(Some(provider.clone() as Arc<dyn SearchProvider>)),
+        &authorize,
+        None,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "completed search response was lost: {result:?}"
+    );
+    assert!(cached.borrow().is_some());
+    let result = volume
+        .snapshot(&Query::File(file(&task, &id, true)), 1)
+        .await
+        .map_err(storage)?;
+    assert_eq!(result.files.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<SearchOutcome>(&result.files[0].bytes).unwrap(),
+        SearchOutcome::Succeeded {
+            response: SearchResponse { results: vec![] }
+        }
+    );
+    assert_eq!(provider.remaining(), 0);
+    settle(
+        &volume,
+        &task,
+        &id,
+        owner.task_binding().1,
+        &mut || panic!("completed search was redispatched"),
+        &authorize,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn completed_response_survives_another_task_advancing_the_coordinator_tail() -> Result<()> {
+    shared_coordinator_tail_advance(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "completed search response was lost")]
+async fn negative_control_detects_cached_settlement_authorization() {
+    shared_coordinator_tail_advance(true).await.unwrap();
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Case {

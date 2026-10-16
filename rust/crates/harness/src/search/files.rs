@@ -91,20 +91,12 @@ fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::
     }
     let (decoded, custody) = if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let decoded: SearchRequest =
-            io.decode_json(bytes).map_err(|error| match error {
-                Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason:
-                        "invalid JSON nesting"
-                        | "incomplete JSON document"
-                        | "JSON nesting limit exceeded",
-                }
-                | Error::NativeJson { .. } => {
-                    super::rejection(Some(work), "invalid search request file")
-                }
-                error => error,
-            })?;
+        let decoded: SearchRequest = io.decode_json(bytes).map_err(|error| match error {
+            Error::NativeJsonAdmission { .. } | Error::NativeJson { .. } => {
+                super::rejection(Some(work), "invalid search request file")
+            }
+            error => error,
+        })?;
         let retained = (std::mem::size_of::<SearchRequest>() + decoded.query.capacity()) as u64;
         (decoded, Some(io.into_native_custody(retained)?))
     } else {
@@ -389,7 +381,7 @@ where
     A: Fn(bool) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {
-    loop {
+    'snapshot: loop {
         let snapshot = volume
             .snapshot(&Query::File(key.clone()), 1)
             .await
@@ -397,25 +389,35 @@ where
         if !snapshot.files.is_empty() {
             return Ok(());
         }
-        match volume
-            .append_if(
-                snapshot.generation,
-                &FileValue::new(key.clone(), bytes.clone()),
-                authorize(true).await?,
-                None,
-                work,
-            )
-            .await
-        {
-            Ok(_) => return Ok(()),
-            Err(crate::task_volume::Error::Conflict(_)) => continue,
-            Err(crate::task_volume::Error::LimitExceeded) => {
-                return Err(super::rejection(
+        let mut conditions = authorize(true).await?;
+        loop {
+            match volume
+                .append_if(
+                    snapshot.generation,
+                    &FileValue::new(key.clone(), bytes.clone()),
+                    conditions.clone(),
+                    None,
                     work,
-                    "search file exceeds packed byte limit",
-                ));
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(crate::task_volume::Error::Conflict(_)) => continue 'snapshot,
+                Err(crate::task_volume::Error::FenceConflict) => {
+                    let fresh = authorize(true).await?;
+                    if fresh == conditions {
+                        return Err(storage(crate::task_volume::Error::FenceConflict));
+                    }
+                    conditions = fresh;
+                }
+                Err(crate::task_volume::Error::LimitExceeded) => {
+                    return Err(super::rejection(
+                        work,
+                        "search file exceeds packed byte limit",
+                    ));
+                }
+                Err(error) => return Err(storage(error)),
             }
-            Err(error) => return Err(storage(error)),
         }
     }
 }

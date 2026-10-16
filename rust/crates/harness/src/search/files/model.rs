@@ -214,3 +214,63 @@ fn replacement_fences_claim_and_result_without_redispatch() {
 fn negative_control_detects_missing_result_fence() {
     replacement(true);
 }
+
+fn shared_tail(broken: bool) {
+    model(move || {
+        let (stream, volume) = initialized();
+        let provider = Arc::new(Provider::new(None));
+        let (authorized, advance) = mpsc::channel();
+        let (advanced, released) = mpsc::channel();
+        let other_task = thread::spawn({
+            let stream = stream.clone();
+            move || {
+                advance.recv().unwrap();
+                append_owner(&stream, 1);
+                advanced.send(()).unwrap();
+            }
+        });
+        let first = std::cell::Cell::new(true);
+        let authorize = |settlement| {
+            let (stream, first, authorized, released) = (&stream, &first, &authorized, &released);
+            async move {
+                let tail = stream
+                    .watermarks(StreamPath::new("owner").unwrap())
+                    .await
+                    .map_err(|_| Error::Storage("model owner missing".into()))?
+                    .accepted;
+                if settlement && first.replace(false) {
+                    authorized.send(()).unwrap();
+                    released.recv().unwrap();
+                }
+                Ok(condition(if broken && settlement { 1 } else { tail }))
+            }
+        };
+        let result = block_on(settle(
+            &volume,
+            &Component::new("model").unwrap(),
+            &Component::new("search-one").unwrap(),
+            &fence("old"),
+            &mut || Ok(Some(provider.clone() as Arc<dyn SearchProvider>)),
+            &authorize,
+            None,
+        ));
+        other_task.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "completed search response was lost: {result:?}"
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(outcome(&volume), SearchOutcome::Succeeded { .. }));
+    });
+}
+
+#[test]
+fn shared_tail_advance_reauthorizes_the_completed_response() {
+    shared_tail(false);
+}
+
+#[test]
+#[should_panic(expected = "completed search response was lost")]
+fn negative_control_detects_cached_authorization() {
+    shared_tail(true);
+}
