@@ -134,12 +134,9 @@ impl Decoder<'_, '_, '_> {
         Ok(copied)
     }
 
-    fn grow<T>(&mut self, values: &mut Vec<T>, scratch: bool) -> Result<()> {
+    fn grow<T>(&mut self, values: &mut Vec<T>) -> Result<()> {
         if values.len() == values.capacity() {
             let bytes = ((values.len() + 1) * std::mem::size_of::<T>()) as u64;
-            if scratch {
-                self.scope.retain(std::mem::size_of::<T>() as u64)?;
-            }
             self.scope
                 .event(JsonCodecCharge::AllocationOperation { bytes })?;
             values.try_reserve_exact(1).map_err(Error::Allocation)?;
@@ -147,14 +144,60 @@ impl Decoder<'_, '_, '_> {
         Ok(())
     }
 
+    fn entries(&mut self) -> Result<usize> {
+        let mut depth = 0usize;
+        let mut string = false;
+        let mut escaped = false;
+        let mut entries = 0;
+        for byte in &self.bytes[self.position..] {
+            self.scope.event(JsonCodecCharge::Inspect { items: 1 })?;
+            if string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => string = true,
+                b'{' | b'[' => depth += 1,
+                b'}' if depth == 0 => return Ok(entries),
+                b'}' | b']' => depth = depth.checked_sub(1).ok_or_else(invalid)?,
+                b':' if depth == 0 => entries += 1,
+                _ => {}
+            }
+        }
+        Err(invalid())
+    }
+
     fn object(&mut self) -> Result<Value> {
+        let count = self.entries()?;
+        let bytes = super::checked(
+            (count as u64).checked_mul(std::mem::size_of::<(String, Value, usize)>() as u64),
+            "JSON object scratch overflow",
+        )?;
+        self.scope.retain(bytes)?;
+        if bytes != 0 {
+            self.scope
+                .event(JsonCodecCharge::AllocationOperation { bytes })?;
+        }
         let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(Error::Allocation)?;
+        let scratch = (entries.capacity() * std::mem::size_of::<(String, Value, usize)>()) as u64;
+        self.scope.retain(scratch - bytes)?;
         if !self.take(b'}') {
             loop {
                 let key = self.string()?;
                 self.require(b':')?;
                 let value = self.value()?;
-                self.grow(&mut entries, true)?;
+                if entries.len() == count {
+                    return Err(invalid());
+                }
                 entries.push((key, value, entries.len()));
                 if self.take(b'}') {
                     break;
@@ -164,26 +207,25 @@ impl Decoder<'_, '_, '_> {
         }
         // Sort without allocating, keeping the last value for duplicate keys.
         entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
-        let scratch = (entries.capacity() * std::mem::size_of::<(String, Value, usize)>()) as u64;
+        let unique = usize::from(!entries.is_empty())
+            + entries
+                .windows(2)
+                .filter(|pair| pair[0].0 != pair[1].0)
+                .count();
+        // Conservative occupancy bound, shared with the retained-byte audit:
+        // eleven slots per node, at least five entries in each non-root node,
+        // and at least one in the root. This does not predict split positions.
+        let operations = if unique == 0 {
+            0
+        } else {
+            1 + (unique as u64 - 1) / 5
+        };
+        if operations != 0 {
+            self.scope
+                .event(JsonCodecCharge::AllocationOperations { operations })?;
+        }
         let mut values = serde_json::Map::new();
         for (key, value, _) in entries.drain(..) {
-            if !values.contains_key(&key) {
-                // std's B-tree has eleven slots per node. Ascending inserts
-                // split a full node into six left entries and five right
-                // entries before inserting the new rightmost entry. A root
-                // split also allocates its replacement parent. Admit these
-                // together: a denied split must not charge half an insertion.
-                let mut length = values.len() + 1;
-                let mut operations = u64::from(length == 1);
-                while length >= 12 && length % 6 == 0 {
-                    operations += 1 + u64::from(length == 12);
-                    length = length / 6 - 1;
-                }
-                if operations != 0 {
-                    self.scope
-                        .event(JsonCodecCharge::AllocationOperations { operations })?;
-                }
-            }
             values.insert(key, value);
         }
         drop(entries);
@@ -205,7 +247,7 @@ impl Decoder<'_, '_, '_> {
                 if !self.take(b']') {
                     loop {
                         let value = self.value()?;
-                        self.grow(&mut values, false)?;
+                        self.grow(&mut values)?;
                         values.push(value);
                         if self.take(b']') {
                             break;
@@ -224,8 +266,31 @@ impl Decoder<'_, '_, '_> {
                 {
                     self.position += 1;
                 }
-                // Successful scalar decoding has no heap storage or scratch.
-                serde_json::from_slice(&self.bytes[start..self.position]).map_err(|_| invalid())
+                let scalar = &self.bytes[start..self.position];
+                match scalar {
+                    b"null" => Ok(Value::Null),
+                    b"true" => Ok(Value::Bool(true)),
+                    b"false" => Ok(Value::Bool(false)),
+                    _ => {
+                        let text = std::str::from_utf8(scalar).map_err(|_| invalid())?;
+                        if scalar != b"-0" && !scalar.iter().any(|b| b".eE".contains(b)) {
+                            if text.starts_with('-') {
+                                if let Ok(number) = text.parse::<i64>() {
+                                    return Ok(Value::from(number));
+                                }
+                            } else if let Ok(number) = text.parse::<u64>() {
+                                return Ok(Value::from(number));
+                            }
+                        }
+                        // Serde's float_roundtrip slow path uses heap-backed
+                        // big integers. std's correctly rounded parser keeps
+                        // its decimal scratch on the stack instead.
+                        let number = text.parse::<f64>().map_err(|_| invalid())?;
+                        serde_json::Number::from_f64(number)
+                            .map(Value::Number)
+                            .ok_or_else(invalid)
+                    }
+                }
             }
         }
     }

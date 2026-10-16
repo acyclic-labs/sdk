@@ -121,9 +121,9 @@ pub enum JsonCodecCharge {
         /// Full requested capacity.
         bytes: u64,
     },
-    /// Atomic admission for the nodes allocated by one B-tree insertion.
+    /// Atomic conservative node-allocation bound for one complete object.
     AllocationOperations {
-        /// Number of physical node allocations.
+        /// Maximum number of physical node allocations, from entry count.
         operations: u64,
     },
     /// Copy into an admitted buffer.

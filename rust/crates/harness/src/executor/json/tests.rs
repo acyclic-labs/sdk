@@ -23,9 +23,10 @@ mod digest_properties {
     }
 
     proptest! {
-        // Every B-tree split/root allocation must be admitted before insertion.
+        // Explicit reserves are exact; only whole-object B-tree funding has
+        // bounded slack, from node occupancy rather than a split schedule.
         #[test]
-        fn plain_maps_charge_exactly_the_physical_allocations(
+        fn plain_maps_charge_bounded_physical_allocations(
             entries in prop::collection::btree_map("[a-z]{0,8}", any::<i64>(), 1..512),
         ) {
             let legacy_operations = 1 + entries.keys().filter(|key| !key.is_empty()).count() as u64;
@@ -42,15 +43,16 @@ mod digest_properties {
                     Ok(())
                 }));
             });
-            prop_assert_eq!(copied.unwrap().unwrap(), value);
-            prop_assert_eq!(operations, measured.count_total);
+            prop_assert_eq!(copied.unwrap().unwrap(), value.clone());
+            prop_assert!(operations >= measured.count_total);
+            prop_assert!(operations <= measured.count_total + map_slack(&value));
             // Negative control: the previous buffer/string-only charges omit
             // at least the root node for every generated nonempty map.
             prop_assert!(legacy_operations < measured.count_total);
         }
 
         // Every prefix must either build the same value or return the original
-        // typed denial, with exactly the physical allocation count in its receipt.
+        // typed denial. Only B-tree node occupancy may introduce bounded slack.
         #[test]
         fn bounded_value_exhausted_prefixes(value in prop_oneof![
             values(),
@@ -58,6 +60,18 @@ mod digest_properties {
             any::<f64>().prop_filter_map("finite JSON number", |number| serde_json::Number::from_f64(number).map(Value::Number)),
         ]) {
             exhausted_prefixes(&value);
+        }
+
+        #[test]
+        fn generic_serializers_exhausted_prefixes(value in values()) {
+            #[derive(Serialize)]
+            struct Record<'a> { borrowed: &'a Value, raw: &'a serde_json::value::RawValue, ratio: f32 }
+            #[derive(Serialize)]
+            enum Envelope<'a> { Record(Record<'a>) }
+            let raw = serde_json::value::RawValue::from_string(serde_json::to_string(&value).unwrap()).unwrap();
+            let extra_slack = 2 * map_slack(&value);
+            exhausted_serialization(raw.as_ref(), extra_slack);
+            exhausted_serialization(&Envelope::Record(Record { borrowed: &value, raw: &raw, ratio: 0.25 }), extra_slack);
         }
 
         // Property: canonical identity and hash charges stay exact, while the
@@ -88,9 +102,27 @@ mod digest_properties {
         }
     }
 
+    fn map_slack(value: &Value) -> u64 {
+        match value {
+            Value::Object(entries) => {
+                let count = entries.len() as u64;
+                let maximum = if count == 0 { 0 } else { 1 + (count - 1) / 5 };
+                maximum - count.div_ceil(11) + entries.values().map(map_slack).sum::<u64>()
+            }
+            Value::Array(entries) => entries.iter().map(map_slack).sum(),
+            _ => 0,
+        }
+    }
+
     fn exhausted_prefixes(value: &Value) {
-        let encoded = serde_json::to_vec(value).unwrap();
+        exhausted_serialization(value, 0);
+    }
+
+    fn exhausted_serialization<T: Serialize + ?Sized>(value: &T, extra_slack: u64) {
+        let normalized = serde_json::to_value(value).unwrap();
+        let encoded = serde_json::to_vec(&normalized).unwrap();
         let expected: Value = serde_json::from_slice(&encoded).unwrap();
+        let slack = map_slack(&expected) + extra_slack;
         let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
         let reference = acyclic_fs::NativeMaterializationWork::new(
             budget,
@@ -142,10 +174,16 @@ mod digest_properties {
                 prefix == operations,
                 "prefix {prefix}/{operations}"
             );
-            assert_eq!(
-                measured.count_total,
-                native.receipt().allocation_operations - construction,
-                "prefix {prefix}/{operations}: {value:?}"
+            let charged = native.receipt().allocation_operations - construction;
+            assert!(
+                charged >= measured.count_total,
+                "prefix {prefix}/{operations}: {charged} charges / {} allocations",
+                measured.count_total
+            );
+            assert!(
+                charged <= measured.count_total + slack,
+                "prefix {prefix}/{operations}: {charged} charges / {} allocations / {slack} slack",
+                measured.count_total
             );
             assert_eq!(measured.bytes_current, 0);
             assert!(measured.bytes_max as u64 <= native.receipt().peak_allocation_bytes);
@@ -161,17 +199,33 @@ mod digest_properties {
     #[test]
     fn exhausted_prefixes_cover_escapes_and_node_splits() {
         exhausted_prefixes(&serde_json::json!({"": null}));
+        exhausted_prefixes(&Value::from(6.237624688224859e252));
+        exhausted_prefixes(&Value::from(-0.0));
         exhausted_prefixes(
             &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
         );
-        for size in [11, 12, 18, 78] {
+        for size in [11, 12, 18, 19, 78] {
             let value = Value::Object(
                 (0..size)
                     .map(|i| (format!("{i:04}"), Value::Null))
                     .collect(),
             );
             exhausted_prefixes(&value);
+            if size == 19 {
+                let raw = serde_json::value::RawValue::from_string(
+                    serde_json::to_string(&value).unwrap(),
+                )
+                .unwrap();
+                exhausted_serialization(raw.as_ref(), 2 * map_slack(&value));
+            }
         }
+        let raw = serde_json::value::RawValue::from_string(r#"{"":null}"#.into()).unwrap();
+        exhausted_serialization(raw.as_ref(), 0);
+        let raw = serde_json::value::RawValue::from_string(
+            r#"{"b":["\u0000\n\"",{"a":1}],"b":false,"a":2}"#.into(),
+        )
+        .unwrap();
+        exhausted_serialization(raw.as_ref(), 0);
         // Negative control: reproducing the old visitor's diagnostic after a
         // denied charge allocates despite no admitted operation.
         let diagnostic = allocation_counter::measure(|| {

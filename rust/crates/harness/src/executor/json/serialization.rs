@@ -82,6 +82,9 @@ struct Writer<'a, 'b, 'c> {
 impl Write for Writer<'_, '_, '_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut scope = self.state.borrow_mut();
+        if scope.failed.is_some() {
+            return Ok(bytes.len());
+        }
         let result = (|| {
             let written = checked(
                 self.written.checked_add(bytes.len() as u64),
@@ -137,7 +140,11 @@ impl Write for Writer<'_, '_, '_> {
             self.written = written;
             Ok(())
         })();
-        result.map_err(|error| scope.stop(error))?;
+        // Defer admission failures to write()'s typed boundary. Returning an IO
+        // error here makes Serde allocate an error box after budget exhaustion.
+        if let Err(error) = result {
+            scope.stop(error);
+        }
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -155,7 +162,7 @@ impl Formatter for Format<'_, '_, '_> {
         writer: &mut W,
         value: i128,
     ) -> std::io::Result<()> {
-        if self.canonical && !self.key {
+        if self.canonical && !self.key && self.state.borrow().failed.is_none() {
             serde::Serializer::serialize_i128(serde_json::value::Serializer, value).map_err(
                 |error| {
                     let mut scope = self.state.borrow_mut();
@@ -171,7 +178,7 @@ impl Formatter for Format<'_, '_, '_> {
         writer: &mut W,
         value: u128,
     ) -> std::io::Result<()> {
-        if self.canonical && !self.key {
+        if self.canonical && !self.key && self.state.borrow().failed.is_none() {
             serde::Serializer::serialize_u128(serde_json::value::Serializer, value).map_err(
                 |error| {
                     let mut scope = self.state.borrow_mut();
@@ -206,6 +213,9 @@ impl Formatter for Format<'_, '_, '_> {
         writer: &mut W,
         fragment: &str,
     ) -> std::io::Result<()> {
+        if self.state.borrow().failed.is_some() {
+            return Ok(());
+        }
         if !self.canonical {
             return CompactFormatter.write_raw_fragment(writer, fragment);
         }
@@ -225,20 +235,60 @@ impl Formatter for Format<'_, '_, '_> {
                     ..scope.bounds
                 };
                 let code = scope.code;
-                let shape = admission::source(
-                    fragment.as_bytes(),
-                    bounds,
-                    Some(JsonValueSchema::Root),
-                    code,
-                    &mut |event| scope.event(event),
-                )?;
+                if fragment.len() as u64 > bounds.maximum_bytes {
+                    return Err(boundary("JSON input exceeds declared byte bound", code));
+                }
+                let mut lexical = admission::Lexical::default();
+                {
+                    let mut forward = |event| scope.event(event);
+                    let charge =
+                        RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
+                    for byte in fragment.as_bytes() {
+                        charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
+                        lexical.byte(*byte, bounds, code, &charge)?;
+                    }
+                }
+                if lexical.string || lexical.depth != 0 {
+                    return Err(boundary("incomplete JSON document", code));
+                }
+                let shape = JsonValueShape {
+                    input_bytes: fragment.len() as u64,
+                    lexical_items: lexical.items,
+                    containers: lexical.containers,
+                    virtual_items: 0,
+                    raw_bytes: 0,
+                    raw_frames: 0,
+                    unresolved_raw: false,
+                    origin: Origin::Slice,
+                };
                 let owned = json_value_decode_owned_bytes(shape)?;
                 scope.retain(owned)?;
-                let value: Value = serde_json::from_str(fragment)
-                    .map_err(|error| records::decode_error(error, code))?;
+                let bytes = fragment.len() as u64;
+                scope.event(JsonCodecCharge::CopyAdmission { bytes })?;
+                scope.retain(bytes)?;
+                if bytes != 0 {
+                    scope.event(JsonCodecCharge::AllocationOperation { bytes })?;
+                }
+                let mut buffer = Vec::new();
+                buffer
+                    .try_reserve_exact(fragment.len())
+                    .map_err(Error::Allocation)?;
+                scope.retain(buffer.capacity() as u64 - bytes)?;
+                buffer.extend_from_slice(fragment.as_bytes());
+                scope.event(JsonCodecCharge::Copy { bytes })?;
+                let value = super::decode::value(&mut buffer, &mut scope)?;
+                let capacity = buffer.capacity() as u64;
+                drop(buffer);
+                scope.release(capacity)?;
                 Ok((value, owned))
             })();
-            result.map_err(|error| scope.stop(error))?
+            match result {
+                Ok(value) => value,
+                Err(error) => {
+                    scope.stop(error);
+                    return Ok(());
+                }
+            }
         };
         value.sort_all_objects();
         let result = serde_json::to_writer(writer, &value);
