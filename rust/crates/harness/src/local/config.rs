@@ -64,13 +64,6 @@ impl LocalHarnessConfig {
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }
-    /// Selects the durable owner, journal and workspace state directory.
-    /// It must be outside the checkout; reopening uses the same directory.
-    #[must_use]
-    pub fn state_directory(mut self, path: impl Into<PathBuf>) -> Self {
-        self.state_directory = Some(path.into());
-        self
-    }
     /// Opens an existing volume in the local filesystem directory passed to `new`.
     #[must_use]
     pub fn volume(mut self, volume: VolumeRef) -> Self {
@@ -79,6 +72,12 @@ impl LocalHarnessConfig {
             LocalProject::Volume { directory, .. } => directory,
         };
         self.project = LocalProject::Volume { directory, volume };
+        self
+    }
+    /// Selects the caller-owned durable state directory, outside the checkout.
+    #[must_use]
+    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(directory.into());
         self
     }
     /// Selects the immutable context manifest retained with each submitted turn.

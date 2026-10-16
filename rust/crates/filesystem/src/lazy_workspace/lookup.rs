@@ -246,7 +246,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let Some(node) = node else {
             return Ok((None, used, ctx.claim_owned(0, 0)?));
         };
-        if node.kind != SourceNodeKind::Directory && node.link_count != Some(1) {
+        // A fresh native link count can fall to one after another alias was
+        // unlinked. Its stable identity still belongs to authored data/shadows.
+        if node.kind != SourceNodeKind::Directory
+            && (basis.unobserved || node.link_count != Some(1))
+        {
             let id = self.source_file_id(&node.file_identity, ctx)?;
             let record = accounted!(ctx, |work, cancel| checkout
                 .read_file_record_by_id(id, work, cancel));

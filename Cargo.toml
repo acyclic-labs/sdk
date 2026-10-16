@@ -29,6 +29,7 @@ members = [
   "rust/crates/objects",
   "rust/crates/objects-wasm",
   "rust/crates/proto-codegen",
+  "compatibility",
   "rust/crates/stream",
   "rust/crates/stream-napi",
   "rust/crates/harness-tui",
@@ -79,7 +80,7 @@ prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
 prost-reflect = "0.16.3"
-protoc-bin-vendored = "3.2.0"
+protoc-bin-vendored = "=3.3.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rmcp = { version = "=3.5.1", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }

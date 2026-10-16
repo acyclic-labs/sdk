@@ -7,10 +7,12 @@ use std::{
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 mod admissions;
+mod allocations;
 mod checked;
 mod context;
 mod credentials;
 mod isolation;
+mod latest;
 mod lifecycle;
 mod outbound;
 

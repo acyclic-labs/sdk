@@ -30,7 +30,7 @@ function readProtoEnums(root) {
     const descriptorPath = join(temporary, "filesystem-descriptor.json");
     const result = spawnSync(
       executable,
-      ["build", "--as-file-descriptor-set", "--path", "proto/filesystem/v2", "-o", descriptorPath],
+      ["build", "--as-file-descriptor-set", "--path", "rust/crates/filesystem/proto/filesystem/v2", "-o", descriptorPath],
       { cwd: root, encoding: "utf8" },
     );
     if (result.status !== 0) {

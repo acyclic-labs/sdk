@@ -8,19 +8,17 @@ publish = false
 cargo-fuzz = true
 
 [features]
-default = ["native", "rust-projection"]
+proto-descriptors = ["dep:acyclic-proto-build"]
+default = ["native"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
-rust-projection = ["dep:sdk-proto-codegen", "dep:syn", "dep:prettyplease"]
 
 [dependencies]
+acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
-sdk-proto-codegen = { path = "../crates/proto-codegen", optional = true }
-syn = { version = "2", features = ["full", "visit-mut"], optional = true }
-prettyplease = { version = "0.2.37", optional = true }
 
 [lints]
 workspace = true
@@ -57,9 +55,9 @@ doc = false
 bench = false
 
 [[bin]]
-name = "sdk_rust_projection"
-required-features = ["rust-projection"]
-path = "fuzz_targets/sdk_rust_projection.rs"
+name = "proto_descriptors"
+required-features = ["proto-descriptors"]
+path = "fuzz_targets/proto_descriptors.rs"
 test = false
 doc = false
 bench = false

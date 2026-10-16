@@ -10,6 +10,13 @@ use libfuzzer_sys::fuzz_target;
 use prost::Message;
 use std::sync::Arc;
 
+mod checks {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/support/follow_data.rs"
+    ));
+}
+
 fuzz_target!(|input: &[u8]| {
     if input.len() > 4096 {
         return;
@@ -17,6 +24,15 @@ fuzz_target!(|input: &[u8]| {
     let Ok(frame) = wire::SessionFrame::decode(input) else {
         return;
     };
+    if let Some(wire::session_frame::Body::Data(data)) = &frame.body {
+        let after = data.after.as_ref().map_or(0, |cursor| cursor.next);
+        for next in [0, after.saturating_sub(1), after, u64::MAX] {
+            for delivery in [0, 1, 2] {
+                checks::check(delivery, next, data, checks::Fault::None)
+                    .expect("follow data contract");
+            }
+        }
+    }
     let encoded = frame.encode_to_vec();
     assert_eq!(
         wire::SessionFrame::decode(encoded.as_slice()).ok().as_ref(),

@@ -13,5 +13,9 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 name = "session_model"
 path = "session_model.rs"
 
+[[test]]
+name = "latency"
+path = "latency.rs"
+
 [workspace]
 members = ["."]

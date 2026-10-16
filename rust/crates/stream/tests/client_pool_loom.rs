@@ -105,3 +105,13 @@ fn pending_opens_keep_their_node_when_home_binding_races_registration() {
 fn negative_control_does_not_rebind_the_pending_home_entry() {
     acyclic_stream::session::verify_admission_binding(true);
 }
+
+#[test]
+fn latest_consumption_and_move_fence_share_one_application_cut() {
+    acyclic_stream::session::verify_latest_progress(false);
+}
+#[test]
+#[should_panic(expected = "a stale delivery cannot advance the fenced resume cut")]
+fn negative_control_checks_latest_generation_outside_the_cursor_lock() {
+    acyclic_stream::session::verify_latest_progress(true);
+}
