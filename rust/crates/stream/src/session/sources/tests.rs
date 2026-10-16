@@ -125,6 +125,24 @@ fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseErr
             }
         }
         partition(&sources)?;
+        if let Some(entry) = sources.entries.get(&id) {
+            let mode = entry.mode;
+            let queues = sources
+                .queues
+                .iter()
+                .map(|queue| (queue.first, queue.last))
+                .collect::<Vec<_>>();
+            sources.mode(id, mode);
+            prop_assert_eq!(
+                queues,
+                sources
+                    .queues
+                    .iter()
+                    .map(|queue| (queue.first, queue.last))
+                    .collect::<Vec<_>>()
+            );
+            partition(&sources)?;
+        }
     }
     Ok(())
 }
@@ -236,4 +254,55 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
     assert!(sources.poll((true, true, true), &mut cx).is_pending());
     assert!(!sources.entries[&1].ready);
     partition(&sources).unwrap();
+}
+
+fn old_mode(sources: &mut Sources, id: u64, mode: Option<usize>) {
+    sources.unlink(id);
+    if let Some(entry) = sources.entries.get_mut(&id) {
+        entry.mode = mode;
+    }
+    sources.enqueue(id);
+}
+
+#[test]
+fn unchanged_admission_does_no_queue_edits_and_preserves_turn_order() {
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    for legacy in [true, false] {
+        let mut sources = Sources::new();
+        for channel_id in 1..=10_000 {
+            let identity = wire::SessionChannel {
+                channel_id,
+                generation: 1,
+            };
+            sources.insert(identity, source(identity), Some(ALL));
+        }
+        for channel_id in 1..=10_000 {
+            assert!(matches!(sources.poll((true, true, true), &mut cx),
+                Poll::Ready(Ok(Some((identity, Ok(Event::Opened(_)))))) if identity.channel_id == channel_id));
+        }
+        sources.queue_edits = 0;
+        let started = std::time::Instant::now();
+        for _ in 0..10_000 {
+            if legacy {
+                old_mode(&mut sources, 1, Some(ALL));
+            } else {
+                sources.mode(1, Some(ALL));
+            }
+        }
+        let elapsed = started.elapsed();
+        let bound = |edits| edits == 0;
+        assert_eq!(
+            bound(sources.queue_edits),
+            !legacy,
+            "unchanged admission must not relink a runnable source; legacy must fail the same bound"
+        );
+        assert_eq!(sources.queue_edits, if legacy { 20_000 } else { 0 });
+        assert_eq!(sources.queues[ALL].first, Some(if legacy { 2 } else { 1 }));
+        partition(&sources).unwrap();
+        eprintln!(
+            "source_refresh legacy={legacy} follows=10000 refreshes=10000 queue_edits={} elapsed={elapsed:?}",
+            sources.queue_edits
+        );
+    }
 }
