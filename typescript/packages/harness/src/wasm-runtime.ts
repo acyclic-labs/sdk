@@ -35,7 +35,7 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
   "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;
 
-const CLIENT_VIEW_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
+const CLIENT_VIEW_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "querySnapshot", "queryChange", "bindGoalSources", "views", "free"] as const;
 
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {

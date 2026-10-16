@@ -39,7 +39,7 @@ export async function exerciseCheckpoint(Harness, harness, options, contracts) {
   forged.state_digest = [...contracts.digestCanonicalJson([
     forged.format_version, forged.authority, forged.revision, forged.events, forged.projection,
   ])];
-  rejected = false;
+  let rejected = false;
   try { (await Harness.restore(forged, options)).free(); }
   catch (error) { rejected = error.code === ErrorCode.UNAUTHORIZED; }
   if (!rejected) throw new Error("forged projection with recomputed public digest accepted");

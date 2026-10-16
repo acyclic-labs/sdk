@@ -28,7 +28,8 @@ pub(crate) use client::Cache;
 pub use client::Client;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
-    verify_cache, verify_interest_accounting, verify_link_isolation, verify_pool_lifetime,
+    verify_abandoned_reconnect, verify_cache, verify_interest_accounting, verify_link_isolation,
+    verify_pool_lifetime,
 };
 pub use service::Service;
 // Child frames carry both their path and the provider-owned resume anchor.

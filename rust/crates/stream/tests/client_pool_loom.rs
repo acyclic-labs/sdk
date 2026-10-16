@@ -2,6 +2,17 @@
 #![cfg(all(acyclic_stream_loom, feature = "grpc"))]
 
 #[test]
+fn cancelled_reconnect_cannot_capture_a_new_interest() {
+    acyclic_stream::session::verify_abandoned_reconnect(false);
+}
+
+#[test]
+#[should_panic(expected = "an abandoned dial must not fail a new interest")]
+fn negative_control_late_credential_failure_terminates_the_new_interest() {
+    acyclic_stream::session::verify_abandoned_reconnect(true);
+}
+
+#[test]
 fn malformed_node_cannot_terminate_independent_routes_or_opens() {
     acyclic_stream::session::verify_link_isolation(false);
 }

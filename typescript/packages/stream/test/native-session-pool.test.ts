@@ -1,7 +1,9 @@
 import { test, expect } from "bun:test";
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { credentialTlsFixture } from "../../../test/credential-tls.js";
 import { NativeStreamProvider } from "../src/native.js";
+import { StreamError } from "../src/types.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
@@ -33,6 +35,9 @@ async function fixture(node: SessionNode, name: string, movedEndpoint: () => str
           if (frame.body.case === "moved" && frame.body.value.node) frame.body.value.node.endpoint = movedEndpoint();
           yield frame;
         }
+      } catch (error) {
+        if (error instanceof StreamError && error.code === "unavailable") throw new ConnectError("fixture disconnected", Code.Unavailable);
+        throw error;
       } finally {
         context.signal.removeEventListener("abort", close); close();
         live--; for (const notify of changed) notify();
@@ -150,6 +155,54 @@ test("a cancelled waiter cannot cancel a shared Session paused before Welcome", 
       expect(peer.sessions).toBe(1); expect(peer.host.connections).toBe(1);
     } finally {
       finish(); cancelled.abort(); healthy.abort();
+      await Promise.all([first.return?.(), second.return?.()]);
+      await peer.closed(); expect(peer.live).toBe(0);
+    }
+  } finally { await peer.host.close(); }
+});
+
+test("new discovery abandons a cancelled home reconnect before its credential settles", async () => {
+  const node = new SessionNode(); node.append("agents/a");
+  const peer = await fixture(node, "home", () => { throw new Error("unexpected move"); });
+  const cancelled = new AbortController(), healthy = new AbortController();
+  let started!: () => void, aborted!: () => void, finish!: () => void;
+  const reconnecting = new Promise<void>(resolve => { started = resolve; });
+  const cancellation = new Promise<void>(resolve => { aborted = resolve; });
+  let calls = 0, settled = false;
+  try {
+    const provider = await NativeStreamProvider.connect(peer.host.endpoint, undefined, Buffer.from(peer.host.certificate), undefined,
+      signal => {
+        if (++calls !== 2) return "fixture";
+        started();
+        return new Promise<string>((_resolve, reject) => {
+          signal!.addEventListener("abort", aborted, { once: true });
+          finish = () => { settled = true; reject(signal!.reason); };
+        });
+      });
+    const first = provider.children({ parent: "agents", limit: 1, signal: cancelled.signal })[Symbol.asyncIterator]();
+    const second = provider.children({ parent: "agents", limit: 1, signal: healthy.signal })[Symbol.asyncIterator]();
+    try {
+      expect((await first.next()).value?.path).toBe("agents/a");
+      const abandoned = first.next().then(result => ({ result }), error => ({ error }));
+      node.disconnect();
+      await reconnecting;
+      cancelled.abort();
+      const replacement = second.next().catch(error => {
+        throw new Error(`replacement failed: credentials=${calls}, sessions=${peer.sessions}, live=${peer.live}, settled=${settled}`, { cause: error });
+      });
+      await cancellation;
+      expect(await abandoned).toEqual({ result: { done: true, value: undefined } });
+      expect((await replacement).value?.path).toBe("agents/a");
+      expect(settled).toBe(false);
+      expect(calls).toBe(3);
+      expect(peer.sessions).toBe(2);
+      expect(peer.host.connections).toBe(1);
+      expect(node.actorChannels).toBe(0);
+      finish();
+      const next = second.next(); node.append("agents/b");
+      expect((await next).value?.path).toBe("agents/b");
+    } finally {
+      finish?.(); cancelled.abort(); healthy.abort();
       await Promise.all([first.return?.(), second.return?.()]);
       await peer.closed(); expect(peer.live).toBe(0);
     }
