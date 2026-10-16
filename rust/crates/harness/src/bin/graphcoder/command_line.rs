@@ -132,9 +132,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     #[cfg(feature = "filesystem-local")]
     let mut workers = tokio::task::JoinSet::<Result<String>>::new();
     #[cfg(feature = "filesystem-local")]
-    let mut effects = futures::stream::FuturesUnordered::<
-        futures::future::LocalBoxFuture<'static, Result<Option<Value>>>,
-    >::new();
+    let mut effects = tokio::task::JoinSet::<Result<Option<Value>>>::new();
     writeln!(output, "terminal-mode stdin-is-terminal={} interactive={interactive} headless={headless} process-id={}", std::io::stdin().is_terminal(), std::process::id()).map_err(invalid)?;
     writeln!(
         output,
@@ -188,7 +186,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 ) {
                     let owner = Arc::clone(owner);
                     let volume = Arc::clone(&volume);
-                    effects.push(Box::pin(async move {
+                    effects.spawn(async move {
                         let mut consumer = CommandSession::open(
                             volume,
                             session,
@@ -213,7 +211,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                                 result => return result,
                             }
                         }
-                    }));
+                    });
                     continue;
                 }
                 Some(
@@ -297,8 +295,8 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 if client.output_sequence() != previous_output && let Some(value) = client.output_page(0)? { render_record(&mut output, &value)?; }
                 continue;
             }
-            outcome = futures::StreamExt::next(&mut effects), if !effects.is_empty() => {
-                match outcome.ok_or_else(|| Error::Conflict("command worker missing".into()))? {
+            outcome = effects.join_next(), if !effects.is_empty() => {
+                match outcome.ok_or_else(|| Error::Conflict("command worker missing".into()))?.map_err(invalid)? {
                     Ok(_) => {} // The session follow renders the saved outcome.
                     Err(error) => writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?,
                 }

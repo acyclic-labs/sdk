@@ -89,33 +89,32 @@ fn worker_keeps_resume_input_live(broken: bool) {
             Some(true),
             1024,
         ))?;
-        block_on(async {
-            let lineage = [task];
-            let mut effects = futures::stream::FuturesUnordered::new();
-            effects.push(Box::pin(CommandControl::wait(&volume, &lineage, 1024)));
-            if broken {
-                // Previous ordering cannot reach input while the real owner
-                // wait is pending, so no command can publish its resume file.
-                let mut waiting = Box::pin(effects.next());
-                assert!(
-                    matches!(
-                        waiting
-                            .as_mut()
-                            .poll(&mut Context::from_waker(std::task::Waker::noop())),
-                        Poll::Ready(_)
-                    ),
-                    "resume input blocked by paused owner"
-                );
-            }
-            let input = CommandControl::change(&volume, Some(task), &lineage, Some(false), 1024);
-            tokio::pin!(input);
-            tokio::select! {
-                biased;
-                outcome = effects.next() => { outcome.unwrap()?; input.await?; }
-                resumed = &mut input => { resumed?; effects.next().await.unwrap()?; }
-            }
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-        })?;
+        let lineage = [task];
+        if broken {
+            // Awaiting the owner inside input cannot publish its resume.
+            let mut waiting = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+            assert!(
+                matches!(
+                    waiting
+                        .as_mut()
+                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                    Poll::Ready(_)
+                ),
+                "resume input blocked by paused owner"
+            );
+        }
+        let worker = loom::thread::spawn({
+            let volume = volume.clone();
+            move || block_on(CommandControl::wait(&volume, &lineage, 1024))
+        });
+        block_on(CommandControl::change(
+            &volume,
+            Some(task),
+            &lineage,
+            Some(false),
+            1024,
+        ))?;
+        worker.join().map_err(|_| "owner worker panicked")??;
         Ok(())
     });
 }
