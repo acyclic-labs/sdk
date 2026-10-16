@@ -7,7 +7,7 @@ pub(super) fn block_has_data(
     if block.is_empty() {
         return Ok(false);
     }
-    // Lock order: original leaf (50), then resource allowances, ancestors first.
+    // Lock order: original leaf (50) precedes resource allowances.
     // No I/O, owner retirement or demand re-entry while the leaf stays locked.
     meter
         .with_original_leaf(|work| {
