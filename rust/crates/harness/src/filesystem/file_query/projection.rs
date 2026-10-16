@@ -98,36 +98,7 @@ impl Selection {
             if stat.kind != FileKind::Directory {
                 return Err(task_volume::Error::InvalidPath);
             }
-            let (page, _allocation) = io.sdk(
-                generation
-                    .list_directory(
-                        directory,
-                        None,
-                        u32::try_from(maximum_files)
-                            .map_err(|_| task_volume::Error::LimitExceeded)?,
-                        io,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?;
-            if page.has_more {
-                return Err(task_volume::Error::LimitExceeded);
-            }
-            for entry in page.entries {
-                let decoded = entry
-                    .name
-                    .unicode_text(
-                        io.remaining().map_err(crate::Error::from)?,
-                        io.cancellation(),
-                    )
-                    .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
-                io.charge(decoded.work).map_err(crate::Error::from)?;
-                let path = format!("plans/{}", decoded.value);
-                if decoded.value.ends_with(".md") {
-                    let key = FileKey::parse(&path)?;
-                    entries.push((key, entry.file_id, entry.kind));
-                }
-            }
+            entries = plan_entries(generation, directory, maximum_files, io).await?;
         }
         let mut remaining = maximum_bytes;
         for (key, id, kind) in entries {
@@ -150,4 +121,62 @@ impl Selection {
         }
         Ok(selection)
     }
+}
+
+async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+    generation: &Generation<Authority<P>, O>,
+    directory: &str,
+    maximum_files: usize,
+    io: &PreparationIo,
+) -> task_volume::Result<Vec<(FileKey, FileId, FileKind)>> {
+    let mut entries = Vec::new();
+    let mut previous: Option<(
+        acyclic_fs::kernel::DirectoryPage,
+        acyclic_fs::AuthorityAllocation,
+    )> = None;
+    loop {
+        let after = previous
+            .as_ref()
+            .and_then(|(page, _)| page.entries.last())
+            .map(|entry| &entry.name);
+        let current = io.sdk(
+            generation
+                .list_directory(
+                    directory,
+                    after,
+                    u32::try_from(maximum_files).map_err(|_| task_volume::Error::LimitExceeded)?,
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        drop(previous.take());
+        let page = &current.0;
+        for entry in &page.entries {
+            let decoded = entry
+                .name
+                .unicode_text(
+                    io.remaining().map_err(crate::Error::from)?,
+                    io.cancellation(),
+                )
+                .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
+            io.charge(decoded.work).map_err(crate::Error::from)?;
+            let path = format!("plans/{}", decoded.value);
+            if decoded.value.ends_with(".md") {
+                if entries.len() == maximum_files {
+                    return Err(task_volume::Error::LimitExceeded);
+                }
+                let key = FileKey::parse(&path)?;
+                entries.push((key, entry.file_id, entry.kind));
+            }
+        }
+        if !page.has_more {
+            break;
+        }
+        if page.entries.is_empty() {
+            return Err(task_volume::Error::InvalidSegment);
+        }
+        previous = Some(current);
+    }
+    Ok(entries)
 }

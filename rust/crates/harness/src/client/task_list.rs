@@ -82,7 +82,8 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
                 code = true;
                 if stack
                     .last()
-                    .is_some_and(|index| items[*index].state.is_some())
+                    .and_then(|index| items.get(*index))
+                    .is_some_and(|item| item.state.is_some())
                 {
                     return None;
                 }
@@ -90,8 +91,9 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
             Event::End(TagEnd::CodeBlock) => code = false,
             event if !code => {
                 let Some(index) = stack.last() else { continue };
-                let item = &mut items[*index];
+                let item = items.get_mut(*index)?;
                 let value = match event {
+                    Event::Start(Tag::Paragraph) if !item.text.is_empty() => Cow::Borrowed("\n\n"),
                     Event::TaskListMarker(done) => {
                         item.state = Some(if done {
                             TaskState::Completed

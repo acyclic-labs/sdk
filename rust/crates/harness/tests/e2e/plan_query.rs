@@ -159,19 +159,28 @@ impl PlanQuery {
 #[cfg(feature = "tui")]
 fn check_panel(view: &acyclic_harness::client::FileQueryView, expected: &[String]) -> TestResult {
     use acyclic_harness::client::PlanPanel;
-    use acyclic_harness_tui::ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    use acyclic_harness_tui::ratatui::{buffer::Buffer, layout::Rect, text::Span, widgets::Widget};
     let area = Rect::new(0, 0, 80, 20);
     let mut buffer = Buffer::empty(area);
     PlanPanel { files: view }.render(area, &mut buffer);
-    let lines: Vec<String> = (1..19)
+    let mut lines: Vec<String> = (1..19)
         .map(|y| {
-            (1..79)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_owned()
+            let mut line = String::new();
+            let mut x = 1;
+            while x < 79 {
+                let symbol = buffer[(x, y)].symbol();
+                line.push_str(symbol);
+                x += Span::raw(symbol).width().max(1) as u16;
+            }
+            line.trim_end().to_owned()
         })
-        .filter(|line| !line.is_empty())
+        .collect();
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|line| line.trim_end().to_owned())
         .collect();
     if lines != expected {
         return Err(format!("wrong plan panel: {lines:?}, expected {expected:?}").into());

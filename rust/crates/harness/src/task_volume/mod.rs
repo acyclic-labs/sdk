@@ -2,12 +2,14 @@
 
 mod follow;
 mod heads;
+mod plan_name;
 mod schema;
 mod segment;
 mod source;
 mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
+pub use plan_name::PlanName;
 pub use schema::{
     Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
 };

@@ -22,6 +22,60 @@ async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Chang
         .unwrap()
 }
 
+#[tokio::test]
+async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_matches()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new().await?;
+    fixture
+        .write(&[
+            ("plans/0.txt", Some("ignored")),
+            ("plans/1.txt", Some("ignored")),
+            ("plans/release notes.md", Some("- [ ] First\n\n  Second")),
+            ("plans/調査.md", Some("- [~] 調査")),
+            ("plans/z.txt", Some("ignored")),
+        ])
+        .await?;
+    let observation = fixture
+        .source
+        .observe_files(Query::Plans, None, 2, 128)
+        .await?;
+    let mut changes = observation.changes;
+    let mut view =
+        FileQueryView::from_snapshot(Query::Plans, observation.snapshot.unwrap(), 2, 128)?;
+    assert_eq!(
+        view.files()
+            .keys()
+            .map(|key| key.path())
+            .collect::<Vec<_>>(),
+        ["plans/release notes.md", "plans/調査.md"]
+    );
+    fixture
+        .write(&[
+            ("plans/release notes.md", Some("- [x] Done")),
+            ("plans/2.txt", Some("ignored")),
+        ])
+        .await?;
+    view.apply(next(&mut changes).await)?;
+    assert_eq!(
+        view.files()[&acyclic_harness::task_volume::FileKey::parse("plans/release notes.md")?]
+            .bytes
+            .as_ref(),
+        b"- [x] Done"
+    );
+    fixture
+        .write(&[("plans/調査.md", None), ("plans/.md", Some("- [ ] Hidden"))])
+        .await?;
+    view.apply(next(&mut changes).await)?;
+    assert_eq!(
+        view.files()
+            .keys()
+            .map(|key| key.path())
+            .collect::<Vec<_>>(),
+        ["plans/.md", "plans/release notes.md"]
+    );
+    Ok(())
+}
+
 struct Fixture {
     host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     source: FilesystemFileQuery<MemoryStream, MemoryObjectBackend>,

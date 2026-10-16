@@ -67,6 +67,27 @@ fn fenced_code_closes_only_with_a_matching_delimiter_and_length() {
     }
 }
 
+#[test]
+fn task_paragraphs_keep_their_separators() {
+    for (markdown, expected) in [
+        (
+            "- [ ] First paragraph\n\n  Second paragraph",
+            "First paragraph\n\nSecond paragraph",
+        ),
+        (
+            "1. [~] First **paragraph**\n\n   Second `paragraph`",
+            "First paragraph\n\nSecond paragraph",
+        ),
+        (
+            "- [x] Parent\n  - [ ] Child\n\n    Second paragraph",
+            "Child\n\nSecond paragraph",
+        ),
+    ] {
+        let items: Vec<_> = parse_task_list(markdown).unwrap().items().collect();
+        assert_eq!(items.last().unwrap().text, expected, "{markdown}");
+    }
+}
+
 proptest! {
     #[test]
     fn canonical_task_lists_round_trip(
