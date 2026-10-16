@@ -479,7 +479,13 @@ fn relative_span_validation_rechecks_missing_and_restored_files_each_call() {
     let (input, _) = fixture(root.path(), "1.0.0");
     let krate: Crate = serde_json::from_slice(&fs::read(&input.rustdoc_files[0]).unwrap()).unwrap();
     let root = root.path().canonicalize().unwrap();
+    let before = RELATIVE_SOURCE_CHECKS.get();
     validate_relative_package_spans(&root, &krate).unwrap();
+    assert_eq!(
+        RELATIVE_SOURCE_CHECKS.get() - before,
+        1,
+        "two item occurrences must perform one production source check"
+    );
     let path = root.join("cli/src/main.rs");
     let bytes = fs::read(&path).unwrap();
     fs::remove_file(&path).unwrap();

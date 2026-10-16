@@ -258,8 +258,13 @@ pub(super) fn package_root(
     Ok(owner)
 }
 
+#[cfg(test)]
+thread_local! { static RELATIVE_SOURCE_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 pub(super) fn validate_relative_package_spans(root: &Path, krate: &Crate) -> Result<(), Error> {
     for filename in crate::relative_spans::sources(krate.index.values()) {
+        #[cfg(test)]
+        RELATIVE_SOURCE_CHECKS.set(RELATIVE_SOURCE_CHECKS.get() + 1);
         let source = root.join(filename);
         reject_reparse_ancestors(&source)?;
         if filename
