@@ -49,21 +49,21 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 }
 
 fn definitions() -> Result<Vec<Value>> {
-    let mut reference_read = files::read_file()?;
+    let mut reference_read = files::read()?;
     let read_projector = FileProjection::Read(ProjectionMode::Reference);
     reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
-    let mut reference_write = files::write_file()?;
+    let mut reference_write = files::write()?;
     let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
     reference_write.definition.projection_schema =
         ProjectionMode::Reference.schema::<FileResult>()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
-        definition("exact_read_full", files::read_file()?)?,
+        definition("exact_read_full", files::read()?)?,
         definition("exact_read_reference", reference_read)?,
-        definition("write_full", files::write_file()?)?,
+        definition("write_full", files::write()?)?,
         definition("write_reference", reference_write)?,
-        definition("exact_edit_full", files::edit_file()?)?,
+        definition("exact_edit_full", files::edit()?)?,
         definition("patch_edit_full", files::patch_file(4096, 16)?)?,
         definition(
             "range_read_full",
@@ -140,15 +140,18 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let search_result = ToolResult {
         value: value(&search)?,
     };
-    let exact_input = ReadFileInput { file: file.clone() };
-    let exact_invocation = invocation("acyclic.read_file", value(&exact_input)?);
+    let exact_input = ReadFileInput {
+        file: file.clone(),
+        range: None,
+    };
+    let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
         value: value(source)?,
     };
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,
     };
-    let file_invocation = invocation("acyclic.write_file", json!({}));
+    let file_invocation = invocation("write", json!({}));
     let definitions = definitions()?;
     println!(
         "{}",

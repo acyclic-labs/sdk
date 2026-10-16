@@ -5,6 +5,8 @@ use crate::Motion;
 pub enum Action {
     /// Move the cursor; Shift extends selection.
     Move(Motion),
+    /// Extend the selection, independently of the physical Shift modifier.
+    Select(Motion),
     /// Delete a grapheme (true means backwards).
     Delete(bool),
     /// Delete a word (true means backwards).
@@ -51,13 +53,15 @@ pub enum Action {
     TranscriptDown,
     /// Toggle host voice dictation.
     Voice,
+    /// Host-owned application action.
+    App(AppAction),
 }
 
 /// Binding data shared by dispatch, overrides and generated help.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Binding {
+pub struct Binding<'a> {
     /// Canonical modifier order: Ctrl, Alt, Shift, Super.
-    pub chord: &'static str,
+    pub chord: &'a str,
     /// Dispatched action.
     pub action: Action,
     /// Help text.
@@ -66,232 +70,133 @@ pub struct Binding {
     pub repeat: bool,
 }
 
-const fn bind(chord: &'static str, action: Action, help: &'static str, repeat: bool) -> Binding {
-    Binding {
-        chord,
-        action,
-        help,
-        repeat,
+include!(concat!(env!("OUT_DIR"), "/keymap.rs"));
+
+/// A host action selected by its stable public configuration name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppAction {
+    /// Quit application action.
+    Quit,
+    /// StopAll application action.
+    StopAll,
+    /// ResumeAll application action.
+    ResumeAll,
+    /// NewAgent application action.
+    NewAgent,
+    /// ClosePanel application action.
+    ClosePanel,
+    /// NextMessage application action.
+    NextMessage,
+    /// PreviousMessage application action.
+    PreviousMessage,
+    /// OpenChanges application action.
+    OpenChanges,
+    /// ToggleFollowTail application action.
+    ToggleFollowTail,
+    /// Picker application action.
+    Picker,
+    /// NewSession application action.
+    NewSession,
+    /// DeleteSession application action.
+    DeleteSession,
+    /// Reasoning application action.
+    Reasoning,
+    /// Details application action.
+    Details,
+    /// Diff application action.
+    Diff,
+    /// Tree application action.
+    Tree,
+    /// Terminal application action.
+    Terminal,
+    /// Find application action.
+    Find,
+    /// Pause application action.
+    Pause,
+    /// Stop application action.
+    Stop,
+    /// Resume application action.
+    Resume,
+    /// Mode application action.
+    Mode,
+    /// ClearAll application action.
+    ClearAll,
+    /// AttentionNext application action.
+    AttentionNext,
+    /// AttentionPrevious application action.
+    AttentionPrevious,
+    /// Theme application action.
+    Theme,
+    /// Export application action.
+    Export,
+    /// Feedback application action.
+    Feedback,
+    /// Open application action.
+    Open,
+    /// Shell application action.
+    Shell,
+    /// Delegate application action.
+    Delegate,
+    /// Search application action.
+    Search,
+    /// Fetch application action.
+    Fetch,
+    /// Compact application action.
+    Compact,
+    /// Model application action.
+    Model,
+    /// Plan application action.
+    Plan,
+    /// Goal application action.
+    Goal,
+    /// Mcp application action.
+    Mcp,
+    /// Sessions application action.
+    Sessions,
+    /// Parent application action.
+    Parent,
+    /// Child application action.
+    Child,
+    /// SiblingNext application action.
+    SiblingNext,
+    /// SiblingPrevious application action.
+    SiblingPrevious,
+    /// NavigationBack application action.
+    NavigationBack,
+    /// NavigationForward application action.
+    NavigationForward,
+    /// Help application action.
+    Help,
+    /// FocusMessages application action.
+    FocusMessages,
+    /// FocusInput application action.
+    FocusInput,
+    /// ToggleWrap application action.
+    ToggleWrap,
+    /// ToggleNotifications application action.
+    ToggleNotifications,
+}
+
+/// Look up one action by its declarative name, independently of its key bindings.
+pub fn named_action(name: &str) -> Option<Binding<'static>> {
+    ACTIONS
+        .iter()
+        .find(|binding| binding.chord == name)
+        .copied()
+}
+
+impl Action {
+    /// Stable name for configuration and host dispatch.
+    pub fn name(self) -> &'static str {
+        ACTIONS
+            .iter()
+            .find(|binding| binding.action == self)
+            .map_or("unsupported", |binding| binding.chord)
     }
 }
 
-/// Default keymap. Shift extends any motion. The application must reserve these
-/// while input is focused; Ctrl+Y and Ctrl+K are exclusively editor actions.
-pub const KEYMAP: &[Binding] = &[
-    bind("Ctrl+;", Action::Voice, "Toggle voice dictation", false),
-    bind(
-        "Left",
-        Action::Move(Motion::Left),
-        "Previous grapheme",
-        true,
-    ),
-    bind("Right", Action::Move(Motion::Right), "Next grapheme", true),
-    bind(
-        "Up",
-        Action::Move(Motion::Up),
-        "Previous completion, row or history at buffer start",
-        true,
-    ),
-    bind(
-        "Down",
-        Action::Move(Motion::Down),
-        "Next completion, row or history at buffer end",
-        true,
-    ),
-    bind("Home", Action::Move(Motion::LineStart), "Line start", true),
-    bind("End", Action::Move(Motion::LineEnd), "Line end", true),
-    bind(
-        "Ctrl+Home",
-        Action::Move(Motion::Start),
-        "Buffer start",
-        true,
-    ),
-    bind("Ctrl+End", Action::Move(Motion::End), "Buffer end", true),
-    bind(
-        "Ctrl+Left",
-        Action::Move(Motion::WordLeft),
-        "Previous word",
-        true,
-    ),
-    bind(
-        "Ctrl+Right",
-        Action::Move(Motion::WordRight),
-        "Next word",
-        true,
-    ),
-    bind(
-        "Alt+Left",
-        Action::Move(Motion::WordLeft),
-        "Previous word",
-        true,
-    ),
-    bind(
-        "Alt+Right",
-        Action::Move(Motion::WordRight),
-        "Next word",
-        true,
-    ),
-    bind(
-        "Super+Left",
-        Action::Move(Motion::LineStart),
-        "Line start",
-        true,
-    ),
-    bind(
-        "Super+Right",
-        Action::Move(Motion::LineEnd),
-        "Line end",
-        true,
-    ),
-    bind(
-        "Super+Up",
-        Action::Move(Motion::Start),
-        "Buffer start",
-        true,
-    ),
-    bind("Super+Down", Action::Move(Motion::End), "Buffer end", true),
-    bind(
-        "Alt+b",
-        Action::Move(Motion::WordLeft),
-        "Previous word",
-        true,
-    ),
-    bind("Alt+f", Action::Move(Motion::WordRight), "Next word", true),
-    bind(
-        "Backspace",
-        Action::Delete(true),
-        "Delete previous grapheme",
-        true,
-    ),
-    bind(
-        "Delete",
-        Action::Delete(false),
-        "Delete next grapheme",
-        true,
-    ),
-    bind(
-        "Ctrl+Backspace",
-        Action::DeleteWord(true),
-        "Delete previous word",
-        true,
-    ),
-    bind(
-        "Alt+Backspace",
-        Action::DeleteWord(true),
-        "Delete previous word",
-        true,
-    ),
-    bind(
-        "Ctrl+Delete",
-        Action::DeleteWord(false),
-        "Delete next word",
-        true,
-    ),
-    bind("Alt+d", Action::DeleteWord(false), "Delete next word", true),
-    bind(
-        "Super+Backspace",
-        Action::Kill(Motion::LineStart),
-        "Kill to line start",
-        true,
-    ),
-    bind("Ctrl+a", Action::SelectAll, "Select all", false),
-    bind("Ctrl+z", Action::Undo, "Undo", false),
-    bind("Ctrl+Shift+z", Action::Redo, "Redo", false),
-    bind(
-        "Ctrl+k",
-        Action::Kill(Motion::LineEnd),
-        "Kill to line end",
-        true,
-    ),
-    bind(
-        "Ctrl+u",
-        Action::Kill(Motion::LineStart),
-        "Kill to line start",
-        true,
-    ),
-    bind(
-        "Ctrl+w",
-        Action::Kill(Motion::WordLeft),
-        "Kill previous word",
-        true,
-    ),
-    bind("Ctrl+y", Action::Yank, "Yank", false),
-    bind("Alt+y", Action::RotateYank, "Rotate yank", false),
-    bind(
-        "Ctrl+r",
-        Action::ReverseSearch,
-        "Reverse prompt search",
-        false,
-    ),
-    bind(
-        "Ctrl+c",
-        Action::CopyOrInterrupt,
-        "Copy selection; otherwise clear/interrupt; twice quits",
-        false,
-    ),
-    bind(
-        "Ctrl+d",
-        Action::DeleteOrQuit,
-        "Delete forwards; quit when empty",
-        false,
-    ),
-    bind(
-        "Ctrl+x",
-        Action::CutPrefix,
-        "Cut; Ctrl+E next opens $EDITOR",
-        false,
-    ),
-    bind(
-        "Ctrl+x Ctrl+e",
-        Action::ExternalEditor,
-        "External editor",
-        false,
-    ),
-    bind(
-        "Ctrl+v",
-        Action::Paste,
-        "Paste text or clipboard image",
-        false,
-    ),
-    bind(
-        "Enter",
-        Action::Submit,
-        "Accept completion or submit; trailing backslash continues",
-        false,
-    ),
-    bind("Shift+Enter", Action::Newline, "Insert newline", false),
-    bind("Alt+Enter", Action::Newline, "Insert newline", false),
-    bind("Ctrl+Enter", Action::Newline, "Insert newline", false),
-    bind(
-        "Tab",
-        Action::Tab,
-        "Accept completion or indent; host may route dock",
-        false,
-    ),
-    bind("Alt+Tab", Action::LiteralTab, "Insert tab", false),
-    bind(
-        "Shift+Tab",
-        Action::PreviousDock,
-        "Previous completion or dock item",
-        false,
-    ),
-    bind(
-        "Esc",
-        Action::Escape,
-        "Cancel input mode or host escape ladder",
-        false,
-    ),
-    bind("PageUp", Action::TranscriptUp, "Scroll transcript up", true),
-    bind(
-        "PageDown",
-        Action::TranscriptDown,
-        "Scroll transcript down",
-        true,
-    ),
-];
-
 /// Generate help directly from dispatch data.
-pub fn keymap_help(bindings: &[Binding]) -> String {
+pub fn keymap_help(bindings: &[Binding<'_>]) -> String {
     bindings
         .iter()
         .map(|b| format!("{}\t{}\n", b.chord, b.help))

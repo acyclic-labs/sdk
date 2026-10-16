@@ -7,7 +7,7 @@ use acyclic_fs::{
     demand::native::NativeDemandSource,
     model::{Lifecycle, VolumeConfig},
 };
-use acyclic_harness::tools::git;
+use acyclic_harness::{Error, tools::git};
 use std::{borrow::Cow, sync::Arc};
 
 #[path = "../src/tools/git/path.rs"]

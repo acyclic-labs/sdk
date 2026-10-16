@@ -1,0 +1,22 @@
+{
+  "scrollback_lines": 5000,
+  "wrap": true,
+  "notifications": "on",
+  "notify_when_focused": false,
+  "max_input_height_percent": 50,
+  "tab_width": 4,
+  "paste_collapse_bytes": 1024,
+  "paste_collapse_lines": 8,
+  "undo_group_ms": 300,
+  "undo_group_graphemes": 20,
+  "chord_timeout_ms": 750,
+  "double_interrupt_ms": 500,
+  "multi_click_ms": 400,
+  "cursor_idle_ms": 500,
+  "cursor_cycle_ms": 1000,
+  "activity_ms": 500,
+  "completion_max_width": 60,
+  "completion_max_height": 12,
+  "image_max_dimension": 1568,
+  "image_quality": 85
+}

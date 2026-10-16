@@ -156,6 +156,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .fork(
             "selected-import-child",
             IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
             &mut accounting(),
         )
         .await?;

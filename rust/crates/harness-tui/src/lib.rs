@@ -5,6 +5,8 @@ mod buffer;
 mod completion;
 #[cfg(feature = "tui")]
 mod completion_popup;
+#[cfg(feature = "tui")]
+pub mod config;
 mod editor;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
@@ -21,6 +23,8 @@ mod key_decode;
 pub mod key_event;
 mod keymap;
 mod layout;
+mod settings;
+pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(feature = "tui")]
 mod prompt_box;
 #[cfg(feature = "tui")]
@@ -43,13 +47,13 @@ pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
-pub use editor_io::{ClipboardContent, edit_external, prepare_image};
+pub use editor_io::{ClipboardContent, edit_external, prepare_image, prepare_image_with_settings};
 pub use history::PromptHistory;
 #[cfg(feature = "tui")]
 pub use input_keymap::InputKeymap;
 #[cfg(feature = "tui")]
 pub use key_decode::{DecodedKey, decode_key, key_chord};
-pub use keymap::{Action, Binding, KEYMAP, keymap_help};
+pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named_action};
 pub use layout::{Cell, Layout, Row};
 #[cfg(feature = "tui")]
 pub use prompt_box::PromptBox;

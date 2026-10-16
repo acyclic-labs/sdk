@@ -16,7 +16,7 @@ proptest! {
         existing in 0u8..16, offset in 1u8..16, retained in any::<bool>(),
     ) {
         let mut tools = ToolRegistry::default();
-        let mut template = crate::tool::files::read_file()?;
+        let mut template = crate::tool::files::read()?;
         for name in ["before", "target", "z-after"] {
             if name == "target" && !retained { continue; }
             template.definition.name = name.into();
@@ -43,7 +43,7 @@ proptest! {
         description in ".{0,80}", hide in any::<bool>(),
     ) {
         let mut original = ToolRegistry::default();
-        let mut tool = crate::tool::files::read_file()?;
+        let mut tool = crate::tool::files::read()?;
         tool.definition.description = description;
         let name = tool.definition.name.clone();
         let revision = tool.definition.revision.clone();
@@ -54,7 +54,7 @@ proptest! {
         prop_assert_eq!(allocation.count_total, 0);
         let mut cloned = cloned.ok_or_else(|| TestCaseError::fail("missing clone"))?;
         if hide { cloned.remove_from_model(&name)?; }
-        let mut additional = crate::tool::files::read_file()?;
+        let mut additional = crate::tool::files::read()?;
         additional.definition.name = "additional".into();
         cloned.register((additional, None), &mut None, None)?;
         prop_assert_eq!(original.definitions(None)?, before);
@@ -76,7 +76,7 @@ proptest! {
 fn denied_ambiguous_tools_are_filtered_before_resolution_or_copying() -> Result<()> {
     let mut tools = ToolRegistry::default();
     for revision in ["1", "2"] {
-        let mut tool = crate::tool::files::read_file()?;
+        let mut tool = crate::tool::files::read()?;
         tool.definition.revision = revision.into();
         tools.register((tool, None), &mut None, None)?;
     }
@@ -99,7 +99,7 @@ fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .expect("native registry work");
     let make_tool = |name: &str| {
-        let mut tool = crate::tool::files::read_file()?;
+        let mut tool = crate::tool::files::read()?;
         tool.definition.name = name.into();
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         tool.definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
@@ -151,7 +151,7 @@ fn prototype() -> Result<Tool> {
             output_schema: Value::Bool(true),
             projection_schema: json_projection_schema(Value::Bool(true)),
         },
-        executor: files::read_file()?.executor,
+        executor: files::read()?.executor,
         projection: Arc::new(JsonToolProjection),
     })
 }
@@ -215,9 +215,10 @@ proptest::proptest! {
                     tool.definition.name.clone_from(name);
                     tool.definition.revision.clone_from(revision);
                     checked(additional.register((tool, None), &mut None, None))?;
-                    let combined = registry.clone().extend(additional);
-                    proptest::prop_assert_eq!(combined.is_ok(), !existed);
-                    if let Ok(combined) = combined { registry = combined; }
+                    let mut combined = registry.clone();
+                    let result = combined.extend(additional);
+                    proptest::prop_assert_eq!(result.is_ok(), !existed);
+                    if result.is_ok() { registry = combined; }
                 }
             }
             proptest::prop_assert!(indexed_names(&registry));

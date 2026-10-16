@@ -194,7 +194,7 @@ proptest! {
 
 #[test]
 fn task_query_codec_seed_corpus() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/task_query_case");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/task_query_case");
     for entry in std::fs::read_dir(root)? {
         let bytes = std::fs::read(entry?.path())?;
         if let Ok(case) = serde_json::from_slice::<TaskQueryCase>(&bytes) {
