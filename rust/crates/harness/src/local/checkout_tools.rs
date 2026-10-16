@@ -142,13 +142,7 @@ impl ToolExecutor for CheckoutTools {
                 })?;
                 owner.verify_owner(None)?.await?;
                 if invocation.name == "fs" {
-                    let State { active, watcher } = &mut *state;
-                    let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
-                    let (result, switched) = self.fs(view, &command, context, watcher).await?;
-                    if let Some(switched) = switched {
-                        state.active = Some(switched);
-                    }
-                    Ok(result)
+                    self.fs(&command, context, &mut state).await
                 } else {
                     let State { active, watcher } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());

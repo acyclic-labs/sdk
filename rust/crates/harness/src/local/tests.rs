@@ -727,3 +727,6 @@ mod checkout;
 mod checkout_reopen;
 
 mod task_files;
+
+#[cfg(all(feature = "native-execution", unix))]
+mod checkout_reconciliation;

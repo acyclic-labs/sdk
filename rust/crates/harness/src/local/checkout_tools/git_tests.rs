@@ -81,3 +81,24 @@ proptest! {
         })?;
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Reconciliation retries bind the command, phase and both generation cuts.
+    #[test]
+    fn reconciliation_identity_binds_every_input(
+        operation in any::<[u8; 16]>(), from in any::<[u8; 32]>(), to in any::<[u8; 32]>(),
+    ) {
+        let generation = |bytes| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(bytes));
+        let operation = OperationId::from_bytes(operation);
+        let original = reconciliation_operation(operation, b"close", generation(from), generation(to));
+        prop_assert_eq!(original, reconciliation_operation(operation, b"close", generation(from), generation(to)));
+        prop_assert_ne!(original, reconciliation_operation(operation, b"recover", generation(from), generation(to)));
+        let mut changed = operation.into_bytes(); changed[0] ^= 1;
+        prop_assert_ne!(original, reconciliation_operation(OperationId::from_bytes(changed), b"close", generation(from), generation(to)));
+        let mut changed = from; changed[0] ^= 1;
+        prop_assert_ne!(original, reconciliation_operation(operation, b"close", generation(changed), generation(to)));
+        let mut changed = to; changed[0] ^= 1;
+        prop_assert_ne!(original, reconciliation_operation(operation, b"close", generation(from), generation(changed)));
+    }
+}

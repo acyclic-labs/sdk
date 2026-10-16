@@ -1,7 +1,7 @@
 //! The durable branch catalog selects capture before the first reopened command.
 use super::*;
 
-async fn run(harness: &LocalHarness) -> Result<()> {
+pub(super) async fn run(harness: &LocalHarness) -> Result<()> {
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "exercise the selected checkout")
         .await?
