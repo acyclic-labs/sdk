@@ -78,7 +78,7 @@ pub struct LocalHarness {
 impl LocalHarness {
     /// Publishes pending mount writes and awaits physical mount retirement.
     /// Reopening after this completes can immediately acquire the destination.
-    pub async fn close(&self) -> Result<()> {
+    pub async fn close(self) -> Result<()> {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {
