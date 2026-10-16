@@ -48,6 +48,10 @@ impl LocalHarness {
                 Err(acyclic_fs::LazyWorkspaceError::NotFound) => continue,
                 Err(error) => return Err(error.into()),
             };
+            #[cfg(test)]
+            if let Some(observer) = self.context_read_observer {
+                observer(self, name).await?;
+            }
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()

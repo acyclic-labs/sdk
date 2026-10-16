@@ -1,90 +1,69 @@
 use super::*;
-use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
-use crate::resources::GenerationRef;
 
-struct Updating<'a>(&'a LocalHarness);
-
-impl ContentResidencyVerifier for Updating<'_> {
-    fn read_private_path<'a, 'io>(
-        &'a self,
-        volume: &'a VolumeRef,
-        prefix: &'a str,
-        path: &'a str,
-        generation: Option<&'a GenerationRef>,
-        maximum: u64,
-        io: Option<&'io ContentIo>,
-    ) -> Result<
-        BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                acyclic_stream::OwnedBytes,
-                Option<ContentHold<'io>>,
-            ),
-        >,
-    >
-    where
-        'io: 'a,
-    {
-        assert!(
-            generation.is_some(),
-            "instruction capture performed an unpinned read"
-        );
-        BoundedContentFuture::new(io, || async move {
-            let reader = self.0.context_reader()?;
-            let result = reader
-                .read_private_path(volume, prefix, path, generation, maximum, io)?
-                .await?;
-            if path == "AGENTS.md" {
-                instruction(self.0, "AGENTS.md", "new agents").await?;
-                instruction(self.0, "CLAUDE.md", "new claude").await?;
+// Both capture routes call this after their first real instruction read. The
+// update runs inline, so the interleaving has no timers, threads or assertions
+// about which reader the routing selected.
+fn update_after_agents<'a>(
+    harness: &'a LocalHarness,
+    name: &'a str,
+) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+    Box::pin(async move {
+        if name == "AGENTS.md" {
+            instruction(harness, "AGENTS.md", "new agents").await?;
+            instruction(harness, "CLAUDE.md", "new claude").await?;
+            #[cfg(feature = "native-execution")]
+            for (name, bytes) in [("AGENTS.md", "new agents"), ("CLAUDE.md", "new claude")] {
+                std::fs::write(harness.workspace().unwrap().path.join(name), bytes)
+                    .map_err(super::super::super::storage)?;
             }
-            Ok(result)
-        })
+        }
+        Ok(())
+    })
+}
+
+async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
+    let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let mut harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
+    instruction(&harness, "AGENTS.md", "old agents").await?;
+    instruction(&harness, "CLAUDE.md", "old claude").await?;
+    #[cfg(feature = "native-execution")]
+    {
+        for (name, bytes) in [("AGENTS.md", "old agents"), ("CLAUDE.md", "old claude")] {
+            std::fs::write(harness.workspace().unwrap().path.join(name), bytes)
+                .map_err(super::super::super::storage)?;
+        }
+        // Negative control: restoring the former routing must make this same
+        // production manifest capture fail the exact same byte-level detector.
+        if restore_faulty_route {
+            harness.checkout_context = true;
+        }
     }
+    #[cfg(not(feature = "native-execution"))]
+    assert!(!restore_faulty_route);
+    harness.context_read_observer = Some(update_after_agents);
+    let operation = OperationId::new();
+    harness.stage_context_manifest(operation).await?;
+    let (_, captured) = manifest(&harness, operation).await?;
+    assert_eq!(captured.discovery.instructions.len(), 2);
+    let reader = harness.context_reader()?;
+    let mut bodies = Vec::new();
+    for file in &captured.discovery.instructions {
+        bodies.push(reader.read(file, 1024, None)?.await?.to_vec());
+    }
+    Ok(bodies)
 }
 
 #[tokio::test]
 async fn volume_generation_is_pinned_across_an_update_between_instruction_reads() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
-    let project = volume(directory.path()).await?;
-    let harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
-    instruction(&harness, "AGENTS.md", "old agents").await?;
-    instruction(&harness, "CLAUDE.md", "old claude").await?;
-    let names = vec!["AGENTS.md".into(), "CLAUDE.md".into()];
-    let captured = harness
-        .volume_instructions(&names, 1024, &Updating(&harness))
-        .await?;
-    assert_eq!(captured.instructions.len(), 2);
-    assert_eq!(
-        captured.instructions[0].version(),
-        captured.instructions[1].version()
-    );
-    let reader = harness.context_reader()?;
-    for (file, expected) in captured
-        .instructions
-        .iter()
-        .zip([b"old agents", b"old claude"])
+    let expected = vec![b"old agents".to_vec(), b"old claude".to_vec()];
+    let actual = capture(false).await?;
+    assert_eq!(actual, expected, "manifest mixed project generations");
+    #[cfg(feature = "native-execution")]
     {
-        assert_eq!(reader.read(file, 1024, None)?.await?.as_ref(), expected);
-    }
-    let operation = OperationId::new();
-    harness.stage_context_manifest(operation).await?;
-    let (_, current) = manifest(&harness, operation).await?;
-    assert!(
-        current
-            .discovery
-            .instructions
-            .iter()
-            .all(|file| file.volume() == harness.project())
-    );
-    for (file, expected) in current
-        .discovery
-        .instructions
-        .iter()
-        .zip([b"new agents", b"new claude"])
-    {
-        assert_eq!(reader.read(file, 1024, None)?.await?.as_ref(), expected);
+        let broken = capture(true).await?;
+        assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);
+        assert_ne!(broken, expected, "detector missed the former checkout route");
     }
     Ok(())
 }
