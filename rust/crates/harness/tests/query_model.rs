@@ -20,10 +20,9 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 
 fn active_command_cut_control(broken: bool) {
     model(move || {
-        let volume = Arc::new(block_on(TaskVolume::open(
-            Arc::new(MemoryStream::default()),
-            StreamPath::new("command-cut")?,
-        ))?);
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("command-cut")?;
+        let volume = Arc::new(block_on(TaskVolume::open(provider.clone(), path.clone()))?);
         let session = Component::new("session")?;
         let request = Write::new(
             FileKey::Session {
@@ -34,6 +33,10 @@ fn active_command_cut_control(broken: bool) {
         );
         let base = block_on(volume.snapshot(&Query::Root, 0))?.generation;
         let base = block_on(volume.create(base, &request))?;
+        // Independent owners have independent indexes. Seed both before racing
+        // one publication against one projection; shared-index serialization
+        // and the provider's atomic commit are covered by their lock models.
+        let reader = block_on(TaskVolume::open(provider, path))?;
         let worker = thread::spawn({
             let volume = volume.clone();
             let session = session.clone();
@@ -55,7 +58,7 @@ fn active_command_cut_control(broken: bool) {
         } else {
             Query::CommandSession { session, recent: 0 }
         };
-        let snapshot = block_on(volume.snapshot(&query, 2))?;
+        let snapshot = block_on(reader.snapshot(&query, 2))?;
         if snapshot.generation.position == base.position {
             assert_eq!(snapshot.files, vec![request]);
         } else {
@@ -63,6 +66,9 @@ fn active_command_cut_control(broken: bool) {
             assert!(snapshot.files.is_empty(), "settled request stayed active");
         }
         worker.join().map_err(|_| "publisher panicked")??;
+        let settled = block_on(reader.snapshot(&query, 2))?;
+        assert_eq!(settled.generation.position, base.position + 1);
+        assert!(settled.files.is_empty(), "settled request stayed active");
         Ok(())
     });
 }
@@ -80,53 +86,55 @@ fn negative_control_detects_retaining_settled_commands() {
 
 fn create_claim_control(broken: bool, session: bool) {
     model(move || {
-        let volume = Arc::new(block_on(TaskVolume::open(
-            Arc::new(MemoryStream::default()),
-            StreamPath::new("claim")?,
-        ))?);
-        let dispatches = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
-        let claim = move |volume: Arc<TaskVolume<MemoryStream>>,
-                          dispatches: Arc<loom::sync::atomic::AtomicUsize>|
-              -> Result {
-            let cut = block_on(volume.snapshot(&Query::Root, 1))?;
-            let body = TaskFile::ExecutionClaim(Component::new("claim")?);
-            let key = if session {
-                FileKey::Session {
-                    session: Component::new("session")?,
-                    file: body,
-                }
-            } else {
-                FileKey::Task {
-                    task: Component::new("task")?,
-                    file: body,
-                }
-            };
-            let file = Write::new(key, OwnedBytes::from_static(b"same request"));
-            // Broken: idempotent append reports success for an existing identical
-            // claim. Correct: create-only publication can authorize just one effect.
-            let accepted = if broken {
-                block_on(volume.append(cut.generation, &file))
-            } else {
-                block_on(volume.create(cut.generation, &file))
-            };
-            if accepted.is_ok() {
-                dispatches.fetch_add(1, loom::sync::atomic::Ordering::SeqCst);
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("claim")?;
+        let first = block_on(TaskVolume::open(provider.clone(), path.clone()))?;
+        let second = block_on(TaskVolume::open(provider, path))?;
+        // Capture both contenders before publication. A later contender is
+        // exercised after the race below, exhausting both generation classes.
+        let cut = block_on(first.snapshot(&Query::Root, 1))?.generation;
+        let body = TaskFile::ExecutionClaim(Component::new("claim")?);
+        let key = if session {
+            FileKey::Session {
+                session: Component::new("session")?,
+                file: body,
             }
-            Ok(())
+        } else {
+            FileKey::Task {
+                task: Component::new("task")?,
+                file: body,
+            }
         };
+        let file = Write::new(key, OwnedBytes::from_static(b"same request"));
         let worker = thread::spawn({
-            let volume = volume.clone();
-            let dispatches = dispatches.clone();
-            move || claim(volume, dispatches)
+            let file = file.clone();
+            move || {
+                if broken {
+                    block_on(second.append(cut, &file)).is_ok()
+                } else {
+                    block_on(second.create(cut, &file)).is_ok()
+                }
+            }
         });
-        claim(volume.clone(), dispatches.clone())?;
-        worker.join().map_err(|_| "claim worker panicked")??;
-        assert_eq!(
-            dispatches.load(loom::sync::atomic::Ordering::SeqCst),
-            1,
-            "duplicate request dispatch"
-        );
-        assert_eq!(block_on(volume.snapshot(&Query::Root, 1))?.files.len(), 1);
+        let accepted = if broken {
+            block_on(first.append(cut, &file)).is_ok()
+        } else {
+            block_on(first.create(cut, &file)).is_ok()
+        };
+        let other = worker.join().map_err(|_| "claim worker panicked")?;
+        let mut dispatches = usize::from(accepted) + usize::from(other);
+        assert_eq!(dispatches, 1, "duplicate request dispatch");
+        // Identical bytes must not authorize a second effect, even when that
+        // contender observed the winning claim before submitting its request.
+        let current = block_on(first.snapshot(&Query::Root, 1))?;
+        assert_eq!(current.files, vec![file.clone()]);
+        let repeated = if broken {
+            block_on(first.append(current.generation, &file)).is_ok()
+        } else {
+            block_on(first.create(current.generation, &file)).is_ok()
+        };
+        dispatches += usize::from(repeated);
+        assert_eq!(dispatches, 1, "duplicate request dispatch");
         Ok(())
     });
 }
