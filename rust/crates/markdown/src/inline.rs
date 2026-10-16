@@ -81,7 +81,7 @@ impl Markdown {
         self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
         self.plain = tail.len() >= 8 && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
             .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
-                && range.end == source.trim_end_matches(' ').len());
+                && range.end > 2 && range.end == source.trim_end_matches(' ').len());
         true
     }
 

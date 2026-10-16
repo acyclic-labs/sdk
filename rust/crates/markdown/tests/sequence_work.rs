@@ -106,7 +106,11 @@ fn measure(
             }
         }
     }
-    push(&format!("\n\n[r]: /{destination}\n\n"));
+    if actions.iter().any(|action| action % 12 == 3) {
+        push(&format!("\n\n[r]: /{destination}\n\n"));
+    } else {
+        push("\n\n");
+    }
     let (payload, bytes) = retained(&markdown);
     assert!(
         payload <= source.len() * 8 + 1024,
