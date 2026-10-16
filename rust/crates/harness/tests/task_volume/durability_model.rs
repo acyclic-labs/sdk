@@ -209,13 +209,13 @@ impl Pause {
     }
 }
 
-fn suspended_io<const HOLD_INDEX: bool>() {
-    loom::model(|| {
+fn suspended_io<const HOLD_INDEX: bool>(pause_at: usize) {
+    loom::model(move || {
         let (histories, value, path) = block_on(histories());
         let pause = Arc::new(Pause::default());
         let provider = Arc::new(Provider(Mutex::new(histories), Some(pause.clone())));
         let volume = Arc::new(block_on(TaskVolume::open_existing(provider, path)).unwrap());
-        pause.0.lock().unwrap().remaining = 2;
+        pause.0.lock().unwrap().remaining = pause_at;
         let reader = volume.clone();
         let operation =
             thread::spawn(move || block_on(reader.file_durability::<true, HOLD_INDEX>(&value)));
@@ -234,10 +234,12 @@ fn suspended_io<const HOLD_INDEX: bool>() {
 
 #[test]
 fn suspended_provider_does_not_exclude_a_competing_index_operation() {
-    suspended_io::<false>();
+    for pause_at in [1, 2] {
+        suspended_io::<false>(pause_at);
+    }
 }
 
 #[test]
 fn negative_control_holding_index_across_io_is_detected() {
-    assert!(std::panic::catch_unwind(suspended_io::<true>).is_err());
+    assert!(std::panic::catch_unwind(|| suspended_io::<true>(2)).is_err());
 }

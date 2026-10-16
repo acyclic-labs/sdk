@@ -108,9 +108,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     /// Captures a finite snapshot and cursor under one publication cut.
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
-        let mut watermarks = self.refresh().await?;
+        self.refresh().await?;
         let index = self.index.lock().await;
-        watermarks.accepted = watermarks.accepted.max(index.next);
         let mut files = Vec::new();
         for range in query.ranges() {
             for (_, file) in index
@@ -124,10 +123,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 files.push(file.file.clone());
             }
         }
+        let generation = self.generation(&index);
+        drop(index);
+        // Stamp the captured cut with post-read durability without excluding
+        // another index operation while the provider answers.
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
         Ok(Snapshot {
             files,
-            cursor: self.cursor(query, self.generation(&index), watermarks)?,
-            generation: self.generation(&index),
+            cursor: self.cursor(query, generation.clone(), watermarks)?,
+            generation,
         })
     }
 
