@@ -23,6 +23,42 @@ mod digest_properties {
     }
 
     proptest! {
+        // Flat arrays need one output buffer and at most one array allocation,
+        // regardless of length. The former reserve-per-element path fails this.
+        #[test]
+        fn flat_arrays_reserve_once(entries in prop::collection::vec(any::<i64>(), 0..512)) {
+            let value = Value::Array(entries.iter().copied().map(Value::from).collect());
+            let mut charged = 0;
+            let measured = allocation_counter::measure(|| {
+                let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                    charged += match event {
+                        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+                        JsonCodecCharge::AllocationOperations { operations } => operations,
+                        _ => 0,
+                    };
+                    Ok(())
+                }).unwrap();
+                assert_eq!(copied, value);
+            });
+            prop_assert!(charged >= measured.count_total);
+            prop_assert_eq!(charged, 1 + u64::from(!entries.is_empty()));
+            prop_assert_eq!(measured.count_total, charged);
+            prop_assert_eq!(measured.bytes_current, 0);
+            let legacy = allocation_counter::measure(|| {
+                let mut values = Vec::new();
+                for entry in &entries {
+                    if values.len() == values.capacity() {
+                        values.try_reserve_exact(1).unwrap();
+                    }
+                    values.push(Value::from(*entry));
+                }
+                std::hint::black_box(values);
+            });
+            if entries.len() > 1 {
+                prop_assert!(legacy.count_total > 1);
+            }
+        }
+
         // Explicit reserves are exact; only whole-object B-tree funding has
         // bounded slack, from node occupancy rather than a split schedule.
         #[test]
@@ -201,6 +237,7 @@ mod digest_properties {
         exhausted_prefixes(&serde_json::json!({"": null}));
         exhausted_prefixes(&Value::from(6.237624688224859e252));
         exhausted_prefixes(&Value::from(-0.0));
+        exhausted_prefixes(&serde_json::json!(["],}", "\"\\,", [], {"a,b": [1, 2]}, 3]));
         exhausted_prefixes(
             &serde_json::json!({"\u{0}\n\\\"": ["\u{1f600}\t\r", -0.25, 1e100, u64::MAX]}),
         );
