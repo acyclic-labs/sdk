@@ -1,4 +1,6 @@
-use super::model_provider::{Pending, PublicationCut, pause_before_publish, publish_until_cut};
+use super::model_provider::{
+    Pending, PublicationCut, declare_fixture, pause_before_publish, publish_until_cut,
+};
 use super::*;
 use crate::distributed::JournalWrite;
 use acyclic_stream::{CommitCondition, CommitOutcome, MemoryLimits, StreamPath};
@@ -134,7 +136,7 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
         ));
         let mut original = Box::new(block_on(open(&client)).unwrap());
         let task = OperationId::from_bytes([41; 16]);
-        block_on(declare(&mut original, spec(task, 0).unwrap(), "task")).unwrap();
+        declare_fixture(&mut original, spec(task, 0).unwrap(), "task").unwrap();
         let lease = block_on(start(&mut original, &worker("worker"), "start")).unwrap();
         let fence = LeaseFence::from(&lease.reservation);
         let (owner, issuer) = owner_issuer();

@@ -1,5 +1,5 @@
 use super::model_provider::{
-    Pending, PublicationCut, block_on, pause_before_publish, publish_until_cut,
+    Pending, PublicationCut, block_on, declare_fixture, pause_before_publish, publish_until_cut,
 };
 use super::*;
 use crate::{
@@ -94,7 +94,7 @@ fn initialized(client: &Arc<MemoryStream>, contents: &Arc<Contents>, kind: Orche
     let parent = OperationId::from_bytes([1; 16]);
     let mut root = spec(parent, 0).unwrap();
     root.orchestration = kind;
-    block_on(declare(&mut coordinator, root, "parent")).unwrap();
+    declare_fixture(&mut coordinator, root, "parent").unwrap();
     let lease = block_on(start(&mut coordinator, &worker("parent"), "parent-start")).unwrap();
     block_on(publish(
         &mut coordinator,
@@ -112,7 +112,7 @@ fn initialized(client: &Arc<MemoryStream>, contents: &Arc<Contents>, kind: Orche
             operation_id: parent,
             slot: slot.into(),
         });
-        block_on(declare(&mut coordinator, child, slot)).unwrap();
+        declare_fixture(&mut coordinator, child, slot).unwrap();
         let lease = block_on(start(
             &mut coordinator,
             &worker(slot),

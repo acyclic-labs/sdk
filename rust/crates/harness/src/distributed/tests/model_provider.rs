@@ -116,3 +116,43 @@ pub(super) fn publish_until_cut<T>(mut future: Pending<T>, phase: Arc<AtomicU8>)
     }));
     future
 }
+
+// Prepare a declaration through the real encoder, append and replay. Calling the
+// command facade here nests acknowledgement replay under its entire async poll
+// chain, exhausting Loom's default Windows coroutine stack before the race.
+pub(super) fn declare_fixture(
+    coordinator: &mut DistributedCoordinator<MemoryStream>,
+    spec: OperationSpec,
+    key: &str,
+) -> Result<()> {
+    let event = SchedulerEvent::Declared {
+        spec: Box::new(spec),
+    };
+    let canonical = crate::store::history::canonical_bytes_with_work(
+        &event,
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        &mut None,
+    )?;
+    let bytes = encode(
+        coordinator.revision + 1,
+        event.operation_id(),
+        key,
+        *blake3::hash(&canonical).as_bytes(),
+        canonical,
+        coordinator.next_commit_time(&mut None)?,
+        &mut None,
+    )?;
+    assert!(matches!(
+        block_on(append(
+            (&coordinator.stream.0, &coordinator.client),
+            [OwnedBytes::from(bytes)],
+            0,
+            Some(coordinator.revision),
+            StreamIdempotencyKey::new(key)?,
+            event.operation_id(),
+            &mut None,
+        ))?,
+        AppendOutcome::Committed(_)
+    ));
+    block_on(coordinator.refresh(&mut None))
+}
