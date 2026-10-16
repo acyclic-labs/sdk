@@ -30,14 +30,17 @@ use crate::{
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
+#[cfg(test)]
+mod children_tests;
 mod client;
+#[cfg(test)]
+mod latency_tests;
 mod server;
 #[cfg(test)]
 mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
-const FOLLOW_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(500);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Connection configuration failure.
@@ -66,6 +69,9 @@ pub struct Client {
     channel: Channel,
     authorization: MetadataValue<Ascii>,
     acknowledge_deliveries: bool,
+    sessions: Arc<tokio::sync::OnceCell<crate::session::Client>>,
+    session_ca: Option<Arc<[u8]>>,
+    session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -125,29 +131,30 @@ impl Client {
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token)?;
-        let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
-        if endpoint.uri().scheme_str() != Some("https") {
-            return Err(ConnectError::InsecureEndpoint);
-        }
-        let endpoint = if let Some(pem) = certificate_pem {
-            endpoint
-                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
-        } else {
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .map_err(ConnectError::PlatformVerifier)?;
-            endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-        };
-        Ok(Self::from_channel(endpoint.connect().await?, authorization))
+        let channel = channel_tls(endpoint, certificate_pem).await?;
+        let mut client = Self::from_channel(channel, authorization);
+        client.session_ca = certificate_pem.map(Arc::from);
+        Ok(client)
     }
 
-    fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
+    pub(crate) fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             channel,
             authorization,
             acknowledge_deliveries: true,
+            sessions: Arc::new(tokio::sync::OnceCell::new()),
+            session_ca: None,
+            session_verifier: None,
         }
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn with_session_verifier(
+        mut self,
+        verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    ) -> Self {
+        self.session_verifier = Some(verifier);
+        self
     }
 
     fn service(&self) -> wire::stream_service_client::StreamServiceClient<Channel> {
@@ -220,6 +227,41 @@ impl Client {
     }
 }
 
+pub(crate) async fn channel_tls(
+    endpoint: &str,
+    certificate_pem: Option<&[u8]>,
+) -> Result<Channel, ConnectError> {
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    let endpoint = if let Some(pem) = certificate_pem {
+        endpoint.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
+    } else {
+        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .map_err(ConnectError::PlatformVerifier)?;
+        endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+    };
+    Ok(endpoint.tcp_nodelay(true).connect().await?)
+}
+
+pub(crate) async fn channel_with_verifier(
+    endpoint: &str,
+    verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+) -> Result<Channel, ConnectError> {
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    Ok(endpoint
+        .tls_config_with_verifier(ClientTlsConfig::new(), verifier)?
+        .tcp_nodelay(true)
+        .connect()
+        .await?)
+}
+
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
     if bearer_token.trim().is_empty()
         || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
@@ -237,7 +279,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
 }
 
 /// Whether the outcome of an attempt is unknown because the transport was lost.
-fn retryable(error: &Status) -> bool {
+pub(crate) fn retryable(error: &Status) -> bool {
     match error.code() {
         Code::Unavailable | Code::DeadlineExceeded => return true,
         Code::Unknown if std::error::Error::source(error).is_none() => return true,
@@ -304,7 +346,7 @@ fn error_status(error: &StreamError) -> Status {
     }
 }
 
-fn status(error: &Status) -> StreamError {
+pub(crate) fn status(error: &Status) -> StreamError {
     match (error.code(), error.message()) {
         (Code::InvalidArgument, "invalid_path") => StreamError::InvalidPath,
         (Code::InvalidArgument, "limit_exceeded") => StreamError::LimitExceeded,

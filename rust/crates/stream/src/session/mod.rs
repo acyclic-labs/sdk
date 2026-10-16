@@ -1,0 +1,270 @@
+//! Multiplexed Streams follows shared by client and node-to-node sessions.
+
+use crate::{StreamError, StreamPath, StreamProvider, wire, wire_codec};
+use bytes::Bytes;
+use futures::{
+    StreamExt, future,
+    stream::{self, BoxStream, SelectAll},
+};
+use prost::Message as _;
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
+use tokio::sync::oneshot;
+use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
+
+mod admission;
+mod children;
+mod client;
+mod gate;
+mod interest;
+mod policy;
+mod queue;
+mod service;
+mod signal;
+mod sync;
+pub use client::Client;
+pub use service::Service;
+// Child frames carry both their path and the provider-owned resume anchor.
+const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;
+const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES + 128 {
+    CHILD_FRAME_BYTES
+} else {
+    crate::MAX_RECORD_BYTES + 128
+};
+#[cfg(test)]
+mod tests;
+
+/// Finite session admission independent of the number of stored streams.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Maximum active follows on this node connection.
+    pub channels: usize,
+    /// Maximum unsent data frames, including lossless attention records.
+    pub pending_frames: usize,
+    /// Maximum unsent encoded data bytes.
+    pub pending_bytes: usize,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            channels: 16_384,
+            pending_frames: crate::MAX_ITEMS,
+            pending_bytes: crate::MAX_COMMAND_BYTES,
+        }
+    }
+}
+
+struct Channel {
+    generation: u64,
+    latest: bool,
+    children: bool,
+    pending: usize,
+    enabled: Arc<gate::Gate>,
+    credit: wire::SessionWindow,
+    sent: wire::SessionCursor,
+    applied: wire::SessionCursor,
+    ending: Option<StreamError>,
+    cancel: Option<oneshot::Sender<()>>,
+}
+struct Pending {
+    frame: wire::SessionFrame,
+    key: Option<Bytes>,
+}
+enum Event {
+    Opened(Option<crate::CommitId>),
+    Record(crate::Record),
+    Child(crate::Child, wire::SessionCursor),
+}
+type Source = BoxStream<'static, (wire::SessionChannel, Result<Event, StreamError>)>;
+
+struct Session<P> {
+    provider: Arc<P>,
+    limits: Limits,
+    node: String,
+    hello: bool,
+    prefer_control: bool,
+    revision: u64,
+    channels: BTreeMap<u64, Channel>,
+    sources: SelectAll<Source>,
+    incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
+    credit: wire::SessionWindow,
+    controls: VecDeque<wire::SessionFrame>,
+    pending: VecDeque<Pending>,
+    pending_bytes: usize,
+    readiness: (bool, bool, bool),
+}
+
+/// Opens one bidirectional node session over the canonical provider.
+/// Transport authentication and per-path capabilities remain the host's responsibility.
+pub fn serve<P: StreamProvider>(
+    provider: Arc<P>,
+    node: String,
+    limits: Limits,
+    incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
+) -> Result<BoxStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError> {
+    if node.is_empty()
+        || limits.channels == 0
+        || limits.pending_frames == 0
+        || limits.pending_bytes < crate::MAX_RECORD_BYTES + 128
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    let session = Session {
+        provider,
+        node,
+        limits,
+        hello: false,
+        prefer_control: true,
+        revision: 0,
+        channels: BTreeMap::new(),
+        sources: SelectAll::new(),
+        incoming,
+        credit: wire::SessionWindow::default(),
+        controls: VecDeque::new(),
+        pending: VecDeque::new(),
+        pending_bytes: 0,
+        readiness: (false, false, false),
+    };
+    Ok(stream::try_unfold(session, |mut session| async move {
+        loop {
+            if let Some(frame) = session.controls.pop_front() {
+                return Ok(Some((frame, session)));
+            }
+            if let Some(frame) = session.ready()? {
+                return Ok(Some((frame, session)));
+            }
+            if session.sources.is_empty() {
+                let Some(frame) = session.incoming.next().await else {
+                    return Ok(None);
+                };
+                session.receive(frame?)?;
+                continue;
+            }
+            // Alternate deterministic priority. This bounds ready-side work
+            // and lets the model explore the actual wakeup path without RNG.
+            let input = session.incoming.next();
+            let source = session.sources.next();
+            let event = if session.prefer_control {
+                match future::select(input, source).await {
+                    future::Either::Left((input, _)) => future::Either::Left(input),
+                    future::Either::Right((source, _)) => future::Either::Right(source),
+                }
+            } else {
+                match future::select(source, input).await {
+                    future::Either::Left((source, _)) => future::Either::Right(source),
+                    future::Either::Right((input, _)) => future::Either::Left(input),
+                }
+            };
+            session.prefer_control = !session.prefer_control;
+            match event {
+                future::Either::Left(Some(frame)) => session.receive(frame?)?,
+                future::Either::Left(None) => return Ok(None),
+                future::Either::Right(Some((channel, event))) => session.record(channel, event)?,
+                future::Either::Right(None) => {}
+            }
+        }
+    })
+    .boxed())
+}
+
+fn frame(channel_id: u64, generation: u64, body: Body) -> wire::SessionFrame {
+    wire::SessionFrame {
+        channel_id,
+        generation,
+        body: Some(body),
+    }
+}
+fn cursor(next: u64) -> wire::SessionCursor {
+    wire::SessionCursor {
+        next,
+        opaque: Bytes::new(),
+    }
+}
+
+impl<P: StreamProvider> Session<P> {
+    fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
+        if input.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        let body = input.body.ok_or(StreamError::InvalidArgument)?;
+        if !self.hello {
+            let Body::Hello(hello) = body else {
+                return Err(StreamError::InvalidArgument);
+            };
+            if input.channel_id != 0
+                || input.generation != 0
+                || hello.version != 1
+                || hello.client_id.is_empty()
+                || (!hello.destination_node.is_empty() && hello.destination_node != self.node)
+            {
+                return Err(StreamError::InvalidArgument);
+            }
+            self.hello = true;
+            self.credit = wire::SessionWindow {
+                bytes: hello.receive_bytes,
+                frames: hello.receive_frames,
+            };
+            self.controls.push_back(frame(
+                0,
+                0,
+                Body::Welcome(wire::SessionWelcome {
+                    version: 1,
+                    node_id: self.node.clone(),
+                    receive_bytes: crate::MAX_COMMAND_BYTES as u64,
+                    receive_frames: u32::try_from(crate::MAX_ITEMS)
+                        .map_err(|_| StreamError::Capacity)?,
+                }),
+            ));
+            self.refresh(None)?;
+            return Ok(());
+        }
+        if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
+            match self.channels.get(&input.channel_id) {
+                None => return Ok(()),
+                Some(channel) if input.generation < channel.generation => return Ok(()),
+                Some(channel) if input.generation != channel.generation => {
+                    return Err(StreamError::InvalidArgument);
+                }
+                Some(_) => {}
+            }
+        }
+        match body {
+            Body::Interest(interest) if input.channel_id == 0 && input.generation == 0 => {
+                self.interest(interest)
+            }
+            Body::Window(grant) if input.channel_id == 0 && input.generation == 0 => {
+                wire_codec::session::grant_credit(&mut self.credit, &grant)?;
+                self.refresh(None)?;
+                Ok(())
+            }
+            Body::Window(grant) => {
+                let channel = self.channel(input.channel_id, input.generation)?;
+                wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
+                self.refresh(Some(input.channel_id))?;
+                Ok(())
+            }
+            Body::Ack(ack) => {
+                let channel = self.channel(input.channel_id, input.generation)?;
+                let applied = ack.applied.ok_or(StreamError::InvalidArgument)?;
+                if (!channel.children && !applied.opaque.is_empty())
+                    || (applied.next == channel.sent.next && applied.opaque != channel.sent.opaque)
+                    || applied.next < channel.applied.next
+                    || applied.next > channel.sent.next
+                {
+                    return Err(StreamError::OutOfRange);
+                }
+                channel.applied = applied;
+                Ok(())
+            }
+            _ => Err(StreamError::InvalidArgument),
+        }
+    }
+    fn channel(&mut self, id: u64, generation: u64) -> Result<&mut Channel, StreamError> {
+        self.channels
+            .get_mut(&id)
+            .filter(|channel| channel.generation == generation)
+            .ok_or(StreamError::InvalidArgument)
+    }
+}

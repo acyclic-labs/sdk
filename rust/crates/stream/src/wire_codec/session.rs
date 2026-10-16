@@ -3,6 +3,36 @@
 use crate::{StreamError, wire};
 use prost::Message as _;
 
+/// Decodes the optional atomic history guard of a full-fidelity follow.
+pub fn preceding_follow(
+    follow: &wire::SessionFollow,
+    resume: &wire::SessionCursor,
+) -> Result<Option<crate::CommitId>, StreamError> {
+    if follow.preceding_commit_id.is_empty() {
+        return Ok(None);
+    }
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || resume.next == 0
+        || !resume.opaque.is_empty()
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    super::commit_id(&follow.preceding_commit_id).map(Some)
+}
+
+/// Requires affirmative provider enforcement before a checked channel gets credit.
+pub fn confirm_follow(
+    preceding: Option<crate::CommitId>,
+    opened: &wire::SessionOpened,
+) -> Result<(), StreamError> {
+    if let Some(preceding) = preceding
+        && opened.preceding_commit_id.as_ref() != preceding.as_bytes()
+    {
+        return Err(StreamError::Unsupported);
+    }
+    Ok(())
+}
+
 /// Adds a receive-credit grant without partially applying an overflowing grant.
 pub fn grant_credit(
     remaining: &mut wire::SessionWindow,

@@ -2,7 +2,8 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { checkedRecord } from "./record.js";
-import { StreamError, type EncodedRecord, type FollowOptions } from "./types.js";
+import { StreamError, type EncodedRecord, type FollowOptions, type ChildrenRequest, type StreamChild } from "./types.js";
+import { checkedChild } from "./child.js";
 import { SessionQueue } from "./session-queue.js";
 
 export interface SessionTransport {
@@ -14,9 +15,11 @@ export interface SessionTransport {
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
 type Body = wire.SessionFrame["body"];
 type Credit = { bytes: bigint; frames: number };
-type Delivery = { record: EncodedRecord; generation: bigint; link: Link; release(): void };
+type StreamKind = Extract<wire.SessionSubscription["kind"], { case: "follow" | "children" }>;
+type Delivery = { value: EncodedRecord | StreamChild; sequence: bigint; opaque: Uint8Array; generation: bigint; link: Link; release(): void };
 type Route = {
-  id: bigint; generation: bigint; path: string; applied: bigint; received: bigint;
+  id: bigint; generation: bigint; kind: StreamKind; applied: bigint; received: bigint;
+  appliedOpaque: Uint8Array; receivedOpaque: Uint8Array;
   placement: bigint; link: Link; queue: SessionQueue<Delivery>; credit: Credit;
   opened: boolean; moving: boolean; controller: AbortController; resolve(): void; release(): void;
 };
@@ -43,6 +46,9 @@ function consume(balance: Credit, bytes: bigint): void {
   balance.bytes -= bytes;
   balance.frames -= 1;
 }
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
 
 /** One canonical Streams session per client/node, shared by every logical follow. */
 export class StreamSessions {
@@ -55,7 +61,15 @@ export class StreamSessions {
   #active = 0;
   constructor(connect: SessionConnect, acknowledge = true) { this.#connect = connect; this.#acknowledge = acknowledge; }
 
-  async *follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
+  follow(path: string, options: FollowOptions): AsyncGenerator<EncodedRecord> {
+    return this.#stream({ case: "follow", value: create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.ALL }) }, options) as AsyncGenerator<EncodedRecord>;
+  }
+  children(request: ChildrenRequest): AsyncGenerator<StreamChild> {
+    return this.#stream({ case: "children", value: { $typeName: "acyclic.stream.v1.ChildrenRequest", limit: request.limit,
+      ...(request.parent === undefined ? {} : { parent: request.parent }) } },
+    { from: 0n, ...(request.signal === undefined ? {} : { signal: request.signal }) }) as AsyncGenerator<StreamChild>;
+  }
+  async *#stream(kind: StreamKind, options: FollowOptions): AsyncGenerator<EncodedRecord | StreamChild> {
     if (options.signal?.aborted) return;
     if (this.#active >= 16_384 || this.#nextId > MAX_U64 - 2n) throw new StreamError("capacity", "session channel capacity exceeded");
     const id = this.#nextId;
@@ -73,7 +87,8 @@ export class StreamSessions {
       if (link.controller.signal.aborted) throw new StreamError("unavailable", "Streams session ended before subscription");
       let resolve!: () => void;
       const opened = new Promise<void>(yes => { resolve = yes; });
-      route = { id, generation: 1n, path, applied: options.from, received: options.from, placement: 0n,
+      route = { id, generation: 1n, kind, applied: options.from, received: options.from, placement: 0n,
+        appliedOpaque: new Uint8Array(), receivedOpaque: new Uint8Array(),
         link, queue, credit: emptyCredit(), opened: false, moving: false, controller: new AbortController(), resolve, release };
       this.#routes.set(id, route);
       try { await this.#subscribe(route); }
@@ -83,12 +98,13 @@ export class StreamSessions {
         delivery.release();
         if (options.signal?.aborted) return;
         if (delivery.generation !== route.generation || delivery.link !== route.link) { await this.#grant(route); continue; }
-        if (delivery.record.sequence !== route.applied) throw failure();
+        if (delivery.sequence !== route.applied) throw failure();
         // No await between application-cursor advancement and the yield boundary.
         route.applied += 1n;
-        yield delivery.record;
+        route.appliedOpaque = delivery.opaque;
+        yield delivery.value;
         if (this.#acknowledge && this.#routes.get(id) === route) {
-          await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied } }) }), route.controller.signal);
+          await this.#write(route.link, frame(id, route.generation, { case: "ack", value: create(wire.SessionAckSchema, { applied: { next: route.applied, opaque: route.appliedOpaque } }) }), route.controller.signal);
         }
         await this.#grant(route);
       }
@@ -191,11 +207,12 @@ export class StreamSessions {
     const link = route.link;
     route.moving = false;
     route.received = route.applied;
+    route.receivedOpaque = route.appliedOpaque;
     route.credit = emptyCredit();
     route.opened = false;
     await untilAborted(link.transport.send(frame(0n, 0n, { case: "interest", value: create(wire.SessionInterestSchema, {
       revision: ++route.link.revision, upsert: [{ channel: { channelId: route.id, generation: route.generation },
-        resume: { next: route.applied }, kind: { case: "follow", value: { path: route.path, delivery: wire.SessionDelivery.ALL } } }],
+        resume: { next: route.applied, opaque: route.appliedOpaque }, kind: route.kind }],
     }) }), route.controller.signal), route.controller.signal, link.controller.signal);
   }
   async #receive(link: Link, input: wire.SessionFrame): Promise<void> {
@@ -227,7 +244,7 @@ export class StreamSessions {
     }
     switch (body.case) {
       case "opened":
-        if (route.opened || body.value.resume?.next !== route.received || body.value.resume.opaque.length !== 0) throw failure();
+        if (route.opened || body.value.resume?.next !== route.received || !sameBytes(body.value.resume.opaque, route.receivedOpaque)) throw failure();
         route.opened = true;
         route.resolve();
         await this.#grant(route);
@@ -235,16 +252,24 @@ export class StreamSessions {
       case "data": {
         consume(route.credit, bytes);
         const data = body.value;
-        if (!route.opened || data.item.case !== "record" || data.after?.next !== route.received + 1n || data.after.opaque.length !== 0 || data.durable > data.accepted || data.accepted < data.after.next) throw failure();
-        const record = checkedRecord(data.item.value, route.received);
+        if (!route.opened || data.after?.next !== route.received + 1n || data.durable > data.accepted || data.accepted < data.after.next) throw failure();
+        let value: EncodedRecord | StreamChild;
+        if (route.kind.case === "follow" && data.item.case === "record" && data.after.opaque.length === 0) {
+          value = checkedRecord(data.item.value, route.received);
+        } else if (route.kind.case === "children" && data.item.case === "child") {
+          value = checkedChild(data.item.value, route.kind.value.parent);
+        } else { throw failure(); }
+        const sequence = route.received;
+        const opaque = data.after.opaque.slice();
         route.received += 1n;
+        route.receivedOpaque = opaque;
         let released = false;
         const release = (): void => {
           if (released) return;
           released = true;
           this.#release(link, bytes);
         };
-        try { route.queue.push({ record, release, generation: route.generation, link }); }
+        try { route.queue.push({ value, sequence, opaque, release, generation: route.generation, link }); }
         catch (error) { release(); throw error; }
         break;
       }
@@ -270,8 +295,9 @@ export class StreamSessions {
   }
   async #grant(route: Route): Promise<void> {
     if (!route.opened || this.#routes.get(route.id) !== route) return;
+    const frameBytes = route.kind.case === "children" ? BigInt(2 * StreamLimit.MAX_PATH_BYTES + 128) : RECORD_BYTES;
     const grant = { frames: Math.max(0, route.queue.available - route.credit.frames),
-      bytes: BigInt(route.queue.available) * RECORD_BYTES > route.credit.bytes ? BigInt(route.queue.available) * RECORD_BYTES - route.credit.bytes : 0n };
+      bytes: BigInt(route.queue.available) * frameBytes > route.credit.bytes ? BigInt(route.queue.available) * frameBytes - route.credit.bytes : 0n };
     if (grant.frames === 0 && grant.bytes === 0n) return;
     add(route.credit, grant);
     await this.#write(route.link, frame(route.id, route.generation, { case: "window", value: create(wire.SessionWindowSchema, grant) }), route.controller.signal);

@@ -2,9 +2,10 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { is_stream_error_code, projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { StreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ReadResponseSchema, TailResponseSchema,
+  ReadResponseSchema, TailResponseSchema, ChildrenResponseSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
+import { checkedChild } from "./child.js";
 import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
@@ -108,6 +109,31 @@ class RustStreamProvider implements StreamProvider {
     }
   }
 
+  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
+    await validateWireRequest({ kind: "children", limit: request.limit,
+      ...(request.parent === undefined ? {} : { parent: request.parent }) });
+    if (request.signal?.aborted) return;
+    const input = wireRequest({ kind: "children", limit: request.limit,
+      ...(request.parent === undefined ? {} : { parent: request.parent }) });
+    let handle: Awaited<ReturnType<WasmStream["open_children"]>>;
+    try { handle = await (await this.#inner).open_children(input); }
+    catch (error) { throw streamError(error, "children"); }
+    const close = (): void => handle.close();
+    request.signal?.addEventListener("abort", close, { once: true });
+    try {
+      while (!request.signal?.aborted) {
+        let bytes: Uint8Array | null;
+        try { bytes = await handle.next(); }
+        catch (error) { if (request.signal?.aborted) return; throw streamError(error, "children"); }
+        if (bytes === null || request.signal?.aborted) return;
+        const child = fromBinary(ChildrenResponseSchema, bytes).child;
+        yield checkedChild(child, request.parent);
+      }
+    } finally {
+      request.signal?.removeEventListener("abort", close);
+      handle.close(); handle.free();
+    }
+  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");

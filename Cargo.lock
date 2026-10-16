@@ -627,6 +627,7 @@ dependencies = [
  "bytes",
  "fs2",
  "futures",
+ "getrandom 0.3.4",
  "h2",
  "hyper",
  "hyper-util",
@@ -660,6 +661,8 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
