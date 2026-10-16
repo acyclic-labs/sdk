@@ -390,6 +390,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-stream",
+ "blake3",
  "bytes",
  "diffy",
  "futures",
@@ -402,6 +403,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
  "which",
 ]
 

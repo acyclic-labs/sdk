@@ -269,11 +269,13 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     }];
     messages.push(ModelMessage {
         role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall {
-            call_id: invocation.call_id.clone(),
-            name: invocation.name.clone(),
-            arguments: invocation.arguments.clone(),
-        }),
+        content: ModelContent::Part(ModelContentPart::ToolCall(
+            acyclic_harness::model::ToolCall::new(
+                invocation.call_id.clone(),
+                invocation.name.clone(),
+                invocation.arguments.clone(),
+            ),
+        )),
     });
     messages.push(ModelMessage {
         role: ModelRole::Tool,

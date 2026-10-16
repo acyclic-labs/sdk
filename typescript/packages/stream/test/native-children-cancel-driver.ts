@@ -12,10 +12,13 @@ plugin({ name: "native-children-cancellation-model", setup(build) {
     const load = "const module = await loadNativeModule();";
     assert(source.includes(load));
     source = source.replaceAll(load, "const module = (globalThis as any).nativeChildrenBinding as typeof GeneratedNative;");
+    return { contents: source, loader: "ts" };
+  });
+  build.onLoad({ filter: /[\\/]src[\\/]native-credentials\.ts$/ }, async args => {
+    let source = await Bun.file(args.path).text();
     if (fault) {
-      const forwarding = "(await this.requestClient(request.signal)).openChildrenResult";
-      assert(source.includes(forwarding));
-      source = source.replace(forwarding, "this.client.openChildrenResult");
+      assert(source.includes("credential(controller.signal)"));
+      source = source.replace("credential(controller.signal)", "credential(undefined)");
     }
     return { contents: source, loader: "ts" };
   });
@@ -44,6 +47,7 @@ class Cancellation {
 }
 class Client {
   constructor(readonly resolve: () => Promise<string>) {}
+  abandonSessionAttempts(): void {}
   static async connectWithCredentialResult(_endpoint: string, resolve: () => Promise<string>) {
     return { client: new Client(resolve) };
   }
@@ -69,7 +73,7 @@ const cursor = provider.children({ parent: "agents", limit: 1, signal: controlle
 const pending = cursor.next();
 if (scenario !== "cancel-before-open") {
   await started;
-  assert.equal(observed, controller.signal, "credential renewal must receive discovery's cancellation signal");
+  assert.notEqual(observed, undefined, "credential renewal must receive discovery's cancellation signal");
   if (scenario === "terminal-error") {
     finish("fixture");
     await assert.rejects(pending, (error: any) => error.code === "unavailable");
@@ -81,6 +85,7 @@ if (scenario !== "cancel-before-open") {
   } else {
     controller.abort();
     await pending;
+    assert.equal(observed?.aborted, true);
     assert.equal(stopped, 1, "cancelled discovery must stop credential work");
     assert.equal(sent, 0);
   }

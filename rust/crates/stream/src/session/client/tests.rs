@@ -6,6 +6,7 @@ use std::{
 };
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod checked;
 mod credentials;
 mod isolation;
 mod outbound;
@@ -15,6 +16,9 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 struct Counts {
     connections: AtomicUsize,
     sessions: AtomicUsize,
+    closed_sessions: AtomicUsize,
+    received_bytes: AtomicUsize,
+    transmitted_bytes: AtomicUsize,
     sent: AtomicUsize,
     follows: AtomicUsize,
     actors: AtomicUsize,
@@ -23,6 +27,14 @@ struct Counts {
     changed: tokio::sync::Notify,
     // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
+    guards: Mutex<Vec<(u64, u64, Bytes)>>,
+}
+struct CountSessionDrop(Arc<Counts>);
+impl Drop for CountSessionDrop {
+    fn drop(&mut self) {
+        self.0.closed_sessions.fetch_add(1, Ordering::Relaxed);
+        self.0.changed.notify_one();
+    }
 }
 struct Host<P> {
     provider: Arc<P>,
@@ -30,6 +42,7 @@ struct Host<P> {
     node: String,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     withhold_welcome: bool,
+    confirm_checked: bool,
 }
 #[tonic::async_trait]
 impl<P: StreamProvider> StreamSessionService for Host<P> {
@@ -63,6 +76,12 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         let input = request
             .into_inner()
             .map(move |input| {
+                if let Ok(frame) = &input {
+                    // Uncompressed gRPC message prefix plus the complete protobuf.
+                    counts
+                        .received_bytes
+                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
+                }
                 if let Ok(wire::SessionFrame {
                     body: Some(Body::Interest(interest)),
                     ..
@@ -86,6 +105,19 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                                         ));
                                 }
                                 counts.changed.notify_one();
+                                if let (Some(channel), Some(Kind::Follow(follow))) =
+                                    (subscription.channel, &subscription.kind)
+                                {
+                                    counts
+                                        .guards
+                                        .lock()
+                                        .map_err(|_| StreamError::Unavailable)?
+                                        .push((
+                                            channel.channel_id,
+                                            channel.generation,
+                                            follow.preceding_commit_id.clone(),
+                                        ));
+                                }
                             }
                             Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => {
                                 counts.actors.fetch_add(1, Ordering::Relaxed);
@@ -124,9 +156,19 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             receiver.recv().await.ok().map(|frame| (frame, receiver))
         });
         let sent = Arc::clone(&self.counts);
+        let confirm_checked = self.confirm_checked;
+        let lifetime = CountSessionDrop(Arc::clone(&self.counts));
         Ok(Reply::new(
             stream::select(
-                output.map(move |item| {
+                output.map(move |mut item| {
+                    if !confirm_checked
+                        && let Ok(wire::SessionFrame {
+                            body: Some(Body::Opened(opened)),
+                            ..
+                        }) = &mut item
+                    {
+                        opened.preceding_commit_id = Bytes::new();
+                    }
                     if item
                         .as_ref()
                         .is_ok_and(|value| matches!(value.body, Some(Body::Data(_))))
@@ -138,6 +180,15 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 }),
                 controls,
             )
+            .inspect(move |item| {
+                if let Ok(frame) = item {
+                    lifetime
+                        .0
+                        .transmitted_bytes
+                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
+                    lifetime.0.changed.notify_one();
+                }
+            })
             .boxed(),
         ))
     }
@@ -153,12 +204,13 @@ impl Fixture {
         provider: Arc<P>,
         node: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::configured(provider, node, false).await
+        Self::configured(provider, node, false, true).await
     }
     async fn configured<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
         withhold_welcome: bool,
+        confirm_checked: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -181,6 +233,7 @@ impl Fixture {
             node: node.into(),
             controls: controls.clone(),
             withhold_welcome,
+            confirm_checked,
         };
         let server = tokio::spawn(
             tonic::transport::Server::builder()
@@ -333,8 +386,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         Some("Bearer fixture".parse()?),
         None,
         connect,
-    )
-    .await?;
+    );
     let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
     let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
     append(&provider, "move", 4).await?;
@@ -501,8 +553,7 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
         None,
         None,
         None,
-    )
-    .await?;
+    );
     let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
@@ -583,7 +634,8 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
 
 #[tokio::test]
 async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResult {
-    let fixture = Fixture::configured(Arc::new(MemoryStream::default()), "silent", true).await?;
+    let fixture =
+        Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
     let client = fixture.client()?;
     let started = tokio::time::Instant::now();
     let one = StreamPath::new("one")?;
@@ -679,8 +731,7 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         Some("Bearer fixture".parse()?),
         None,
         connect,
-    )
-    .await?;
+    );
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),
@@ -768,3 +819,5 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     }
     Ok(())
 }
+
+mod tenk;

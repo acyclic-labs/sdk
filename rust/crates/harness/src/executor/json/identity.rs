@@ -62,7 +62,28 @@ pub(crate) fn json_byte_length<T: Serialize + ?Sized>(
     maximum: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
+    json_byte_length_at_depth(value, maximum, u32::MAX, work)
+}
+
+pub(crate) fn json_byte_length_at_depth<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: u64,
+    maximum_depth: u32,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<u64> {
     let Some(observer) = work.as_deref_mut() else {
+        if maximum_depth != u32::MAX {
+            return count_json_bytes_trusted(
+                value,
+                JsonBounds {
+                    maximum_bytes: maximum,
+                    maximum_items: u64::MAX,
+                    maximum_depth,
+                },
+                None,
+                &mut |_| Ok(()),
+            );
+        }
         return {
             struct Budget(u64);
 
@@ -111,7 +132,7 @@ pub(crate) fn json_byte_length<T: Serialize + ?Sized>(
         JsonBounds {
             maximum_bytes: maximum,
             maximum_items: u64::MAX,
-            maximum_depth: if native_code.is_some() { 256 } else { u32::MAX },
+            maximum_depth: maximum_depth.min(if native_code.is_some() { 256 } else { u32::MAX }),
         },
         native_code,
         &mut |charge| observer.codec_charge(charge),

@@ -23,6 +23,47 @@ fn request() -> ChildrenRequest {
 }
 
 #[wasm_bindgen_test]
+async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across_cache_rebuild() {
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    let AppendOutcome::Committed(seed) = append(&writer, "events").await.expect("seed") else {
+        panic!("seed conflict");
+    };
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let path = StreamPath::new("events").expect("path");
+    assert!(matches!(
+        reader
+            .follow_checked(path.clone(), 1, CommitId::from_bytes([42; 32]))
+            .await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+    let mut records = reader
+        .follow_checked(path, 1, seed.commit_id)
+        .await
+        .expect("checked follow");
+    assert!(futures::poll!(records.next()).is_pending());
+    for sequence in 1..=3 {
+        append(&writer, "events").await.expect("append");
+        assert_eq!(
+            records
+                .next()
+                .await
+                .expect("ended")
+                .expect("record")
+                .sequence,
+            sequence
+        );
+        // Cancellation of an IndexedDB operation can invalidate the shared cache.
+        // The next publication rebuilds identical immutable history from its journal.
+        reader.inner.cache.lock().await.valid = false;
+    }
+}
+
+#[wasm_bindgen_test]
 async fn publications_refresh_once_and_wake_only_affected_follows() {
     enum Observed {
         Record(usize, Result<Record, StreamError>),

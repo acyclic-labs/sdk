@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod files;
 mod follow;
 mod heads;
 #[cfg(acyclic_harness_loom)]
@@ -9,6 +10,7 @@ mod schema;
 mod segment;
 mod source;
 mod watermarks;
+pub use files::TaskFiles;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
@@ -45,6 +47,9 @@ fn item_examined() {
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Private task volume access was not granted to this owner.
+    #[error("task-volume access denied")]
+    Unauthorized,
     /// Authorization, work or storage failure accessing volume files.
     #[cfg(feature = "filesystem")]
     #[error(transparent)]
@@ -106,7 +111,7 @@ pub struct Generation {
 }
 
 /// One logical file backed by a shared immutable slice of its publication segment.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileValue {
     /// Logical immutable identity or mutable state location.
     pub key: FileKey,
@@ -194,6 +199,11 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    /// Authenticated provider path bound to this volume's history identity.
+    pub fn path(&self) -> &StreamPath {
+        &self.path
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
@@ -225,6 +235,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
                 .await?;
         }
+        Self::open_existing(provider, path).await
+    }
+
+    /// Opens a published volume without creating or writing any state.
+    pub async fn open_existing(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let mut records = provider
             .read(ReadRequest {
                 path: path.clone(),

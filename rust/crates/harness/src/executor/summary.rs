@@ -115,7 +115,7 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                 }
-                ModelEvent::ToolCall { .. } => {
+                ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Invalid,
