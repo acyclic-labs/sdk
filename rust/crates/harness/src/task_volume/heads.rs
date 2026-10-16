@@ -136,9 +136,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(&index, &files)?;
-                apply(&mut index, files);
+                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
+                apply(&mut index, files, next);
                 index.commit = record.commit_id;
-                index.next += 1;
+                index.next = next;
             }
             if index.next == before {
                 return Err(Error::ResetRequired);
@@ -164,12 +165,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             for (_, file) in index
                 .files
                 .range(range)
-                .filter(|(_, f)| query.matches_file(f))
+                .filter(|(_, f)| query.matches_file(&f.file))
             {
                 if files.len() == maximum_files {
                     return Err(Error::LimitExceeded);
                 }
-                files.push(file.clone());
+                files.push(file.file.clone());
             }
         }
         Ok(Snapshot {
