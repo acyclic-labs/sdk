@@ -83,15 +83,10 @@ impl NativeSession {
             .await
     }
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
-        let context = self
-            .context
-            .read()
-            .map_err(|_| Error::Storage("context lock poisoned".into()))?
-            .pipeline()?;
         let commands = self.runtime.commands().with_model(
             &crate::provider::model(self.config.deterministic_delay_ms),
             self.model_provider.clone(),
-            &context,
+            &self.context,
             &Default::default(),
             None,
         )?;

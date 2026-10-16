@@ -113,42 +113,16 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let (receiver, cursor) = {
-            let state = self.state.read().await;
-            let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-            if from > stream.tail {
-                return Err(StreamError::OutOfRange);
-            }
-            (
-                stream.changed.subscribe(),
-                HistoryCursor::new(stream, stream.tail, from),
-            )
-        };
-        let provider = self.clone();
-        Ok(stream::unfold(
-            (provider, path, receiver, cursor),
-            |(provider, path, mut receiver, mut cursor)| async move {
-                loop {
-                    let record = provider.next_follow_record(&path, &mut cursor).await;
-                    let Some(record) = (match record {
-                        Ok(record) => record,
-                        Err(error) => {
-                            return Some((Err(error), (provider, path, receiver, cursor)));
-                        }
-                    }) else {
-                        if receiver.changed().await.is_err() {
-                            return Some((
-                                Err(StreamError::Unavailable),
-                                (provider, path, receiver, cursor),
-                            ));
-                        }
-                        continue;
-                    };
-                    return Some((Ok(record), (provider, path, receiver, cursor)));
-                }
-            },
-        )
-        .boxed())
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {

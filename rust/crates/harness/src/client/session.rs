@@ -170,7 +170,7 @@ impl<S: ClientStateStore> ClientSession<S> {
 
     /// Resolves canonical files, publishes the complete frame, then commits its cursor.
     /// File and validation failures leave the views and durable cut unchanged.
-    pub async fn receive_delivery(
+    pub(super) async fn receive_delivery(
         &mut self,
         delivery: wire::Delivery,
         files: Option<&dyn crate::conversation::ContentResidencyVerifier>,

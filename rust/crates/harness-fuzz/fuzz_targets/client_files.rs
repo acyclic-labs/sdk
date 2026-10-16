@@ -1,7 +1,7 @@
 #![no_main]
 use acyclic_harness::{
     AgentId, Result,
-    client::{ClientSession, MemoryClientState},
+    client::{ClientSession, HarnessClient, MemoryClientState},
     conversation::{
         Attachment, BoundedContentFuture, ContentResidencyVerifier, ConversationMessage,
         FileDescriptor, FileRef, MessageKind, ReferencedAttachments, VolumeClass, VolumeOwner,
@@ -11,10 +11,11 @@ use acyclic_harness::{
     executor::PreparationIo,
     resources::ProviderRef,
     wire,
-    wire_api::current_protocol,
+    wire_api::{HarnessWireApi, OperationControlRequest, ReplayMode, current_protocol, negotiate},
 };
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream, OwnedBytes};
 use libfuzzer_sys::fuzz_target;
+use std::sync::Arc;
 
 struct Files(OwnedBytes);
 impl ContentResidencyVerifier for Files {
@@ -117,21 +118,78 @@ fuzz_target!(|input: &[u8]| {
                 revision: 0,
             })
             .unwrap();
-        if session
-            .receive_delivery(delivery.clone(), Some(&files), |_| Ok(()))
+        let host = Arc::new(Host(delivery));
+        let files = Arc::new(files);
+        let mut client = HarnessClient::connect(host.clone(), session)
             .await
-            .is_ok()
-        {
-            let expected = session.views().clone();
-            let mut reopened = ClientSession::open(session.into_store()).unwrap();
-            reopened
-                .receive_delivery(delivery, Some(&files), |_| Ok(()))
+            .unwrap()
+            .with_files(files.clone());
+        client.replay().await.unwrap();
+        if client.next_delivery().await.is_ok() {
+            let expected = client.session().views().clone();
+            let reopened = ClientSession::open(client.into_session().into_store()).unwrap();
+            let mut reopened = HarnessClient::connect(host, reopened)
                 .await
-                .unwrap();
-            assert_eq!(reopened.views(), &expected);
+                .unwrap()
+                .with_files(files);
+            reopened.replay().await.unwrap();
+            reopened.next_delivery().await.unwrap();
+            assert_eq!(reopened.session().views(), &expected);
         } else {
-            assert_eq!(session.resume().cursors[0].revision, 0);
-            assert_eq!(session.views(), &Default::default());
+            assert_eq!(client.session().resume().cursors[0].revision, 0);
+            assert_eq!(client.session().views(), &Default::default());
         }
     });
 });
+
+struct Host(wire::Delivery);
+impl HarnessWireApi for Host {
+    fn handshake(
+        &self,
+        request: wire::HandshakeRequest,
+    ) -> BoxProviderFuture<'_, Result<wire::HandshakeResponse>> {
+        Box::pin(async move { negotiate(&request, &wire::CapabilitySet::default()) })
+    }
+    fn replay(
+        &self,
+        _: wire::ResumeRequest,
+        _: ReplayMode,
+    ) -> BoxProviderFuture<'_, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
+        let page = self.0.clone();
+        Box::pin(async move {
+            Ok(Box::pin(futures::stream::iter([Ok(page)]))
+                as BoxProviderStream<'static, Result<wire::Delivery>>)
+        })
+    }
+    fn acknowledge(&self, _: wire::Acknowledge) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn submit(&self, _: wire::CommandEnvelope) -> BoxProviderFuture<'_, Result<wire::Admission>> {
+        panic!("replay must not submit")
+    }
+    fn authorize_operation_control<'a>(
+        &'a self,
+        _: &'a OperationControlRequest,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        panic!("replay must not authorize operation control")
+    }
+    fn observe(
+        &self,
+        _: wire::ObserveRequest,
+    ) -> BoxProviderFuture<'_, Result<wire::OperationStatus>> {
+        panic!("replay must not observe operations")
+    }
+    fn watch_operation(
+        &self,
+        _: wire::ObserveRequest,
+    ) -> BoxProviderFuture<'_, Result<BoxProviderStream<'static, Result<wire::OperationStatus>>>>
+    {
+        panic!("replay must not watch operations")
+    }
+    fn cancel(
+        &self,
+        _: wire::CancelRequest,
+    ) -> BoxProviderFuture<'_, Result<wire::CancelResponse>> {
+        panic!("replay must not cancel")
+    }
+}

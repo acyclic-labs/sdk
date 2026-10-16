@@ -2,7 +2,5 @@
 
 /**
  * Empty deletion acknowledgement. After it, every operation on the deleted
- * Actor identity reports `ACTOR_NOT_FOUND`; an exact retry with the same
- * idempotency key succeeds again.
  */
 export type DeleteActorResponse = Record<never, never>;

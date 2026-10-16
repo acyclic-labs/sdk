@@ -3,6 +3,5 @@ import type { ActorId } from "./ActorId.js";
 
 /**
  * Deletion request. The canonical validator requires an Actor identity and a
- * bounded idempotency key; deletion is terminal for that Actor identity.
  */
 export type DeleteActorRequest = { actorId: ActorId, idempotencyKey: string, };
