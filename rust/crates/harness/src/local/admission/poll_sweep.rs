@@ -57,10 +57,9 @@ struct Fixture {
 impl Fixture {
     async fn new(scenario: Scenario, seed: Option<&Seed>) -> Result<Self> {
         let (schedule, events) = Schedule::new();
-        let directory = if cfg!(target_os = "linux") {
-            temporary_directory(Path::new("/dev/shm"))
-        } else {
-            tempfile::tempdir()
+        let directory = match seed {
+            Some(seed) => temporary_directory(&seed.parent),
+            None => fixture_directory(),
         }
         .map_err(storage)?;
         let reference =
@@ -492,6 +491,18 @@ fn temporary_directory(preferred: &Path) -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir_in(preferred).or_else(|_| tempfile::tempdir())
 }
 
+fn fixture_directory() -> std::io::Result<tempfile::TempDir> {
+    if cfg!(target_os = "linux") {
+        return temporary_directory(Path::new("/dev/shm"));
+    }
+    // Keep native I/O on the build volume (including Windows Dev Drives), not
+    // on an unrelated system-temp filesystem. No durability setting changes.
+    match std::env::current_exe()?.parent() {
+        Some(parent) => temporary_directory(parent),
+        None => tempfile::tempdir(),
+    }
+}
+
 #[test]
 fn unavailable_shared_memory_falls_back_to_the_system_temporary_directory() {
     let parent = tempfile::tempdir().unwrap();
@@ -555,7 +566,13 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
+                    let io_threads = Arc::new(AtomicUsize::new(0));
+                    let started_io = io_threads.clone();
                     let runtime = tokio::runtime::Builder::new_current_thread()
+                        .max_blocking_threads(1)
+                        .on_thread_start(move || {
+                            started_io.fetch_add(1, Ordering::Relaxed);
+                        })
                         .enable_all()
                         .build()
                         .map_err(storage)?;
@@ -565,6 +582,11 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
+                            assert_eq!(
+                                io_threads.load(Ordering::Relaxed),
+                                0,
+                                "replay opened a private Tokio I/O pool"
+                            );
                             return Ok(());
                         };
                         let coverage = runtime

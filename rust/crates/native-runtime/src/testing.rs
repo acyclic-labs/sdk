@@ -218,26 +218,55 @@ where
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.
-pub fn spawn_blocking<F, T>(work: F) -> tokio::task::JoinHandle<T>
+pub fn spawn_blocking<F, T>(work: F) -> impl Future<Output = std::io::Result<T>> + Send
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let Some(context) = Context::current() else {
-        return tokio::task::spawn_blocking(work);
+    let (worker, shared) = if let Some(context) = Context::current() {
+        let active = context.accept("blocking");
+        let owned = active.0.clone();
+        (
+            Some(tokio::spawn(CURRENT.scope(
+                Some(owned.clone()),
+                async move {
+                    let _active = active;
+                    owned.pause("blocking:submitted").await;
+                    let result = CURRENT.sync_scope(None, || {
+                        let _inline = crate::InlineBlocking::enter();
+                        work()
+                    });
+                    owned.pause("blocking:completed").await;
+                    result
+                },
+            ))),
+            None,
+        )
+    } else if crate::inline_blocking_allowed() {
+        // These closures may use Tokio blocking locks, so they need a real
+        // worker outside the driver's runtime. Reuse the native service instead
+        // of creating a private Tokio blocking pool for every replay driver.
+        (
+            None,
+            Some(tokio::spawn(async move {
+                let mut completion = crate::run_blocking_io(work, None)?;
+                let job = completion.pending.take().expect("prepared host operation");
+                queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
+                completion.await
+            })),
+        )
+    } else {
+        (Some(tokio::task::spawn_blocking(work)), None)
     };
-    let active = context.accept("blocking");
-    let owned = active.0.clone();
-    tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
-        let _active = active;
-        owned.pause("blocking:submitted").await;
-        let result = CURRENT.sync_scope(None, || {
-            let _inline = crate::InlineBlocking::enter();
-            work()
-        });
-        owned.pause("blocking:completed").await;
-        result
-    }))
+    async move {
+        match shared {
+            Some(shared) => shared.await.map_err(std::io::Error::other)?,
+            None => worker
+                .expect("original blocking owner")
+                .await
+                .map_err(std::io::Error::other),
+        }
+    }
 }
 
 pub(crate) fn submit(
