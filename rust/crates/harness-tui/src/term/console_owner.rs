@@ -284,9 +284,13 @@ mod tests {
     struct Console {
         restored: Arc<AtomicBool>,
         late: Arc<AtomicBool>,
+        submitting: Option<loom::sync::mpsc::Sender<()>>,
     }
     impl Write for Console {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if let Some(submitting) = self.submitting.take() {
+                submitting.send(()).unwrap_or_else(|error| panic!("{error}"));
+            }
             thread::yield_now();
             if self.restored.load(Ordering::SeqCst) {
                 self.late.store(true, Ordering::SeqCst);
@@ -301,10 +305,12 @@ mod tests {
         loom::model(move || {
             let restored = Arc::new(AtomicBool::new(false));
             let late = Arc::new(AtomicBool::new(false));
+            let (submitting, submitted) = loom::sync::mpsc::channel();
             let guard = RestoreGuard::new(
                 Console {
                     restored: Arc::clone(&restored),
                     late: Arc::clone(&late),
+                    submitting: Some(submitting),
                 },
                 &Capabilities::default(),
             );
@@ -317,7 +323,10 @@ mod tests {
                     |guard| guard.writer().write_all(b"mode"),
                 );
             });
-            thread::yield_now();
+            // Start at the reported race: the worker has passed its cancelled
+            // check and may pause immediately before the native write. This
+            // removes unrelated open/close-before-submit permutations.
+            submitted.recv().unwrap_or_else(|error| panic!("{error}"));
             if broken {
                 owner
                     .state
