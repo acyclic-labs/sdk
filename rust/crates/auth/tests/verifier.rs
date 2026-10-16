@@ -1,6 +1,7 @@
 #[path = "common/signed.rs"]
 mod signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
+use ed25519_dalek::Signer;
 use proptest::prelude::*;
 use prost::Message;
 use signed::*;
@@ -72,6 +73,24 @@ proptest! {
         // admission accepts every generated forgery. The signature property fails.
         prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
         prop_assert!(verify(&changed, &trust, NOW).is_err());
+        // Re-sign the outer block to isolate each certificate signature check.
+        for birth in [false, true] {
+            let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
+            let mut block = BlockProto::decode(wire.blocks[0].payload.as_slice()).unwrap();
+            let certificates = block.certificates.as_mut().unwrap();
+            let signature = if birth { &mut certificates.birth.as_mut().unwrap().signature } else { &mut certificates.keys[0].signature };
+            signature[index] ^= 1 << bit;
+            wire.blocks[0].payload = block.encode_to_vec();
+            wire.blocks[0].signature = key(3).sign(&acyclic_auth::crypto::block_transcript(0, &[0;32], &wire.blocks[0].payload)).to_bytes().to_vec();
+            let changed = wire.encode_to_vec();
+            prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
+            prop_assert!(matches!(verify(&changed, &trust, NOW), Err(VerifyError::Signature)));
+        }
+        let sealed = verify(&bytes, &trust, NOW).unwrap().seal().unwrap().encode();
+        let mut wire = CapabilityProto::decode(sealed.as_slice()).unwrap();
+        let Some(TipProofProto::Sealed(signature)) = &mut wire.proof else { unreachable!() };
+        signature[index] ^= 1 << bit;
+        prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
     }
     #[test]
     fn revoking_block_k_invalidates_k_and_every_descendant(k in 0..4usize) {
