@@ -7,7 +7,7 @@ use acyclic_stream::{
 };
 use std::cell::Cell;
 use std::future::Future;
-use std::sync::atomic::AtomicBool as Observation;
+use std::sync::atomic::{AtomicBool as Observation, AtomicUsize as CallCount};
 
 const ID: AuthorityId = AuthorityId::from_bytes([61; 16]);
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
@@ -58,6 +58,29 @@ struct ModelStream {
     retired_at_record_read: Observation,
     cancelled_at_record_read: Observation,
     cancellation: CancellationToken,
+    cut: Option<usize>,
+    calls: CallCount,
+    change_request: Option<CommitRequest>,
+}
+
+impl ModelStream {
+    async fn call<T>(&self, future: impl Future<Output = T>) -> T {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        let writer = (self.cut == Some(call)).then(|| {
+            let inner = self.inner.clone();
+            let request = self.change_request.clone().unwrap();
+            loom::thread::spawn(move || ready(inner.commit(request)))
+        });
+        let result = future.await;
+        if let Some(writer) = writer {
+            assert!(matches!(
+                writer.join().unwrap().unwrap(),
+                CommitOutcome::Committed(_)
+            ));
+            self.completed.store(true, Ordering::SeqCst);
+        }
+        result
+    }
 }
 
 fn ready<F: Future>(future: F) -> F::Output {
@@ -67,7 +90,7 @@ fn ready<F: Future>(future: F) -> F::Output {
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
+        self.call(self.inner.tail(path)).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str().ends_with("/records") {
@@ -80,7 +103,7 @@ impl StreamProvider for ModelStream {
                     .fetch_or(self.cancellation.is_cancelled(), Ordering::Relaxed);
             }
         }
-        self.inner.read(request).await
+        self.call(self.inner.read(request)).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let result = self.inner.commit(request).await;
@@ -169,6 +192,27 @@ fn request(
 }
 
 fn model(change: Change, broken: bool) {
+    if matches!(change, Change::Cancel) {
+        check(change, broken, None, Arc::new(CallCount::new(0)));
+        return;
+    }
+    // Each provider call reads under the actual Stream state lock, and the
+    // writer publishes once under that lock. Race it against each call in turn;
+    // joining before the next call covers every old/new publication boundary
+    // without multiplying equivalent windows across the entire snapshot.
+    // Discover the call count from executions so an added read adds a new cut.
+    let mut cut = 0;
+    loop {
+        let calls = Arc::new(CallCount::new(0));
+        check(change, broken, Some(cut), calls.clone());
+        if cut >= calls.load(Ordering::Relaxed) {
+            break;
+        }
+        cut += 1;
+    }
+}
+
+fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>) {
     // Immutable fixture bytes do not depend on any schedule. Build them once;
     // every permutation still gets a fresh provider and cancellation state.
     let first = durable(1, Digest::ZERO, b"old");
@@ -223,10 +267,19 @@ fn model(change: Change, broken: bool) {
             retired_at_record_read: Observation::new(false),
             cancelled_at_record_read: Observation::new(false),
             cancellation: cancellation.clone(),
+            cut,
+            calls: CallCount::new(0),
+            change_request: change_request.clone(),
         });
+        if cut == Some(0) {
+            assert!(matches!(
+                ready(provider.commit(change_request.clone().unwrap())).unwrap(),
+                CommitOutcome::Committed(_)
+            ));
+        }
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
-        let reader = loom::thread::spawn(move || {
+        let read = move || {
             let completed_at_entry = matches!(change, Change::Fence)
                 && reader_provider.completed.load(Ordering::SeqCst);
             let store = StreamAuthorityStore::new(reader_provider);
@@ -260,18 +313,15 @@ fn model(change: Change, broken: bool) {
             };
             work.spent().verify(BUDGET).unwrap();
             (result, completed_at_entry)
-        });
-        // Two actors suffice: the reader and this writer. An idle third
-        // thread joining both adds schedules without adding a race.
-        if let Some(request) = &change_request {
-            assert!(matches!(
-                ready(provider.commit(request.clone())).unwrap(),
-                CommitOutcome::Committed(_)
-            ));
+        };
+        let (result, completed_at_entry) = if cut.is_some() {
+            read()
         } else {
+            let reader = loom::thread::spawn(read);
             cancellation.cancel();
-        }
-        let (result, completed_at_entry) = reader.join().unwrap();
+            reader.join().unwrap()
+        };
+        calls.fetch_max(provider.calls.load(Ordering::Relaxed), Ordering::Relaxed);
         match result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
