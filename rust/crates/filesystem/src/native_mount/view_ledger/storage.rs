@@ -115,6 +115,11 @@ pub(super) fn record(
             let mut positions = map.write().unwrap_or_else(PoisonError::into_inner);
             if plan.holds_for(&positions, key) {
                 let at = positions.latest.entry(key).or_insert(position.0);
+                #[cfg(all(test, acyclic_fs_loom))]
+                if model_checking::overwrite_stamp() {
+                    *at = position.0;
+                    return Ok(());
+                }
                 *at = (*at).max(position.0);
                 return Ok(());
             }

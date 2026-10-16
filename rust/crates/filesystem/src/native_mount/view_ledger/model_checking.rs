@@ -5,6 +5,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 loom::thread_local! {
     static MAP_BEFORE_METER: Cell<bool> = Cell::new(false);
+    static OVERWRITE_STAMP: Cell<bool> = Cell::new(false);
+}
+
+pub(super) fn overwrite_stamp() -> bool {
+    OVERWRITE_STAMP.with(Cell::get)
 }
 
 pub(super) fn hold_map_while_charging(
@@ -71,4 +76,60 @@ fn concurrent_reader_and_growth_share_the_original_meter() {
         .downcast_ref::<String>()
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
+}
+
+#[test]
+fn concurrent_records_keep_the_newest_publication() {
+    crate::initialize_test_native_io();
+    let exercise = |broken| {
+        loom::model(move || {
+            let work = crate::NativeMaterializationWork::new(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .unwrap();
+            let map = Arc::new(RwLock::new(ChangePositions::default()));
+            record(
+                &map,
+                1,
+                ViewStamp(1),
+                &mut NativeDemandCarrier::Native(&work),
+            )
+            .unwrap();
+            let writer = loom::thread::spawn({
+                let (map, work) = (Arc::clone(&map), work.clone());
+                move || {
+                    OVERWRITE_STAMP.with(|fault| fault.set(broken));
+                    record(
+                        &map,
+                        1,
+                        ViewStamp(2),
+                        &mut NativeDemandCarrier::Native(&work),
+                    )
+                    .unwrap();
+                }
+            });
+            record(
+                &map,
+                1,
+                ViewStamp(3),
+                &mut NativeDemandCarrier::Native(&work),
+            )
+            .unwrap();
+            writer.join().unwrap();
+            assert!(
+                !unchanged_since(&map, ViewStamp(2), [1]),
+                "newest publication was overwritten"
+            );
+            assert!(unchanged_since(&map, ViewStamp(3), [1]));
+        });
+    };
+    exercise(false);
+    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
+        .expect_err("an older concurrent record must not replace the newest stamp");
+    let message = error.downcast_ref::<String>().expect("assertion message");
+    assert!(
+        message.contains("newest publication was overwritten"),
+        "{message}"
+    );
 }
