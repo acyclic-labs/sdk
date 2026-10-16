@@ -101,12 +101,15 @@ async fn run(case: Case) -> Result<()> {
         )
         .await
         .map_err(super::super::storage)?;
-    let execution = harness.resume(task_id);
+    let execution_done = std::cell::Cell::new(false);
+    let progress = std::cell::RefCell::new((0u64, Vec::new(), Vec::new()));
+    let execution = async {
+        let output = harness.resume(task_id).await;
+        execution_done.set(true);
+        output
+    };
     let frames = async {
-        let mut admitted = Vec::new();
-        let mut completed = Vec::new();
-        let mut revision = 0;
-        while completed.len() < case.tasks {
+        while progress.borrow().2.len() < case.tasks {
             let record = followed
                 .try_next()
                 .await
@@ -114,32 +117,37 @@ async fn run(case: Case) -> Result<()> {
                 .expect("live task frames ended");
             let frame = crate::wire::SchedulerEventEnvelope::decode(record.value.as_ref())
                 .map_err(super::super::storage)?;
-            assert_eq!(frame.revision, revision + 1, "{}", case.name);
-            revision = frame.revision;
+            let mut progress = progress.borrow_mut();
+            assert_eq!(frame.revision, progress.0 + 1, "{}", case.name);
+            progress.0 = frame.revision;
             let event: crate::scheduler::SchedulerEvent =
                 serde_json::from_slice(&frame.canonical_event_json)
                     .map_err(super::super::storage)?;
             match event {
                 crate::scheduler::SchedulerEvent::Declared { spec } => {
-                    admitted.push(spec.operation_id)
+                    progress.1.push(spec.operation_id)
                 }
                 crate::scheduler::SchedulerEvent::Completed { operation_id, .. } => {
-                    completed.push(operation_id)
+                    progress.2.push(operation_id)
                 }
                 _ => {}
             }
         }
-        assert_eq!(admitted.len(), case.tasks, "{}", case.name);
-        assert_eq!(admitted, completed, "{}", case.name);
-        assert_eq!(admitted[0], operation);
-        Ok::<_, Error>(admitted)
+        let progress = progress.borrow();
+        assert_eq!(progress.1.len(), case.tasks, "{}", case.name);
+        assert_eq!(progress.1, progress.2, "{}", case.name);
+        assert_eq!(progress.1[0], operation);
+        Ok::<_, Error>(progress.1.clone())
     };
     let (output, admitted) = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         futures::future::try_join(execution, frames),
     )
     .await
-    .expect("goal scenario stalled")?;
+    .unwrap_or_else(|_| panic!(
+        "goal scenario stalled: case={} task={task_id:?} execution_done={} remaining={} frames={:?}",
+        case.name, execution_done.get(), provider.remaining(), progress.borrow()
+    ))?;
     assert_eq!(
         output.text,
         format!("settle-{}", case.writes.len() - 1),

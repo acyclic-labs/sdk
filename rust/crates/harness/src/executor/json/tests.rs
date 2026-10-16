@@ -615,6 +615,41 @@ mod object_work {
             prop_assert!(full_scan > bound);
         }
     }
+    proptest! {
+        // Counts depend on nodes, independently of array width, nesting and text size.
+        #[test]
+        fn nested_and_wide_arrays_do_not_rescan(
+            depth in 1usize..12, width in 1usize..48, text in "[a-z]{32,96}",
+        ) {
+            let mut value = Value::Array((0..width).map(|_| Value::String(text.clone())).collect());
+            for _ in 0..depth { value = Value::Array(vec![value, Value::Array(Vec::new())]); }
+            let nodes = (width + 1 + 2 * depth) as u64;
+            let mut work = (0, 0);
+            let copied = json_value_bounded(&value, BOUNDS, None, &mut |event| {
+                match event {
+                    JsonCodecCharge::Inspect { items } | JsonCodecCharge::Work { items, .. } => work.0 += items,
+                    JsonCodecCharge::Read { bytes } => work.1 += bytes,
+                    _ => {},
+                }
+                Ok(())
+            }).unwrap();
+            prop_assert_eq!(&copied, &value);
+            prop_assert_eq!(work, (nodes, 0));
+            let bytes = serde_json::to_vec(&value).unwrap();
+            oracle::check(&bytes);
+            // Negative control: traverse every descendant as the former pre-count did.
+            fn rescans(value: &Value) -> usize {
+                match value {
+                    Value::Array(entries) => serde_json::to_vec(value).unwrap().len() - 1
+                        + entries.iter().map(rescans).sum::<usize>(),
+                    _ => 0,
+                }
+            }
+            let scanned = rescans(&value) as u64;
+            prop_assert!(work.0 + scanned > nodes);
+            prop_assert!(work.1 + scanned > 0);
+        }
+    }
     #[test]
     fn checked_codec_fuzz_corpus() {
         for bytes in [

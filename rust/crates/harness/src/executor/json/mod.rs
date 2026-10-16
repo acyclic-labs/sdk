@@ -4,6 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 mod admission;
+mod arrays;
 mod identity;
 mod records;
 pub(crate) use identity::{
@@ -163,7 +164,7 @@ fn boundary(reason: &'static str, code: Option<crate::wire::ErrorCode>) -> Error
     let _ = code;
     Error::Invalid(reason.into())
 }
-fn checked(value: Option<u64>, reason: &'static str) -> Result<u64> {
+fn checked<T>(value: Option<T>, reason: &'static str) -> Result<T> {
     value.ok_or_else(|| boundary(reason, Some(crate::wire::ErrorCode::Invalid)))
 }
 
