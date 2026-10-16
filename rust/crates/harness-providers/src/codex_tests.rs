@@ -47,16 +47,20 @@ fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, 
     std::fs::write(&path, auth(access).to_string()).map_err(|error| invalid(error.to_string()))?;
     let transport = Refresh {
         status,
-        response: json!({"access_token":jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600),
+        response: json!({"access_token":jwt(crate::codex::fixed_now().unix_timestamp() + 3600),
         "id_token":"new-id","refresh_token":"new-refresh"}),
         sent: Mutex::new(Vec::new()),
     };
-    Ok((root, CodexLogin::from_path(path), transport))
+    Ok((
+        root,
+        CodexLogin::from_path(path).with_clock(crate::codex::fixed_now),
+        transport,
+    ))
 }
 
 #[tokio::test]
 async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
-    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, transport) = fixture(&access, 200)?;
     let (bearer, account) = login.bearer(&transport, None, None).await?;
     assert_eq!(bearer, access);
@@ -74,50 +78,77 @@ async fn fresh_login_uses_local_bearer_without_refresh() -> Result<()> {
 
 #[tokio::test]
 async fn proactive_refresh_rotates_tokens_and_preserves_the_auth_document() -> Result<()> {
-    let (root, login, transport) =
-        fixture(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 299), 200)?;
-    let (access, account) = login.bearer(&transport, None, None).await?;
-    assert_eq!(access, transport.response["access_token"]);
-    assert_eq!(account.as_deref(), Some("account"));
-    let stored = crate::json(
-        &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
-    )?;
-    assert_eq!(stored["agent_identity"], json!({"preserve":true}));
-    assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
-    assert_eq!(stored["tokens"]["id_token"], "new-id");
-    assert_eq!(stored["tokens"]["account_id"], "account");
-    assert!(OffsetDateTime::parse(stored["last_refresh"].as_str().unwrap_or(""), &Rfc3339).is_ok());
-    let requests = transport
-        .sent
-        .lock()
-        .map_err(|_| invalid("fixture poisoned"))?;
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
-    let body = crate::json(&requests[0].body)?;
-    assert_eq!(body["client_id"], CLIENT_ID);
-    assert_eq!(body["grant_type"], "refresh_token");
-    assert_eq!(body["refresh_token"], "old-refresh");
+    for expiry in [0, crate::codex::fixed_now().unix_timestamp() + 299] {
+        let (root, login, transport) = fixture(&jwt(expiry), 200)?;
+        let (access, account) = login.bearer(&transport, None, None).await?;
+        assert_eq!(access, transport.response["access_token"]);
+        assert_eq!(account.as_deref(), Some("account"));
+        let stored = crate::json(
+            &std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?,
+        )?;
+        assert_eq!(stored["agent_identity"], json!({"preserve":true}));
+        assert_eq!(stored["tokens"]["refresh_token"], "new-refresh");
+        assert_eq!(stored["tokens"]["id_token"], "new-id");
+        assert_eq!(stored["tokens"]["account_id"], "account");
+        assert!(
+            OffsetDateTime::parse(stored["last_refresh"].as_str().unwrap_or(""), &Rfc3339).is_ok()
+        );
+        let requests = transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+        let body = crate::json(&requests[0].body)?;
+        assert_eq!(body["client_id"], CLIENT_ID);
+        assert_eq!(body["grant_type"], "refresh_token");
+        assert_eq!(body["refresh_token"], "old-refresh");
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn shared_login_serializes_refresh_and_reloads_the_winner() -> Result<()> {
-    let (_root, first, transport) = fixture(&jwt(0), 200)?;
+    refresh_pair(false, 200).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "two refreshes raced")]
+async fn negative_control_detects_independent_locks_racing_the_scripted_token_endpoint() {
+    refresh_pair(true, 200).await.expect("scripted refresh");
+}
+
+async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
+    let (_root, first, transport) = fixture(&jwt(0), status)?;
     let transport = Arc::new(transport);
-    let second = first.fresh();
+    let mut second = first.fresh();
     assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
+    if broken {
+        second.refresh = crate::sync::Arc::new(crate::refresh::Refresh::new());
+    }
+    // The scripted endpoint suspends after recording each request. Both
+    // attempts therefore reach the shared guard before the first refresh returns.
     let (left, right) = futures::join!(
         first.bearer(transport.as_ref(), None, None),
         second.bearer(transport.as_ref(), None, None)
     );
-    assert_eq!(left?, right?);
+    if status == 200 {
+        assert_eq!(left?, right?);
+    } else {
+        let (left, right) = (left.unwrap_err(), right.unwrap_err());
+        assert_eq!(left.code(), right.code());
+        assert_eq!(left.to_string(), right.to_string());
+        assert!(left.to_string().contains(&status.to_string()));
+    }
+    let requests = transport
+        .sent
+        .lock()
+        .map_err(|_| invalid("fixture poisoned"))?;
+    assert_eq!(requests.len(), 1, "two refreshes raced");
+    assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
     assert_eq!(
-        transport
-            .sent
-            .lock()
-            .map_err(|_| invalid("fixture poisoned"))?
-            .len(),
-        1
+        crate::json(&requests[0].body)?["refresh_token"],
+        "old-refresh"
     );
     Ok(())
 }
@@ -127,7 +158,7 @@ mod races;
 
 #[tokio::test]
 async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Result<()> {
-    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"access_token":"updated-access"});
     let (updated, _) = login.bearer(&transport, Some(&access), None).await?;
@@ -142,7 +173,7 @@ async fn unauthorized_bearer_refreshes_once_and_retains_omitted_tokens() -> Resu
 
 #[tokio::test]
 async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Result<()> {
-    let access = jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600);
+    let access = jwt(crate::codex::fixed_now().unix_timestamp() + 3600);
     let (root, login, mut transport) = fixture(&access, 200)?;
     transport.response = json!({"refresh_token":"rotated-refresh","id_token":"rotated-id"});
     assert_eq!(
@@ -159,19 +190,33 @@ async fn refresh_retains_access_token_when_only_other_tokens_are_rotated() -> Re
 
 #[tokio::test]
 async fn revoked_refresh_and_account_changes_preserve_existing_credentials() -> Result<()> {
-    let (root, login, transport) = fixture(&jwt(0), 400)?;
-    let before =
-        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None, None).await.is_err());
-    assert_eq!(
-        before,
-        std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
-    );
-    let mut changed = auth(&jwt(OffsetDateTime::now_utc().unix_timestamp() + 3600));
-    changed["tokens"]["account_id"] = json!("another-account");
-    std::fs::write(root.path().join("auth.json"), changed.to_string())
-        .map_err(|e| invalid(e.to_string()))?;
-    assert!(login.bearer(&transport, None, None).await.is_err());
+    for status in [400, 401, 403] {
+        let (root, login, transport) = fixture(&jwt(0), status)?;
+        let before =
+            std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?;
+        let error = login
+            .bearer(&transport, None, None)
+            .await
+            .expect_err("rejected refresh");
+        assert!(matches!(error, acyclic_harness::Error::Unauthorized(_)));
+        assert!(error.to_string().contains(&status.to_string()));
+        let requests = transport
+            .sent
+            .lock()
+            .map_err(|_| invalid("fixture poisoned"))?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url, "https://auth.openai.com/oauth/token");
+        drop(requests);
+        assert_eq!(
+            before,
+            std::fs::read(root.path().join("auth.json")).map_err(|e| invalid(e.to_string()))?
+        );
+        let mut changed = auth(&jwt(crate::codex::fixed_now().unix_timestamp() + 3600));
+        changed["tokens"]["account_id"] = json!("another-account");
+        std::fs::write(root.path().join("auth.json"), changed.to_string())
+            .map_err(|e| invalid(e.to_string()))?;
+        assert!(login.bearer(&transport, None, None).await.is_err());
+    }
     Ok(())
 }
 
@@ -253,4 +298,50 @@ fn checked_in_auth_seed_exercises_an_accepted_document() {
         assert!(decode_auth(&seed[1..]).is_ok());
         crate::fuzzing::assert_stream_invariants(seed);
     }
+}
+
+#[tokio::test]
+async fn failed_refreshes_share_the_typed_result_with_all_queued_callers() -> Result<()> {
+    for status in [400, 401, 403, 429, 503] {
+        refresh_pair(false, status).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "two refreshes raced")]
+async fn negative_control_failed_refreshes_race_without_shared_ownership() {
+    refresh_pair(true, 503).await.expect("scripted refresh");
+}
+
+#[tokio::test]
+async fn a_new_caller_can_retry_a_previously_failed_attempt() -> Result<()> {
+    let (_root, login, transport) = fixture(&jwt(0), 503)?;
+    assert!(login.bearer(&transport, None, None).await.is_err());
+    assert!(login.bearer(&transport, None, None).await.is_err());
+    assert_eq!(transport.sent.lock().unwrap().len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn injected_clock_drives_exact_expiry_boundaries_and_publication_time() -> Result<()> {
+    for remaining in [299, 300, 301] {
+        let (_root, login, transport) = fixture(
+            &jwt(crate::codex::fixed_now().unix_timestamp() + remaining),
+            200,
+        )?;
+        login.bearer(&transport, None, None).await?;
+        assert_eq!(
+            transport.sent.lock().unwrap().len(),
+            usize::from(remaining <= 300)
+        );
+        if remaining <= 300 {
+            let stored = crate::json(&std::fs::read(&login.path).unwrap())?;
+            assert_eq!(
+                stored["last_refresh"],
+                crate::codex::fixed_now().format(&Rfc3339).unwrap()
+            );
+        }
+    }
+    Ok(())
 }

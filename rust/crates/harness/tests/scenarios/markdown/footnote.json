@@ -1,0 +1,5 @@
+{"turns":[[{"type":"event","kind":"content","delta":"text[^"},{"type":"event","kind":"content","delta":
+  "1]\n\n"},{"type":"event","kind":"content","delta":"[^1]: "},{"type":"event","kind":"content","delta":
+  "note"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"text[^1]\n\n[^1]: note",
+  "model_events":[{"kind":"content","delta":"text[^"},{"kind":"content","delta":"1]\n\n"},{"kind":"content",
+  "delta":"[^1]: "},{"kind":"content","delta":"note"},{"kind":"completed","metadata":null}]}}

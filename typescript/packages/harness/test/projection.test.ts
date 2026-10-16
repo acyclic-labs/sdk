@@ -146,9 +146,10 @@ test("tool projection links each result to its exact call, even when provider ca
   const resultIds = [("11111111-1111-1111-1111-111111111111" as ConversationMessageId), ("22222222-2222-2222-2222-222222222222" as ConversationMessageId)];
   let state = conversationState();
   for (let index = 0; index < 2; index++) {
-    const call = await artifact(`tool/call-${index}.json`, { invocation: {
-      operation_id: callIds[index], call_id: "reused", name: `tool-${index}`, arguments: { index },
-    }, metadata: null });
+    const call = await artifact(`tool/call-${index}.json`, {
+      invocation: { operation_id: callIds[index]!, call_id: "reused", name: `tool-${index}`, arguments: { index } },
+      metadata: null,
+    });
     const result = await artifact(`tool/result-${index}.json`, { value: { index, full: "x".repeat(1024) } });
     const projection = await artifact(`tool/projection-${index}.json`, { kind: "json", value: { index } });
     state = conversationState(...state.messages, { id: callIds[index]!, sequence: BigInt(index * 2 + 1),
@@ -178,9 +179,7 @@ test("tool projection links each result to its exact call, even when provider ca
 });
 
 test("tool linkage and exact JSON numbers fail before owner reads", async () => {
-  const callBytes = new TextEncoder().encode(JSON.stringify({ invocation: {
-    operation_id: "30303030-3030-3030-3030-303030303030", call_id: "reused", name: "tool", arguments: {},
-  }, metadata: null }));
+  const callBytes = new TextEncoder().encode(JSON.stringify({ invocation: { operation_id: "30303030-3030-3030-3030-303030303030", call_id: "reused", name: "tool", arguments: {} }, metadata: null }));
   const call = await reference("tool/preflight-call.json", callBytes, "application/json");
   const resultBytes = new TextEncoder().encode(JSON.stringify({ value: "unused" }));
   const result = await reference("tool/preflight-result.json", resultBytes, "application/json");

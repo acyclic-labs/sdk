@@ -9,7 +9,6 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
-use time::OffsetDateTime;
 
 const RESPONSE: &str = concat!(
     "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n",
@@ -54,6 +53,12 @@ impl HttpTransport for Server {
 mod controls;
 #[path = "codex_native_tests.rs"]
 mod native;
+#[path = "codex_reasoning_tests.rs"]
+mod reasoning;
+#[path = "codex_recovery_tests.rs"]
+mod recovery;
+#[path = "codex_stock_tests.rs"]
+mod stock;
 
 fn fixture(
     replies: Vec<(u16, String)>,
@@ -63,7 +68,7 @@ fn fixture(
         "header.{}.signature",
         URL_SAFE_NO_PAD.encode(
             json!({
-                "exp":OffsetDateTime::now_utc().unix_timestamp() + 3600
+                "exp":crate::codex::fixed_now().unix_timestamp() + 3600
             })
             .to_string()
         )
@@ -79,7 +84,7 @@ fn fixture(
     .map_err(|error| invalid(error.to_string()))?;
     Ok((
         root,
-        CodexLogin::from_path(path),
+        CodexLogin::from_path(path).with_clock(crate::codex::fixed_now),
         Arc::new(Server {
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
@@ -224,16 +229,25 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
             base_url: "https://other.test/v1".into(),
             models: BTreeMap::from([(
                 "gpt-5".into(),
-                acyclic_harness::context::ModelContextCapacity {
-                    context_tokens: 8192,
-                    output_tokens: 1024,
+                ModelSpec {
+                    capacity: acyclic_harness::context::ModelContextCapacity {
+                        context_tokens: 8192,
+                        output_tokens: 1024,
+                    },
+                    features: ModelFeatures::default(),
                 },
             )]),
-            headers: Default::default(),
             max_event_bytes: 4096,
+            token_counter: default_catalog()["openai"].token_counter.clone(),
         },
     )?;
-    assert!(registry.resolve("openai/gpt-5").is_err());
+    let error = registry
+        .resolve("openai/gpt-5")
+        .err()
+        .expect("foreign route refused");
+    assert!(
+        matches!(error, Error::Invalid(reason) if reason == "Codex CLI credentials require the built-in Responses route")
+    );
     Ok(())
 }
 
@@ -303,114 +317,5 @@ fn codex_authentication_is_catalog_policy_independent_of_provider_ids()
         projection::endpoint(&local)?,
         "http://127.0.0.1:1234/v1/responses"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn codex_login_preserves_encrypted_reasoning_before_function_calls_across_followups()
--> acyclic_harness::Result<()> {
-    use acyclic_harness::{
-        conversation::Limits,
-        model::{
-            ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage, ModelRole,
-            PreparedModelRequest, ToolCall, ToolResultContent,
-        },
-    };
-    let native = json!({"id":"rs_native","type":"reasoning","encrypted_content":"encrypted-exact==","summary":[{"type":"summary_text","text":"plan"}]});
-    let first = format!(
-        "data: {}\n\ndata: {}\n\ndata: {}\n\n",
-        json!({"type":"response.output_item.done","output_index":0,"item":native}),
-        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_echo","name":"echo","arguments":"{}"}}),
-        json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":8,"output_tokens":4}}})
-    );
-    let (_root, login, server, _) = fixture(vec![(200, first), (200, RESPONSE.into())])?;
-    let provider = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
-    let (initial, dispatch) = crate::tests::request(&provider)?;
-    let mut request = initial.request().clone();
-    request.tools.push(acyclic_harness::tool::ToolDefinition {
-        name: "echo".into(),
-        revision: "1".into(),
-        description: "echo".into(),
-        input_schema: json!({"type":"object"}),
-        output_schema: json!({}),
-        projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
-    });
-    let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
-    let digest = prepared.request_digest();
-    let events = provider
-        .generate(
-            prepared,
-            ModelDispatch {
-                request_digest: digest,
-                ..dispatch
-            },
-        )
-        .try_collect::<Vec<_>>()
-        .await?;
-    let call = events
-        .into_iter()
-        .find_map(|event| match event {
-            ModelEvent::ToolCall(call) => Some(call),
-            _ => None,
-        })
-        .expect("tool call");
-    // Persist and reconstruct through the shared canonical tool-call envelope.
-    let bytes = serde_json::to_vec(&call).expect("fixture encoding");
-    let call: ToolCall = serde_json::from_slice(&bytes).expect("fixture decoding");
-    request.messages.push(ModelMessage {
-        role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall(call)),
-    });
-    request.messages.push(ModelMessage {
-        role: ModelRole::Tool,
-        content: ModelContent::Part(ModelContentPart::ToolResult {
-            call_id: "call_echo".into(),
-            name: "echo".into(),
-            content: ToolResultContent::Json {
-                value: json!({"ok":true}),
-            },
-        }),
-    });
-    let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-    let replay = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
-    provider
-        .generate(
-            replay,
-            ModelDispatch {
-                step: 1,
-                request_digest: prepared.request_digest(),
-                ..dispatch
-            },
-        )
-        .try_collect::<Vec<_>>()
-        .await?;
-    let sent = server
-        .requests
-        .lock()
-        .map_err(|_| invalid("fixture poisoned"))?;
-    assert_eq!(sent.len(), 2);
-    for request in sent.iter() {
-        assert_eq!(
-            request.url,
-            "https://chatgpt.com/backend-api/codex/responses"
-        );
-        let body = crate::json(&request.body)?;
-        assert_eq!(body["instructions"], "system");
-        assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
-        assert_eq!(body["store"], false);
-        assert!(
-            body["input"]
-                .as_array()
-                .expect("input")
-                .iter()
-                .all(|item| item["role"] != "system")
-        );
-    }
-    let body = crate::json(&sent[1].body)?;
-    assert_eq!(body["input"][1], native);
-    assert_eq!(body["input"][2]["type"], "function_call");
-    assert_eq!(body["input"][3]["type"], "function_call_output");
     Ok(())
 }

@@ -11,25 +11,9 @@ pub(crate) async fn read_tool_call(
 ) -> Result<ToolCall> {
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
     #[cfg(feature = "filesystem")]
-    let source_bytes = match (io, hold) {
-        (Some(_), Some(hold)) => {
-            let bytes = hold.bytes();
-            hold.into_retained()?;
-            Some(bytes)
-        }
-        (Some(io), None) => {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "observed tool value lacks ownership",
-            ));
-        }
-        (None, _) => None,
-    };
+    let source_hold = hold;
     #[cfg(not(feature = "filesystem"))]
     let _ = hold;
-    #[cfg(feature = "filesystem")]
-    let strings_hold;
     crate::model::charge_items(io, 5)?;
     let object = value
         .as_object_mut()
@@ -69,38 +53,71 @@ pub(crate) async fn read_tool_call(
             })?;
         let argument_bytes = crate::executor::json::json_value_logical_owned_bytes(&arguments)?;
         let metadata_bytes = crate::executor::json::json_value_logical_owned_bytes(&metadata)?;
-        let source = source_bytes.ok_or_else(|| {
+        let mut source = source_hold.ok_or_else(|| {
             stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
                 "observed tool value lacks ownership",
             )
         })?;
-        let discarded = source
-            .checked_sub(strings)
-            .and_then(|bytes| bytes.checked_sub(argument_bytes))
-            .and_then(|bytes| bytes.checked_sub(metadata_bytes))
+        let retained = strings
+            .checked_add(argument_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata_bytes))
             .ok_or_else(|| {
                 stock_boundary(Some(io), Invalid, "tool fields exceed source ownership")
             })?;
-        strings_hold = io.guard_owned(strings)?;
-        let arguments = (arguments, io.guard_owned(argument_bytes)?);
-        let metadata = (metadata, io.guard_owned(metadata_bytes)?);
-        let discarded_hold = io.guard_owned(discarded)?;
-        drop((value, invocation, discarded_hold));
-        // The record and invocation envelopes consume two levels.
-        let (arguments, hold) = convert::<Value>(arguments, maximum, 126, io)?;
-        hold.into_retained()?;
-        let (metadata, hold) = convert::<Value>(metadata, maximum, 127, io)?;
-        hold.into_retained()?;
-        strings_hold.into_retained()?;
-        return Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata));
+        drop((value, invocation));
+        // These fields are already decoded Values validated by read_value. Keep
+        // their original guard; a second serde conversion only interprets markers.
+        source.substitute(retained)?;
+        source.into_retained()?;
     }
-    let arguments = serde_json::from_value(arguments)
-        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    let metadata = serde_json::from_value(metadata)
-        .map_err(|error| Error::Invalid(format!("tool metadata is invalid: {error}")))?;
     Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata))
+}
+
+pub(super) async fn read_reasoning(
+    resolver: &dyn ContentResidencyVerifier,
+    file: &FileRef,
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<crate::model::ReasoningBlock> {
+    let (value, hold) = read_value(resolver, file, maximum, io).await?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let (event, hold) = convert::<crate::model::ModelEvent>(
+            (
+                value,
+                hold.ok_or_else(|| {
+                    stock_boundary(Some(io), Invalid, "reasoning lacks source custody")
+                })?,
+            ),
+            maximum,
+            128,
+            io,
+        )?;
+        let crate::model::ModelEvent::ReasoningBlock { block } = event else {
+            return Err(stock_boundary(
+                Some(io),
+                Invalid,
+                "artifact is not canonical reasoning",
+            ));
+        };
+        let mut hold = hold;
+        hold.substitute(block.payload_bytes()?)?;
+        hold.into_retained()?;
+        return Ok(block);
+    }
+    let _ = hold;
+    let event: crate::model::ModelEvent = serde_json::from_value(value)
+        .map_err(|_| stock_boundary(io, Invalid, "invalid reasoning artifact"))?;
+    match event {
+        crate::model::ModelEvent::ReasoningBlock { block } => Ok(block),
+        _ => Err(stock_boundary(
+            io,
+            Invalid,
+            "artifact is not canonical reasoning",
+        )),
+    }
 }
 
 pub(super) async fn read_result(
@@ -112,8 +129,7 @@ pub(super) async fn read_result(
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        // The Value conversion normalizes serde_json's private raw markers.
-        let normalized = convert::<Value>(
+        let (result, hold) = convert(
             (
                 value,
                 hold.ok_or_else(|| {
@@ -128,14 +144,11 @@ pub(super) async fn read_result(
             128,
             io,
         )?;
-        let (result, hold) = convert(normalized, maximum, 128, io)?;
         hold.into_retained()?;
         return Ok(result);
     }
     let _ = hold;
-    let normalized: Value = serde_json::from_value(value)
-        .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    serde_json::from_value(normalized).map_err(|error| Error::Invalid(error.to_string()))
+    serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 pub(crate) async fn read_value<'a>(
@@ -181,38 +194,15 @@ pub(crate) async fn read_value<'a>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let (value, hold) = io.decode(std::marker::PhantomData::<Value>, &bytes, Invalid)?;
-        validate_numbers(&value, Some(io))?;
+        with_history_io(Some(io), |work| {
+            crate::conversation::validate_json_value(&value, work)
+        })?;
         return Ok((value, Some(hold)));
     }
     let value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
-    validate_numbers(&value, None)?;
+    crate::conversation::validate_json_value(&value, &mut None)?;
     Ok((value, None))
-}
-
-fn validate_numbers(value: &Value, io: Option<&PreparationIo>) -> Result<()> {
-    crate::model::charge_items(io, 1)?;
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .try_for_each(|value| validate_numbers(value, io)),
-        Value::Object(values) => values
-            .values()
-            .try_for_each(|value| validate_numbers(value, io)),
-        Value::Number(number)
-            if !crate::conversation::is_exact_js_integer(number)
-                || number
-                    .as_f64()
-                    .is_some_and(|value| !crate::conversation::is_exact_js_number(value)) =>
-        {
-            Err(stock_boundary(
-                io,
-                Invalid,
-                "tool artifact contains an inexact number",
-            ))
-        }
-        _ => Ok(()),
-    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -287,17 +277,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     maximum_depth: u32,
     io: &'a PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
-    let missing_hold = || {
-        stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Storage,
-            "tool conversion lacks ownership",
-        )
-    };
-    let mut source_hold = Some(source.1);
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut native = None;
-    let input = source.0;
+    let (input, mut hold) = source;
     let shape = crate::executor::json::json_owned_value_shape_bounded(
         &input,
         crate::executor::json::JsonBounds {
@@ -317,81 +297,25 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
             )),
         },
     )?;
-    let mut additional = Some(io.reserve_decode(conversion_allowance::<T>(shape, io)?)?);
-    let total = source_hold
-        .as_ref()
-        .ok_or_else(missing_hold)?
-        .bytes()
-        .checked_add(additional.as_ref().ok_or_else(missing_hold)?.bytes())
-        .ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                Invalid,
-                "owned tool conversion allowance overflows",
-            )
-        })?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.original_native_work().is_some() {
-        source_hold
-            .take()
-            .ok_or_else(missing_hold)?
-            .into_retained()?;
-        additional
-            .take()
-            .ok_or_else(missing_hold)?
-            .into_retained()?;
-        native = Some(io.take_native_custody(total)?);
-    }
+    hold.absorb(io.reserve_decode(conversion_allowance::<T>(shape, io)?)?)?;
     let value: T = match serde_json::from_value(input) {
         Ok(value) => value,
-        Err(error) => {
+        Err(source) => {
             #[cfg(not(target_arch = "wasm32"))]
-            if native.is_some() {
+            if io.original_native_work().is_some() {
+                let (source, custody) = crate::filesystem::native_decoded((source, hold))?;
                 return Err(Error::NativeJson {
                     code: Invalid,
-                    source: error,
-                    custody: native,
+                    source,
+                    custody: Some(custody),
                 });
             }
-            let message = error.to_string();
-            additional
-                .take()
-                .ok_or_else(missing_hold)?
-                .into_retained()?;
+            let message = source.to_string();
+            hold.substitute(message.capacity() as u64)?;
+            hold.into_retained()?;
             return Err(Error::Invalid(message));
         }
     };
-    let retained = value.logical_owned_bytes()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(mut custody) = native.take() {
-        if let Err(cause) = custody
-            .bytes()
-            .checked_sub(retained)
-            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
-                acyclic_fs::WorkError::Overflow,
-            ))
-            .and_then(|bytes| custody.release(bytes))
-        {
-            drop(value);
-            return Err(Error::NativeWork {
-                cause,
-                custody: Some(custody),
-            });
-        }
-        io.absorb_native_custody(custody)?;
-        return Ok((value, io.guard_owned(retained)?));
-    }
-    let released = total.checked_sub(retained).ok_or_else(|| {
-        stock_boundary(Some(io), Invalid, "owned tool conversion exceeds admission")
-    })?;
-    source_hold
-        .take()
-        .ok_or_else(missing_hold)?
-        .into_retained()?;
-    additional
-        .take()
-        .ok_or_else(missing_hold)?
-        .into_retained()?;
-    io.release(released)?;
-    Ok((value, io.guard_owned(retained)?))
+    hold.substitute(value.logical_owned_bytes()?)?;
+    Ok((value, hold))
 }

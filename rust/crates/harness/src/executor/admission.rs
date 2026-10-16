@@ -48,12 +48,22 @@ impl ModelEventAdmission {
                 "model emitted an event after completion",
             ));
         }
-        let ModelEvent::ToolCall(crate::model::ToolCall { call_id, name, .. }) = event else {
+        if let ModelEvent::ReasoningBlock { block } = event {
+            with_history_io(io, |work| {
+                block.validate_limits(limits, work)?;
+                crate::executor::json::json_byte_length(
+                    event,
+                    limits.render_bytes.min(limits.file_bytes),
+                    work,
+                )
+                .map(|_| ())
+            })?;
+        }
+        let ModelEvent::ToolCall(call) = event else {
             return Ok(None);
         };
-        with_history_io(io, |work| {
-            ToolInvocation::validate_identity(call_id, Some(name), work)
-        })?;
+        crate::tool::validate_model_call_recorded(call, limits, io)?;
+        let call_id = &call.call_id;
         if self.calls.len() >= limits.tool_calls_per_step {
             return Err(stock_boundary(
                 io,
@@ -143,9 +153,19 @@ impl ModelEventAdmission {
                 })?;
             }
             ModelEvent::Completed { .. } => self.completed = true,
-            ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
+            ModelEvent::Content { .. }
+            | ModelEvent::Reasoning { .. }
+            | ModelEvent::ReasoningBlock { .. } => {}
         }
         self.count += 1;
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "reasoning_admission_tests.rs"]
+mod reasoning_tests;
+
+#[cfg(test)]
+#[path = "recorded_admission_tests.rs"]
+mod recorded_tests;

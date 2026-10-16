@@ -32,6 +32,20 @@ fn nominal_error(error: domain::DomainError) -> JsValue {
     js_error(code, error)
 }
 
+/// Encode a validated source timer, retaining exact u64 milliseconds from JS bigint.
+#[wasm_bindgen(js_name = "timerRecord")]
+pub fn timer_record(task: String, operation: String, deadline: BigInt) -> Result<Vec<u8>, JsValue> {
+    let deadline = u64::try_from(deadline)
+        .map_err(|_| js_error("invalid_argument", "timer deadline must be a positive u64"))?;
+    acyclic_actors::timers::TimerRecord {
+        task_id: task,
+        operation_id: operation,
+        deadline_unix_ms: deadline,
+    }
+    .encode()
+    .map_err(|error| js_error("invalid_argument", error))
+}
+
 fn nominal_string(value: &JsValue, field: &str) -> Result<String, JsValue> {
     value
         .as_string()
@@ -180,6 +194,21 @@ impl ActorsClient {
     #[wasm_bindgen(getter)]
     pub fn transport(&self) -> String {
         self.inner.transport().to_owned()
+    }
+
+    /// Execute one operation with a request-local credential on the existing connection.
+    pub async fn call_with_credential(
+        &self,
+        method: &str,
+        request: &[u8],
+        token: &str,
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.run(
+            signal,
+            self.inner.call_with_credential(method, request, token),
+        )
+        .await
     }
 
     /// Execute `CreateActor` with an encoded protobuf request.

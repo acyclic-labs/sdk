@@ -1,0 +1,17 @@
+{
+  "expect": {
+    "result": {
+      "kind": "prompt",
+      "text": "shell echo hi"
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "text": "shell echo hi",
+        "kind": "prompt",
+        "mentions": [],
+        "source": null
+      }
+    }
+  },
+  "prompt": "shell echo hi"
+}

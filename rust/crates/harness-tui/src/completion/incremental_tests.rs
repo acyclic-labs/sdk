@@ -133,7 +133,7 @@ fn full_scan_oracle_detects_a_cursor_before_the_cached_token() {
     let start = completion_request(&editor).unwrap().range.start;
     editor.insert("/", 0);
     editor.set_cursor(4, false);
-    let broken = request_from(&editor, start, &mut 0);
+    let broken = request_from(&editor, start, &mut 0, None);
     assert_eq!(
         broken,
         completion_request(&editor),

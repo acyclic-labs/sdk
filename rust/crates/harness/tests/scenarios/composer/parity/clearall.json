@@ -1,0 +1,26 @@
+{
+  "expect": {
+    "result": {
+      "kind": "confirm",
+      "request": {
+        "kind": "clear_all"
+      }
+    },
+    "files": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": null
+    },
+    "file_values": {
+      "session/layout.json": {
+        "confirmation": {
+          "request": {
+            "kind": "clear_all"
+          },
+          "operation": "00000000-0000-0000-0000-000000000001"
+        },
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
+      }
+    }
+  },
+  "prompt": "/clearall"
+}

@@ -1,0 +1,4 @@
+{"writes":[{"path":".tasks/t/requests/r.json","text":"run"},{"path":".tasks/t/status.json","text":"admitted"},{"path":
+  ".tasks/t/status.json","text":"completed"}],"expect":{"files":{".tasks/t/requests/r.json":"run",".tasks/t/status.json"
+  :"completed"},"changes":[{"path":".tasks/t/requests/r.json","text":"run"},{"path":".tasks/t/status.json","text":
+  "admitted"},{"path":".tasks/t/status.json","text":"completed"}]}}

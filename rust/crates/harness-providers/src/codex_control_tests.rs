@@ -55,7 +55,7 @@ proptest! {
                 output_schema: json!({"type":"object"}),
                 projection_schema: json!({"type":"object"}),
             });
-            let body = crate::projection::body(&provider, &request, &mut crate::files::FileText::Estimate).unwrap();
+            let body = crate::projection::body(&provider, &request).unwrap();
             prop_assert_eq!(&body["parallel_tool_calls"], &json!(parallel));
             let projected = &body["tool_choice"];
             match choice.as_str() {

@@ -18,12 +18,12 @@ fn uncompacted_executor(
 fn fixture_token_count(
     request: &crate::model::PreparedModelRequest,
 ) -> Result<crate::context::ModelTokenCount> {
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(request.bytes().len())
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-        message_tokens: vec![0; request.request().messages.len()],
-    })
+        vec![0; request.request().messages.len()],
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -76,11 +76,11 @@ fn counted_model(
                         .map_err(|_| Error::Invalid("synthetic token bound exceeds u32".into()))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let mut count = crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 100,
+            let mut count = crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                100,
                 message_tokens,
-            };
+            );
             match fault {
                 Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
                 Some(AccountingFault::MissingMessage) => {
@@ -95,6 +95,7 @@ fn counted_model(
                         )
                     }) =>
                 {
+                    count.input_tokens = u64::from(capacity);
                     count.fixed_tokens = capacity;
                 }
                 _ => {}
@@ -690,8 +691,11 @@ impl crate::context::ContextStage for OnceStage {
 mod compaction;
 mod content;
 mod invocation_bounds;
+mod output_bounds;
 mod recovery;
 mod replay;
+#[cfg(not(target_arch = "wasm32"))]
+mod tool_metadata;
 mod tools_1;
 mod tools_2;
 fn echo_tools(
@@ -722,4 +726,15 @@ fn echo_tools(
         None,
     )?;
     Ok(tools)
+}
+
+fn call_message(invocation: &ToolInvocation) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        ))),
+    }
 }

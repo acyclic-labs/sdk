@@ -290,6 +290,36 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     );
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    let deep_operation = OperationId::new();
+    let mut deep = json!(0);
+    for _ in 0..126 {
+        deep = json!([deep]);
+    }
+    let deep_invocation = acyclic_harness::tool::ToolInvocation {
+        operation_id: deep_operation,
+        call_id: "deep-record".into(),
+        name: definition.name.clone(),
+        arguments: json!({"nested":deep}),
+    };
+    let rejected = runner
+        .run(
+            first_task,
+            &definition,
+            &deep_invocation,
+            &ToolContext::new(first_context.clone(), deep_operation, "deep-record", None)?,
+            None,
+            false,
+        )?
+        .await;
+    assert!(matches!(rejected, Err(Error::Invalid(_))));
+    assert!(
+        journal
+            .replay(deep_operation, 0, 64, None)?
+            .await?
+            .is_empty()
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     let fresh_operation = OperationId::new();
     let bounded =
         DurableToolRunner::new(&registry, journal.clone(), None)?.with_limits(Limits {

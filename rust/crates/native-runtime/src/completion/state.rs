@@ -39,11 +39,26 @@ impl<T> CompletionState<T> {
 }
 
 pub(crate) trait TaskTerminal: Send + Sync {
+    #[cfg(feature = "test-support")]
+    fn test_poll_completion(&self, waker: &Waker) -> Poll<()>;
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>);
     fn publish(&self) -> Option<Waker>;
 }
 
 impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
+    #[cfg(feature = "test-support")]
+    fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
+        let mut state = self
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
+            Poll::Ready(())
+        } else {
+            state.waker = Some(waker.clone());
+            Poll::Pending
+        }
+    }
+
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
         self.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

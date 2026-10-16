@@ -3,6 +3,10 @@
 mod artifacts;
 pub(crate) use artifacts::{read_tool_call, read_value};
 mod attachments;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod custody_tests;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod recorded_invocation_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
@@ -257,6 +261,20 @@ async fn project_message(
         MessageKind::User => ModelRole::User,
         _ => ModelRole::Assistant,
     };
+    if let Some(event) = message.extensions.get("acyclic.model.reasoning") {
+        if role != ModelRole::Assistant || event != &message.content {
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "reasoning artifact identity is invalid",
+            ));
+        }
+        let block = artifacts::read_reasoning(resolver, event, limits.render_bytes, io).await?;
+        return Ok((
+            role,
+            ModelContent::Part(ModelContentPart::Reasoning { block }),
+        ));
+    }
     let policy = match message.content.descriptor().media_type() {
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
             attachments::native_image(limits.render_bytes, io)?

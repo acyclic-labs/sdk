@@ -65,5 +65,52 @@ fn calibration_model(broken: bool) {
 #[path = "models/refresh.rs"]
 mod refresh;
 
-#[path = "models/cancellation.rs"]
-mod cancellation;
+#[path = "../src/usage_snapshot.rs"]
+mod usage_snapshot;
+#[test]
+fn usage_snapshot_is_atomic_across_concurrent_counting_and_completion() {
+    loom::model(|| {
+        let cell = Arc::new(usage_snapshot::Snapshot::default());
+        let first = usage_snapshot::Usage {
+            digest: [1; 32],
+            messages: 1,
+            bytes: 3,
+            tokens: 5,
+        };
+        let second = usage_snapshot::Usage {
+            digest: [2; 32],
+            messages: 2,
+            bytes: 7,
+            tokens: 11,
+        };
+        cell.set(first).unwrap();
+        let writer = cell.clone();
+        let task = loom::thread::spawn(move || writer.set(second).unwrap());
+        let observed = cell.get().unwrap().unwrap();
+        assert!(
+            observed == first || observed == second,
+            "torn usage snapshot"
+        );
+        task.join().unwrap();
+        assert_eq!(cell.get().unwrap(), Some(second));
+    });
+}
+#[test]
+#[should_panic(expected = "torn usage snapshot")]
+fn negative_control_independent_usage_fields_can_tear() {
+    use sync::atomic::{AtomicU64, Ordering};
+    loom::model(|| {
+        let cell = Arc::new((AtomicU64::new(3), AtomicU64::new(5)));
+        let writer = cell.clone();
+        let task = loom::thread::spawn(move || {
+            writer.0.store(7, Ordering::SeqCst);
+            writer.1.store(11, Ordering::SeqCst);
+        });
+        let observed = (cell.0.load(Ordering::SeqCst), cell.1.load(Ordering::SeqCst));
+        assert!(
+            observed == (3, 5) || observed == (7, 11),
+            "torn usage snapshot"
+        );
+        task.join().unwrap();
+    });
+}

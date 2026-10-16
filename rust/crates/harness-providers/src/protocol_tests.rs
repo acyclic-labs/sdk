@@ -23,32 +23,37 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             sent: Mutex::new(Vec::new()),
         });
         let (prepared, dispatch) = request(&provider)?;
-        let initial = total(&provider.count_tokens(&prepared)?);
-        let bytes = serde_json::to_vec(&projection::body(
-            &provider,
-            prepared.request(),
-            &mut crate::files::FileText::Estimate,
-        )?)
-        .expect("encode fixture")
-        .len();
-        assert!(initial >= bytes.div_ceil(2) as u32 && initial < bytes as u32);
+        let initial = total(&projection::plan(&provider, &prepared, 512)?);
+        let bytes = serde_json::to_vec(&projection::body(&provider, prepared.request())?)
+            .expect("encode fixture")
+            .len();
+        assert!(initial > 0);
+        assert_eq!(
+            provider.estimator.tokens(bytes),
+            Some(bytes.div_ceil(2) as u32)
+        );
         provider
             .generate(prepared.clone(), dispatch)
             .try_collect::<Vec<_>>()
             .await?;
-        let calibrated = total(&provider.count_tokens(&prepared)?);
+        let calibrated = total(&projection::plan(&provider, &prepared, 512)?);
         assert!(
             calibrated > initial,
             "{adapter:?}: {initial} -> {calibrated}"
         );
-        assert!(calibrated >= 512);
+        // Usage calibrates provider wire bytes. Canonical transcript weights
+        // differ with framing and are not verified admission token counts.
+        assert!(provider.estimator.tokens(bytes).expect("wire estimate") >= 512);
         provider
             .generate(prepared.clone(), dispatch)
             .try_collect::<Vec<_>>()
             .await?;
-        assert_eq!(total(&provider.count_tokens(&prepared)?), calibrated);
+        assert_eq!(
+            total(&projection::plan(&provider, &prepared, 512)?),
+            calibrated
+        );
         let (other, _) = super::provider(adapter, 200);
-        assert_eq!(total(&other.count_tokens(&prepared)?), initial);
+        assert_eq!(total(&projection::plan(&other, &prepared, 512)?), initial);
     }
     Ok(())
 }
@@ -63,7 +68,7 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
         let mut resumed = original.request().clone();
         resumed.messages[1].content = ModelContent::Text("漢".repeat(5000));
         let prepared = PreparedModelRequest::prepare(resumed, Limits::default(), None)?;
-        let count = total(&provider.count_tokens(&prepared)?);
+        let count = futures::executor::block_on(provider.count_tokens(&prepared))?.input_tokens;
         let capacity = provider.context_capacity(&provider.model)?;
         let policy = ThresholdCompaction {
             response_reserve_tokens: 1024,
@@ -71,9 +76,8 @@ fn dense_first_request_after_resume_requires_compaction_before_dispatch() -> Res
             ..ThresholdCompaction::default()
         };
         assert!(policy.needs_compaction(capacity, u64::from(count))?);
-        // The previous three-byte estimate admitted this dense history. Two-byte
-        // initial accounting routes it through compaction before any HTTP request.
-        assert!(!policy.needs_compaction(capacity, u64::from(count) * 2 / 3)?);
+        // No generation has started. A fresh process uses the verified count;
+        // previous usage and a sparse calibration cannot weaken admission.
         assert!(script.sent.lock().expect("fixture requests").is_empty());
     }
     Ok(())
@@ -288,6 +292,22 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         let events: Vec<ModelEvent> =
             serde_json::from_slice(&serde_json::to_vec(&events).expect("encode events"))
                 .expect("decode events");
+        let reasoning: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ReasoningBlock { block } => Some(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::Reasoning {
+                        block: block.clone(),
+                    }),
+                }),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !reasoning.is_empty(),
+            "signed native reasoning is a canonical event"
+        );
         let call = events
             .into_iter()
             .find(|event| matches!(event, ModelEvent::ToolCall(_)))
@@ -302,7 +322,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             unreachable!()
         };
         if adapter == Adapter::Gemini {
-            assert_eq!(call_id, format!("{}-0-0", dispatch.operation_id));
+            assert_eq!(call_id, dispatch.tool_call_id(0));
         }
         let mut next = initial.request().clone();
         next.tools.push(acyclic_harness::tool::ToolDefinition {
@@ -313,6 +333,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             output_schema: json!({}),
             projection_schema: json!({}),
         });
+        next.messages.extend(reasoning);
         next.messages.extend([
             ModelMessage {
                 role: ModelRole::Assistant,
@@ -358,7 +379,7 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             );
             assert_eq!(
                 body["contents"][1]["parts"][0]["functionCall"]["id"],
-                format!("{}-0-0", dispatch.operation_id)
+                "harness_call_0"
             );
         } else if adapter == Adapter::Responses {
             for request in sent.iter() {

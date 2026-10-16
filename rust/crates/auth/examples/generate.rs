@@ -5,7 +5,6 @@ use ts_rs::TS;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::args_os().nth(1).ok_or("expected output root")?);
-    render(&root.join("proto"))?;
     let mut typescript =
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
     typescript.push_str("export ");

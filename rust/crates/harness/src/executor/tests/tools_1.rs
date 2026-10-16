@@ -508,7 +508,6 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         Err(Error::Indeterminate(_))
     ));
 
-    let mut replay_context = Vec::new();
     let changed_call = ToolInvocation::for_model_call(
         input.operation_id,
         0,
@@ -517,6 +516,8 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         json!({"value": "changed"}),
         None,
     )?;
+    let mut replay_context = vec![call_message(&changed_call)];
+    let before = replay_context.clone();
     assert!(matches!(
         StockExecution::ordinary(&executor)
             .resolve_tool_call(
@@ -524,12 +525,13 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
                 input.operation_id,
                 0,
                 changed_call,
+                0,
                 &mut replay_context,
             )
             .await,
         Err(Error::Conflict(_))
     ));
-    assert!(replay_context.is_empty());
+    assert_eq!(replay_context, before);
     let replayed = executor.execute(input.clone(), &journal).await?;
     assert_eq!(first, replayed);
     assert_eq!(model.requests().len(), 2);

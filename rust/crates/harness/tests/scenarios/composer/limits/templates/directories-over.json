@@ -1,0 +1,3 @@
+{"prompt":"/x","seed":{".claude/commands/x.md":"body"},"discovery_limits":{"entries":4096,"directories":2,"header_bytes"
+  :16384,"instruction_bytes":65536},"expect":{"error":"discovery directory bound exceeded","files":{
+  ".claude/commands/x.md":"body"}}}

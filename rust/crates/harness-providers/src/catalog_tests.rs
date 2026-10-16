@@ -1,4 +1,5 @@
 use super::*;
+use proptest::prelude::*;
 
 #[tokio::test]
 async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> Result<()> {
@@ -9,13 +10,21 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
-        headers: Default::default(),
+        token_counter: Some(crate::TokenCounterSpec {
+            path: "count_tokens".into(),
+            adapter: Adapter::Chat,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        }),
         max_event_bytes: 4096,
         models: BTreeMap::from([(
             "m".into(),
-            ModelContextCapacity {
-                context_tokens: 8192,
-                output_tokens: 1024,
+            ModelSpec {
+                capacity: ModelContextCapacity {
+                    context_tokens: 8192,
+                    output_tokens: 1024,
+                },
+                features: ModelFeatures::default(),
             },
         )]),
     };
@@ -60,9 +69,12 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     assert!(registry.resolve("openai/gpt-5").is_err());
     openai.models.insert(
         "gpt-5".into(),
-        ModelContextCapacity {
-            context_tokens: 32768,
-            output_tokens: 2048,
+        ModelSpec {
+            capacity: ModelContextCapacity {
+                context_tokens: 32768,
+                output_tokens: 2048,
+            },
+            features: ModelFeatures::default(),
         },
     );
     registry.register("openai".into(), openai)?;
@@ -102,11 +114,7 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         let provider = registry.resolve_with_options(selection, options.clone())?;
         let (prepared, _) = request(&provider)?;
         assert_eq!(provider.model().options, options);
-        let body = projection::body(
-            &provider,
-            prepared.request(),
-            &mut crate::files::FileText::Estimate,
-        )?;
+        let body = projection::body(&provider, prepared.request())?;
         for (field, configured) in options.as_object().expect("fixture options") {
             for (key, value) in configured.as_object().expect("fixture option controls") {
                 assert_eq!(&body[field][key], value);
@@ -124,7 +132,7 @@ fn resolution_binds_options_and_rejects_mutated_model_identity() -> Result<()> {
         let mut changed = provider.model().clone();
         changed.options = json!({});
         assert!(provider.context_capacity(&changed).is_err());
-        assert!(provider.count_tokens(&prepared).is_ok());
+        assert!(futures::executor::block_on(provider.count_tokens(&prepared)).is_ok());
     }
     assert!(
         registry
@@ -139,9 +147,9 @@ fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<
     let (_, transport) = provider(Adapter::Responses, 200);
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
     let before = registry.catalog().keys().cloned().collect::<Vec<_>>();
-    let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"context_tokens":4096,"output_tokens":512}},"max_event_bytes":4096});
+    let valid = json!({"adapter":"chat","authentication":"optional","base_url":"http://localhost:1234/v1","models":{"fixture":{"capacity":{"context_tokens":4096,"output_tokens":512}}},"max_event_bytes":4096});
     let mut bad = valid.clone();
-    bad["models"]["fixture"]["context_tokens"] = json!(0);
+    bad["models"]["fixture"]["capacity"]["context_tokens"] = json!(0);
     let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog I/O"))?;
     std::fs::write(
         file.path(),
@@ -163,4 +171,109 @@ fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<
         "invalid request: invalid provider catalog"
     );
     Ok(())
+}
+
+fn stock_registry() -> (Registry, Arc<Script>) {
+    let (_, transport) = provider(Adapter::Responses, 200);
+    let registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::from([
+            ("openai".into(), "fixture".into()),
+            ("anthropic".into(), "fixture".into()),
+            ("gemini".into(), "fixture".into()),
+        ])),
+        transport.clone(),
+    );
+    (registry, transport)
+}
+
+fn stock_models(registry: &Registry) -> Vec<String> {
+    registry
+        .catalog()
+        .iter()
+        .flat_map(|(provider, spec)| {
+            spec.models
+                .keys()
+                .map(move |model| format!("{provider}/{model}"))
+        })
+        .collect()
+}
+
+#[test]
+fn stock_catalog_alloys_support_tools_and_images_and_overrides_fail_closed() -> Result<()> {
+    let (mut registry, transport) = stock_registry();
+    let required = ModelFeatures {
+        tools: true,
+        images: true,
+    };
+    let models = stock_models(&registry);
+    assert!(models.iter().any(|model| model == "openai/gpt-5"));
+    registry.resolve_alloy(
+        AlloySpec {
+            models,
+            select: AlloySelection::RoundRobin,
+        },
+        required,
+    )?;
+    for missing in [
+        ModelFeatures::default(),
+        ModelFeatures {
+            tools: false,
+            images: true,
+        },
+        ModelFeatures {
+            tools: true,
+            images: false,
+        },
+    ] {
+        let mut spec = registry.catalog()["openai"].as_ref().clone();
+        spec.models.get_mut("gpt-5").unwrap().features = missing;
+        registry.register("openai".into(), spec)?;
+        assert!(
+            registry
+                .resolve_alloy(
+                    AlloySpec {
+                        models: vec!["openai/gpt-5".into()],
+                        select: AlloySelection::First,
+                    },
+                    required
+                )
+                .is_err(),
+            "missing capability must reject before dispatch"
+        );
+    }
+    assert!(transport.sent.lock().unwrap().is_empty());
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Any nonempty stock subset accepts supported requirements, and selection
+    // retains the subset's minimum capacity without contacting a provider.
+    #[test]
+    fn stock_alloy_subsets_preserve_declared_features_and_minimum_capacity(
+        indices in proptest::collection::btree_set(0usize..8, 1..=8),
+        tools in any::<bool>(), images in any::<bool>(), ordinal in any::<u64>(),
+    ) {
+        let (registry, transport) = stock_registry();
+        let stock = stock_models(&registry);
+        prop_assert_eq!(stock.len(), 8);
+        let models: Vec<_> = indices.into_iter().map(|index| stock[index].clone()).collect();
+        let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: u32::MAX };
+        for selection in &models {
+            let (provider, name) = selection.split_once('/').unwrap();
+            let entry = &registry.catalog()[provider].models[name];
+            expected.context_tokens = expected.context_tokens.min(entry.capacity.context_tokens);
+            expected.output_tokens = expected.output_tokens.min(entry.capacity.output_tokens);
+        }
+        let alloy = registry.resolve_alloy(AlloySpec {
+            models: models.clone(), select: AlloySelection::RoundRobin,
+        }, ModelFeatures { tools, images }).unwrap();
+        prop_assert_eq!(alloy.capacity(), expected);
+        let selected = alloy.select(AlloyTurn {
+            operation_id: acyclic_harness::OperationId::from_bytes([1; 16]), ordinal, role: "worker",
+        });
+        prop_assert_eq!(selected.context_capacity(selected.model()).unwrap(), expected);
+        prop_assert!(models.contains(&format!("{}/{}", selected.model().provider, selected.model().name)), "selected model belongs to the stock subset");
+        prop_assert!(transport.sent.lock().unwrap().is_empty());
+    }
 }

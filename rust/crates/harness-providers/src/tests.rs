@@ -15,30 +15,78 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+#[path = "counting/admission_tests.rs"]
+mod admission_tests;
+#[path = "alloy_tests.rs"]
+mod alloy_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
-#[path = "files_tests.rs"]
-mod files_tests;
-
+#[path = "call_id_tests.rs"]
+mod call_id_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "chat_batch_tests.rs"]
 mod chat_batch_tests;
+#[path = "gemini_replay_tests.rs"]
+mod gemini_replay_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
-mod native_tests;
+pub(crate) mod native_tests;
 #[path = "tool_name_tests.rs"]
 mod tool_name_tests;
 
-use crate::fixtures::{CHAT, fixtures};
+#[path = "ordered_parts_tests.rs"]
+mod ordered_parts_tests;
 
-fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
-    let bytes = Bytes::copy_from_slice(input.as_bytes());
+const CHAT: &str = concat!(
+    "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\",\"reasoning_content\":\"think\",\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3,\"total_tokens\":8}}\n\n",
+    "data: [DONE]\n\n"
+);
+const ANTHROPIC: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hé\"}}\n\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think\"}}\n\n",
+    "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"echo\",\"input\":{}}}\n\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"value\\\":1}\"}}\n\n",
+    "data: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n",
+    "data: {\"type\":\"message_stop\"}\n\n"
+);
+const RESPONSES: &str = concat!(
+    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hé\"}\n\n",
+    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\n",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc\",\"call_id\":\"call\",\"name\":\"echo\",\"arguments\":\"\"}}\n\n",
+    "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"value\\\":1}\"}\n\n",
+    "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":1,\"arguments\":\"{\\\"value\\\":1}\"}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":1}\"}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":3,\"total_tokens\":8}}}\n\n"
+);
+const GEMINI: &str = concat!(
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hé\"},{\"text\":\"think\",\"thought\":true}]}}]}\n\n",
+    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call\",\"name\":\"echo\",\"args\":{\"value\":1}}}]},\"finishReason\":\"STOP\"}],\"responseId\":\"run\",\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n\n"
+);
+
+fn fixtures() -> [(Adapter, &'static str); 4] {
+    [
+        (Adapter::Chat, CHAT),
+        (Adapter::Anthropic, ANTHROPIC),
+        (Adapter::Responses, RESPONSES),
+        (Adapter::Gemini, GEMINI),
+    ]
+}
+
+fn chunks(
+    input: impl AsRef<[u8]>,
+    width: usize,
+) -> acyclic_stream::BoxProviderStream<'static, Result<Bytes>> {
+    let bytes = Bytes::copy_from_slice(input.as_ref());
     let chunks: Vec<_> = (0..bytes.len())
         .step_by(width)
         .map(|start| Ok(bytes.slice(start..(start + width).min(bytes.len()))))
@@ -49,33 +97,56 @@ fn chunks(input: &str, width: usize) -> acyclic_stream::BoxProviderStream<'stati
 #[tokio::test]
 async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Result<()> {
     for (adapter, fixture) in fixtures() {
+        let dispatch = parser_dispatch();
         for width in [1, 7, 1024] {
-            let events: Vec<_> =
-                stream::events(adapter, chunks(fixture, width), 4096, parser_dispatch())
-                    .try_collect()
-                    .await?;
-            assert_eq!(events.len(), 4, "{adapter:?}");
+            let events: Vec<_> = stream::events(adapter, chunks(fixture, width), 4096, dispatch)
+                .try_collect()
+                .await?;
+            let visible: Vec<_> = events
+                .iter()
+                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .collect();
+            assert_eq!(visible.len(), 4, "{adapter:?}");
             assert_eq!(
-                events[0],
+                *visible[0],
                 ModelEvent::Content {
                     delta: "hé".into()
                 }
             );
             assert_eq!(
-                events[1],
+                *visible[1],
                 ModelEvent::Reasoning {
                     delta: "think".into()
                 }
             );
             assert_eq!(
-                events[2],
-                ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                    "call".into(), "echo".into(), json!({"value":1})
-                ).with_metadata(if adapter == Adapter::Anthropic {
-                    json!({"anthropic_thinking":[{"type":"thinking","thinking":"think","signature":""}]})
-                } else { serde_json::Value::Null }))
+                *visible[2],
+                ModelEvent::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        dispatch.tool_call_id(0),
+                        "echo".into(),
+                        json!({"value":1})
+                    )
+                    .with_metadata(
+                        json!({"provider_call":{"provider":stream::family(adapter),"id":"call"}})
+                    )
+                )
             );
-            let ModelEvent::Completed { metadata } = &events[3] else {
+            if matches!(
+                adapter,
+                Adapter::Anthropic | Adapter::Gemini | Adapter::Chat
+            ) {
+                let canonical = events
+                    .iter()
+                    .find_map(|event| match event {
+                        ModelEvent::ReasoningBlock { block } if block.text.is_some() => Some(block),
+                        _ => None,
+                    })
+                    .expect("readable reasoning is durably retained");
+                assert_eq!(canonical.text.as_deref(), Some("think"));
+                assert!(!canonical.continuity.is_empty());
+            }
+            let ModelEvent::Completed { metadata } = visible[3] else {
                 return Err(invalid("missing completion"));
             };
             assert_eq!(metadata["id"], "run");
@@ -154,6 +225,9 @@ struct Script {
 impl HttpTransport for Script {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            if let Some(response) = fixture_count(&request) {
+                return Ok(response);
+            }
             self.sent
                 .lock()
                 .map_err(|_| invalid("poisoned fixture"))?
@@ -169,6 +243,25 @@ impl HttpTransport for Script {
             })
         })
     }
+}
+
+fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
+    if !(request.url.ends_with("count_tokens")
+        || request.url.ends_with("input_tokens")
+        || request.url.ends_with(":countTokens"))
+    {
+        return None;
+    }
+    // The fixture tokenizer counts one token per encoded byte plus framing.
+    let tokens = request.body.len() as u64 + 512;
+    let body = serde_json::to_vec(
+        &json!({"input_tokens": tokens, "totalTokens": tokens, "count": tokens}),
+    )
+    .unwrap();
+    Some(HttpResponse {
+        status: 200,
+        body: Box::pin(futures::stream::iter([Ok(body.into())])),
+    })
 }
 
 fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
@@ -190,7 +283,12 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             authentication: Authentication::ApiKey,
             base_url: "http://127.0.0.1:1234/v1".into(),
             models: BTreeMap::new(),
-            headers: Default::default(),
+            token_counter: Some(crate::TokenCounterSpec {
+                path: "count_tokens".into(),
+                adapter,
+                response_field: crate::TokenCountField::InputTokens,
+                framing_tokens: 0,
+            }),
             max_event_bytes: 4096,
         }),
         capacity: ModelContextCapacity {
@@ -199,7 +297,8 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         },
         key: Some("scripted-key".into()),
         transport: script.clone(),
-        files: Default::default(),
+        #[cfg(not(target_arch = "wasm32"))]
+        codex_count: crate::codex_count::Counter::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
     };
@@ -239,7 +338,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
     for (adapter, _) in fixtures() {
         let (provider, script) = provider(adapter, 200);
         let (request, dispatch) = request(&provider)?;
-        let count = provider.count_tokens(&request)?;
+        let count = provider.count_tokens(&request).await?;
         assert_eq!(count.request_digest, request.request_digest());
         assert_eq!(count.message_tokens.len(), 2);
         assert!(count.fixed_tokens > 0 && count.message_tokens.iter().all(|count| *count > 0));
@@ -247,14 +346,50 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             provider.context_capacity(&provider.model)?.context_tokens,
             8192
         );
+        let events = provider
+            .generate(request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
         assert_eq!(
-            provider
-                .generate(request, dispatch)
-                .try_collect::<Vec<_>>()
-                .await?
-                .len(),
+            events
+                .iter()
+                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .count(),
             4
         );
+        if adapter != Adapter::Responses {
+            let blocks: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::ReasoningBlock { block } => Some(block),
+                    _ => None,
+                })
+                .collect();
+            let thinking = if adapter == Adapter::Gemini {
+                assert_eq!(blocks.len(), 2);
+                assert_eq!(blocks[0].text, None);
+                assert_eq!(
+                    blocks[0].kind,
+                    acyclic_harness::model::ReasoningKind::Opaque
+                );
+                assert_eq!(
+                    blocks[0].outcome,
+                    acyclic_harness::model::ReasoningOutcome::SuppressedDisplay
+                );
+                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
+                blocks[1]
+            } else {
+                assert_eq!(blocks.len(), 1);
+                blocks[0]
+            };
+            assert_eq!(thinking.text.as_deref(), Some("think"));
+            for block in blocks {
+                assert_eq!(
+                    block.origin,
+                    provider.reasoning_origin(provider.key.as_deref(), None)
+                );
+            }
+        }
         let sent = script
             .sent
             .lock()
@@ -328,12 +463,20 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         base_url: "https://example.test/v1".into(),
         models: BTreeMap::from([(
             "org/model".into(),
-            ModelContextCapacity {
-                context_tokens: 8192,
-                output_tokens: 1024,
+            ModelSpec {
+                capacity: ModelContextCapacity {
+                    context_tokens: 8192,
+                    output_tokens: 1024,
+                },
+                features: ModelFeatures::default(),
             },
         )]),
-        headers: Default::default(),
+        token_counter: Some(crate::TokenCounterSpec {
+            path: "count_tokens".into(),
+            adapter: Adapter::Chat,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        }),
         max_event_bytes: 4096,
     };
     for base in [
@@ -402,7 +545,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             ],
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-        let count = provider.count_tokens(&prepared)?;
+        let count = provider.count_tokens(&prepared).await?;
         let dispatch = ModelDispatch {
             operation_id: acyclic_harness::OperationId::new(),
             step: 1,
@@ -531,3 +674,6 @@ fn parser_dispatch() -> ModelDispatch {
 
 #[path = "protocol_tests.rs"]
 mod protocol;
+
+#[path = "stream/reasoning_tests.rs"]
+mod reasoning;

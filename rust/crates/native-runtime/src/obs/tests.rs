@@ -13,6 +13,74 @@ use std::{
 };
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
+#[test]
+fn unobserved_future_and_stream_bypass_dispatcher_installation() {
+    unobserved_bypass(false);
+}
+
+#[test]
+#[should_panic(expected = "unobserved polling must bypass dispatcher installation")]
+fn negative_control_forces_dispatcher_installation_for_an_unobserved_producer() {
+    unobserved_bypass(true);
+}
+
+fn unobserved_bypass(broken: bool) {
+    use std::cell::Cell;
+    struct Producer<'a>(&'a Cell<usize>);
+    impl Future for Producer<'_> {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+            self.0.set(self.0.get() + 1);
+            Poll::Ready(())
+        }
+    }
+    impl futures_core::Stream for Producer<'_> {
+        type Item = ();
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<()>> {
+            self.0.set(self.0.get() + 1);
+            Poll::Ready(Some(()))
+        }
+    }
+    impl Drop for Producer<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
+        let mut operation = super::OperationSpan::new(tracing::Span::none());
+        if broken {
+            // A nonempty origin forces the former dispatcher-installation path.
+            operation.dispatch = tracing::Dispatch::new(tracing_subscriber::registry());
+        }
+        for stream in [false, true] {
+            let calls = Cell::new(0);
+            let mut producer = Some(Box::pin(operation.scope(Producer(&calls))));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // The dependency holds its dispatcher borrow through this call.
+                // Installing a dispatcher would panic, so this observes actual
+                // scoping work without a timing threshold or a test-only hook.
+                tracing::dispatcher::get_default(|_| {
+                    let producer = producer.as_mut().unwrap().as_mut();
+                    let mut context = Context::from_waker(Waker::noop());
+                    if stream {
+                        assert!(futures_core::Stream::poll_next(producer, &mut context).is_ready());
+                    } else {
+                        assert!(producer.poll(&mut context).is_ready());
+                    }
+                });
+                tracing::dispatcher::get_default(|_| drop(producer.take()));
+            }));
+            // If the control panicked during poll, retire it outside the borrow.
+            drop(producer);
+            assert!(
+                result.is_ok(),
+                "unobserved polling must bypass dispatcher installation"
+            );
+            assert_eq!(calls.get(), 2, "poll and destruction must both execute");
+        }
+    });
+}
+
 fn assert_context(
     origin_kind: u8,
     parent_enabled: bool,
@@ -214,4 +282,94 @@ fn admitted_work_keeps_observation_after_observer_drop() {
             assert_eq!(temporary.metadata().unwrap().len(), 73);
         }
     }
+}
+
+fn root_context_case(mode: u8, broken: bool) {
+    use tracing::callsite::Callsite as _;
+    let seen = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone()));
+    let root = tracing::dispatcher::with_default(&subscriber, || {
+        let caller = tracing::info_span!("test.root.caller");
+        caller.in_scope(|| {
+            let span = match mode {
+                0 => tracing::Span::none(),
+                1 => tracing::Span::new_disabled(
+                    tracing::callsite! {
+                        name: "test.root.filtered", kind: tracing::metadata::Kind::SPAN,
+                        level: tracing::Level::DEBUG, fields:
+                    }
+                    .metadata(),
+                ),
+                _ => tracing::info_span!(parent: None, "test.root.enabled"),
+            };
+            if broken {
+                super::OperationSpan::new(span)
+            } else {
+                super::OperationSpan::new_root(span)
+            }
+        })
+    });
+    assert_eq!(
+        seen.closed("test.root.caller"),
+        1,
+        "a root must never retain its caller"
+    );
+    assert_eq!(root.context().id(), root.id());
+    drop(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn root_context_preserves_only_its_own_span(mode in 0_u8..3) {
+        root_context_case(mode, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a root must never retain its caller")]
+fn negative_control_root_falls_back_to_the_filtered_caller() {
+    root_context_case(1, true);
+}
+
+fn causal_registry_case(foreign: bool, broken: bool) {
+    let first = Capture::default();
+    let second = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let a = tracing::Dispatch::new(tracing_subscriber::registry().with(first.clone()));
+    let b = tracing::Dispatch::new(tracing_subscriber::registry().with(second));
+    let root = tracing::dispatcher::with_default(&a, || {
+        super::OperationSpan::new_root(tracing::info_span!(parent: None, "test.causal.root"))
+    });
+    let dispatch = if foreign { &b } else { &a };
+    let cause = tracing::dispatcher::with_default(dispatch, || {
+        super::OperationSpan::new(tracing::info_span!(parent: None, "test.causal.interest"))
+    });
+    if broken {
+        root.span.follows_from(cause.context().id());
+    } else {
+        root.follows_from_same_subscriber(&cause);
+    }
+    let history = first.0.lock().unwrap().spans.clone();
+    let root = history
+        .iter()
+        .find(|span| span.name == "test.causal.root")
+        .unwrap();
+    assert_eq!(
+        root.follows_from.len(),
+        usize::from(!foreign),
+        "foreign span IDs must never cross subscriber registries"
+    );
+}
+
+proptest::proptest! {
+    #[test]
+    fn causal_links_require_identical_subscriber_registries(foreign in proptest::bool::ANY) {
+        causal_registry_case(foreign, false);
+    }
+}
+#[test]
+#[should_panic(expected = "foreign span IDs must never cross subscriber registries")]
+fn negative_control_passes_foreign_ids_to_a_session_subscriber() {
+    causal_registry_case(true, true);
 }

@@ -1,0 +1,6 @@
+{
+  "before":"same",
+  "after":"same",
+  "work":7,
+  "expect":{"error":"invalid request: diff computation work bound exceeded"}
+}

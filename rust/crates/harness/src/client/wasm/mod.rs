@@ -12,12 +12,14 @@ use values::*;
 mod domain;
 use domain::JavaScriptDomain;
 mod branches;
+mod files;
 mod views;
 
 /// Browser client using the kernel's transitions, limits and reconciliation.
 #[wasm_bindgen]
 pub struct WasmClientViews {
     client: Client<JavaScriptDomain>,
+    views: super::ClientViews,
 }
 
 #[wasm_bindgen]
@@ -65,6 +67,7 @@ impl WasmClientViews {
         };
         Ok(Self {
             client: Client::new(domain, namespace, sequence, limits).map_err(failure)?,
+            views: super::ClientViews::default(),
         })
     }
 }

@@ -181,8 +181,12 @@ pinned_pi() {
 case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
+    node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
+    node scripts/qualify-mcp-loom.mjs --memory-accounting
     nextest --workspace --all-features --locked
+    cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
   docs)
     # Independent workspaces qualify alongside the root workspace.
@@ -271,6 +275,7 @@ case "$lane" in
     # Package validation runs with --offline; populate every locked crate even
     # when the Blacksmith dependency cache is cold.
     cargo fetch --locked
+    node scripts/check-git-proto-build.mjs
     background napi native_binding
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"
@@ -284,18 +289,9 @@ case "$lane" in
     node scripts/build-wasm-groups.mjs
     bun run test
     bun scripts/check-typescript-tarballs.mjs
-    # WASM builds are path-independent but not host-independent: panic
-    # locations keep the host's path separators and private wasm-bindgen
-    # closure names carry host-derived crate hashes. Verify the fresh WASM
-    # against the committed package API and runtime, then stage the committed
-    # release bytes. The checker reads HEAD for tracked WASM surfaces and
-    # validates fresh runtimes; this restore controls release staging.
-    git restore --worktree -- \
-      typescript/packages/filesystem/generated/wasm \
-      typescript/packages/stream/generated/wasm
     background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"
     generated_status=0
-    bun run check:generated || generated_status=$?
+    bun run check:baselines || generated_status=$?
     finish harness-package
     if ((generated_status != 0)); then exit "$generated_status"; fi
     background harness-conformance bun scripts/run-harness-conformance.mjs \
@@ -336,7 +332,7 @@ case "$lane" in
     node scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
-    node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
+    node --test scripts/wasm-size-report.test.mjs
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
@@ -398,8 +394,7 @@ case "$lane" in
       harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
-    cargo test -p acyclic-harness-providers --features browser \
-      --target wasm32-unknown-unknown --lib --locked
+    harness_tests --features wasm --target wasm32-unknown-unknown --test client-goal-views
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
@@ -448,16 +443,14 @@ case "$lane" in
     # compilation, so a cold runner needs the dependency index and crates first.
     cargo fetch --locked
     # Pull requests and main pushes only; full runs cover this in the linux
-    # lane. As there, check:generated runs after `bun run test` has built the
-    # uncommitted packages. It compares tracked surfaces with immutable HEAD
-    # blobs and validates freshly generated runtimes for all six packages.
+    # lane. Build outputs are regenerated before checking compatibility baselines.
     source scripts/ensure-bun.sh
     wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     client_bindings
     bun run test
-    bun run check:generated
+    bun run check:baselines
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \

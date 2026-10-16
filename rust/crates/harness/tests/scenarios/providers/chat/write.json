@@ -1,0 +1,65 @@
+{
+  "responses":[
+    [
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"n",
+      "ame\":\"write\",\"arguments\":\"{\\\"path\\\":\\\"plans/a.md\\\",\\\"text\\\":\\\"after\\\\n\\",
+      "\",\\\"media_type\\\":\\\"text/markdown\\\",\\\"display_name\\\":\\\"a.md\\\"}\"}}]}}]}\n\ndat",
+      "a: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\"",
+      ":5,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n"
+    ],
+    [
+      "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\ndata: {\"choices\":",
+      "[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens",
+      "\":1}}\n\ndata: [DONE]\n\n"
+    ]
+  ],
+  "expect":{
+    "text":"done",
+    "requests":[
+      {},
+      {
+        "/messages/4/tool_calls/0":{"type":"function","id":"call","function":{"name":"write"}},
+        "/messages/5":{
+          "role":"tool",
+          "tool_call_id":"call",
+          "content":{
+            "$json":{
+              "file":{
+                "path":"plans/a.md",
+                "display_name":"a.md",
+                "descriptor":{
+                  "byte_length":6,
+                  "media_type":"text/markdown",
+                  "sha256":[
+                    123,154,114,70,109,57,96,235,42,172,204,252,132,137,57,69,52,144,219,6,
+                    120,189,71,37,222,243,247,137,184,145,201,25
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "/messages/5/tool_call_id":"call",
+        "/messages/4/tool_calls/0/function/arguments":{
+          "$json":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}
+        }
+      }
+    ],
+    "events":[
+      [
+        {
+          "kind":"tool_call",
+          "name":"write",
+          "arguments":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"},
+          "metadata":{"provider_call":{"provider":"chat","id":"call"}}
+        },
+        {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
+      ],
+      [
+        {"kind":"content","delta":"done"},
+        {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
+      ]
+    ],
+    "files":{"plans/a.md":"after\n"}
+  }
+}

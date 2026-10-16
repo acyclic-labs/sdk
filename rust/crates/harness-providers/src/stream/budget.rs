@@ -21,6 +21,16 @@ pub(super) struct Budget<'work> {
 }
 
 impl<'work> Budget<'work> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bytes(&self) -> Result<usize> {
+        if let Some(work) = self.work {
+            work.charge(acyclic_fs::WorkCounters {
+                items_examined: 1,
+                ..acyclic_fs::WorkCounters::UNCHARGED
+            })?;
+        }
+        Ok(self.used.bytes)
+    }
     #[cfg(test)]
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
@@ -93,6 +103,9 @@ impl<'work> Budget<'work> {
         let delta = value
             .as_str()
             .ok_or_else(|| invalid("tool delta must be a string"))?;
+        self.append_str(target, delta)
+    }
+    pub fn append_str(&mut self, target: &mut String, delta: &str) -> Result<()> {
         let required = target
             .len()
             .checked_add(delta.len())
@@ -175,7 +188,7 @@ impl<'work> Budget<'work> {
         }
         Ok(())
     }
-    pub fn encoded(&mut self, target: &mut String, value: &Value) -> Result<()> {
+    pub fn encoded<T: serde::Serialize>(&mut self, target: &mut String, value: &T) -> Result<()> {
         let length = crate::projection::encoded_len(value)?;
         self.replace(
             Size {
@@ -193,41 +206,6 @@ impl<'work> Budget<'work> {
             .map_err(|_| invalid("tool buffer allocation failed"))?;
         serde_json::to_writer(&mut bytes, value).map_err(|_| invalid("tool encoding failed"))?;
         *target = String::from_utf8(bytes).map_err(|_| invalid("tool encoding is not UTF-8"))?;
-        Ok(())
-    }
-    pub fn formatted(
-        &mut self,
-        target: &mut String,
-        arguments: std::fmt::Arguments<'_>,
-    ) -> Result<()> {
-        use std::fmt::Write as _;
-        struct Counter(usize);
-        impl std::fmt::Write for Counter {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.0 = self.0.checked_add(text.len()).ok_or(std::fmt::Error)?;
-                Ok(())
-            }
-        }
-        let mut count = Counter(0);
-        count
-            .write_fmt(arguments)
-            .map_err(|_| invalid("tool identity size overflow"))?;
-        self.replace(
-            Size {
-                bytes: target.capacity(),
-                items: 0,
-            },
-            Size {
-                bytes: count.0,
-                items: 0,
-            },
-        )?;
-        let mut text = String::new();
-        text.try_reserve_exact(count.0)
-            .map_err(|_| invalid("tool buffer allocation failed"))?;
-        text.write_fmt(arguments)
-            .map_err(|_| invalid("tool identity formatting failed"))?;
-        *target = text;
         Ok(())
     }
 }

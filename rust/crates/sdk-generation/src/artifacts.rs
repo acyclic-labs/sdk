@@ -142,7 +142,16 @@ pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    Ok(sha256_bytes(&fs::read(path).map_err(io_error)?))
+    let bytes = fs::read(path).map_err(io_error)?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
+    result.push_str("sha256:");
+    for &byte in digest.as_ref() {
+        result.push(DIGITS[(byte >> 4) as usize] as char);
+        result.push(DIGITS[(byte & 0xf) as usize] as char);
+    }
+    Ok(result)
 }
 
 pub(super) fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {
@@ -170,7 +179,7 @@ pub(super) fn rustdoc_key(root: &Path, path: &Path) -> Result<String, CliError> 
 /// copying its exact bytes to the receipt's recorded path. Missing or
 /// ambiguous files fail closed; the docs projection never silently drops a
 /// source span.
-pub(super) fn materialize_generated_sources(
+pub fn materialize_generated_sources(
     root: &Path,
     rustdoc_files: &[PathBuf],
 ) -> Result<Vec<GeneratedSource>, CliError> {
@@ -681,12 +690,13 @@ pub(super) fn collect_source_files_inner(
             let relative_string = path_string(relative);
             let descriptor_input = matches!(
                 relative_string.as_str(),
-                "rust/crates/actors/src/generated/acyclic-actors-v1.bin"
-                    | "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin"
-                    | "rust/crates/inference/inference_descriptor.bin"
-                    | "rust/crates/machines/src/generated/acyclic-machines-v1.bin"
-                    | "rust/crates/objects/src/generated/acyclic-objects-v2.bin"
-                    | "rust/crates/stream/proto/stream/v2/stream_descriptor.bin"
+                "compatibility/descriptors/actors-v1.bin"
+                    | "compatibility/descriptors/auth-v1.bin"
+                    | "compatibility/descriptors/filesystem-v2.bin"
+                    | "compatibility/descriptors/inference-v1.bin"
+                    | "compatibility/descriptors/machines-v1.bin"
+                    | "compatibility/descriptors/objects-v1.bin"
+                    | "compatibility/descriptors/stream-v1.bin"
             );
             let plugin_install_asset = matches!(
                 relative_string.as_str(),
@@ -716,6 +726,8 @@ pub(super) fn collect_source_files_inner(
                 || ((under_proto || under_crate_proto)
                     && path.extension().and_then(OsStr::to_str) == Some("proto"))
                 || (under_conformance && path.extension().and_then(OsStr::to_str) == Some("json"))
+                || relative == Path::new("compatibility/Cargo.toml")
+                || relative.starts_with("compatibility/src")
                 || descriptor_input
                 || plugin_install_asset
                 || relative

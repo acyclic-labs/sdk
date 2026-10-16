@@ -8,16 +8,18 @@ import { DEFAULT_LIMITS } from "../../dist/index.js";
 export function syntheticAccounting(contracts) {
   return {
     contextCapacity() { return { contextTokens: 1_048_576, outputTokens: 16_384 }; },
-    countTokens(request) {
+    async countTokens(request) {
+      const messageTokens = request.messages.map(message => {
+        const bytes = 512 + contracts.modelContentInventory(message.content, DEFAULT_LIMITS).files
+          .reduce((total, file) => total + file.descriptor.byte_length, 0);
+        if (!Number.isSafeInteger(bytes) || bytes > 0xffff_ffff) throw new RangeError("synthetic message count exceeds u32");
+        return bytes;
+      });
+      const fixedTokens = request.serializedInput.byteLength + 512;
       return {
         requestDigest: contracts.digestCanonicalJson(contracts.decodeCanonicalJson(request.serializedInput)),
-        fixedTokens: request.serializedInput.byteLength + 512,
-        messageTokens: request.messages.map(message => {
-          const bytes = 512 + contracts.modelContentInventory(message.content, DEFAULT_LIMITS).files
-            .reduce((total, file) => total + file.descriptor.byte_length, 0);
-          if (!Number.isSafeInteger(bytes) || bytes > 0xffff_ffff) throw new RangeError("synthetic message count exceeds u32");
-          return bytes;
-        }),
+        inputTokens: BigInt(fixedTokens) + messageTokens.reduce((sum, n) => sum + BigInt(n), 0n),
+        fixedTokens, messageTokens,
       };
     },
   };

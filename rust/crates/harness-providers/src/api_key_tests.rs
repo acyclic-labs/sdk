@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
+use acyclic_harness::model::{ModelContentPart, ToolResultContent};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FIRST: &str = concat!(
@@ -17,6 +17,18 @@ struct Responses {
 }
 impl Responses {
     fn exchange(&self, request: HttpRequest) -> Result<HttpResponse> {
+        if let Some(response) = fixture_count(&request) {
+            assert_eq!(
+                request.url,
+                "https://api.openai.com/v1/responses/input_tokens"
+            );
+            assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
+            let body = json(&request.body)?;
+            assert_eq!(body["model"], "gpt-6-luna");
+            assert!(body.get("stream").is_none());
+            assert!(body.get("store").is_none());
+            return Ok(response);
+        }
         assert_eq!(request.url, "https://api.openai.com/v1/responses");
         assert_eq!(request.headers["authorization"], "Bearer fixture-api-key");
         let body = json(&request.body)?;
@@ -133,13 +145,14 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 step,
                 request_digest: prepared.request_digest(),
             };
-            let count = provider.count_tokens(&prepared)?;
+            let count = provider.count_tokens(&prepared).await?;
             assert_eq!(count.request_digest, dispatch.request_digest);
             let mut custody = Vec::new();
             let events = if native {
                 assert!(provider.supports_native_model(&work)?);
-                let (native_count, hold) =
-                    provider.count_tokens_with_native_work(&prepared, &work)?;
+                let (native_count, hold) = provider
+                    .count_tokens_with_native_work(&prepared, &work)?
+                    .await?;
                 assert_eq!(native_count, count);
                 drop(hold);
                 let mut stream = provider
@@ -159,24 +172,35 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                     .await?
             };
             if step == 0 {
-                let call = events
+                let parts: Vec<_> = events
                     .into_iter()
-                    .find_map(|event| match event {
-                        ModelEvent::ToolCall(call) => Some(call),
+                    .filter_map(|event| match event {
+                        ModelEvent::ToolCall(call) => Some(ModelContentPart::ToolCall(call)),
+                        ModelEvent::ReasoningBlock { block } => {
+                            Some(ModelContentPart::Reasoning { block })
+                        }
                         _ => None,
                     })
-                    .expect("tool call");
-                let saved: ToolCall =
-                    serde_json::from_slice(&serde_json::to_vec(&call).expect("serialized call"))
-                        .expect("replayed call");
+                    .collect();
+                assert!(matches!(
+                    &parts[..],
+                    [
+                        ModelContentPart::Reasoning { .. },
+                        ModelContentPart::ToolCall(_)
+                    ]
+                ));
+                let saved = serde_json::from_slice(
+                    &serde_json::to_vec(&parts).expect("serialized assistant parts"),
+                )
+                .expect("replayed assistant parts");
                 request.messages.push(ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall(saved)),
+                    content: ModelContent::Parts(saved),
                 });
                 request.messages.push(ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
-                        call_id: "call_echo".into(),
+                        call_id: dispatch.tool_call_id(0),
                         name: "echo".into(),
                         content: ToolResultContent::Json {
                             value: json!({"value":1}),

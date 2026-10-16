@@ -34,7 +34,8 @@ impl StockExecution<'_> {
                 self.stock.limits,
                 self.io,
             )?;
-            let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io)?;
+            let count =
+                stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {

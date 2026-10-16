@@ -1,6 +1,6 @@
 use super::{
-    Cursor, Error, FileKey, Generation, Index, Query, Result, Snapshot, TaskFile, TaskVolume,
-    apply, segment, validate_file,
+    Cursor, Error, FileKey, FileValue, Generation, Index, Query, Result, Snapshot, TaskFile,
+    TaskVolume, apply, segment, validate_file,
 };
 use acyclic_stream::{OwnedBytes, ReadRequest, StreamProvider};
 use futures::StreamExt as _;
@@ -29,30 +29,37 @@ pub struct HeadSnapshot {
     pub generation: Generation,
 }
 
+impl FileValue {
+    pub(crate) fn head_key(&self) -> Result<(FileKey, Option<u64>)> {
+        self.validate()?;
+        Ok(match (&self.key, self.channel) {
+            (
+                FileKey::Task {
+                    task,
+                    file: TaskFile::Chunk { turn, sequence },
+                },
+                Some(channel),
+            ) => (
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::TextHead {
+                        turn: *turn,
+                        channel,
+                    },
+                },
+                Some(*sequence),
+            ),
+            _ => (self.key.clone(), None),
+        })
+    }
+}
+
 impl Snapshot {
     /// Converts a selected snapshot into zero-copy materialized head files.
     pub fn into_heads(self) -> Result<HeadSnapshot> {
         let mut heads = BTreeMap::<FileKey, HeadFile>::new();
         for file in self.files {
-            let (key, sequence) = match (&file.key, file.channel) {
-                (
-                    FileKey::Task {
-                        task,
-                        file: TaskFile::Chunk { turn, sequence },
-                    },
-                    Some(channel),
-                ) => (
-                    FileKey::Task {
-                        task: task.clone(),
-                        file: TaskFile::TextHead {
-                            turn: *turn,
-                            channel,
-                        },
-                    },
-                    Some(*sequence),
-                ),
-                _ => (file.key.clone(), None),
-            };
+            let (key, sequence) = file.head_key()?;
             let head = heads.entry(key.clone()).or_insert_with(|| HeadFile {
                 key,
                 segments: Vec::new(),
@@ -129,9 +136,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(&index, &files)?;
-                apply(&mut index, files);
+                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
+                apply(&mut index, files, next);
                 index.commit = record.commit_id;
-                index.next += 1;
+                index.next = next;
             }
             if index.next == before {
                 return Err(Error::ResetRequired);
@@ -152,19 +160,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.commit.as_bytes() != &cursor.commit {
             return Err(Error::ResetRequired);
         }
-        let mut files = Vec::new();
-        for range in query.ranges() {
-            for (_, file) in index
-                .files
-                .range(range)
-                .filter(|(_, f)| query.matches_file(f))
-            {
-                if files.len() == maximum_files {
-                    return Err(Error::LimitExceeded);
+        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
+            let mut files = Vec::new();
+            for range in query.ranges() {
+                for (_, file) in index
+                    .files
+                    .range(range)
+                    .filter(|(_, f)| query.matches_file(&f.file))
+                {
+                    if files.len() == maximum_files {
+                        return Err(Error::LimitExceeded);
+                    }
+                    files.push(file.file.clone());
                 }
-                files.push(file.clone());
             }
-        }
+            files
+        };
         Ok(Snapshot {
             files,
             generation: self.generation(&index),

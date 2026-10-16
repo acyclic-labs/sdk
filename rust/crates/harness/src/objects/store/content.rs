@@ -37,23 +37,36 @@ impl ObjectContentStore {
         file: &FileRef,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        self.read_representation(file, maximum_bytes, true)
+            .await
+            .map(acyclic_objects::v1::Object::into_body)
+    }
+
+    pub(super) fn content_key(&self, file: &FileRef) -> Result<String> {
         file.validate(&mut None)?;
         if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
             return Err(Error::Unauthorized(
                 "file is outside this Objects binding".into(),
             ));
         }
-        if file.version() != content_identity(file.descriptor(), file.display_name())? {
-            return Err(Error::Invalid(
-                "Objects file content identity does not match its descriptor".into(),
-            ));
-        }
+        self.key(
+            file.path(),
+            &content_identity(file.descriptor(), file.display_name())?,
+        )
+    }
+
+    pub(super) async fn read_representation(
+        &self,
+        file: &FileRef,
+        maximum_bytes: u64,
+        pinned: bool,
+    ) -> Result<acyclic_objects::v1::Object> {
         let read = self
             .objects
             .get(
                 wire::GetObjectRequest {
                     bucket: Some(self.bucket.clone()),
-                    object_key: self.key(file.path(), file.version())?,
+                    object_key: self.content_key(file)?,
                     ..Default::default()
                 },
                 maximum_bytes.min(self.maximum_bytes),
@@ -65,6 +78,19 @@ impl ObjectContentStore {
             .object
             .as_ref()
             .ok_or_else(|| Error::Storage("Objects returned no content metadata".into()))?;
+        self.verify_metadata(file, info, pinned)?;
+        acyclic_objects::v1::response::get_header(read.header(), &None, maximum_bytes)
+            .map_err(storage)?;
+        file.descriptor().verify(read.body(), &mut None)?;
+        Ok(read)
+    }
+
+    pub(super) fn verify_metadata(
+        &self,
+        file: &FileRef,
+        info: &wire::ObjectInfo,
+        pinned: bool,
+    ) -> Result<()> {
         if info.size != file.descriptor().byte_length()
             || info.metadata.as_ref().is_none_or(|metadata| {
                 metadata.content_type != file.descriptor().media_type()
@@ -78,8 +104,12 @@ impl ObjectContentStore {
                 "Objects returned another file length or metadata".into(),
             ));
         }
-        file.descriptor().verify(read.body(), &mut None)?;
-        Ok(read.into_body())
+        if pinned && file.version() != representation_identity(file, &info.etag)? {
+            return Err(Error::Conflict(
+                "Objects representation was replaced".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Selects this bucket's immutable content as an artifact without copying it.
@@ -92,7 +122,7 @@ impl ObjectContentStore {
         }
         ArtifactRef::new(
             self.volume.provider().clone(),
-            self.key(file.path(), file.version())?.into_bytes(),
+            self.content_key(file)?.into_bytes(),
             None,
         )
     }
@@ -183,7 +213,29 @@ pub(in crate::objects) fn content_identity(
     )
 }
 
+pub(super) fn representation_identity(file: &FileRef, etag: &str) -> Result<String> {
+    Ok(
+        blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
+            &(file.descriptor(), file.display_name(), etag),
+            u64::MAX,
+            &mut None,
+        )?)
+        .to_hex()
+        .to_string(),
+    )
+}
+
 impl ContentResidencyVerifier for ObjectContentStore {
+    fn read_range<'a>(
+        &'a self,
+        file: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.supports_read(file.volume(), io)?;
+        crate::conversation::BoundedContentFuture::new(io, || self.read_interval(file, range))
+    }
+
     fn read<'a>(
         &'a self,
         reference: &'a FileRef,

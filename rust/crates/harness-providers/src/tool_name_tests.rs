@@ -97,7 +97,7 @@ proptest! {
                 for options in choices {
                     let mut request = request.clone();
                     request.model.options = options;
-                    let body = projection::body(&provider, &request, &mut crate::files::FileText::Estimate).unwrap();
+                    let body = projection::body(&provider, &request).unwrap();
                     let (declaration, controls) = match adapter {
                         Adapter::Anthropic => (&body["tools"][0]["name"], vec![&body["tool_choice"]["name"]]),
                         Adapter::Responses => (&body["tools"][0]["name"], vec![if body["tool_choice"]["type"] == "allowed_tools" {
@@ -165,11 +165,8 @@ fn builtins_collisions_unicode_and_replayed_names_project_for_every_adapter() ->
         });
         let replay: ModelRequest =
             serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
-        let body = projection::body(&provider, &request, &mut crate::files::FileText::Estimate)?;
-        assert_eq!(
-            body,
-            projection::body(&provider, &replay, &mut crate::files::FileText::Estimate)?
-        );
+        let body = projection::body(&provider, &request)?;
+        assert_eq!(body, projection::body(&provider, &replay)?);
         let names = Names::new(&request);
         for name in canonical {
             let wire = names.wire(name)?;
@@ -278,7 +275,7 @@ impl HttpTransport for AliasFixture {
         Box::pin(async move {
             Ok(HttpResponse {
                 status: 200,
-                body: chunks(self.0.response, 1),
+                body: chunks(&self.0.response, 1),
             })
         })
     }

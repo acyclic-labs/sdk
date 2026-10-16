@@ -1,5 +1,7 @@
 //! Data-driven composer cases against the production filesystem reader.
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::Error;
 use acyclic_harness::{
     Result,
     client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope, resolve_file_mentions},
@@ -7,6 +9,39 @@ use acyclic_harness::{
     conversation::ContentResidencyVerifier,
 };
 use serde_json::{Value, json};
+
+fn volume_error(error: acyclic_harness::task_volume::Error) -> acyclic_harness::Error {
+    acyclic_harness::Error::Storage(error.to_string())
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "terminal"))]
+mod client_command_driver;
+mod client_command_files;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_owners;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_parity;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_parser;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_session;
+#[cfg(not(target_arch = "wasm32"))]
+mod client_command_views;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/name_index.rs"]
+mod command_name_index;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../../harness-fuzz/command_oracle.rs"]
+mod command_oracle;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/parse.rs"]
+mod command_parse;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/syntax.rs"]
+mod command_syntax;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/context/discovery/frontmatter.rs"]
+mod frontmatter;
 
 #[path = "support/client_files.rs"]
 mod client_files;

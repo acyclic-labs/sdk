@@ -2,9 +2,22 @@ use super::*;
 
 #[tokio::test]
 async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_execution() -> Result<()> {
-    for (maximum, bare_at_limit, metadata) in [
-        (256, true, Value::Null),
-        (256, false, json!({"provider_signature":"x".repeat(256)})),
+    for (maximum, render, bare_at_limit, arguments, metadata) in [
+        (256, 4096, true, json!({"data":""}), Value::Null),
+        (
+            256,
+            4096,
+            false,
+            json!({"data":""}),
+            json!({"provider_signature":"x".repeat(256)}),
+        ),
+        (
+            4096,
+            1024,
+            false,
+            json!({"data":"x".repeat(600)}),
+            json!({"signature":"x".repeat(600)}),
+        ),
     ] {
         let operation = OperationId::new();
         let mut invocation = ToolInvocation::for_model_call(
@@ -12,7 +25,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
             0,
             "call".into(),
             "example.echo".into(),
-            json!({"data":""}),
+            arguments,
             None,
         )?;
         if bare_at_limit {
@@ -31,7 +44,10 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
             invocation: &invocation,
             metadata: &metadata,
         };
-        assert!(serde_json::to_vec(&saved).expect("fixture encoding").len() > maximum as usize);
+        assert!(
+            serde_json::to_vec(&saved).expect("fixture encoding").len()
+                > maximum.min(render) as usize
+        );
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
         let tools = echo_tools(
             tool.clone(),
@@ -50,6 +66,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits {
                     file_bytes: maximum,
+                    render_bytes: render,
                     ..Limits::default()
                 },
             )?,
@@ -72,7 +89,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
         }];
         let journal = Journal::default();
         let result = StockExecution::ordinary(&executor)
-            .settle_tool_call(&journal, operation, 0, invocation, &mut prior)
+            .settle_tool_call(&journal, operation, 0, invocation, 0, &mut prior)
             .await;
         assert!(matches!(result, Err(Error::Invalid(_))));
         assert_eq!(journal.3.load(Ordering::SeqCst), 0, "no replay I/O");

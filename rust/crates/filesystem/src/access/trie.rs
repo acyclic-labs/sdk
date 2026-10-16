@@ -8,6 +8,8 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod reachability;
+
 #[derive(Clone, Copy)]
 struct Outcome {
     rule: Option<usize>,
@@ -17,6 +19,7 @@ struct Outcome {
 struct State {
     transitions: Vec<usize>,
     decisions: [Outcome; 12],
+    actions: u16,
 }
 
 /// Determinized glob trie for one principal, volume, generation, and context.
@@ -120,6 +123,12 @@ impl<'a> PreparedPath<'a> {
     #[must_use]
     pub fn decide(self, action: Action, now: u64) -> Decision<'a> {
         self.trie.decision(self.state, action, now)
+    }
+
+    pub(super) fn action_mask(self, now: u64) -> u16 {
+        self.trie
+            .state_at(self.state, now)
+            .map_or(0, |state| state.actions)
     }
 }
 
@@ -320,12 +329,8 @@ impl PathTrie {
     }
 
     fn decision(&self, state: usize, action: Action, now: u64) -> Decision<'_> {
-        if now < self.valid_from || self.valid_until.is_some_and(|expiry| now >= expiry) {
-            return Decision::denied(self.version, Denial::Invalid);
-        }
         match self
-            .states
-            .get(state)
+            .state_at(state, now)
             .and_then(|node| node.decisions.get(action as usize))
         {
             Some(outcome) => Decision {
@@ -337,6 +342,14 @@ impl PathTrie {
                 policy_version: self.version,
             },
             None => Decision::denied(self.version, Denial::Invalid),
+        }
+    }
+
+    fn state_at(&self, state: usize, now: u64) -> Option<&State> {
+        if now < self.valid_from || self.valid_until.is_some_and(|expiry| now >= expiry) {
+            None
+        } else {
+            self.states.get(state)
         }
     }
 }
@@ -445,6 +458,16 @@ fn determinize(
         }
         states.push(State {
             transitions,
+            actions: decisions
+                .iter()
+                .enumerate()
+                .fold(0, |mask, (bit, outcome)| {
+                    mask | if outcome.denial.is_none() {
+                        1 << bit
+                    } else {
+                        0
+                    }
+                }),
             decisions,
         });
     }

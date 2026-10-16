@@ -5,7 +5,6 @@ use acyclic_harness::{
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent, ToolCall},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
-    tool::files,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -54,7 +53,7 @@ async fn run(case: Case) -> Result<()> {
         turns.push(ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 format!("write-{index}"),
-                "acyclic.write_file".into(),
+                "write".into(),
                 json!({
                     "path":"GOAL.md", "text":text,
                     "media_type":"text/markdown", "display_name":"GOAL.md",
@@ -74,8 +73,6 @@ async fn run(case: Case) -> Result<()> {
             provider.clone(),
         )
         .grant("model:generate")
-        .tool(files::write_file()?)?
-        .grant("tool:call:acyclic.write_file")
         .compaction(CompactionPolicy::Disabled)
         .build()?;
     let output = storage

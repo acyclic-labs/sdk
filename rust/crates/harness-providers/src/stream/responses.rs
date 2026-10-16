@@ -1,6 +1,6 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
-pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<ModelEvent>> {
     let mut events = Vec::new();
     match value["type"].as_str() {
         Some("response.output_text.delta" | "response.refusal.delta") => {
@@ -12,7 +12,19 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
         Some("response.output_item.added" | "response.output_item.done") => {
             let item = &value["item"];
             if item["type"] == "reasoning" {
-                state.retain_thinking(index(value, "output_index")?, item)?;
+                #[derive(serde::Deserialize)]
+                struct Event<'a> {
+                    #[serde(borrow)]
+                    item: &'a serde_json::value::RawValue,
+                }
+                let event: Event<'_> =
+                    serde_json::from_str(data).map_err(|_| invalid("invalid reasoning item"))?;
+                state.raw_part(
+                    index(value, "output_index")?,
+                    item,
+                    Some(event.item.get()),
+                    false,
+                )?;
             }
             if item["type"] == "function_call" {
                 let (call, budget) = state.call(index(value, "output_index")?)?;

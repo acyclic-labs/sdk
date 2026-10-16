@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool::ToolRegistry;
 
 #[tokio::test]
 #[allow(
@@ -731,7 +732,8 @@ async fn assert_summary_child_import(
     )?;
     let capacity = model.context_capacity(&request.request().model)?;
     let input_tokens = model
-        .count_tokens(&request)?
+        .count_tokens(&request)
+        .await?
         .validate(&request, &mut None)?;
     assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
     assert_eq!(

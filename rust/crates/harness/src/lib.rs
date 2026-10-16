@@ -17,6 +17,15 @@
 )]
 #![doc = include_str!("../README.md")]
 
+mod sync;
+#[cfg(all(
+    test,
+    debug_assertions,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[path = "memory_store/retention_scan_trace.rs"]
+mod accounting_trace;
 pub mod agent_loop;
 #[cfg(feature = "tui")]
 pub use acyclic_harness_tui as tui;
@@ -43,6 +52,8 @@ pub mod grpc;
 pub mod hooks;
 pub mod interaction;
 pub mod live;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub mod local;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
@@ -70,6 +81,7 @@ pub mod resource_preparation;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
+pub mod search;
 pub mod source_authorization;
 pub mod store;
 pub mod task_volume;
@@ -78,12 +90,15 @@ pub mod test_support;
 pub mod tool;
 pub mod tools;
 #[cfg(feature = "tui")]
+pub mod tui_config;
+#[cfg(feature = "tui")]
 pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;
+pub mod workspace;
 pub use wire_codec::encode_error;
 #[cfg(test)]
 #[path = "../tests/support/stream/mod.rs"]
@@ -158,6 +173,8 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{LocalHarness, LocalHarnessConfig};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]

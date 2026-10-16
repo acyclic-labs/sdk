@@ -13,8 +13,15 @@ const occupancy = { active: 0, minimum: 0 };
 if (fault || scenario === "reservation") {
   const { plugin } = await import("bun");
   plugin({ name: "session-negative-control", setup(build) {
+    if (fault === "childSelect") build.onLoad({ filter: /[\\/]src[\\/]default\.ts$/ }, async args => {
+      const source = await Bun.file(args.path).text();
+      const old = "this.acquireProvider(request.signal)";
+      if (!source.includes(old)) throw new Error("child selection negative control no longer matches");
+      return { contents: source.replace(old, "this.acquireProvider(undefined)"), loader: "ts" };
+    });
     build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
       let source = await Bun.file(args.path).text();
+      if (fault === "childSelect") return { contents: source, loader: "ts" };
       if (scenario === "reservation") {
         // Observe the actual private counter without adding a production API.
         for (const operator of ["+=", "-="]) {
@@ -24,14 +31,16 @@ if (fault || scenario === "reservation") {
         }
       }
       if (!fault) return { contents: source, loader: "ts" };
-      const old = fault === "resume" ? "route.placement = target.placementEpoch;"
+      const old = fault === "childCursor" ? "route.appliedOpaque = delivery.opaque;"
+        : fault === "resume" ? "route.placement = target.placementEpoch;"
         : fault === "cancel" ? "if (route !== undefined) this.#remove(route); };"
         : fault === "control" ? "try { await untilAborted(link.transport.send(input, signal), signal, link.controller.signal); }\n    catch (error) { if (!signal?.aborted) this.#lost(link, error); }"
         : fault === "resubscribe" ? "catch (error) { if (route.link === next && route.generation === generation) this.#fail(route, error); }"
         : fault === "reservation" ? "const abort = (): void => { release();"
         : "queue.discard(delivery => delivery.release());";
       if (!source.includes(old)) throw new Error(`negative control no longer matches: ${fault}`);
-      const replacement = fault === "resume" ? "route.applied = body.value.resume?.next ?? route.applied; route.placement = target.placementEpoch;"
+      const replacement = fault === "childCursor" ? "route.appliedOpaque = new Uint8Array();"
+        : fault === "resume" ? "route.applied = body.value.resume?.next ?? route.applied; route.placement = target.placementEpoch;"
         : fault === "control" ? "await link.transport.send(input, signal);"
         : fault === "resubscribe" ? "catch (error) { if (route.link === link) this.#fail(route, error); }"
         : fault === "reservation" ? "const abort = (): void => {"
@@ -46,7 +55,7 @@ const { StreamSessions } = await import("../src/session.js");
 const peer = new SessionNode();
 const parked: (() => void)[] = [];
 const acknowledgements: (() => void)[] = [];
-let frozen = true;
+let frozen = scenario !== "children";
 let ackFrozen = true;
 let ackStarted = false;
 const sessions = new StreamSessions(async (node, signal) => {
@@ -65,9 +74,19 @@ const sessions = new StreamSessions(async (node, signal) => {
   } };
 });
 const controller = new AbortController();
+const { DefaultStreamProvider } = await import("../src/default.js");
+const facade = new DefaultStreamProvider({ endpoint: "https://home", token: "model" });
+let releaseSelection: (() => void) | undefined;
+Reflect.set(facade, "select", async () => {
+  if (scenario === "childSelect") await new Promise<void>(resolve => { releaseSelection = resolve; });
+  return { children: (request: Parameters<StreamSessions["children"]>[0]) => sessions.children(request) };
+});
 if (scenario === "drop") peer.append("events", 2);
 if (["immediate", "ack", "reject", "reservation"].includes(scenario)) peer.append("events");
-const records = sessions.follow("events", { from: 0n, signal: controller.signal });
+if (scenario === "children") { peer.append("agents/m"); peer.append("agents/a"); }
+const records = scenario === "children" || scenario === "childSelect"
+  ? facade.children({ parent: "agents", limit: 1, signal: controller.signal })
+  : sessions.follow("events", { from: 0n, signal: controller.signal });
 const seen: number[] = [];
 let settled = false;
 let rejected: unknown;
@@ -75,19 +94,52 @@ let appliedAtMove = 0;
 let seenAtAbort: number[] = [];
 function receive(): void {
   settled = false;
-  void records.next().then(result => { settled = true; if (!result.done) seen.push(Number(result.value.sequence)); }, error => { settled = true; rejected = error; });
+  void records.next().then(result => { settled = true; if (!result.done) seen.push("sequence" in result.value ? Number(result.value.sequence) : result.value.path === "agents/m" ? 0 : result.value.path === "agents/a" ? 1 : 2); }, error => { settled = true; rejected = error; });
 }
 if (scenario !== "decode") receive();
-async function command(action: string, hex?: string): Promise<unknown> {
+async function command(action: string, hex?: string, path?: string,
+  work?: { warm: number; samples: number; reverse: boolean; shared: boolean }): Promise<unknown> {
   switch (action) {
+    case "latency": {
+      if (work === undefined || path === undefined) throw new Error("latency work missing");
+      const { measure } = await import("./session-latency-measure.mjs");
+      const { MemoryStreamProvider } = await import("../src/memory.js");
+      const memory = new MemoryStreamProvider();
+      const accepted = new Map<string, number>();
+      const provider = {
+        async append(path: string, values: readonly Uint8Array[], options: import("../src/types.js").AppendOptions) {
+          const result = await memory.append(path, values, options);
+          if (result.ok) accepted.set(path, (accepted.get(path) ?? 0) + values.length);
+          return result;
+        },
+        follow: memory.follow.bind(memory),
+      };
+      let rejection: string | null = null;
+      try {
+        for (const runtime of work.reverse ? ["bun", "node"] : ["node", "bun"]) {
+          await measure(provider, path, undefined, { warm: work.warm, samples: work.samples, runtime: work.shared ? "shared" : runtime });
+        }
+      } catch (error) { rejection = String(error); }
+      const tails = [];
+      for (const path of accepted.keys()) tails.push(Number(await memory.tail(path)));
+      return { isolated: rejection === null, rejection, accepted: [...accepted.values()].reduce((sum, count) => sum + count, 0), tails };
+    }
+    case "child": {
+      const value = create(wire.SessionFrameSchema, { channelId: 1n, generation: 1n, body: { case: "data", value: {
+        after: { next: 1n, opaque: new TextEncoder().encode(path) }, accepted: 1n, item: { case: "child", value: { path: path ?? "" } },
+      } } });
+      return command("decode", Buffer.from(toBinary(wire.SessionFrameSchema, value)).toString("hex"));
+    }
     case "ready": break;
-    case "append": peer.append("events"); break;
+    case "releaseSelection": releaseSelection?.(); break;
+    case "finishChildren": if (seen.length === 2) receive(); break;
+    case "append": peer.append(scenario === "children" ? "agents/0" : "events"); break;
     case "consume": receive(); break;
     case "disconnectNext": peer.disconnect(); receive(); break;
     case "disconnect": peer.disconnect(); break;
     case "releaseAck": ackFrozen = false; for (const resolve of acknowledgements.splice(0)) resolve(); break;
     case "drop": await records.return(undefined); break;
-    case "move": appliedAtMove = seen.length; peer.move("events"); break;
+    case "move": appliedAtMove = seen.length; peer.move(scenario === "children" ? "agents" : "events"); break;
     case "release": frozen = false; for (const resolve of parked.splice(0)) resolve(); break;
     case "abort": seenAtAbort = [...seen]; controller.abort(); break;
     case "decode": {
@@ -99,11 +151,13 @@ async function command(action: string, hex?: string): Promise<unknown> {
       const validatorPeer = new SessionNode();
       const validator = new StreamSessions(validatorPeer.connect);
       const cancel = new AbortController();
-      const iterator = validator.follow("probe", { from: 0n, signal: cancel.signal });
+      const childFrame = decoded.body.case === "data" && decoded.body.value.item.case === "child";
+      const iterator = childFrame ? validator.children({ limit: 1, signal: cancel.signal })
+        : validator.follow("probe", { from: 0n, signal: cancel.signal });
       let outcome = "pending";
       let sequence: number | undefined;
       const pending = iterator.next().then(result => {
-        if (!result.done) { outcome = "record"; sequence = Number(result.value.sequence); }
+        if (!result.done) { outcome = "sequence" in result.value ? "record" : "child"; sequence = "sequence" in result.value ? Number(result.value.sequence) : undefined; }
       }, error => { outcome = error?.code ?? "unavailable"; });
       await checkpoint();
       validatorPeer.connections[0]!.output.push(decoded);
@@ -125,7 +179,7 @@ async function command(action: string, hex?: string): Promise<unknown> {
   }
   await checkpoint();
   if (scenario === "ack" && action === "consume" && !ackStarted) throw new Error("model did not park the actual acknowledgement write");
-  if (rejected !== undefined && !["immediate", "ack", "reject"].includes(scenario)) throw rejected;
+  if (rejected !== undefined && !["immediate", "ack", "reject", "children"].includes(scenario)) throw rejected;
   return { settled, seen, seenAtAbort, appliedAtMove, connections: peer.connections.length,
     activeReservations: occupancy.active, minimumReservations: occupancy.minimum,
     rejected: rejected === undefined ? null : String(rejected), rejectedCode: rejected instanceof StreamError ? rejected.code : null, ackStarted,
@@ -133,7 +187,7 @@ async function command(action: string, hex?: string): Promise<unknown> {
     active: peer.active, outstanding: peer.outstandingFrames, returned: peer.returned };
 }
 for await (const line of createInterface({ input: process.stdin })) {
-  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action, input.hex))}\n`); }
+  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action, input.hex, input.path, input.work))}\n`); }
   catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
 }
 controller.abort();

@@ -245,8 +245,7 @@ export function publicModelContent(content: NativeModel.ModelContent): ModelCont
   };
   const mapContentPart = (part: NativeModel.ModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
-      return { kind: part.kind, callId: part.call_id, name: part.name,
-        arguments: normalizeModelJson(part.arguments), metadata: part.metadata ?? null };
+      return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
     }
     if (part.kind === "tool_result") {
       const content = part.content.kind === "json"

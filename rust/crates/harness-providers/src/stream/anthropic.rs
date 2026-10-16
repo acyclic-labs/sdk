@@ -1,6 +1,6 @@
 use super::{ModelEvent, Result, State, Value, index, invalid, string, text};
 
-pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
+pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<ModelEvent>> {
     let mut events = Vec::new();
     match value["type"].as_str() {
         Some("message_start") => {
@@ -27,11 +27,35 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
                 }
                 Some("text") => text(&mut events, &block["text"], false),
                 Some("thinking") => {
-                    state.retain_thinking(index(value, "index")?, block)?;
+                    #[derive(serde::Deserialize)]
+                    struct Event<'a> {
+                        #[serde(borrow)]
+                        content_block: &'a serde_json::value::RawValue,
+                    }
+                    let raw: Event<'_> = serde_json::from_str(data)
+                        .map_err(|_| invalid("invalid thinking block"))?;
+                    state.raw_part(
+                        index(value, "index")?,
+                        block,
+                        Some(raw.content_block.get()),
+                        false,
+                    )?;
                     text(&mut events, &block["thinking"], true);
                 }
                 Some("redacted_thinking") => {
-                    state.retain_thinking(index(value, "index")?, block)?;
+                    #[derive(serde::Deserialize)]
+                    struct Event<'a> {
+                        #[serde(borrow)]
+                        content_block: &'a serde_json::value::RawValue,
+                    }
+                    let raw: Event<'_> = serde_json::from_str(data)
+                        .map_err(|_| invalid("invalid thinking block"))?;
+                    state.raw_part(
+                        index(value, "index")?,
+                        block,
+                        Some(raw.content_block.get()),
+                        false,
+                    )?;
                 }
                 _ => {}
             }

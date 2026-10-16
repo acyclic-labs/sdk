@@ -6,17 +6,25 @@ use crate::{
     executor::PreparationIo,
     tool::{ToolDefinition, ToolRegistry},
 };
-use std::collections::BTreeSet;
+
+mod binding;
 
 /// Pinned instructions, available skills, selected invocations and exact tool schemas.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextManifest {
+    /// Declarative conventions pinned in this manifest file, before discovered instructions.
+    #[serde(default)]
+    pub conventions: Vec<String>,
     /// Instructions are ordered from broad to specific scope; later entries take precedence.
     pub discovery: DiscoveredContext,
     /// Names in invocation order, resolving only through this manifest's pinned skill catalog.
     pub selected_skills: Vec<String>,
+    /// Pinned configuration inputs (such as hooks and MCP settings), never prompt text.
+    #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
+    pub sources: Vec<FileRef>,
     /// Complete selected tool catalog before caller attenuation, with exact executor revisions.
     pub tools: Vec<ToolDefinition>,
 }
@@ -29,59 +37,93 @@ impl ContextManifest {
         tools: &ToolRegistry,
     ) -> Result<Self> {
         Ok(Self {
+            conventions: serde_json::from_str(include_str!("instructions.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             discovery,
             selected_skills,
+            sources: Vec::new(),
             tools: tools.definitions(None)?,
         })
     }
 
     /// Validates one bounded selection before reading skill bodies or changing model visibility.
     pub fn validate(&self, limits: Limits) -> Result<()> {
-        limits.validate(&mut None)?;
-        crate::executor::json::json_byte_length(self, limits.render_bytes, &mut None)?;
-        self.discovery.validate(&mut None)?;
-        for instruction in &self.discovery.instructions {
-            limits.validate_file(instruction, &mut None)?;
-        }
-        let mut names = BTreeSet::new();
-        for name in &self.selected_skills {
-            if !names.insert(name) {
-                return Err(Error::Conflict("manifest repeats a selected skill".into()));
+        self.validate_observed(limits, None)
+    }
+
+    fn validate_observed(&self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        use crate::{executor::stock_boundary, wire::ErrorCode};
+        crate::executor::with_history_io(io, |work| -> Result<()> {
+            limits.validate(work)?;
+            crate::executor::json::json_byte_length(self, limits.render_bytes, work)?;
+            self.discovery.validate(work)?;
+            for file in self.discovery.instructions.iter().chain(&self.sources) {
+                limits.validate_file(file, work)?;
             }
-        }
-        for skill in &self.discovery.skills {
-            if skill.source.path.len() > limits.path_bytes {
-                return Err(Error::Invalid(
-                    "manifest skill path exceeds path bound".into(),
+            for tool in &self.tools {
+                tool.validate(work)?;
+            }
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut names = crate::core::reserve_copy_vector::<&str>(
+                self.selected_skills.len().max(self.tools.len()),
+                &mut quota,
+            )?;
+            names.extend(self.selected_skills.iter().map(String::as_str));
+            names.sort_unstable();
+            if names.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Conflict,
+                    "manifest repeats a selected skill",
                 ));
             }
-            names.remove(&skill.name);
-        }
-        if !names.is_empty() {
-            return Err(Error::NotFound(
-                "manifest selected skill is not in its catalog".into(),
-            ));
-        }
-        names.clear();
-        for tool in &self.tools {
-            tool.validate(&mut None)?;
-            if !names.insert(&tool.name) {
-                return Err(Error::Conflict("manifest repeats a tool name".into()));
+            let mut matched = 0;
+            for skill in &self.discovery.skills {
+                if skill.source.path.len() > limits.path_bytes {
+                    return Err(stock_boundary(
+                        io,
+                        ErrorCode::Invalid,
+                        "manifest skill path exceeds path bound",
+                    ));
+                }
+                matched += usize::from(names.binary_search(&skill.name.as_str()).is_ok());
             }
-        }
-        let count = self
-            .discovery
-            .instructions
-            .len()
-            .checked_add(usize::from(!self.discovery.skills.is_empty()))
-            .and_then(|count| count.checked_add(self.selected_skills.len()))
-            .ok_or_else(|| Error::Invalid("manifest message count overflows".into()))?;
-        if count > limits.context_messages {
-            return Err(Error::Invalid(
-                "manifest exceeds context message bound".into(),
-            ));
-        }
-        Ok(())
+            if matched != names.len() {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::NotFound,
+                    "manifest selected skill is not in its catalog",
+                ));
+            }
+            names.clear();
+            names.extend(self.tools.iter().map(|tool| tool.name.as_str()));
+            names.sort_unstable();
+            if names.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Conflict,
+                    "manifest repeats a tool name",
+                ));
+            }
+            let count = self
+                .discovery
+                .instructions
+                .len()
+                .checked_add(self.conventions.len())
+                .and_then(|count| count.checked_add(usize::from(!self.discovery.skills.is_empty())))
+                .and_then(|count| count.checked_add(self.selected_skills.len()))
+                .ok_or_else(|| {
+                    stock_boundary(io, ErrorCode::Invalid, "manifest message count overflows")
+                })?;
+            if count > limits.context_messages {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Invalid,
+                    "manifest exceeds context message bound",
+                ));
+            }
+            Ok(())
+        })
     }
 
     /// Encodes the validated selection with canonical object keys and explicit array order.
@@ -149,83 +191,14 @@ impl ContextManifest {
         Ok(reference)
     }
 
-    async fn load(
-        reference: &FileRef,
-        reader: &dyn ContentResidencyVerifier,
-        limits: Limits,
-    ) -> Result<Self> {
-        limits.validate(&mut None)?;
-        limits.validate_file(reference, &mut None)?;
-        if reference.descriptor().media_type() != "application/json"
-            || reference.descriptor().byte_length() > limits.render_bytes
-        {
-            return Err(Error::Invalid(
-                "context manifest exceeds JSON/render bounds".into(),
-            ));
-        }
-        let bytes = reader.read(reference, limits.render_bytes, None)?.await?;
-        reference.descriptor().verify(&bytes, &mut None)?;
-        Self::decode(&bytes, limits)
-    }
-
-    async fn context(
-        &self,
-        reference: FileRef,
-        reader: &dyn ContentResidencyVerifier,
-        limits: Limits,
-    ) -> Result<Context> {
-        let mut messages = self.discovery.messages(limits, None)?;
-        let mut remaining = limits
-            .render_bytes
-            .checked_sub(crate::executor::json::json_byte_length(
-                &messages,
-                limits.render_bytes,
-                &mut None,
-            )?)
-            .ok_or_else(|| Error::Invalid("manifest exceeds context byte bound".into()))?;
-        let skills: BTreeMap<_, _> = if self.selected_skills.is_empty() {
-            BTreeMap::new()
-        } else {
-            self.discovery
-                .skills
-                .iter()
-                .map(|skill| (&skill.name, skill))
-                .collect()
-        };
-        for name in &self.selected_skills {
-            let skill = skills
-                .get(name)
-                .ok_or_else(|| Error::NotFound("manifest selected skill disappeared".into()))?;
-            let message = skill
-                .invoke(reader, limits.file_bytes.min(remaining))
-                .await?;
-            let bytes = crate::executor::json::json_byte_length(&message, remaining, &mut None)?;
-            remaining = remaining
-                .checked_sub(bytes)
-                .ok_or_else(|| Error::Invalid("manifest exceeds context byte bound".into()))?;
-            messages.push(message);
-        }
-        let context = Context {
-            messages,
-            metadata: BTreeMap::from([("context.manifest".into(), reference)]),
-            current_input_index: None,
-        };
-        validate_projected_context(&context, limits, None)?;
-        Ok(context)
-    }
-
     /// Binds one immutable selection to its registered executors and reusable context stage.
     pub async fn bind(
         reference: FileRef,
         reader: &dyn ContentResidencyVerifier,
-        mut tools: ToolRegistry,
+        tools: ToolRegistry,
         limits: Limits,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
-        let manifest = Self::load(&reference, reader, limits).await?;
-        // Reject mismatched executors before fetching any selected skill bodies.
-        tools.pin_model_definitions(&manifest.tools)?;
-        let context = manifest.context(reference, reader, limits).await?;
-        Ok((tools, Arc::new(ManifestStage { context })))
+        Self::bind_observed(reference, reader, tools, limits, None).await
     }
 }
 

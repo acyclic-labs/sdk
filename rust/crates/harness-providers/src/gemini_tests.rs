@@ -1,5 +1,7 @@
 use super::*;
-use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
+use acyclic_harness::model::{
+    ModelContentPart, ReasoningBlock, ReasoningKind, ReasoningOutcome, ToolCall, ToolResultContent,
+};
 
 #[tokio::test]
 async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected() -> Result<()> {
@@ -52,16 +54,24 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
     });
     for step in 0..2 {
         for index in 0..2 {
+            let mut parts = Vec::new();
+            if index == 0 {
+                parts.push(ModelContentPart::Reasoning { block: ReasoningBlock {
+                    kind: ReasoningKind::Signature,
+                    text: None,
+                    origin: provider.reasoning_origin(provider.key.as_deref(), None),
+                    continuity: serde_json::to_vec(&json!({"functionCall":{"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
+                    outcome: ReasoningOutcome::PreservedOpaque,
+                }});
+            }
+            parts.push(ModelContentPart::ToolCall(ToolCall::new(
+                format!("{step}-{index}"),
+                "echo".into(),
+                json!({}),
+            )));
             request.messages.push(ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Part(ModelContentPart::ToolCall(
-                    ToolCall::new(format!("{step}-{index}"), "echo".into(), json!({}))
-                        .with_metadata(if index == 0 {
-                            json!({"gemini_thought_signature":format!("signature-{step}")})
-                        } else {
-                            serde_json::Value::Null
-                        }),
-                )),
+                content: ModelContent::Parts(parts),
             });
         }
         for index in 0..2 {
@@ -80,7 +90,7 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let replayed = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
     for request in [prepared.request(), replayed.request()] {
-        let body = projection::body(&provider, request, &mut crate::files::FileText::Estimate)?;
+        let body = projection::body(&provider, request)?;
         let contents = body["contents"].as_array().expect("contents");
         assert_eq!(contents.len(), 5);
         for step in 0..2 {

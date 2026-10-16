@@ -16,9 +16,7 @@ fn check_retention(input: Vec<u8>, broken: bool) {
     let expected = bytes.clone();
     let source = futures::stream::iter([Ok(bytes)]);
     let mut body = body(source, (!broken).then_some(&work)).unwrap();
-    let received = futures::executor::block_on(futures::StreamExt::next(&mut body))
-        .unwrap()
-        .unwrap();
+    let received = futures::executor::block_on(body.next()).unwrap().unwrap();
     assert_eq!(received, expected);
     if !broken {
         assert_eq!(work.receipt().source_bytes_read, expected.len() as u64);
@@ -53,11 +51,7 @@ fn an_oversized_received_buffer_is_rejected_before_a_reader_can_consume_it() {
     let baseline = work.live_allocation_bytes();
     let source = futures::stream::iter([Ok(Bytes::from(vec![0; 16384]))]);
     let mut body = body(source, Some(&work)).unwrap();
-    assert!(
-        futures::executor::block_on(futures::StreamExt::next(&mut body))
-            .unwrap()
-            .is_err()
-    );
+    assert!(futures::executor::block_on(body.next()).unwrap().is_err());
     drop(body);
     assert_eq!(work.live_allocation_bytes(), baseline);
 }

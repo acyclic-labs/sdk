@@ -48,7 +48,7 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
                     "read".into(),
-                    "acyclic.read_file".into(),
+                    "read".into(),
                     json!({"file":file}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
@@ -65,11 +65,11 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             ]),
         ])
         .with_token_counter(|request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 512,
-                message_tokens: vec![512; request.request().messages.len()],
-            })
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                512,
+                vec![512; request.request().messages.len()],
+            ))
         }),
     );
     let bundle = storage
@@ -78,12 +78,7 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             Model::new("test".into(), "usage".into(), "1".into(), Value::Null)?,
             model.clone(),
         )
-        .tools(storage.default_tools(limits, None)?)
         .grant("model:generate")
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
-        .grant("tool:call:acyclic.list_files")
         .compaction(CompactionPolicy::Disabled)
         .limits(limits)
         .build()?;

@@ -49,6 +49,10 @@ schema!(PROJECT_MERGE_RECEIPT => ProjectMergeReceipt, "", [], ["provider_proof" 
 schema!(TOOL_TASK_COMMAND => ToolTaskCommand, "", [], ["arguments" => ROOT : 0], []);
 schema!(TASK_ADMIT_COMMAND => TaskAdmitCommand, "", [], ["input" => ROOT : 0], []);
 schema!(PREPARED_TASK_ADMIT_COMMAND => PreparedTaskAdmitCommand, "", [], ["admission" => TASK_ADMISSION_RECORD : 0], []);
+schema!(CONTEXT_MANIFEST => ContextManifest, "", [], ["discovery" => DISCOVERED_CONTEXT : 0, "tools" => TOOLS : 0], []);
+schema!(DISCOVERED_CONTEXT, "", [], ["skills" => SKILLS : 0], []);
+schema!(SKILLS, "", [], [], [SKILL]);
+schema!(SKILL, "", [], ["fields" => ROOT : 0], []);
 schema!(MODEL_TASK_COMMAND => ModelTaskCommand, "", [], ["input" => MODEL_CONTENT : 0, "selected_context" => CONTEXT : 0], []);
 schema!(NATIVE_PROCESS_REQUEST => NativeProcessRequest, "", [], ["mcp_stdio" => MCP_STDIO_REQUEST : 0], []);
 schema!(PROJECT_SOURCE_AUTHORIZATION => ProjectSourceAuthorization, "", [], ["native_snapshot" => ROOT : 0], []);

@@ -473,46 +473,34 @@ export class MemoryConversation {
 
   async #publishToolHistory(operation: OperationId, userId: ConversationMessageId, output: RunOutput, limits: Limits): Promise<void> {
     const seen = new Set<string>();
-    const results: { index: number; message: Omit<ConversationMessage<"tool_result">, "sequence"> }[] = [];
-    let step: number | undefined;
-    const flushResults = () => {
-      for (const { index, message } of results) {
-        this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result",
-          { ...message, sequence: BigInt(this.conversation().messages.length + 1) }, limits);
-      }
-      results.length = 0;
-    };
     for (const [index, receipt] of output.receipts.entries()) {
       if (receipt.kind !== "tool") continue;
-      if (step !== undefined && step !== receipt.step) flushResults();
-      step = receipt.step;
       const identity = `${receipt.step}:${receipt.callId}`;
       if (seen.has(identity)) throw new TypeError("tool call identity is duplicated within a model step");
       seen.add(identity);
       const callId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-call:${index}`));
       const resultId = this.#core.contracts.validateConversationMessageId(this.#core.contracts.deriveOperationId(operation, `tool-result:${index}`));
       const call = await this.stage(`turns/${operation}/tools/${index}-call.json`,
-        this.#core.contracts.encodeCanonicalJson({ invocation: { operation_id: receipt.operationId,
-          call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }, metadata: receipt.metadata }),
+        this.#core.contracts.encodeCanonicalJson({ call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }),
         "application/json", "call.json");
       const result = await this.stage(`turns/${operation}/tools/${index}-result.json`,
         this.#core.contracts.encodeCanonicalJson({ value: receipt.value }), "application/json", "result.json");
       const projection = await this.stage(`turns/${operation}/tools/${index}-projection.json`,
         this.#core.contracts.encodeCanonicalJson(receipt.projection), "application/json", "projection.json");
       for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
-      const state = this.conversation();
+      let state = this.conversation();
       this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
         id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
         attachments: { kind: "inline", items: [] }, reply_to: userId,
         tool_call_id: receipt.callId, extensions: {},
       }, limits);
-      results.push({ index, message: {
-        id: resultId, kind: "tool_result", content: result,
+      state = this.conversation();
+      this.#appendIfAbsent(this.#core.contracts.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
+        id: resultId, sequence: BigInt(state.messages.length + 1), kind: "tool_result", content: result,
         attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
         reply_to: callId, tool_call_id: receipt.callId, extensions: {},
-      } });
+      }, limits);
     }
-    flushResults();
   }
 
   #append(operation: OperationId, label: string, message: ConversationMessage, limits: Limits): void {

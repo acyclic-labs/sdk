@@ -110,6 +110,8 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    acyclic_fs::initialize_native_mount_services()?;
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
@@ -196,12 +198,14 @@ where
             None,
         )
         .await?;
+    let work = capture::work()?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         results_volume.clone(),
         &issuer,
         &scope,
+        Some(&work),
     )
     .await?;
     let WorkPull::Claimed(lease) = runtime
@@ -258,16 +262,7 @@ where
     } else {
         tempfile::tempdir()?
     };
-    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
-    if let Some(fields) = allowances.as_object_mut() {
-        for value in fields.values_mut() {
-            *value = json!(1_000_000);
-        }
-    }
-    let work_per_volume: WorkBudget = serde_json::from_value(allowances)?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(work_per_volume, &cancellation)
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+    let work_per_volume = work.budget();
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = LeaseFence::from(&lease.reservation);
     let owner = runtime
@@ -419,6 +414,7 @@ where
         results: results.clone(),
         approvals: approvals.clone(),
     };
+    let output = Arc::new(capture::Output::default());
     let process = Arc::new(
         NativeProcessProvider::new(
             owner.clone(),
@@ -428,7 +424,8 @@ where
             approval,
             authority,
         )
-        .await?,
+        .await?
+        .with_output_observer(output.observer()),
     );
     let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone(), None)?;
@@ -506,7 +503,10 @@ where
         .await?
     };
     let applied = receipt_fault.is_none_or(|(kind, _)| kind == "observed");
-    verify_publication(&files, &destination, applied && !lost_response).await?;
+    verify_publication(&files, &destination, applied).await?;
+    output
+        .verify(content.as_ref(), status.as_ref(), applied)
+        .await?;
     drop(effects);
     drop(process);
     drop(view);
@@ -602,7 +602,7 @@ fn native_request(
         cancellation_poll_ms: 10,
         maximum_output_bytes: 8192,
         maximum_result_bytes: 65_536,
-        standard_input: None,
+        standard_input: mcp.is_none().then(|| b"exact native input".to_vec()),
         mcp_stdio: if let Some(method) = mcp {
             Some(McpStdioRequest {
                 initialization: OperationId::from_bytes([31; 16]),
@@ -722,6 +722,8 @@ fn verify_mcp_calls(
 #[path = "approved-native-process/faults.rs"]
 mod faults;
 
+#[path = "approved-native-process/capture.rs"]
+mod capture;
 #[path = "approved-native-process/mcp_peer.rs"]
 mod mcp_peer;
 #[path = "approved-native-process/model_tool.rs"]
@@ -732,13 +734,17 @@ mod recovery;
 mod task;
 use recovery::Restart;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) && std::env::args().any(|arg| arg == "--list") {
         if !std::env::args().any(|arg| arg == "--ignored") {
             println!("approved_native_process: test");
         }
         return Ok(());
+    }
+    #[cfg(test)]
+    if std::env::args().any(|arg| arg == "--native-properties") {
+        return task::properties::verify_native_callbacks().map_err(Into::into);
     }
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
@@ -750,11 +756,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return mcp_peer::child(std::env::args().any(|arg| arg == "--mcp-native-lost-response"));
     }
     if std::env::args().any(|arg| arg == "--native-child") {
-        std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
-        println!("{}", std::env::var("APPROVED_TOKEN")?);
-        return Ok(());
+        return capture::child();
     }
     if cfg!(test) {
+        #[cfg(test)]
+        task::properties::verify_native_callbacks()?;
         run(None).await?;
         run(Some("tools/call")).await?;
         run(Some("tools/list")).await?;

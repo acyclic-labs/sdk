@@ -4,10 +4,10 @@ use acyclic_harness::NativeFutureBundle;
 use futures::StreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct NativeServer {
-    inner: Arc<Server>,
-    work: NativeMaterializationWork,
-    sent: AtomicUsize,
+pub(super) struct NativeServer {
+    pub(super) inner: Arc<Server>,
+    pub(super) work: NativeMaterializationWork,
+    pub(super) sent: AtomicUsize,
 }
 
 impl HttpTransport for NativeServer {

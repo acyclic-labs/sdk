@@ -208,6 +208,8 @@ impl MemoryStream {
             paths.push((
                 StreamPath(destination.0.slice(..end)),
                 PathState {
+                    children: ChildIndex::default(),
+                    next_sibling: None,
                     history: None,
                     prefix: [None, None],
                     tail: 0,
@@ -387,6 +389,10 @@ impl MemoryStream {
                 Some(CommitConflict::Exists { path: path.clone() })
             }
             CommitCondition::Head { commit_id, .. } => {
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
+                    return Ok(None);
+                }
                 let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
                 let actual = self.preceding_commit(stream)?;
                 (actual != *commit_id).then(|| CommitConflict::Head {
@@ -477,13 +483,18 @@ fn publish(
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
 ) -> Result<(), StreamError> {
+    let hierarchy_changed = !paths.is_empty();
     for (path, stream) in paths {
         state.path_bytes += path.as_str().len();
-        state.paths.insert(path, stream);
+        state.paths.insert(path.clone(), stream);
+        state.index_child(path)?;
         state.hierarchy_version = envelope.commit_id;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
         publish_fact(state, fact, history)?;
+    }
+    if hierarchy_changed && let Some(changed) = &state.hierarchy_changed {
+        changed.send_replace(());
     }
     Ok(())
 }
@@ -504,8 +515,7 @@ fn publish_fact(
     let mut prefix = state
         .paths
         .get(source)
-        .map(|path| path.prefix.clone())
-        .unwrap_or([None, None]);
+        .map_or([None, None], |path| path.prefix.clone());
     if let CommittedMutation::Fork(fork) = fact {
         for (slot, sequence) in prefix.iter_mut().zip([0_u64, 1]) {
             if sequence >= fork.forked_at {
@@ -535,7 +545,13 @@ fn publish_fact(
     stream.prefix = prefix;
     stream.history = Some(history);
     stream.tail = tail;
-    stream.changed.send_replace(tail);
+    #[cfg(all(acyclic_loom, feature = "local"))]
+    let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
+    #[cfg(not(all(acyclic_loom, feature = "local")))]
+    let notify = true;
+    if notify {
+        stream.changed.send_replace(tail);
+    }
     state.record_count += fact_records(fact).len();
     state.payload_bytes += fact_records(fact)
         .iter()

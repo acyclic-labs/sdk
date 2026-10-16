@@ -59,7 +59,24 @@ impl CargoExecutionContext<'_> {
     }
     pub fn configure(self, command: &mut Command) -> Result<(), ProfileError> {
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        if let Some(home) = crate::cargo_home::current() {
+            command.env("CARGO_HOME", home);
+        }
         command.args(self.config_options()?);
+        Ok(())
+    }
+
+    pub fn configure_metadata(self, command: &mut MetadataCommand) -> Result<(), ProfileError> {
+        command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        if let Some(home) = crate::cargo_home::current() {
+            command.env("CARGO_HOME", home);
+        }
+        if let Some(cargo) = self.cargo_path {
+            command.cargo_path(cargo);
+        }
+        let mut options = vec!["--locked".to_owned()];
+        options.extend(self.config_options()?);
+        command.other_options(options);
         Ok(())
     }
 }
@@ -70,13 +87,7 @@ pub fn load_metadata(
     context: CargoExecutionContext<'_>,
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
-    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-    if let Some(cargo_path) = context.cargo_path {
-        command.cargo_path(cargo_path);
-    }
-    let mut options = vec!["--locked".to_owned()];
-    options.extend(context.config_options()?);
-    command.other_options(options);
+    context.configure_metadata(&mut command)?;
     command
         .no_deps()
         .manifest_path(manifest.as_ref())
@@ -89,26 +100,51 @@ const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 struct RustdocProducer {
     cargo: PathBuf,
     targets: BTreeSet<String>,
+    host: String,
 }
 
-thread_local! {
-    // Profile batches are sequential; each calling thread retains its producer.
-    static PRODUCER: std::cell::RefCell<Option<RustdocProducer>> = const { std::cell::RefCell::new(None) };
-    #[cfg(test)]
-    static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+// One pinned producer is immutable for the lifetime of this process. The leaf
+// slot lock is released before profile validation or command construction.
+static PRODUCER: crate::sync::Mutex<Option<crate::sync::Arc<RustdocProducer>>> =
+    crate::sync::Mutex::new(None);
+static PLATFORM_CFGS: crate::sync::Mutex<Option<crate::sync::Arc<(String, String)>>> =
+    crate::sync::Mutex::new(None);
+#[cfg(test)]
+static PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 pub(super) fn rustup_lookup_count() -> usize {
-    LOOKUPS.get()
+    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     #[cfg(test)]
-    LOOKUPS.set(LOOKUPS.get() + 1);
+    LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Command::new("rustup")
         .args(args)
         .output()
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
+}
+
+fn compiler_probe(cargo: &Path, args: &[&str]) -> Result<String, ProfileError> {
+    #[cfg(test)]
+    PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bin = cargo
+        .parent()
+        .ok_or_else(|| ProfileError::InvalidRustdoc("pinned Cargo has no directory".into()))?;
+    let output = Command::new(bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }))
+        .args(args)
+        .output()
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+    if !output.status.success() {
+        return Err(ProfileError::InvalidRustdoc(format!(
+            "pinned compiler probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    String::from_utf8(output.stdout)
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
 }
 
@@ -126,7 +162,7 @@ fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
             String::from_utf8_lossy(&installed.stderr)
         )));
     }
-    let targets = String::from_utf8_lossy(&installed.stdout)
+    let targets: BTreeSet<String> = String::from_utf8_lossy(&installed.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -144,46 +180,62 @@ fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
             .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?
             .trim(),
     );
-    Ok(RustdocProducer { cargo, targets })
+    let verbose = compiler_probe(&cargo, &["-vV"])?;
+    let host = verbose
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .filter(|host| targets.contains(*host))
+        .ok_or_else(|| {
+            ProfileError::InvalidRustdoc("pinned compiler host target is unavailable".into())
+        })?
+        .to_owned();
+    Ok(RustdocProducer {
+        cargo,
+        targets,
+        host,
+    })
 }
 
 fn with_producer<T>(
     required: &[&str],
     use_producer: impl FnOnce(&RustdocProducer) -> T,
 ) -> Result<T, ProfileError> {
-    PRODUCER.with_borrow_mut(|cached| {
-        let producer = match cached {
-            Some(producer) => producer,
-            None => cached.insert(resolve_producer()?),
-        };
-        for &target in required {
-            if producer.targets.contains(target) {
-                continue;
-            }
-            let added = Command::new("rustup")
-                .args([
-                    "target",
-                    "add",
-                    "--toolchain",
-                    RUSTDOC_TOOLCHAIN,
-                    "--",
-                    target,
-                ])
-                .output()
-                .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
-            if !added.status.success() {
-                return Err(ProfileError::InvalidRustdoc(format!(
-                    "cannot install {target} for {RUSTDOC_TOOLCHAIN}: {}",
-                    String::from_utf8_lossy(&added.stderr)
-                )));
-            }
-            producer.targets.insert(target.to_owned());
+    let producer = crate::sync::get_or_try_init(&PRODUCER, resolve_producer)?;
+    for &target in required {
+        if !producer.targets.contains(target) {
+            return Err(ProfileError::UnsupportedTarget {
+                target: target.to_owned(),
+            });
         }
-        Ok(use_producer(producer))
-    })
+    }
+    Ok(use_producer(&producer))
 }
 
-/// Queries and provisions targets on the toolchain producing Rustdoc JSON.
+/// Returns the host of the compiler that produces the pinned Rustdoc output.
+pub fn rustdoc_host() -> Result<String, ProfileError> {
+    with_producer(&[], |producer| producer.host.clone())
+}
+
+/// Reuses the pinned compiler's host/browser cfg across all profile batches.
+pub fn rustdoc_platform_cfgs() -> Result<(String, String), ProfileError> {
+    // Resolve before acquiring the cfg slot: both slots remain leaf locks.
+    let producer = crate::sync::get_or_try_init(&PRODUCER, resolve_producer)?;
+    let cfgs = crate::sync::get_or_try_init(&PLATFORM_CFGS, || {
+        Ok::<_, ProfileError>((
+            compiler_probe(
+                &producer.cargo,
+                &["--print", "cfg", "--target", &producer.host],
+            )?,
+            compiler_probe(
+                &producer.cargo,
+                &["--print", "cfg", "--target", "wasm32-unknown-unknown"],
+            )?,
+        ))
+    })?;
+    Ok((*cfgs).clone())
+}
+
+/// Queries installed targets and rejects unavailable requirements without provisioning.
 pub fn rustdoc_targets(required: &[&str]) -> Result<BTreeSet<String>, ProfileError> {
     with_producer(required, |producer| producer.targets.clone())
 }
@@ -370,18 +422,30 @@ pub fn execute_profile(
 
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
-    let targets = rustdoc_targets(&["wasm32-unknown-unknown"])
+    let targets = rustdoc_targets(&[])
         .unwrap()
         .into_iter()
         .collect::<Vec<_>>();
+    let cfgs = rustdoc_platform_cfgs().unwrap();
     let lookups = rustup_lookup_count();
+    let probes = PROBES.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(probes, 3);
     let profiles = proptest::collection::vec(0..targets.len(), 0..32);
     proptest::test_runner::TestRunner::default()
         .run(&profiles, |order| {
             for index in order {
                 nightly_rustdoc_command(&targets[index]).unwrap();
             }
+            let unavailable = "sdk-docs-unavailable-target";
+            proptest::prop_assert_eq!(
+                nightly_rustdoc_command(unavailable).unwrap_err(),
+                ProfileError::UnsupportedTarget {
+                    target: unavailable.into()
+                },
+            );
             proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
+            proptest::prop_assert_eq!(rustdoc_platform_cfgs().unwrap(), cfgs.clone());
+            proptest::prop_assert_eq!(PROBES.load(std::sync::atomic::Ordering::Relaxed), probes);
             Ok(())
         })
         .unwrap();

@@ -1,10 +1,46 @@
-use crate::sync::AsyncMutex;
-use std::future::Future;
+use crate::sync::{
+    AsyncMutex,
+    atomic::{AtomicU64, Ordering},
+};
 
-// Lock order: this is the sole refresh lock, shared by a registry's resolved logins. The
-// guarded operation never acquires another refresh lock; account initialization
-// does not call user code. Hold it across I/O and release it on every exit/drop.
-pub(crate) async fn serialized<T>(lock: &AsyncMutex<()>, operation: impl Future<Output = T>) -> T {
-    let _guard = lock.lock().await;
-    operation.await
+/// Sole credential lock. Never acquire another refresh lock while holding it.
+/// The generation is sampled before queuing; failures belong to that attempt,
+/// not to subsequent callers. Cancellation drops ownership without publication.
+pub(crate) struct Refresh<F> {
+    generation: AtomicU64,
+    result: AsyncMutex<Option<F>>,
+}
+
+impl<F> Refresh<F> {
+    pub(crate) fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            result: AsyncMutex::new(None),
+        }
+    }
+}
+
+pub(crate) fn serialized<T, F: Copy>(
+    state: &Refresh<F>,
+    operation: impl std::future::Future<Output = (T, Option<F>)>,
+) -> impl std::future::Future<Output = Result<T, F>> {
+    let generation = state.generation.load(Ordering::Acquire);
+    execute(state, generation, operation)
+}
+
+async fn execute<T, F: Copy>(
+    state: &Refresh<F>,
+    generation: u64,
+    operation: impl std::future::Future<Output = (T, Option<F>)>,
+) -> Result<T, F> {
+    let mut result = state.result.lock().await;
+    if state.generation.load(Ordering::Acquire) != generation {
+        if let Some(failure) = *result {
+            return Err(failure);
+        }
+    }
+    let (value, failure) = operation.await;
+    *result = failure;
+    state.generation.fetch_add(1, Ordering::Release);
+    Ok(value)
 }

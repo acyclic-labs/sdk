@@ -8,7 +8,6 @@ pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
-    files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
     codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -35,7 +34,6 @@ impl Registry {
             providers,
             credentials,
             transport,
-            files: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         }
@@ -45,19 +43,6 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
         self.codex_login = Some(Arc::new(login));
-        self
-    }
-
-    /// Supplies an owner-authenticated reader for bounded text files.
-    pub fn with_content(
-        mut self,
-        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
-    ) -> Self {
-        self.files = crate::files::Files {
-            reader: Some(reader),
-            maximum_bytes,
-        };
         self
     }
 
@@ -109,9 +94,13 @@ impl Registry {
             .get(provider)
             .ok_or_else(|| invalid("unknown model provider"))?
             .clone();
-        let capacity = config.models.get(name).copied().ok_or_else(|| {
-            invalid("register the exact selected model context and output capacities")
-        })?;
+        let capacity = config
+            .models
+            .get(name)
+            .map(|entry| entry.capacity)
+            .ok_or_else(|| {
+                invalid("register the exact selected model context and output capacities")
+            })?;
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -134,11 +123,21 @@ impl Registry {
             }
             Arc::new(ProviderSpec {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
+                token_counter: None,
                 ..config.as_ref().clone()
             })
         } else {
             config
         };
+        #[cfg(target_arch = "wasm32")]
+        let local_count = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let local_count = codex_login.is_some();
+        if config.token_counter.is_none() && !local_count {
+            return Err(acyclic_harness::Error::Unsupported(
+                "configure a verified input token counter for this endpoint".into(),
+            ));
+        }
         let authenticated = key.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();
@@ -152,7 +151,8 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
-            files: self.files.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_count: crate::codex_count::Counter::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })
@@ -181,29 +181,16 @@ fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
-    for (name, value) in &config.headers {
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            || value.contains(['\r', '\n'])
-            || [
-                "authorization",
-                "x-api-key",
-                "x-goog-api-key",
-                "cookie",
-                "host",
-                "content-length",
-                "content-type",
-            ]
-            .iter()
-            .any(|reserved| name.eq_ignore_ascii_case(reserved))
-        {
-            return Err(invalid("invalid or reserved provider header"));
+    if let Some(counter) = &config.token_counter {
+        if counter.adapter != config.adapter {
+            return Err(invalid(
+                "count endpoint must accept the provider input dialect",
+            ));
         }
+        crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
     }
-    for capacity in config.models.values() {
-        capacity.validate()?;
+    for model in config.models.values() {
+        model.capacity.validate()?;
     }
     Ok(())
 }

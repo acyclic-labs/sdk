@@ -393,19 +393,19 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         crate::Capabilities::new([
             "task:spawn:context-probe@1",
             "model:generate",
-            "tool:call:acyclic.write_file",
+            "tool:call:write",
         ]),
         Limits::default(),
     )?;
     let context = capture_admitted_context(scope.clone()).await?;
-    let tool = crate::tool::files::write_file()?;
+    let tool = crate::tool::files::write()?;
     let mut tools = ToolRegistry::default();
     tools.register((tool, None), &mut None, None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
-        name: "acyclic.write_file".into(),
+        name: "write".into(),
         arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(
@@ -416,17 +416,18 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     )
     .with_tool_authority(scope, None)?;
     let journal = Journal::default();
-    let mut messages = Vec::new();
+    let mut messages = vec![call_message(&invocation)];
+    let before = messages.clone();
     assert!(matches!(
         StockExecution::ordinary(&base)
-            .settle_tool_call(&journal, operation, 0, invocation.clone(), &mut messages)
+            .settle_tool_call(&journal, operation, 0, invocation.clone(), 0, &mut messages)
             .await,
         Err(Error::Unauthorized(_))
     ));
     let contextual = base.with_task_context(&context, operation)?;
     assert!(matches!(
         StockExecution::ordinary(&contextual)
-            .settle_tool_call(&journal, operation, 0, invocation, &mut messages)
+            .settle_tool_call(&journal, operation, 0, invocation, 0, &mut messages)
             .await,
         Err(Error::Unsupported(_))
     ));
@@ -434,6 +435,6 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(journal.0.lock().unwrap().is_empty());
     assert!(journal.1.lock().unwrap().is_empty());
-    assert!(messages.is_empty());
+    assert_eq!(messages, before);
     Ok(())
 }

@@ -19,7 +19,13 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
     let delta = &choice["delta"];
     let mut events = Vec::new();
     text(&mut events, &delta["content"], false);
-    text(&mut events, &delta["reasoning_content"], true);
+    let reasoning = delta
+        .get("reasoning_content")
+        .or_else(|| delta.get("reasoning"));
+    if let Some(reasoning) = reasoning {
+        text(&mut events, reasoning, true);
+        state.thinking_delta(0, "text", reasoning)?;
+    }
     if let Some(calls) = delta["tool_calls"].as_array() {
         for raw in calls {
             let index = index(raw, "index")?;

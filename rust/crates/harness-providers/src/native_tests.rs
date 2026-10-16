@@ -2,11 +2,13 @@ use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "native_stock_probe.rs"]
+mod probe;
 #[path = "native_stock_tests.rs"]
-mod stock;
+pub(crate) mod stock;
 
 pub(super) struct Fixture {
-    pub(super) response: &'static str,
+    pub(super) response: Bytes,
     pub(super) sent: AtomicUsize,
     cancel: Option<CancellationToken>,
     pending_body: bool,
@@ -16,7 +18,7 @@ pub(super) struct Fixture {
 impl Fixture {
     pub(super) fn new(response: &'static str) -> Self {
         Self {
-            response,
+            response: Bytes::from_static(response.as_bytes()),
             sent: AtomicUsize::new(0),
             cancel: None,
             pending_body: false,
@@ -39,6 +41,9 @@ impl HttpTransport for Fixture {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
+            if let Some(response) = fixture_count(&request) {
+                return HttpResponse::with_native_body(response.status, response.body, work);
+            }
             self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 request.headers.contains_key("authorization")
@@ -69,7 +74,7 @@ impl HttpTransport for Fixture {
             }
             HttpResponse::with_native_body(
                 200,
-                futures::stream::iter([Ok(Bytes::from_static(self.response.as_bytes()))]),
+                futures::stream::iter([Ok(self.response.clone())]),
                 work,
             )
         })
@@ -95,10 +100,20 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
         let before = work.live_allocation_bytes();
         {
             assert!(provider.supports_native_model(&work)?);
-            let (count, custody) = provider.count_tokens_with_native_work(&request, &work)?;
+            let (count, custody) = provider
+                .count_tokens_with_native_work(&request, &work)?
+                .await?;
             assert!(custody.work().shares_allocation_context(&work));
             assert_eq!(count.request_digest, request.request_digest());
+            let count_bytes = serde_json::to_vec(&json!({
+                "input_tokens":count.input_tokens, "totalTokens":count.input_tokens,
+                "count":count.input_tokens,
+            }))
+            .expect("fixture count encoding")
+            .len();
+            assert_eq!(work.receipt().source_bytes_read, count_bytes as u64);
             drop((count, custody));
+            let source_before = work.receipt().source_bytes_read;
             let mut stream = provider
                 .generate_with_native_work(&request, dispatch, &work)?
                 .await?;
@@ -111,6 +126,8 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 match &event {
                     ModelEvent::ToolCall(call) => {
                         calls += 1;
+                        assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                        assert_eq!(call.metadata["provider_call"]["id"], "call");
                         assert_eq!(call.arguments, json!({"value":1}));
                     }
                     ModelEvent::Completed { metadata } => {
@@ -122,6 +139,10 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 drop((event, custody));
             }
             assert_eq!((calls, completed), (1, 1));
+            assert_eq!(
+                work.receipt().source_bytes_read - source_before,
+                response.len() as u64
+            );
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
@@ -219,4 +240,73 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     assert!(result.is_err());
     assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
     Ok(())
+}
+
+#[tokio::test]
+async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Result<()> {
+    let cancel = CancellationToken::new();
+    let work = work(&cancel)?;
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    Arc::make_mut(&mut provider.config)
+        .token_counter
+        .as_mut()
+        .unwrap()
+        .path = "cancel_count".into();
+    provider.transport = Arc::new(Fixture {
+        response: Bytes::new(),
+        sent: AtomicUsize::new(0),
+        cancel: Some(cancel),
+        pending_body: true,
+        prefix: None,
+    });
+    let (request, _) = request(&provider)?;
+    let baseline = work.live_allocation_bytes();
+    let result = provider
+        .count_tokens_with_native_work(&request, &work)?
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    drop(result);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+mod source_accounting {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Each physical HTTP byte, including comments and SSE framing, is paid
+        // exactly once regardless of how many decoded frames it contains.
+        #[test]
+        fn frames_do_not_recharge_received_http_bytes(
+            text in prop::collection::vec(any::<char>(), 0..48), frames in 1usize..8,
+        ) {
+            use std::fmt::Write as _;
+            let text: String = text.into_iter().collect();
+            let mut response = String::from(": fixture comment\n\n");
+            for _ in 0..frames {
+                writeln!(response, "data: {}\n", json!({"choices":[{"delta":{"content":text}}]})).unwrap();
+            }
+            response.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+            let expected = response.len() as u64;
+            let (mut provider, _) = provider(Adapter::Chat, 200);
+            provider.transport = Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) });
+            let (request, dispatch) = request(&provider).unwrap();
+            let work = work(&CancellationToken::new()).unwrap();
+            let baseline = work.live_allocation_bytes();
+            futures::executor::block_on(async {
+                let mut stream = provider.generate_with_native_work(&request, dispatch, &work).unwrap().await.unwrap();
+                while let Some(event) = stream.next().await { drop(event.unwrap()); }
+            });
+            prop_assert_eq!(work.receipt().source_bytes_read, expected);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
 }

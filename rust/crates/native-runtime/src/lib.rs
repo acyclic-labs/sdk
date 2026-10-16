@@ -19,6 +19,8 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::terminal;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
@@ -28,7 +30,9 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
-pub use process_tree::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessTree};
+pub use process_tree::{
+    CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput, ProcessTree,
+};
 
 mod file;
 #[cfg(windows)]
@@ -51,6 +55,8 @@ mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod recovery;
 pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
+mod directory;
+pub use directory::remove_child_directory;
 mod namespace;
 pub use namespace::{RenameMode, durable_rename, publish_new};
 mod service;
@@ -66,6 +72,8 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub(crate) use blocking::{
     BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,

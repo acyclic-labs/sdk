@@ -63,6 +63,11 @@ pub enum ModelContentPart {
         /// Resolution policy.
         policy: FileProjectionPolicy,
     },
+    /// Canonical reasoning in its original assistant-turn position.
+    Reasoning {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
+    },
     /// Assistant tool request.
     ToolCall(ToolCall),
     /// Paired tool result.
@@ -173,6 +178,9 @@ impl ModelContent {
                     if !metadata.is_null() {
                         value_bound(metadata, limits.render_bytes, work)?;
                     }
+                }
+                ModelContentPart::Reasoning { block } => {
+                    block.validate_limits(limits, work)?;
                 }
                 ModelContentPart::ToolResult { content, .. } => {
                     content.validate_limits(limits, work)?;

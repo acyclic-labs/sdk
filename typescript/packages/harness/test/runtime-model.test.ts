@@ -25,7 +25,7 @@ test("executes model tool calls with durable task ownership and typed receipts",
   }).build();
   const output = await runtime.run("go");
   expect(output.text).toBe("done");
-  expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, operationId: toolOperationId, callId: "call", name: "double", arguments: 3, metadata: null, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
+  expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
   expect(sender).toBe(output.taskId);
   expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
@@ -133,8 +133,8 @@ test("model provider callbacks are captured once per binding and retain their re
   const binding = scope.modelBinding;
   if (!binding || !admitted) throw new Error("expected an admitted scoped request");
   expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
-  const count = binding.provider.countTokens(admitted);
-  expect(count).toEqual(accounting.countTokens(admitted));
+  const count = await binding.provider.countTokens(admitted);
+  expect(count).toEqual(await accounting.countTokens(admitted));
   await binding.provider.reconcile({ operationId: "binding-probe", step: 0,
     requestDigest: count.requestDigest, observed: [] });
   expect(called).toEqual(["capacity", "count", "reconcile"]);

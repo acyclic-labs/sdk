@@ -1,5 +1,4 @@
 use crate::Adapter;
-use acyclic_harness::context::ModelContextCapacity;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -27,10 +26,11 @@ pub struct ProviderSpec {
     pub base_url: String,
     /// Exact model capacities, including local server configurations.
     #[serde(default)]
-    pub models: BTreeMap<String, ModelContextCapacity>,
-    /// Additional endpoint headers. Authentication headers are supplied by credentials.
+    pub models: BTreeMap<String, crate::ModelSpec>,
+    /// Verified admission counter. Required for automatic compaction; generic
+    /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub token_counter: Option<crate::TokenCounterSpec>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
 }

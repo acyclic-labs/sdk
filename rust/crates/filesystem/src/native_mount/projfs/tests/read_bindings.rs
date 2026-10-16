@@ -116,3 +116,75 @@ async fn a_current_source_binding_still_captures_a_host_metadata_edit()
     assert!(!has_pending_capture(&runtime.post_operation_failure, &path));
     Ok(())
 }
+
+#[tokio::test]
+async fn cached_read_close_charges_source_validation_to_its_callback_meter()
+-> Result<(), Box<dyn std::error::Error>> {
+    use proptest::prelude::*;
+    use proptest::test_runner::TestRunner;
+
+    let setup = setup_work()?;
+    let source = windows_checkout_source().await?;
+    let path = windows_path("read.txt");
+    source.create_file(&path, FileMetadata::default(), None, &setup)?;
+    source.write_range(&path, 0, Bytes::from_static(b"contents"))?;
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("read.txt"), b"contents")?;
+    let warm = metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &setup)?;
+    close_read(&warm, &setup);
+    let binding = lock_recover(&warm.projection)
+        .get(&path)
+        .copied()
+        .ok_or("no cached binding")?;
+    let before = setup.receipt();
+    host_windows_metadata(&warm.metadata_root, &path, &setup, None)?;
+    let probe_items = setup.receipt().items_examined - before.items_examined;
+    let limits = prop_oneof![Just(probe_items), 0_u64..128, any::<u64>()];
+    let mut runner = TestRunner::new(ProptestConfig {
+        cases: 32,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    });
+    runner.run(&limits, |items_examined| {
+        let mut runtime =
+            metadata_errors::callback_runtime(Arc::clone(&source), root.path(), &setup)
+                .map_err(|e| TestCaseError::fail(e.to_string()))?;
+        lock_recover(&runtime.projection).insert(path.clone(), binding);
+        prop_assert_eq!(notify(&runtime, PRJ_NOTIFICATION_FILE_OPENED), HR_OK);
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                items_examined,
+                backend_read_operations: 1,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
+        runtime.work = Mutex::new(work.clone());
+        let result = notify(
+            &runtime,
+            PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION,
+        );
+        let receipt = work.receipt();
+        prop_assert!(receipt.items_examined <= items_examined);
+        prop_assert!(receipt.backend_read_operations <= 1);
+        if result.is_ok() {
+            prop_assert_eq!(receipt.backend_read_operations, 1);
+            prop_assert!(
+                receipt.items_examined > probe_items,
+                "a successful close must charge source validation after its host probe"
+            );
+        }
+        if items_examined == probe_items {
+            prop_assert!(
+                result.is_err(),
+                "the host-only budget cannot also fund source validation"
+            );
+        }
+        prop_assert!(lock_recover(&runtime.metadata_baselines).is_empty());
+        prop_assert!(!has_pending_capture(&runtime.post_operation_failure, &path));
+        Ok(())
+    })?;
+    assert_eq!(source.read_range(&path, 0, 8)?.as_ref(), b"contents");
+    Ok(())
+}

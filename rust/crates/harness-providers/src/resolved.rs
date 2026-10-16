@@ -1,4 +1,4 @@
-use crate::{HttpTransport, ProviderSpec, invalid, projection};
+use crate::{HttpTransport, ProviderSpec, invalid};
 use acyclic_harness::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -16,7 +16,8 @@ pub struct ResolvedModel {
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
     pub(crate) transport: Arc<dyn HttpTransport>,
-    pub(crate) files: crate::files::Files,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) codex_count: crate::codex_count::Counter,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -26,6 +27,45 @@ impl ResolvedModel {
     pub fn model(&self) -> &Model {
         &self.model
     }
+    pub(crate) fn reasoning_origin(
+        &self,
+        key: Option<&str>,
+        account: Option<&str>,
+    ) -> acyclic_harness::model::ReasoningOrigin {
+        let family = crate::stream::family(self.config.adapter);
+        let mut scope = blake3::Hasher::new();
+        scope.update(b"harness-reasoning-scope-v1\0");
+        for value in [
+            family,
+            self.config.base_url.as_str(),
+            account.or(key).unwrap_or(""),
+        ] {
+            scope.update(&(value.len() as u64).to_be_bytes());
+            scope.update(value.as_bytes());
+        }
+        acyclic_harness::model::ReasoningOrigin {
+            provider: family.into(),
+            model: self.model.name.clone(),
+            credential_scope: Some(*scope.finalize().as_bytes()),
+        }
+    }
+
+    pub(crate) fn observe(
+        &self,
+        request: &PreparedModelRequest,
+        input_bytes: usize,
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        self.estimator.observe(input_bytes, metadata);
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.codex_login.is_some() {
+            self.codex_count.observe(request, metadata)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = request;
+        Ok(())
+    }
+
     pub(crate) fn context_output(&self) -> u32 {
         self.capacity.output_tokens
     }
@@ -61,12 +101,34 @@ impl ModelProvider for ResolvedModel {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn count_tokens_with_native_work(
-        &self,
-        request: &PreparedModelRequest,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(ModelTokenCount, acyclic_fs::NativeAllocation)> {
-        crate::native::count(self, request, work)
+    fn count_tokens_with_native_work<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_harness::NativeFutureBundle<'a, (ModelTokenCount, acyclic_fs::NativeAllocation)>,
+    > {
+        self.context_capacity_with_native_work(&request.request().model, work)?;
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
+            let cancelled = work.cancellation_wait()?;
+            let exchange = crate::counting::count(self, request, Some(work));
+            futures::pin_mut!(cancelled, exchange);
+            match futures::future::select(cancelled, exchange).await {
+                futures::future::Either::Left(_) => {
+                    Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into())
+                }
+                futures::future::Either::Right((result, _)) => {
+                    let (count, custody) = result?;
+                    Ok((
+                        count,
+                        custody.ok_or(acyclic_harness::Error::NativeBoundary {
+                            code: acyclic_harness::wire::ErrorCode::Invalid,
+                            reason: "verified count lost native custody",
+                        })?,
+                    ))
+                }
+            }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -103,9 +165,15 @@ impl ModelProvider for ResolvedModel {
         Ok(self.capacity)
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        self.validate(&request.request().model)?;
-        projection::count(self, request)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            crate::counting::count(self, request, None)
+                .await
+                .map(|(count, _)| count)
+        })
     }
 
     fn generate<'a>(

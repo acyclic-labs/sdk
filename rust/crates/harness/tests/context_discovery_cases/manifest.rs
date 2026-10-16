@@ -7,24 +7,14 @@ use acyclic_harness::{
     filesystem::FilesystemContentPublisher,
     model::{Model, ModelRole},
     runtime::RuntimeScope,
-    tool::{ToolRegistry, plan, schema::ProjectionMode, text::ReadOptions, text_files},
+    tool::{ToolRegistry, files},
 };
 use acyclic_stream::MemoryStream;
 use serde_json::Value;
 
 fn tools() -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
-    for tool in [
-        plan::update_plan()?,
-        text_files::read_file_range(
-            ReadOptions {
-                maximum_input_bytes: 512,
-                maximum_text_bytes: 512,
-            },
-            8192,
-            ProjectionMode::Full,
-        )?,
-    ] {
+    for tool in [files::write()?, files::read()?] {
         tools.register((tool, None), &mut None, None)?;
     }
     Ok(tools)
@@ -105,7 +95,7 @@ async fn seed(fixture: &Fixture) -> Result<ContextManifest> {
         .capture(fixture.reader.as_ref())
         .await?;
     let mut manifest = ContextManifest::new(discovered, vec!["inspect".into()], &tools()?)?;
-    manifest.tools.retain(|tool| tool.name == "update_plan");
+    manifest.tools.retain(|tool| tool.name == "write");
     Ok(manifest)
 }
 
@@ -120,6 +110,15 @@ async fn assert_request(
         .first()
         .ok_or_else(|| Error::NotFound("model request".into()))?;
     assert_eq!(request.tools, manifest.tools);
+    let conventions: Vec<String> =
+        serde_json::from_str(include_str!("../../src/context/instructions.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(manifest.conventions, conventions);
+    assert!(conventions[1].contains("plans/<id>.md"));
+    for (message, expected) in request.messages.iter().zip(&conventions) {
+        assert_eq!(message.role, ModelRole::System);
+        assert_eq!(message.content, ModelContent::Text(expected.clone()));
+    }
     let text = serde_json::to_string(request).map_err(|e| Error::Invalid(e.to_string()))?;
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
@@ -127,6 +126,7 @@ async fn assert_request(
     for ((message, pinned), (path, expected)) in request
         .messages
         .iter()
+        .skip(manifest.conventions.len())
         .zip(&manifest.discovery.instructions)
         .zip(INSTRUCTIONS)
     {
@@ -201,7 +201,10 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         .run(&input, limits, None)
         .await?;
     assert_eq!(rendered.metadata.get("context.manifest"), Some(&reference));
-    assert_eq!(rendered.current_input_index, Some(6));
+    assert_eq!(
+        rendered.current_input_index,
+        Some(u32::try_from(6 + manifest.conventions.len()).expect("bounded message count"))
+    );
     assert_eq!(
         rendered.messages.last().map(|message| message.role),
         Some(ModelRole::User)
@@ -299,13 +302,20 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
                 None,
             )
             .await?;
-        for (message, name) in context.messages[5..7].iter().zip(["hidden", "inspect"]) {
+        let offset = manifest.conventions.len();
+        for (message, name) in context.messages[5 + offset..7 + offset]
+            .iter()
+            .zip(["hidden", "inspect"])
+        {
             let ModelContent::Text(text) = &message.content else {
                 return Err(Error::Invalid("expected cached skill text".into()));
             };
             assert!(text.contains(&format!("name: {name}\n")));
         }
-        assert_eq!(context.current_input_index, Some(7));
+        assert_eq!(
+            context.current_input_index,
+            Some(u32::try_from(7 + offset).expect("bounded message count"))
+        );
         assert_eq!(counted.reads.load(Ordering::Relaxed), 2);
     }
     assert!(

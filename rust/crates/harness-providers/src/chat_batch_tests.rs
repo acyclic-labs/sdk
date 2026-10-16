@@ -37,7 +37,7 @@ proptest! {
         let prepared = PreparedModelRequest::prepare(input, Limits::default(), None).unwrap();
         let replayed = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
         for request in [prepared.request(), replayed.request()] {
-            let body = projection::body(&provider, request, &mut crate::files::FileText::Estimate).unwrap();
+            let body = projection::body(&provider, request).unwrap();
             let messages = body["messages"].as_array().unwrap();
             prop_assert_eq!(messages.len(), 2 + turns * (calls + 1));
             for turn in 0..turns {
@@ -47,9 +47,7 @@ proptest! {
                 prop_assert_eq!(batch["tool_calls"].as_array().unwrap().len(), calls);
                 let expected: String = (0..calls).map(|index| format!("call {index}"))
                     .collect::<Vec<_>>().join("\n");
-                let texts = batch["content"].as_array().unwrap();
-                prop_assert_eq!(texts.len(), calls);
-                prop_assert_eq!(texts.iter().map(|part| part["text"].as_str().unwrap()).collect::<Vec<_>>().join("\n"), expected);
+                prop_assert_eq!(batch["content"].as_str().unwrap(), expected);
                 for index in 0..calls {
                     let id = format!("{turn}-{index}");
                     prop_assert_eq!(&batch["tool_calls"][index]["id"], &id);

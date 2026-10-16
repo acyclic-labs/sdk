@@ -131,3 +131,6 @@ mod yielding_tests;
 mod test_support;
 #[cfg(test)]
 use test_support::{test_path, test_root};
+
+#[cfg(windows)]
+pub(crate) mod private_file;

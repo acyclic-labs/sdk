@@ -3,18 +3,44 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", features, run);
+  return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
+export function qualifyTimerLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-actors", "timer_loom", [
+    "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
+  ], run, {
+    env: { ...process.env, RUSTFLAGS: "--cfg acyclic_loom" }, targetCfg: [],
+  });
 }
 
 export function qualifyGuestLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "guest_loom", [], run);
 }
 
-function qualifyLoom(crate, target, features, run) {
+export function qualifyFsBindingLoom(features = [], run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
+    targetCfg: ["--", "--cfg", "acyclic_fs_loom"],
+  });
+}
+
+export function qualifyMemoryAccountingLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-harness", "memory-accounting-model", [
+    "--features", "filesystem,acyclic-fs/model-checking",
+    "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
+  ], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom` },
+    targetCfg: ["--", "--cfg", "acyclic_harness_loom"],
+  });
+}
+
+function qualifyLoom(crate, target, features, run, options = {}) {
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
-    ...features, "--", "--cfg", "loom",
-  ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+    ...features, ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
+  ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
   const binaries = [];
@@ -37,6 +63,9 @@ function qualifyLoom(crate, target, features, run) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
-  if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
+  else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
+  else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
 }

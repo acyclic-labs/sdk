@@ -3,6 +3,7 @@ use crate::native_mount::{
     NativeMountCallbackGuard, NativeMountMeterActivation, NativeMountStartupAdmissionError,
     run_native_mount_handler, run_native_mount_handler_on_meter, view_ledger::same_work,
 };
+use crate::sync::{Mutex, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
 pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
@@ -38,7 +39,7 @@ thread_local! {
 }
 
 pub(super) struct StateGuard<'a> {
-    state: Option<MutexGuard<'a, ProjectionState>>,
+    state: Option<RankedGuard<'a, ProjectionState>>,
     core: &'a ProjectionCore,
 }
 
@@ -62,15 +63,18 @@ impl std::ops::DerefMut for StateGuard<'_> {
 }
 
 impl StateGuard<'_> {
+    #[track_caller]
     pub(super) fn wait_timeout(
         mut self,
-        condition: &Condvar,
+        condition: &RankedCondvar,
         duration: Duration,
     ) -> Result<Self, NativeMountError> {
         let Some(state) = self.state.take() else {
             unreachable!("the guard owns its lock until drop");
         };
         self.core.invalidation.notify_all();
+        #[cfg(all(test, acyclic_fs_loom))]
+        invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
                 .wait_timeout(state, duration)
@@ -92,7 +96,13 @@ impl Drop for StateGuard<'_> {
         DROPPED_ATTRIBUTES.with_borrow_mut(|dropped| {
             dropped.extend(superseded.iter().map(|(inode, _)| *inode));
         });
-        self.core.invalidation.notify_all();
+        #[cfg(all(test, acyclic_fs_loom))]
+        let notify = !invalidation::model_checking::omit_guard_notification();
+        #[cfg(not(all(test, acyclic_fs_loom)))]
+        let notify = true;
+        if notify {
+            self.core.invalidation.notify_all();
+        }
         if let Some(notifier) = self.core.notifier.get() {
             for (inode, credit) in superseded.iter_mut() {
                 // Drop only attributes, so this never waits for kernel pages or requests.
@@ -135,9 +145,9 @@ fn verify_guard(
 
 pub(super) struct ProjectionCore {
     pub(super) source: Arc<dyn MountFilesystem>,
-    pub(super) state: Mutex<ProjectionState>,
+    pub(super) state: RankedMutex<ProjectionState, VIEW>,
     pub(super) names: RwLock<()>,
-    pub(super) invalidation: Condvar,
+    pub(super) invalidation: RankedCondvar,
     pub(super) notifier: OnceLock<Notifier>,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
@@ -221,9 +231,9 @@ impl ProjectionCore {
         )?;
         Ok(Arc::new(Self {
             source,
-            state: Mutex::new(state),
+            state: RankedMutex::new(state),
             names: RwLock::new(()),
-            invalidation: Condvar::new(),
+            invalidation: RankedCondvar::new(),
             notifier: OnceLock::new(),
             stopping: AtomicBool::new(false),
             origin: ViewOrigin::new(),
@@ -242,6 +252,7 @@ impl ProjectionCore {
         let _state = self.state_to_finish();
     }
 
+    #[track_caller]
     pub(super) fn state(&self) -> Result<StateGuard<'_>, i32> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV);
@@ -253,6 +264,7 @@ impl ProjectionCore {
         })
     }
 
+    #[track_caller]
     pub(super) fn state_to_finish(&self) -> StateGuard<'_> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         StateGuard {

@@ -19,16 +19,20 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     .map(str::to_owned)
     .collect();
     // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
+    assert!(
+        parse_generate(base.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("requires a complete registry corpus")
+    );
     let mut missing = base.clone();
     missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
+    assert!(
+        parse_generate(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("requires both")
+    );
     let mut complete = base;
     complete.extend([
         "--registry-frontier-repository".into(),
@@ -45,14 +49,19 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "source_attestation_tests.rs"]
+mod source_attestation;
+
 #[test]
 fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);
     let error = validate_release_package_versions("0.1.0", &versions)
         .expect_err("a stale docs version must not be released");
-    assert!(error
-        .to_string()
-        .contains("does not match SDK package version"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not match SDK package version")
+    );
     validate_release_package_versions("0.2.0", &versions)
         .expect("matching SDK and docs versions should be accepted");
 }
@@ -91,9 +100,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     );
     let before = artifact_hashes(&output).expect("artifact inventory should build");
     assert!(before.contains_key("sdk-docs-data.v1.json"));
-    assert!(!before
-        .keys()
-        .any(|path| path.starts_with(".profile-build/")));
+    assert!(
+        !before
+            .keys()
+            .any(|path| path.starts_with(".profile-build/"))
+    );
     assert_eq!(
         before.get("assets/.profile-build/qualified-example.txt"),
         Some(&sha256_bytes(b"published")),
@@ -124,7 +135,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"{\"suite\":true}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v1".as_slice(),
         ),
         (
@@ -157,7 +168,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         "proto/demo.proto",
         "rust/crates/stream/proto/stream/v2/stream.proto",
         "rust/crates/stream/conformance/stream.json",
-        "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+        "compatibility/descriptors/stream-v1.bin",
         "plugin/bin/install.js",
         "plugin/scripts/package.mjs",
         "plugin/package.json",
@@ -185,7 +196,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"syntax = \"proto3\"; message Changed {}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v2".as_slice(),
         ),
         (
@@ -406,9 +417,11 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
     fs::remove_file(&foreign).unwrap();
     fs::write(root.join(relative), b"changed capture").unwrap();
     let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("captured Rustdoc source digest changed"));
+    assert!(
+        error
+            .to_string()
+            .contains("captured Rustdoc source digest changed")
+    );
     assert!(!foreign.exists());
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(output);
@@ -524,4 +537,44 @@ fn restoration_rejects_junction_ancestors_before_writing() {
     fs::remove_dir(junction).unwrap();
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(external);
+}
+
+#[test]
+fn file_hashes_keep_existing_artifact_and_tool_identities() {
+    use proptest::prelude::*;
+    let root = test_root("sha256-equivalence");
+    let path = root.join("input.bin");
+    // The full branch retains every original byte vector with fewer shrink trees.
+    let full = (
+        proptest::collection::vec(any::<u128>(), 0..4096),
+        proptest::collection::vec(any::<u8>(), 0..16),
+    )
+        .prop_map(|(words, tail)| {
+            words
+                .into_iter()
+                .flat_map(u128::to_le_bytes)
+                .chain(tail)
+                .collect::<Vec<_>>()
+        });
+    let bytes = prop_oneof![
+        15 => proptest::collection::vec(any::<u8>(), 0..512),
+        1 => full,
+    ];
+    let check = |bytes: &[u8]| {
+        fs::write(&path, bytes).unwrap();
+        prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
+        Ok(())
+    };
+    proptest::test_runner::TestRunner::default()
+        .run(&bytes, |bytes| check(&bytes))
+        .unwrap();
+    for length in [
+        0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 65535, 65536, 65537,
+    ] {
+        let bytes = (0..length)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        check(&bytes).unwrap();
+    }
+    fs::remove_dir_all(root).unwrap();
 }

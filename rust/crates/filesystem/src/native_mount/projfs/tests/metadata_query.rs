@@ -1,4 +1,114 @@
 use super::*;
+use proptest::prelude::*;
+
+fn registration_matches(
+    entered: usize,
+    during_query: bool,
+    expected: usize,
+) -> proptest::test_runner::TestCaseResult {
+    prop_assert_eq!(entered, expected);
+    prop_assert!(!during_query);
+    Ok(())
+}
+
+#[test]
+fn only_handle_opening_fallbacks_register_metadata_probes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let original = work()?;
+    let temporary = tempfile::tempdir()?;
+    std::fs::write(temporary.path().join("leaf"), b"contents")?;
+    let root = HostRoot::open(temporary.path(), &mut &original)?;
+    let path: Vec<_> = "leaf".encode_utf16().collect();
+    let metadata = root.stat(&path, &mut &original)?;
+    let mount_path =
+        MountPath::root().child(path.iter().copied().flat_map(u16::to_le_bytes).collect());
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    });
+    // Success, missing/unsupported query, fatal error, and every admission bound
+    // retain exactly one guard iff a held-handle fallback is selected.
+    runner.run(&(0_u8..9, 0_u64..5), |(mode, reads)| {
+        let expected = usize::from(reads == 2 || reads > 0 && (1..=5).contains(&mode));
+        for eager in [false, true] {
+            let probes = Mutex::new(HashMap::new());
+            let key = 0_u8;
+            let entered = std::cell::Cell::new(0);
+            let during_query = std::cell::Cell::new(false);
+            let guard = || {
+                entered.set(entered.get() + 1);
+                ProbeGuard::enter(&probes, &key)
+            };
+            // Negative control reproduces the original unconditional registration.
+            let early = eager.then(&guard);
+            let limited = crate::NativeMaterializationWork::new(
+                crate::WorkBudget {
+                    items_examined: path.len() as u64,
+                    backend_read_operations: reads,
+                    ..crate::WorkBudget::UNBOUNDED
+                },
+                &crate::CancellationToken::new(),
+            )
+            .map_err(|(error, _)| TestCaseError::fail(format!("{error:?}")))?;
+            let result = query_metadata_using(&root, &path, &mut &limited, &guard, |_, _| {
+                during_query.set(!lock_recover(&probes).is_empty());
+                match mode {
+                    0 => Ok(Some(metadata)),
+                    1 => Ok(None),
+                    _ => Err(std::io::Error::from_raw_os_error(
+                        [1, 50, 87, 124, 2, 5, 32][usize::from(mode - 2)],
+                    )),
+                }
+            });
+            let observed = registration_matches(entered.get(), during_query.get(), expected);
+            if eager {
+                prop_assert!(observed.is_err());
+            } else {
+                observed?;
+            }
+            drop(early);
+            prop_assert!(lock_recover(&probes).is_empty());
+            prop_assert_eq!(
+                result.is_ok(),
+                reads == 2 || reads > 0 && mode == 0 || reads >= 3 && (1..=5).contains(&mode)
+            );
+            let charged = if reads == 2 {
+                2
+            } else if (1..=5).contains(&mode) {
+                reads.min(3)
+            } else {
+                reads.min(1)
+            };
+            prop_assert_eq!(limited.receipt().backend_read_operations, charged);
+            prop_assert_eq!(
+                limited.receipt().items_examined,
+                if reads == 0 { 0 } else { path.len() as u64 }
+            );
+            // Also pin the production wrapper: an eager registration there must
+            // not escape the helper-level oracle. Removal retains map capacity;
+            // the eager control verifies that this detects a registration.
+            let probes = Mutex::new(HashMap::new());
+            let early = eager.then(|| MetadataProbeGuard::enter(&probes, &mount_path));
+            let limited = crate::NativeMaterializationWork::new(
+                crate::WorkBudget {
+                    backend_read_operations: reads,
+                    ..crate::WorkBudget::UNBOUNDED
+                },
+                &crate::CancellationToken::new(),
+            )
+            .map_err(|(error, _)| TestCaseError::fail(format!("{error:?}")))?;
+            let result = probe_host_windows_metadata(&root, &mount_path, &probes, &limited);
+            prop_assert_eq!(result.is_ok(), reads > 0);
+            drop(early);
+            let matches = (lock_recover(&probes).capacity() > 0) == (reads == 2);
+            prop_assert_eq!(matches, !eager || reads == 2);
+            prop_assert!(lock_recover(&probes).is_empty());
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
 
 fn work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
@@ -25,7 +135,8 @@ fn name_query_matches_held_stat_and_records_one_read() -> Result<(), Box<dyn std
     for path in ["leaf", "LEAF", "alias", "éclair"] {
         let wide: Vec<_> = path.encode_utf16().collect();
         let before = work.receipt();
-        let actual = query_metadata(&root, &wide, &mut &work)?.ok_or("name query fell back")?;
+        let actual =
+            query_metadata(&root, &wide, &mut &work, || ())?.ok_or("name query fell back")?;
         let after = work.receipt();
         assert_eq!(
             after.backend_read_operations - before.backend_read_operations,
@@ -67,7 +178,7 @@ fn name_query_keeps_other_paths_on_the_original_validator() -> Result<(), Box<dy
     ] {
         let wide: Vec<_> = path.encode_utf16().collect();
         let before = work.receipt();
-        assert!(query_metadata(&root, &wide, &mut &work)?.is_none());
+        assert!(query_metadata(&root, &wide, &mut &work, || ())?.is_none());
         assert_eq!(
             work.receipt().backend_read_operations,
             before.backend_read_operations
@@ -90,13 +201,13 @@ fn name_query_respects_cancellation_and_read_budget() -> Result<(), Box<dyn std:
     };
     let limited =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    assert!(query_metadata(&root, &path, &mut &limited).is_err());
+    assert!(query_metadata(&root, &path, &mut &limited, || ()).is_err());
     assert_eq!(limited.receipt().backend_read_operations, 0);
     let cancellable =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
     cancellation.cancel();
-    assert!(query_metadata(&root, &path, &mut &cancellable).is_err());
+    assert!(query_metadata(&root, &path, &mut &cancellable, || ()).is_err());
     assert_eq!(cancellable.receipt().backend_read_operations, 0);
     Ok(())
 }
@@ -146,7 +257,8 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| error)?;
-        let actual = query_metadata(&root, &wide, &mut &limited)?.ok_or("tagged leaf fell back")?;
+        let actual =
+            query_metadata(&root, &wide, &mut &limited, || ())?.ok_or("tagged leaf fell back")?;
         if path == "junction" {
             assert_ne!(actual.raw.ReparseTag, 0);
         }
@@ -158,7 +270,7 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
     }
     let wide: Vec<_> = "junction\\outside".encode_utf16().collect();
     let before = work.receipt();
-    assert!(query_metadata(&root, &wide, &mut &work)?.is_none());
+    assert!(query_metadata(&root, &wide, &mut &work, || ())?.is_none());
     assert_eq!(work.receipt(), before);
     let path = MountPath::root().child(
         "junction"
@@ -167,7 +279,8 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
             .collect(),
     );
     assert!(
-        host_windows_metadata(&root, &path, &work)?.attributes & FILE_ATTRIBUTE_REPARSE_POINT.0
+        host_windows_metadata(&root, &path, &work, None)?.attributes
+            & FILE_ATTRIBUTE_REPARSE_POINT.0
             != 0
     );
     let through_link = path.child(
@@ -176,7 +289,7 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
             .flat_map(u16::to_le_bytes)
             .collect(),
     );
-    assert!(host_windows_metadata(&root, &through_link, &work).is_err());
+    assert!(host_windows_metadata(&root, &through_link, &work, None).is_err());
     assert!(std::fs::metadata(outside.path().join("outside"))?.is_file());
     Ok(())
 }
@@ -211,7 +324,7 @@ fn fallback_preserves_the_original_tight_budget() -> Result<(), Box<dyn std::err
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| error)?;
-        let actual = match query_metadata(&root, &wide, &mut &limited) {
+        let actual = match query_metadata(&root, &wide, &mut &limited, || ()) {
             Ok(Some(stat)) => Ok(stat),
             Ok(None) => root.stat(&wide, &mut &limited),
             Err(error) => Err(error),
@@ -249,12 +362,18 @@ fn failed_queries_record_attempts_and_reuse_validation() -> Result<(), Box<dyn s
             )
             .map_err(|(error, _)| error)?;
             let mut queries = 0;
-            let result = query_metadata_using(&root, &path, &mut &limited, |_, _| {
-                queries += 1;
-                unsupported.map_or(Ok(None), |code| {
-                    Err(std::io::Error::from_raw_os_error(code))
-                })
-            });
+            let result = query_metadata_using(
+                &root,
+                &path,
+                &mut &limited,
+                || (),
+                |_, _| {
+                    queries += 1;
+                    unsupported.map_or(Ok(None), |code| {
+                        Err(std::io::Error::from_raw_os_error(code))
+                    })
+                },
+            );
             let result = match result {
                 Ok(None) => root.stat(&path, &mut &limited).map(Some),
                 result => result,
@@ -271,9 +390,13 @@ fn failed_queries_record_attempts_and_reuse_validation() -> Result<(), Box<dyn s
     }
     for code in [2, 5, 32] {
         let limited = work()?;
-        let error = query_metadata_using(&root, &path, &mut &limited, |_, _| {
-            Err(std::io::Error::from_raw_os_error(code))
-        })
+        let error = query_metadata_using(
+            &root,
+            &path,
+            &mut &limited,
+            || (),
+            |_, _| Err(std::io::Error::from_raw_os_error(code)),
+        )
         .err()
         .ok_or("failed query unexpectedly succeeded")?;
         assert!(
@@ -309,7 +432,7 @@ fn name_query_reuses_prepaid_validation_items() -> Result<(), Box<dyn std::error
         },
     )?;
     let recheck = limited.recheck_admitted();
-    assert!(query_metadata(&root, &path, &mut &recheck)?.is_some());
+    assert!(query_metadata(&root, &path, &mut &recheck, || ())?.is_some());
     assert_eq!(limited.receipt().items_examined, path.len() as u64);
     assert_eq!(limited.receipt().backend_read_operations, 1);
     Ok(())

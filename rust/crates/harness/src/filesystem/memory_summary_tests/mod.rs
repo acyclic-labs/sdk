@@ -44,11 +44,11 @@ fn summary_model(turns: usize) -> ScriptedModelProvider {
                 u32::try_from(bytes + 512).map_err(|error| Error::Invalid(error.to_string()))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 512,
+        Ok(ModelTokenCount::from_upper_bounds(
+            request.request_digest(),
+            512,
             message_tokens,
-        })
+        ))
     })
 }
 
@@ -300,6 +300,8 @@ async fn sealed_summary_preparation(
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+mod accounting;
 mod compaction;
 mod publication;
 mod retirement;

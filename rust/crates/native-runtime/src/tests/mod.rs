@@ -12,6 +12,7 @@ mod completion;
 mod custody;
 mod namespace;
 mod positional;
+mod spare;
 mod write_validation;
 
 fn wait_until(ready: impl Fn() -> bool) {

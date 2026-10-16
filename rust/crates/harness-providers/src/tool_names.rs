@@ -129,7 +129,14 @@ impl<'a> Names<'a> {
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {
-        let mut values = Vec::with_capacity(names(request).count());
+        Self::with_capacity(request, names(request).count())
+    }
+
+    fn with_capacity(request: &'a ModelRequest, count: usize) -> Self {
+        if count == 0 {
+            return Self(Vec::new());
+        }
+        let mut values = Vec::with_capacity(count);
         values.extend(names(request));
         values.sort_unstable();
         values.dedup();
@@ -197,6 +204,6 @@ impl<'a> Names<'a> {
                 ..acyclic_fs::WorkCounters::UNCHARGED
             },
         )?;
-        Ok((Self::new(request), custody))
+        Ok((Self::with_capacity(request, count as usize), custody))
     }
 }
