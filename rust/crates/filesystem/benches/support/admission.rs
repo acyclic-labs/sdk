@@ -1,3 +1,4 @@
+use acyclic_fs::facade::FsWork;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use divan::Bencher;
 
@@ -58,15 +59,15 @@ fn admission_charge(bencher: Bencher, (context, recheck): (u8, bool)) {
 
 #[divan::bench]
 fn admission_charge_local(bencher: Bencher) {
-    let mut counters = WorkCounters::UNCHARGED;
+    let cancellation = CancellationToken::new();
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let mut accounting = budget.accounting(&cancellation);
     let delta = WorkCounters {
         items_examined: 1,
         bytes_copied: 1,
         ..WorkCounters::UNCHARGED
     };
     bencher.bench_local(|| {
-        counters
-            .charge(&delta, &acyclic_fs::performance::BOUNDARY_BUDGET)
-            .unwrap_or_else(fail);
+        accounting.charge(delta).unwrap_or_else(fail);
     });
 }
