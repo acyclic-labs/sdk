@@ -26,6 +26,11 @@ pub(crate) fn validate_compaction(
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let summary = match &reference.summary {
             Some(summary) => Some(ContextSummary {
+                source_file: summary
+                    .source_file
+                    .as_ref()
+                    .map(|file| file.clone_in_quota(&mut quota))
+                    .transpose()?,
                 operation_id: summary.operation_id,
                 step: summary.step,
                 source_messages: summary.source_messages,

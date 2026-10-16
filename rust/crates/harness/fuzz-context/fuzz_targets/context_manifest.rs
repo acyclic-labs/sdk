@@ -48,6 +48,18 @@ fuzz_target!(|input: &[u8]| {
         let encoded = serde_json::to_vec(&source).unwrap();
         assert_eq!(serde_json::from_slice::<Context>(&encoded).unwrap(), source);
     }
+    macro_rules! round_trip {
+        ($ty:ty) => {
+            if let Ok(value) = serde_json::from_slice::<$ty>(input) {
+                let encoded = serde_json::to_vec(&value).unwrap();
+                assert_eq!(serde_json::from_slice::<$ty>(&encoded).unwrap(), value);
+            }
+        };
+    }
+    round_trip!(acyclic_harness::context::SummarySource);
+    round_trip!(acyclic_harness::context::SummaryCheckpoint);
+    round_trip!(acyclic_harness::context::SummarySelection);
+    round_trip!(acyclic_harness::context::ContextSummary);
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {
             path_bytes,

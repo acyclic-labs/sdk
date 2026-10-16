@@ -258,6 +258,7 @@ fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
         .current_input_index
         .filter(|index| (*index as usize) < through);
     Ok(ContextSummary {
+        source_file: None,
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: u32::try_from(through)

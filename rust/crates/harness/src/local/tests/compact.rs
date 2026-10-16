@@ -199,3 +199,258 @@ proptest::proptest! {
         }
     }
 }
+
+#[tokio::test]
+async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tasks() -> Result<()> {
+    use crate::context::SummarySelection;
+    use crate::task_volume::{Channel, Component, FileKey, FileValue, TaskFile};
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Text("completed original".into()),
+        ScriptedTurn::Text("FACT_ONLY_IN_A".into()),
+        ScriptedTurn::Text("SUMMARY_B".into()),
+        ScriptedTurn::Text("branch answer".into()),
+        ScriptedTurn::Text("rewound answer".into()),
+    ]);
+    let config = || volume_config(directory.path(), project.clone(), provider.clone());
+    let local = LocalHarness::open(config()?).await?;
+    let target_operation = OperationId::new();
+    let target = admitted(local.submit(target_operation, "original prompt").await?);
+    local.resume(target).await?;
+    // The raw child API must keep rejecting children of this completed task.
+    let definition = local
+        .runtime
+        .harness()
+        .task::<Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+    let record = local.runtime.task_host().observe_admission(target).await?;
+    let owner = local
+        .runtime
+        .harness()
+        .durable_context(target, record.operation_id, None)
+        .await?;
+    assert!(
+        owner
+            .admit(OperationId::new(), &definition, record.input)
+            .await
+            .is_err()
+    );
+    drop(owner);
+    let a = OperationId::new();
+    local.compact(a, target, "retain A").await?;
+    let (selected_a, checkpoint_a) = local.selected_checkpoint(target).await?.unwrap();
+    assert!(
+        matches!(local.submit_to(target_operation, Some(target), "original prompt").await,
+        Err(Error::Conflict(message)) if message == "task admission belongs to another conversation")
+    );
+    // Admission through the production prompt path creates a retained root
+    // continuation. Its binding is A, even if B is published before dispatch.
+    let branch_operation = OperationId::new();
+    let branch = serde_json::from_value(
+        local
+            .dispatch_command(
+                branch_operation,
+                Some(target),
+                crate::client::CommandResolution::Prompt {
+                    text: "branch prompt".into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
+            .await?["task"]
+            .clone(),
+    )
+    .map_err(super::super::storage)?;
+    assert!(
+        local
+            .runtime
+            .task_host()
+            .observe_admission(branch)
+            .await?
+            .parent
+            .is_none()
+    );
+    assert!(
+        matches!(local.submit_to(branch_operation, Some(branch), "changed parent").await,
+        Err(Error::Conflict(message)) if message == "continuation belongs to another conversation")
+    );
+    let mut chunk = FileValue::new(
+        FileKey::Task {
+            task: Component::new(target.to_string()).map_err(super::super::storage)?,
+            file: TaskFile::Chunk {
+                turn: 99,
+                sequence: 0,
+            },
+        },
+        b"TURN_AFTER_A".to_vec(),
+    );
+    chunk.channel = Some(Channel::Text);
+    local
+        .task_files
+        .inner
+        .create(
+            local
+                .task_files
+                .inner
+                .head()
+                .await
+                .map_err(super::super::storage)?,
+            &chunk,
+        )
+        .await
+        .map_err(super::super::storage)?;
+    let b = OperationId::new();
+    local.compact(b, target, "retain B").await?;
+    let request = serde_json::to_string(&provider.requests()[2]).map_err(super::super::storage)?;
+    assert!(request.contains("FACT_ONLY_IN_A"));
+    assert!(request.contains("TURN_AFTER_A"));
+    assert!(!request.contains("completed original"));
+    let (selected_b, _) = local.selected_checkpoint(target).await?.unwrap();
+    local.compact(a, target, "retain A").await?;
+    assert_eq!(
+        local.selected_checkpoint(target).await?.unwrap().0,
+        selected_b
+    );
+    assert_eq!(provider.requests().len(), 3);
+    // Broken publication ignores predecessor/fence and replaces B with A.
+    super::super::compact::checkpoints::select::<_, false>(
+        &local.task_files.inner,
+        target,
+        &checkpoint_a,
+        &selected_a.checkpoint,
+        local.limits.file_bytes,
+    )
+    .await?;
+    assert_ne!(
+        local.selected_checkpoint(target).await?.unwrap().0,
+        selected_b
+    );
+    // Restore the selected boundary using the ordinary user-owned file.
+    let key = super::super::commands::compact_key(target)?;
+    local
+        .task_files
+        .inner
+        .append(
+            local
+                .task_files
+                .inner
+                .head()
+                .await
+                .map_err(super::super::storage)?,
+            &FileValue::new(
+                key.clone(),
+                serde_json::to_vec(&selected_b).map_err(super::super::storage)?,
+            ),
+        )
+        .await
+        .map_err(super::super::storage)?;
+    local.close().await?;
+    let local = LocalHarness::open(config()?).await?;
+    assert_eq!(local.resume(branch).await?.text, "branch answer");
+    let branch_request =
+        serde_json::to_string(&provider.requests()[3]).map_err(super::super::storage)?;
+    assert!(branch_request.contains("FACT_ONLY_IN_A"));
+    assert!(!branch_request.contains("SUMMARY_B"));
+    // Rewind is a file selection at a fixed conversation cursor, with a fresh
+    // selection fence. Replaying B cannot undo this later user decision.
+    let rewind = SummarySelection {
+        parent: None,
+        checkpoint: selected_a.checkpoint,
+        selected_at: local
+            .task_files
+            .inner
+            .head()
+            .await
+            .map_err(super::super::storage)?
+            .position,
+        through: Some(checkpoint_a.boundary.through),
+    };
+    local
+        .task_files
+        .inner
+        .append(
+            local
+                .task_files
+                .inner
+                .head()
+                .await
+                .map_err(super::super::storage)?,
+            &FileValue::new(
+                key,
+                serde_json::to_vec(&rewind).map_err(super::super::storage)?,
+            ),
+        )
+        .await
+        .map_err(super::super::storage)?;
+    local.compact(b, target, "retain B").await?;
+    assert_eq!(local.selected_checkpoint(target).await?.unwrap().0, rewind);
+    let rewound = serde_json::from_value(
+        local
+            .dispatch_command(
+                OperationId::new(),
+                Some(target),
+                crate::client::CommandResolution::Prompt {
+                    text: "after rewind".into(),
+                    source: None,
+                    mentions: Vec::new(),
+                },
+            )
+            .await?["task"]
+            .clone(),
+    )
+    .map_err(super::super::storage)?;
+    assert_eq!(local.resume(rewound).await?.text, "rewound answer");
+    let request = serde_json::to_string(&provider.requests()[4]).map_err(super::super::storage)?;
+    assert!(request.contains("FACT_ONLY_IN_A"));
+    assert!(!request.contains("SUMMARY_B"));
+    Ok(())
+}
+
+proptest::proptest! {
+    // Recompaction starts from the selected summary, retaining facts absent from
+    // the original input, then adds every turn since its exact cut.
+    #[test]
+    fn repeated_summary_sequences_preserve_selected_facts(
+        fact in "[A-Z]{1,40}", turns in proptest::collection::vec("[a-z]{1,20}", 1..16),
+    ) {
+        use crate::context::summary_source::retained_source;
+        use crate::model::ModelContent;
+        let limits = crate::conversation::Limits::default();
+        let input = ModelContent::Text("original input".into());
+        let mut first = retained_source::<true>(None, Some(&input), limits).unwrap();
+        first.push_str("first turn");
+        let summary = format!("summary-only-{fact}");
+        let next = |keep:bool| {
+            let mut source = if keep { retained_source::<true>(Some(&summary), None, limits) }
+                else { retained_source::<false>(Some(&summary), None, limits) }.unwrap();
+            for turn in &turns { source.push_str(turn); }
+            source
+        };
+        let detector = |source:&str| source.contains(&summary) && turns.iter().all(|turn|source.contains(turn));
+        proptest::prop_assert!(detector(&next(true)));
+        proptest::prop_assert!(!detector(&next(false)));
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn checkpoint_selection_requires_the_exact_predecessor_and_observation_fence(
+        captured in proptest::num::u64::ANY, selected_at in proptest::num::u64::ANY,
+        predecessor in proptest::bool::ANY,
+    ) {
+        use crate::context::SummarySelection;
+        use crate::task_volume::{Cursor,FileKey};
+        use super::super::compact::checkpoints::advances;
+        let cursor = Cursor {volume:[0;32],epoch:uuid::Uuid::nil(),schema:crate::task_volume::SCHEMA,
+            query:[0;32],position:1,accepted:1,durable:1,commit:[0;32]};
+        let mut cp = crate::context::summary_source::tests::checkpoint(cursor);
+        let key = FileKey::parse(".tasks/task/context/compaction-next/manifest.json").unwrap();
+        let previous = FileKey::parse(".tasks/task/context/compaction-previous/manifest.json").unwrap();
+        cp.boundary.previous = predecessor.then_some(previous.clone());
+        cp.boundary.captured_at = captured;
+        let current = SummarySelection {parent:None,checkpoint:previous,selected_at,through:None};
+        let expected = predecessor && captured > selected_at;
+        proptest::prop_assert_eq!(advances::<true>(Some(&current),&cp,&key),expected);
+        if !expected { proptest::prop_assert!(advances::<false>(Some(&current),&cp,&key)); }
+    }
+}

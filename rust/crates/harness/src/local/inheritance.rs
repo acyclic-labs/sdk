@@ -221,7 +221,13 @@ impl LocalHarness {
             }),
             async || match parent {
                 Some(parent) => self.resolved_inheritance(parent).await,
-                None => Ok(json!({"model":null,"summary":null})),
+                None => match self.continuation_selection(task).await? {
+                    Some(selected) => {
+                        let checkpoint = self.read_checkpoint(&selected.checkpoint).await?;
+                        Ok(json!({"model":checkpoint.boundary.model,"summary":self.summary_text(&checkpoint).await?}))
+                    }
+                    None => Ok(json!({"model":null,"summary":null})),
+                },
             },
         )
         .await
@@ -298,10 +304,21 @@ impl LocalHarness {
         )
         .await?
         else {
-            return Ok(None);
+            return if field == "summary" {
+                match self.continuation_selection(task).await? {
+                    Some(selected) => self.checkpoint_text(&selected).await.map(Some),
+                    None => Ok(None),
+                }
+            } else {
+                Ok(None)
+            };
         };
         if !value.is_object() {
             return Err(Error::Invalid(format!("{name} must be an object")));
+        }
+        if field == "summary" && value.get("checkpoint").is_some() {
+            let selected = serde_json::from_value(value).map_err(storage)?;
+            return self.checkpoint_text(&selected).await.map(Some);
         }
         match value.get(field) {
             Some(text) => text

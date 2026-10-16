@@ -39,7 +39,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 let (source, hold) = io.decode(
-                    std::marker::PhantomData::<crate::context::Context>,
+                    std::marker::PhantomData::<crate::context::SummarySource>,
                     &bytes,
                     crate::wire::ErrorCode::Invalid,
                 )?;
@@ -60,21 +60,46 @@ impl StockExecution<'_> {
         })?;
         #[cfg(feature = "filesystem")]
         let _instruction_hold = self.io.map(|io| io.guard_owned(_owned)).transpose()?;
-        let (_, text) = self
+        let boundary = source.boundary;
+        let (summary, text) = self
             .summarize(
                 journal,
                 Some(input),
                 input.operation_id,
                 0,
-                source,
+                source.context,
                 instruction,
             )
             .await?;
+        let checkpoint = crate::context::SummaryCheckpoint {
+            operation: input.operation_id,
+            boundary,
+            source: summary
+                .source_file
+                .ok_or_else(|| Error::Invalid("summary lost its pinned source".into()))?,
+            summary: summary.output,
+        };
+        let metadata = match self.io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => {
+                let bytes = io.encode(&checkpoint, self.stock.limits.file_bytes, true)?;
+                let _hold = io.guard_bytes(&bytes)?;
+                let decoded = io.decode(
+                    std::marker::PhantomData::<Value>,
+                    &bytes,
+                    crate::wire::ErrorCode::Invalid,
+                )?;
+                crate::filesystem::retain_decoded(decoded)?
+            }
+            _ => serde_json::to_value(&checkpoint)
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        drop(checkpoint);
         drop(source_hold);
         Ok(ExecutionProgress::Ready(TurnOutput {
             text,
             attachments: Vec::new(),
-            metadata: Value::Null,
+            metadata,
             steps: 1,
         }))
     }

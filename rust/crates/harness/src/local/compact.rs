@@ -1,11 +1,10 @@
 //! Manual compaction is a retained model command selecting the shared summary engine.
 use super::*;
+pub(super) mod checkpoints;
+pub(super) mod source;
 use crate::{
-    context::Context,
-    conversation::FileRef,
     filesystem::ModelTaskCommand,
     model::{ModelMessage, ModelRequest, ModelRole, PreparedModelRequest},
-    runtime::TaskStateProvider,
     task_volume::{Component, FileValue, Query, TaskFile},
 };
 use serde_json::{Value, json};
@@ -21,7 +20,6 @@ impl LocalHarness {
             Some(retained) => retained,
             None => self.stage_summary(operation, target, instructions).await?,
         };
-        let source = model.payload.clone();
         let task = crate::runtime::task_id_for_admission(operation);
         let task = commands::accepted(
             inheritance::admit_prepared(
@@ -32,33 +30,12 @@ impl LocalHarness {
             .await?,
             operation,
         )?;
-        let summary = self.resume(task).await?.text;
-        let key = commands::compact_key(target)?;
-        let cut = self
-            .task_files
-            .inner
-            .snapshot(&Query::File(key.clone()), 1)
-            .await
-            .map_err(storage)?;
-        let bytes = serde_json::to_vec(&json!({
-            "summary": summary, "source": source, "operation": operation,
-        }))
-        .map_err(storage)?;
-        if bytes.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid("compaction exceeds file bound".into()));
-        }
-        if !cut
-            .files
-            .first()
-            .is_some_and(|file| file.bytes.as_ref() == bytes)
-        {
-            self.task_files
-                .inner
-                .append(cut.generation, &FileValue::new(key, bytes))
-                .await
-                .map_err(storage)?;
-        }
-        Ok(json!({"compacted": target, "summary": summary}))
+        let output = self.resume(task).await?;
+        let checkpoint = serde_json::from_value(output.metadata).map_err(storage)?;
+        let (key, selected) = self
+            .publish_checkpoint(operation, target, &checkpoint)
+            .await?;
+        Ok(json!({"compacted":target,"summary":output.text,"checkpoint":key,"selected":selected}))
     }
 
     pub(super) async fn stage_summary(
@@ -88,7 +65,7 @@ impl LocalHarness {
         let (retained, _) = publisher
             .observe_staged_once(source_operation, self.limits.file_bytes, None)?
             .await?;
-        let (source, manifest, mut context) = match retained {
+        let (source, captured) = match retained {
             Some(file) => {
                 let bytes = self
                     .files
@@ -99,16 +76,13 @@ impl LocalHarness {
                         None,
                     )
                     .await?;
-                let mut context: Context = serde_json::from_slice(&bytes).map_err(storage)?;
-                let manifest = context
-                    .metadata
-                    .remove("context-manifest")
-                    .ok_or_else(|| Error::Invalid("summary source has no manifest".into()))?;
-                (file, manifest, context)
+                let captured: crate::context::SummarySource =
+                    serde_json::from_slice(&bytes).map_err(storage)?;
+                (file, captured)
             }
             None => {
-                let (context, manifest) = self.summary_source(target).await?;
-                let bytes = crate::contract::canonical_json_bytes(&context)?;
+                let captured = self.summary_source(target).await?;
+                let bytes = serde_json::to_vec(&captured).map_err(storage)?;
                 let file = publisher
                     .stage_once(
                         source_operation,
@@ -120,11 +94,17 @@ impl LocalHarness {
                     )?
                     .await?
                     .0;
-                (file, manifest, context)
+                (file, captured)
             }
         };
-        let model = self.command_model(Some(target)).await?;
-        self.retain_settings(operation, &json!({"model":model.name}))
+        if captured.boundary.task != target {
+            return Err(Error::Conflict(
+                "summary source belongs to another task".into(),
+            ));
+        }
+        let manifest = captured.boundary.manifest;
+        let mut context = captured.context;
+        self.retain_settings(operation, &json!({"model":captured.boundary.model}))
             .await?;
         let model = self
             .command_model(Some(crate::runtime::task_id_for_admission(operation)))
@@ -180,64 +160,6 @@ impl LocalHarness {
             .await?
             .0;
         self.finish_turn_inputs(operation, payload, publisher).await
-    }
-
-    async fn summary_source(&self, target: TaskId) -> Result<(Context, FileRef)> {
-        let admission = self.runtime.task_host().observe_admission(target).await?;
-        let context = self
-            .runtime
-            .harness()
-            .durable_context(target, admission.operation_id, None)
-            .await?;
-        let model = admission
-            .input
-            .get("model")
-            .ok_or_else(|| Error::Invalid("selected task has no model context".into()))?;
-        let command: WorkflowCommand = serde_json::from_value(model.clone()).map_err(storage)?;
-        let bytes = context.read_file(&command.payload, None).await?;
-        let input: ModelTaskCommand = serde_json::from_slice(&bytes).map_err(storage)?;
-        let mut text = serde_json::to_string(&input.input).map_err(storage)?;
-        if let Some(outcome) = self.runtime.task_host().outcome(target).await? {
-            append_source(
-                &mut text,
-                &serde_json::to_string(&outcome).map_err(storage)?,
-                self.limits,
-            )?;
-        }
-        let snapshot = self
-            .task_files
-            .inner
-            .snapshot(
-                &Query::Turns(Component::new(target.to_string()).map_err(storage)?),
-                self.limits.context_messages,
-            )
-            .await
-            .map_err(storage)?;
-        for file in snapshot.files {
-            if matches!(
-                file.key,
-                crate::task_volume::FileKey::Task {
-                    file: TaskFile::TextHead { .. } | TaskFile::TurnRequest(_),
-                    ..
-                }
-            ) {
-                append_source(
-                    &mut text,
-                    &String::from_utf8_lossy(&file.bytes),
-                    self.limits,
-                )?;
-            }
-        }
-        let manifest = input.context_manifest;
-        let mut context = Context::default();
-        context
-            .metadata
-            .insert("context-manifest".into(), manifest.clone());
-        context.messages.push(ModelMessage {
-            role: ModelRole::User,
-            content: ModelContent::Text(text),
-        });
-        Ok((context, manifest))
     }
 }
 

@@ -80,6 +80,62 @@ impl LocalHarness {
             ));
         }
         let task = crate::runtime::task_id_for_admission(operation);
+        let continuation = self.continuation_selection(task).await?;
+        let existing = match self.runtime.task_host().observe_admission(task).await {
+            Ok(record) => Some(record.parent),
+            Err(Error::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        if continuation.is_none() && existing.is_some_and(|retained| retained != Some(parent)) {
+            return Err(Error::Conflict(
+                "task admission belongs to another conversation".into(),
+            ));
+        }
+        // Completed executions retain their lifetime boundary. A conversation
+        // continuation is a new root bound to the selected immutable checkpoint.
+        if continuation.is_some()
+            || existing.is_none()
+                && matches!(
+                    self.runtime.task_host().outcome(parent).await?,
+                    Some(
+                        crate::Outcome::Succeeded(_)
+                            | crate::Outcome::Failed { .. }
+                            | crate::Outcome::Cancelled
+                    )
+                )
+                && self.selected_checkpoint(parent).await?.is_some()
+        {
+            return super::admission::serialized(&self.admission, async || {
+                let selected = match self.continuation_selection(task).await? {
+                    Some(selected) => selected,
+                    None => {
+                        self.selected_checkpoint(parent)
+                            .await?
+                            .ok_or_else(|| {
+                                Error::Conflict("continuation lost its checkpoint".into())
+                            })?
+                            .0
+                    }
+                };
+                let (_, checkpoint) = self.retain_continuation(task, parent, selected).await?;
+                self.prepare_inheritance(task, None).await?;
+                let (receive, model) = match self.recover_turn_inputs(operation).await? {
+                    Some(inputs) => inputs,
+                    None => {
+                        let prompt = self.prompt_context(Some(task), prompt).await?;
+                        self.stage_bound_turn(
+                            operation,
+                            &prompt,
+                            checkpoint.boundary.manifest,
+                            self.input_publisher()?.as_ref(),
+                        )
+                        .await?
+                    }
+                };
+                self.admit_turn(operation, None, receive, model).await
+            })
+            .await;
+        }
         inheritance::admit_prepared(
             &self.admission,
             Box::pin(self.prepare_inheritance(task, Some(parent))),
@@ -152,15 +208,27 @@ impl LocalHarness {
         prompt: &str,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let manifest = match &self.context_manifest {
+            Some(reference) => reference.clone(),
+            None => {
+                self.stage_context_manifest_with(operation, publisher)
+                    .await?
+            }
+        };
+        self.stage_bound_turn(operation, prompt, manifest, publisher)
+            .await
+    }
+
+    async fn stage_bound_turn(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        manifest: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
             summary_source: None,
-            context_manifest: match &self.context_manifest {
-                Some(reference) => reference.clone(),
-                None => {
-                    self.stage_context_manifest_with(operation, publisher)
-                        .await?
-                }
-            },
+            context_manifest: manifest,
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)

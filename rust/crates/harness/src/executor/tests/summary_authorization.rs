@@ -63,6 +63,7 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
     // provenance is rejected even though its bytes exist in the journal.
     assert!(!runtime.block_on(permitted(journal.as_ref(), &narrow, &file))?);
     let summary = crate::context::ContextSummary {
+        source_file: None,
         operation_id: operation,
         step: 0,
         source_messages: 1,

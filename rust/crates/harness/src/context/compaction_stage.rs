@@ -67,6 +67,11 @@ impl ContextStage for CompactionStage {
                     .as_ref()
                     .map(|summary| {
                         Ok::<_, crate::Error>(ContextSummary {
+                            source_file: summary
+                                .source_file
+                                .as_ref()
+                                .map(|file| file.copy(work))
+                                .transpose()?,
                             operation_id: summary.operation_id,
                             step: summary.step,
                             source_messages: summary.source_messages,
