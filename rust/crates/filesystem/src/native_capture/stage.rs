@@ -42,7 +42,10 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         &mut meter.clone(),
     )
     .map_err(capture_demand_error)?;
-    if ranges.is_empty() {
+    let skip_import = ranges.is_empty();
+    #[cfg(all(test, feature = "memory"))]
+    let skip_import = super::empty_stage_tests::after_ranges(skip_import);
+    if skip_import {
         let staged = capture_vec(0, meter)?;
         finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
         let bytes = vector_bytes(&ranges);
@@ -102,6 +105,10 @@ pub(super) fn finish_regular_capture(
     file: &std::fs::File,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    #[cfg(all(test, feature = "memory"))]
+    if super::empty_stage_tests::omit_finish() {
+        return Ok(());
+    }
     meter.cancellation().check()?;
     let after = source_root
         .stat_file(file, &mut meter.clone())

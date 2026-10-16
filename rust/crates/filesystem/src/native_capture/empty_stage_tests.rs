@@ -13,11 +13,6 @@ fn empty_stage_matches(
     Ok(())
 }
 
-fn finalization_matches(accepted: bool, expected: bool) -> proptest::test_runner::TestCaseResult {
-    prop_assert_eq!(accepted, expected);
-    Ok(())
-}
-
 #[test]
 fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -54,18 +49,7 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
         ),
         |(before, length, cancelled)| {
             let source = tempfile::tempdir().unwrap();
-            let file = std::fs::File::create(source.path().join("file")).unwrap();
-            #[cfg(windows)]
-            acyclic_native_runtime::device_control_in_place(
-                &file,
-                windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
-                &[],
-                &mut [],
-                None,
-            )
-            .unwrap();
-            file.set_len(length).unwrap();
-            drop(file);
+            sparse_file(&source.path().join("file"), length);
             let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
             let snapshot = test_host_stat(&root, Path::new("file")).unwrap();
@@ -107,57 +91,339 @@ fn empty_staging_preserves_bytes_and_retires_custody() -> Result<(), Box<dyn std
     Ok(())
 }
 
+#[derive(Default)]
+struct StageProbe {
+    force_import: bool,
+    omit_finish: bool,
+    edit: Option<Box<dyn FnOnce()>>,
+}
+
+thread_local! {
+    static PROBE: std::cell::RefCell<StageProbe> = const {
+        std::cell::RefCell::new(StageProbe {
+            force_import: false, omit_finish: false, edit: None,
+        })
+    };
+}
+
+pub(super) fn after_ranges(empty: bool) -> bool {
+    PROBE.with_borrow_mut(|probe| {
+        if let Some(edit) = probe.edit.take() {
+            assert!(empty, "fixture must reach the empty-range branch");
+            edit();
+        }
+        empty && !probe.force_import
+    })
+}
+
+pub(super) fn omit_finish() -> bool {
+    PROBE.with_borrow(|probe| probe.omit_finish)
+}
+
+struct Reset;
+
+impl Drop for Reset {
+    fn drop(&mut self) {
+        PROBE.set(StageProbe::default());
+    }
+}
+
+fn sparse_file(path: &Path, length: u64) {
+    let file = std::fs::File::create(path).unwrap();
+    #[cfg(windows)]
+    acyclic_native_runtime::device_control_in_place(
+        &file,
+        windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
+        &[],
+        &mut [],
+        None,
+    )
+    .unwrap();
+    #[cfg(windows)]
+    {
+        // Punch while nonresident: NTFS can report small resident zeros as data.
+        let grown = length.max(65537);
+        file.set_len(grown).unwrap();
+        let mut zero = [0; 16];
+        zero[8..].copy_from_slice(&grown.to_le_bytes());
+        acyclic_native_runtime::device_control_in_place(
+            &file,
+            windows::Win32::System::Ioctl::FSCTL_SET_ZERO_DATA,
+            &zero,
+            &mut [],
+            None,
+        )
+        .unwrap();
+    }
+    file.set_len(length).unwrap();
+}
+
+fn side_data(path: &Path, bytes: &[u8]) {
+    #[cfg(target_os = "linux")]
+    match rustix::fs::setxattr(
+        path,
+        c"user.empty729",
+        bytes,
+        rustix::fs::XattrFlags::empty(),
+    ) {
+        Ok(()) | Err(rustix::io::Errno::NOTSUP) => {}
+        Err(error) => panic!("setxattr failed: {error}"),
+    }
+    #[cfg(windows)]
+    std::fs::write(path.with_file_name("file:empty729"), bytes).unwrap();
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = (path, bytes);
+}
+
+fn acceptance_matches(accepted: bool, edit: u8) -> proptest::test_runner::TestCaseResult {
+    prop_assert_eq!(accepted, edit == 0);
+    Ok(())
+}
+
+async fn run_capture(
+    initial: &crate::facade::MemoryCheckout,
+    path: &NamespacePath,
+    options: &CaptureOptions,
+    setup: &NativeMaterializationWork,
+    variant: (bool, bool),
+    edit: (u8, usize),
+    budget: WorkBudget,
+) -> (
+    crate::facade::MemoryCheckout,
+    Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>>,
+    NativeMaterializationWork,
+    WorkCounters,
+) {
+    let (work, cancellation) = setup
+        .native_volume_work(budget)
+        .unwrap()
+        .invocation_view()
+        .unwrap();
+    let mut checkout = initial
+        .private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+            &cancellation,
+        )
+        .unwrap();
+    let before = work.receipt();
+    let cancel = cancellation.clone();
+    let file = options.source_root.join("file");
+    PROBE.set(StageProbe {
+        force_import: variant.0,
+        omit_finish: variant.1,
+        edit: Some(Box::new(move || match edit.0 {
+            1 => std::fs::write(&file, vec![b'x'; edit.1]).unwrap(),
+            2 => {
+                let replacement = file.with_file_name("replacement");
+                std::fs::write(&replacement, []).unwrap();
+                std::fs::rename(&file, file.with_file_name("displaced")).unwrap();
+                std::fs::rename(replacement, &file).unwrap();
+            }
+            3 => std::fs::remove_file(&file).unwrap(),
+            4 => cancel.cancel(),
+            _ => {}
+        })),
+    });
+    let _reset = Reset;
+    let result = capture_subtrees_with_native_work(
+        &mut checkout,
+        std::slice::from_ref(path),
+        options,
+        &CapturePolicy::default(),
+        &cancellation,
+        None,
+        &work,
+    )
+    .await;
+    (checkout, result, work, before)
+}
+
+async fn encoded_record(
+    checkout: &mut crate::facade::MemoryCheckout,
+    path: &NamespacePath,
+    setup: &NativeMaterializationWork,
+) -> Vec<u8> {
+    let (lookup, _custody) = checkout
+        .lookup_batch_no_follow(std::slice::from_ref(path), setup, setup.cancellation())
+        .await
+        .unwrap();
+    crate::kernel::encode_file_record(
+        lookup.entries[0].record.unwrap(),
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )
+    .unwrap()
+}
+
 #[test]
 fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let setup =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let initial = runtime.block_on(async {
+        crate::Fs::memory()
+            .create_workspace(
+                "empty-differential",
+                WorkBudget::UNBOUNDED,
+                setup.cancellation(),
+            )
+            .await
+            .unwrap()
+            .value
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                WorkBudget::UNBOUNDED,
+                setup.cancellation(),
+            )
+            .await
+            .unwrap()
+            .value
+    });
+    let path = NamespacePath::from_portable(
+        &crate::path::PortablePath::parse("/file", initial.volume_config().limits)?,
+        initial.volume_config().limits,
+    )?;
     let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
         cases: 64,
         source_file: Some(file!()),
         ..ProptestConfig::default()
     });
-    // The same held-file and current-path proof is required for every outcome,
-    // including files for which no content reader or worker is necessary.
-    runner.run(&(1_usize..17), |length| {
-        for edit in 0..5 {
-            let source = tempfile::tempdir().unwrap();
-            let path = source.path().join("file");
-            std::fs::write(&path, []).unwrap();
-            let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
-                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
-            let snapshot = test_host_stat(&root, Path::new("file")).unwrap();
-            let held = test_open_file(&root, Path::new("file")).unwrap().into_std();
-            let cancellation = CancellationToken::new();
-            let original =
-                NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-            match edit {
-                1 => std::fs::write(&path, vec![b'x'; length]).unwrap(),
-                2 => {
-                    let replacement = source.path().join("replacement");
-                    std::fs::write(&replacement, []).unwrap();
-                    std::fs::rename(&path, source.path().join("displaced")).unwrap();
-                    std::fs::rename(replacement, &path).unwrap();
+    runner.run(
+        &(1_usize..17, prop::collection::vec(any::<u8>(), 0..17)),
+        |(growth, attribute)| {
+            runtime.block_on(async {
+                for length in [0, 65537] {
+                    for edit in 0..5 {
+                        let source = tempfile::tempdir().unwrap();
+                        let file = source.path().join("file");
+                        sparse_file(&file, length);
+                        side_data(&file, &attribute);
+                        let options = CaptureOptions {
+                            source_root: source.path().to_owned(),
+                            expected_root_identity: capture_root_identity(source.path()).unwrap(),
+                            maximum_paths: 8,
+                            maximum_extent_spans: 8,
+                        };
+                        let (baseline, seeded, _, _) = run_capture(
+                            &initial,
+                            &path,
+                            &options,
+                            &setup,
+                            (true, false),
+                            (0, growth),
+                            WorkBudget::UNBOUNDED,
+                        )
+                        .await;
+                        seeded.unwrap();
+                        let mut outcomes = Vec::new();
+                        for force_import in [true, false] {
+                            if edit != 0 {
+                                if file.exists() {
+                                    std::fs::remove_file(&file).unwrap();
+                                }
+                                sparse_file(&file, length);
+                                side_data(&file, &attribute);
+                            }
+                            let (mut checkout, result, _work, before) = run_capture(
+                                &baseline,
+                                &path,
+                                &options,
+                                &setup,
+                                (force_import, false),
+                                (edit, growth),
+                                WorkBudget::UNBOUNDED,
+                            )
+                            .await;
+                            acceptance_matches(result.is_ok(), edit)?;
+                            if edit == 0 {
+                                let receipt = result.unwrap();
+                                prop_assert_eq!(receipt.value.staged_file_bytes, 0);
+                                outcomes.push((
+                                    checkout.root().clone(),
+                                    encoded_record(&mut checkout, &path, &setup).await,
+                                    receipt.work.backend_read_operations
+                                        - before.backend_read_operations,
+                                    receipt.work.source_bytes_read - before.source_bytes_read,
+                                ));
+                            } else {
+                                prop_assert_eq!(checkout.root(), baseline.root());
+                            }
+                        }
+                        if edit == 0 {
+                            prop_assert_eq!(&outcomes[0].0, &outcomes[1].0);
+                            prop_assert_eq!(&outcomes[0].1, &outcomes[1].1);
+                            prop_assert_eq!(outcomes[0].3, outcomes[1].3);
+                            prop_assert!(outcomes[0].2 > outcomes[1].2);
+                            for force_import in [true, false] {
+                                let index = usize::from(!force_import);
+                                let reads = outcomes[index].2;
+                                for limit in [reads - 1, reads] {
+                                    let budget = WorkBudget {
+                                        backend_read_operations: limit,
+                                        ..WorkBudget::UNBOUNDED
+                                    };
+                                    let (mut bounded, result, _work, before) = run_capture(
+                                        &baseline,
+                                        &path,
+                                        &options,
+                                        &setup,
+                                        (force_import, false),
+                                        (0, growth),
+                                        budget,
+                                    )
+                                    .await;
+                                    let work = match result {
+                                        Ok(receipt) => {
+                                            prop_assert_eq!(limit, reads);
+                                            prop_assert_eq!(bounded.root(), &outcomes[index].0);
+                                            prop_assert_eq!(
+                                                encoded_record(&mut bounded, &path, &setup).await,
+                                                outcomes[index].1.clone()
+                                            );
+                                            receipt.work
+                                        }
+                                        Err(failure) => {
+                                            prop_assert_eq!(limit + 1, reads);
+                                            prop_assert_eq!(bounded.root(), baseline.root());
+                                            *failure.work
+                                        }
+                                    };
+                                    prop_assert!(
+                                        work.backend_read_operations
+                                            - before.backend_read_operations
+                                            <= limit
+                                    );
+                                }
+                            }
+                        } else if edit != 4 {
+                            // The identical production capture, deliberately omitting its
+                            // final proof, must be rejected by the acceptance oracle.
+                            if file.exists() {
+                                std::fs::remove_file(&file).unwrap();
+                            }
+                            sparse_file(&file, length);
+                            side_data(&file, &attribute);
+                            let (_, broken, _, _) = run_capture(
+                                &baseline,
+                                &path,
+                                &options,
+                                &setup,
+                                (false, true),
+                                (edit, growth),
+                                WorkBudget::UNBOUNDED,
+                            )
+                            .await;
+                            prop_assert!(acceptance_matches(broken.is_ok(), edit).is_err());
+                        }
+                    }
                 }
-                3 => std::fs::remove_file(&path).unwrap(),
-                4 => cancellation.cancel(),
-                _ => {}
-            }
-            let accepted = finish_regular_capture(
-                &root,
-                &test_host_path(Path::new("file")),
-                &snapshot,
-                &held,
-                &original,
-            )
-            .is_ok();
-            let expected = edit == 0;
-            finalization_matches(accepted, expected)?;
-            // Deliberately omit final validation: it must fail for every edit.
-            if !expected {
-                prop_assert!(finalization_matches(true, expected).is_err());
-            }
-        }
-        Ok(())
-    })?;
+                Ok(())
+            })
+        },
+    )?;
     Ok(())
 }
