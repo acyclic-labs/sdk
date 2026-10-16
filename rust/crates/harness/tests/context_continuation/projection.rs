@@ -180,11 +180,13 @@ pub(super) fn typed_payload_source() -> Context {
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Part(ModelContentPart::ToolCall {
-                    call_id: "previous-call".into(),
-                    name: "echo".into(),
-                    arguments: serde_json::json!({"value":"é🦀"}),
-                }),
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        "previous-call".into(),
+                        "echo".into(),
+                        serde_json::json!({"value":"é🦀"}),
+                    ),
+                )),
             },
             ModelMessage {
                 role: ModelRole::Tool,

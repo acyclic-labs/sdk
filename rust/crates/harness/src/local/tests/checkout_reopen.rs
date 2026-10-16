@@ -111,11 +111,11 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let write = |index: usize, text: &str| {
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: format!("write-{index}"),
-                name: "write".into(),
-                arguments: json!({"path":"from-write.txt","text":text,"media_type":"text/plain","display_name":"from-write.txt"}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                format!("write-{index}"),
+                "write".into(),
+                json!({"path":"from-write.txt","text":text,"media_type":"text/plain","display_name":"from-write.txt"}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

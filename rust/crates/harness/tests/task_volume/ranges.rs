@@ -16,8 +16,9 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         "plans/release notes.md",
         "plans/調査.md",
         "plans/\u{10ffff}tail.md",
-        "plans/.md",
         ".tasks/t/requests/r.json",
+        ".tasks/t/requests/r/started.json",
+        ".tasks/t/requests/r/result.json",
         ".tasks/t/context/c/manifest.json",
         ".tasks/t/approvals/a/request.json",
         ".tasks/t/approvals/a/decisions/p.json",
@@ -31,12 +32,13 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         index.insert(FileKey::parse(path)?, ());
     }
     for (query, expected) in [
+        (Query::Requests(Component::new("t")?), 1),
         (Query::Approvals(Component::new("t")?), 4),
         (Query::Notifications(Component::new("t")?), 2),
         (Query::Approvals(Component::new("empty")?), 0),
         (Query::Notifications(Component::new("empty")?), 0),
         (Query::Agents, 0),
-        (Query::Plans, 5),
+        (Query::Plans, 4),
     ] {
         // Count candidates before the query predicate: filtering a task-wide
         // range would still return correct files while scanning all its chunks.

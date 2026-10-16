@@ -50,6 +50,8 @@ native_modules! {
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod checkout_work;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+mod stage_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]

@@ -6,6 +6,7 @@ use std::{
 };
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod credentials;
 mod isolation;
 mod outbound;
 
@@ -327,8 +328,12 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
             Ok(channel)
         })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    );
     let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
     let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
     append(&provider, "move", 4).await?;
@@ -491,11 +496,11 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = Client::open(
         fixture.channel.clone(),
-        "Bearer fixture".parse()?,
+        Some("Bearer fixture".parse()?),
         None,
         None,
-    )
-    .await?;
+        None,
+    );
     let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
@@ -667,8 +672,12 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         let channel = channel.clone();
         Box::pin(async move { Ok(channel) })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    );
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),

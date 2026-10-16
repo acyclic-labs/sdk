@@ -18,9 +18,11 @@ export declare const TailConflictSchema: GenMessage<TailConflict>;  /** @generat
  case: "committed";  } | {  /** @generated from field: acyclic.stream.v1.TailConflict conflict = 2; */  value: TailConflict;  case: "conflict";  } | { case: undefined; value?: undefined };
 };  /** Describes the message acyclic.stream.v1.AppendResponse. Use `create(AppendResponseSchema)` to create a new message. */ export declare const AppendResponseSchema: GenMessage<AppendResponse>;
  /** @generated from message acyclic.stream.v1.TailRequest */ export declare type TailRequest = Message<"acyclic.stream.v1.TailRequest"> & {  /** @generated from field: string path = 1; */
- path: string; };  /** Describes the message acyclic.stream.v1.TailRequest. Use `create(TailRequestSchema)` to create a new message. */ export declare const TailRequestSchema: GenMessage<TailRequest>;
+ path: string;   /** Observe accepted visibility without waiting for persistence. False retains the provider's ordinary tail behavior. @generated from field: bool accepted = 2; */  accepted: boolean;
+};  /** Describes the message acyclic.stream.v1.TailRequest. Use `create(TailRequestSchema)` to create a new message. */ export declare const TailRequestSchema: GenMessage<TailRequest>;
  /** @generated from message acyclic.stream.v1.TailResponse */ export declare type TailResponse = Message<"acyclic.stream.v1.TailResponse"> & {  /** @generated from field: uint64 tail = 1; */
- tail: bigint; };  /** Describes the message acyclic.stream.v1.TailResponse. Use `create(TailResponseSchema)` to create a new message. */ export declare const TailResponseSchema: GenMessage<TailResponse>;
+ tail: bigint;   /** Present for an accepted observation: confirmed durable prefix at the same cut, bounded by tail. Absent means the peer does not support that observation. @generated from field: optional uint64 durable = 3; */
+ durable?: bigint | undefined; };  /** Describes the message acyclic.stream.v1.TailResponse. Use `create(TailResponseSchema)` to create a new message. */ export declare const TailResponseSchema: GenMessage<TailResponse>;
  /** @generated from message acyclic.stream.v1.ForkRequest */ export declare type ForkRequest = Message<"acyclic.stream.v1.ForkRequest"> & {  /** @generated from field: string source = 1; */
  source: string;   /** @generated from field: string destination = 2; */  destination: string;   /** @generated from field: optional uint64 at_tail = 3; */  atTail?: bigint | undefined;
   /** @generated from field: optional bytes idempotency_key = 4; */  idempotencyKey?: Uint8Array | undefined; };  /** Describes the message acyclic.stream.v1.ForkRequest. Use `create(ForkRequestSchema)` to create a new message. */

@@ -1,4 +1,5 @@
-use super::*;
+#[cfg(test)]
+use crate::work;
 
 #[derive(Clone, Copy)]
 pub(super) struct Opener {

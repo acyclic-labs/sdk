@@ -5,7 +5,8 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
         identity: Bytes::from_static(b"model"),
-        authorization: "Bearer fixture".parse().unwrap(),
+        authorization: Some("Bearer fixture".parse().unwrap()),
+        credential: None,
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
         routes: BTreeMap::new(),
@@ -16,6 +17,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         pending: VecDeque::new(),
         home_channel: channel.clone(),
         next_link: 3,
+        active: Arc::new(AtomicU64::new(0)),
         commands,
         removed: Arc::new(signal::Signal::new()),
         released: Arc::clone(&released),
@@ -84,6 +86,136 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         );
     }
     (pool, healthy.unwrap())
+}
+
+/// Uses the real cursor reservation/drop, dispatcher, idle cleanup and link locks.
+pub fn verify_pool_lifetime(fault: u8) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
+    loom::model(move || {
+        let (mut pool, _) = fixture(channel.clone());
+        pool.routes.clear();
+        let links = std::mem::take(&mut pool.links);
+        let (commands, _) = mpsc::channel(2);
+        let client = Client {
+            commands,
+            removed: Arc::clone(&pool.removed),
+            next_id: Arc::new(AtomicU64::new(1)),
+            active: Arc::clone(&pool.active),
+        };
+        let prepare = |id| {
+            let progress = Arc::new(Progress::new(0));
+            let (records, receiver) = mpsc::channel(2);
+            let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
+            let (ready, opened) = oneshot::channel();
+            let command = Command::Open {
+                id,
+                acknowledge: false,
+                kind: Kind::Follow(wire::SessionFollow {
+                    path: "healthy".into(),
+                    ..Default::default()
+                }),
+                progress,
+                records,
+                ready,
+            };
+            (cursor, command, opened)
+        };
+        let (first, command, _first_opened) = prepare(1);
+        pool.command(command).unwrap();
+        assert_eq!(pool.dials.len(), 1);
+        // B reserves before its Open can reach dispatch; Welcome is still pending.
+        let (second, command, _second_opened) = prepare(3);
+        let events = Arc::new(signal::Signal::new());
+        let cancelled = Arc::clone(&events);
+        let abort = loom::thread::spawn(move || {
+            drop(first);
+            cancelled.send(None).unwrap();
+        });
+        let opening = Arc::clone(&events);
+        let open = loom::thread::spawn(move || opening.send(Some(command)).unwrap());
+        abort.join().unwrap();
+        open.join().unwrap();
+        for _ in 0..2 {
+            match loom::future::block_on(events.next()).unwrap() {
+                Some(command) => pool.command(command).unwrap(),
+                None => {
+                    let id = loom::future::block_on(pool.removed.next()).unwrap();
+                    pool.remove(id).unwrap();
+                    if fault == 1 {
+                        pool.dials.clear();
+                    }
+                }
+            }
+            if fault == 2 && pool.routes.is_empty() {
+                pool.close_links();
+            } else {
+                pool.close_idle();
+            }
+            assert_eq!(
+                pool.dials.len(),
+                1,
+                "a cancelled waiter must preserve shared initialization"
+            );
+        }
+        assert_eq!(pool.active.load(Ordering::Acquire), 1);
+        pool.links = links;
+        let senders: Vec<_> = pool
+            .links
+            .values()
+            .map(|link| Arc::clone(&link.sender))
+            .collect();
+        drop(second);
+        let id = loom::future::block_on(pool.removed.next()).unwrap();
+        pool.remove(id).unwrap();
+        if fault != 3 {
+            pool.close_idle();
+        }
+        assert!(
+            pool.links.is_empty(),
+            "the last interest must close cached links"
+        );
+        assert!(pool.dials.is_empty());
+        assert_eq!(pool.active.load(Ordering::Acquire), 0);
+        for sender in senders {
+            assert!(matches!(
+                loom::future::block_on(sender.next()),
+                Err(StreamError::Unavailable)
+            ));
+        }
+    });
+}
+
+/// Checks real cursor reservation/drop against an arbitrary live-cursor fold.
+pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
+    loom::model(move || {
+        let (commands, _) = mpsc::channel(2);
+        let client = Client {
+            commands,
+            removed: Arc::new(signal::Signal::new()),
+            next_id: Arc::new(AtomicU64::new(1)),
+            active: Arc::new(AtomicU64::new(0)),
+        };
+        let mut live = BTreeMap::new();
+        for &(key, open) in &operations {
+            if open {
+                let (_, receiver) = mpsc::channel(2);
+                let cursor = client
+                    .cursor(u64::from(key) * 2 + 1, Arc::new(Progress::new(0)), receiver)
+                    .unwrap();
+                live.insert(key, cursor);
+            } else {
+                live.remove(&key);
+            }
+            assert_eq!(client.active.load(Ordering::Acquire), live.len() as u64);
+        }
+        drop(live);
+        assert_eq!(client.active.load(Ordering::Acquire), 0);
+    });
 }
 
 /// Models actual pool dispatch with a malformed peer and an independent delivery.

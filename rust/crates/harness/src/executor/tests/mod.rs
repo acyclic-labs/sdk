@@ -152,11 +152,11 @@ use crate::test_support::{
 };
 
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
-    ModelEvent::ToolCall {
-        call_id: call_id.into(),
-        name: "example.echo".into(),
+    ModelEvent::ToolCall(crate::model::ToolCall::new(
+        call_id.into(),
+        "example.echo".into(),
         arguments,
-    }
+    ))
 }
 
 fn tool_turn(calls: impl IntoIterator<Item = ModelEvent>) -> ScriptedTurn {
@@ -689,8 +689,11 @@ impl crate::context::ContextStage for OnceStage {
 
 mod compaction;
 mod content;
+mod invocation_bounds;
 mod recovery;
 mod replay;
+#[cfg(not(target_arch = "wasm32"))]
+mod tool_metadata;
 mod tools_1;
 mod tools_2;
 fn echo_tools(
@@ -721,4 +724,15 @@ fn echo_tools(
         None,
     )?;
     Ok(tools)
+}
+
+fn call_message(invocation: &ToolInvocation) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        ))),
+    }
 }
