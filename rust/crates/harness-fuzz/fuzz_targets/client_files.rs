@@ -1,4 +1,7 @@
 #![no_main]
+
+#[path = "../../harness/tests/support/client_views.rs"]
+mod client_views_fixture;
 use acyclic_harness::{
     AgentId, Result,
     client::{ClientSession, HarnessClient, MemoryClientState},
@@ -217,7 +220,7 @@ fn model_file_view(input: &[u8]) {
         durable: 1,
         commit: [1; 32],
     };
-    let mut views = ClientViews::default();
+    let mut views = client_views_fixture::file_views();
     views
         .query_snapshot(
             Query::Root,
@@ -252,7 +255,7 @@ fn model_file_view(input: &[u8]) {
         }
         let encoded =
             serde_json::to_vec(&serde_json::json!({"model":observed[0]["model"]})).unwrap();
-        let mut round_trip = ClientViews::default();
+        let mut round_trip = client_views_fixture::file_views();
         round_trip
             .query_snapshot(
                 Query::Root,
@@ -299,7 +302,7 @@ fn model_file_view(input: &[u8]) {
         cursor.accepted = 3;
         cursor.durable = 3;
         cursor.commit = [3; 32];
-        let mut bounded = ClientViews::default();
+        let mut bounded = client_views_fixture::file_views();
         bounded
             .query_snapshot(
                 Query::Root,

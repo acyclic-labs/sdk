@@ -73,7 +73,7 @@ pub fn check(data: &[u8]) -> Result<()> {
         durable: 1,
         commit: [2; 32],
     };
-    let mut views = ClientViews::default();
+    let mut views = client_views_fixture::file_views();
     views.query_snapshot(
         query,
         Snapshot {
