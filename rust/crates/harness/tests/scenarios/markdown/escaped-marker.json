@@ -1,6 +1,5 @@
-{"turns":[[{"type":"event","kind":"content","delta":"\\"},{"type":"event","kind":"content","delta":"*literal"},{"type":
-  "event","kind":"content","delta":"\\"},{"type":"event","kind":"content","delta":"*"},{"type":"event","kind":
-  "completed","metadata":null}]],"expect":{"text":"\\*literal\\*","events":[{"kind":"model","event":{"kind":"content",
-  "delta":"\\"}},{"kind":"model","event":{"kind":"content","delta":"*literal"}},{"kind":"model","event":{"kind":
-  "content","delta":"\\"}},{"kind":"model","event":{"kind":"content","delta":"*"}},{"kind":"model","event":{"kind":
-  "completed","metadata":null}}]}}
+{"turns":[[{"type":"event","kind":"content","delta":"\\"},{"type":"event","kind":"content","delta":"*literal"}
+  ,{"type":"event","kind":"content","delta":"\\"},{"type":"event","kind":"content","delta":"*"},{"type":
+  "event","kind":"completed","metadata":null}]],"expect":{"text":"\\*literal\\*","model_events":[{"kind":
+  "content","delta":"\\"},{"kind":"content","delta":"*literal"},{"kind":"content","delta":"\\"},{"kind":
+  "content","delta":"*"},{"kind":"completed","metadata":null}]}}

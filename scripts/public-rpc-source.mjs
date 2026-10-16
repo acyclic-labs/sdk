@@ -19,7 +19,7 @@ function body(source, declaration) {
 }
 
 const objectMethods = {
-  PutObject: "put", GetObject: "get", HeadObject: "head", DeleteObject: "delete", ListObjects: "list",
+  PutObject: "put", GetObject: "get", HeadObject: "head", DeleteObject: "delete", ListObjects: "list", RestoreObjects: "restore",
 };
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
@@ -39,7 +39,13 @@ export function createSourceInspector(root, read = path => {
   const method = (path, className, name) => new RegExp(`^\\s*(?:(?:public|protected|private|async)\\s+)*\\*?${name}\\s*\\(`, "m").test(
     body(source(path), new RegExp(`\\bclass\\s+${className}\\b`)));
   const factory = (path, name, service) => {
-    const implementation = body(source(path), new RegExp(`\\bexport\\s+function\\s+${name}\\s*\\(`));
+    let implementation = body(source(path), new RegExp(`\\bexport\\s+function\\s+${name}\\s*\\(`));
+    if (name === "createStreamGrpcClient" && /\bstreamGrpc\s*\(/.test(implementation)) {
+      const provider = body(source(path), /\bfunction\s+streamGrpc\s*\(/);
+      if (/\bcreateStreamGrpcTransport\s*\(/.test(provider)) {
+        implementation += provider + body(source(path), /\bfunction\s+createStreamGrpcTransport\s*\(/);
+      }
+    }
     return new RegExp(`\\bcreateClient\\s*\\(\\s*${service}\\s*,`).test(implementation) &&
       /\bcreateGrpcTransport\s*\(/.test(implementation);
   };

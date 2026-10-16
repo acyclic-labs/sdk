@@ -12,7 +12,7 @@ fn complete<F: Future>(future: F) -> F::Output {
 // Only the admission gate may contain provider locks, never the reverse.
 // The modeled provider state stands in for the filesystem head and scheduler
 // outcome; the actual gate, selection predicate and critical section are shared.
-fn race(broken: bool) {
+fn race(broken: bool, recovering_orphan: bool) {
     let gate = StateArc::new(Mutex::new(()));
     let state = StateArc::new(DataMutex::new((OperationId::from_bytes([1; 16]), true, 0)));
     let tasks: Vec<_> = [None, Some(OperationId::from_bytes([1; 16]))]
@@ -30,7 +30,11 @@ fn race(broken: bool) {
                     thread::yield_now();
                     if accepted {
                         let mut state = state.lock().unwrap();
-                        state.0 = OperationId::from_bytes([index as u8 + 2; 16]);
+                        state.0 = if recovering_orphan && expected.is_some() {
+                            OperationId::from_bytes([1; 16])
+                        } else {
+                            OperationId::from_bytes([index as u8 + 2; 16])
+                        };
                         state.1 = false;
                         state.2 += 1;
                     }
@@ -59,8 +63,17 @@ fn race(broken: bool) {
 
 #[test]
 fn settle_submit_and_replayed_settle_admit_once() {
-    loom::model(|| race(false));
-    let failure = std::panic::catch_unwind(|| loom::model(|| race(true)))
+    check(false);
+}
+
+#[test]
+fn orphan_recovery_and_replacement_cannot_admit_two_active_turns() {
+    check(true);
+}
+
+fn check(recovering_orphan: bool) {
+    loom::model(move || race(false, recovering_orphan));
+    let failure = std::panic::catch_unwind(|| loom::model(move || race(true, recovering_orphan)))
         .expect_err("unserialized negative control did not fail");
     let message = failure
         .downcast_ref::<String>()

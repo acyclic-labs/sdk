@@ -5,7 +5,7 @@ use acyclic_fs::{GitCompatState, GitCompatStore, GitGenerationRef};
 // Lock order: the existing checkout guard is outermost. Git-state CAS
 // returns owned data and releases its leaf record lock before any native
 // publication or owner callback. Open completes recovery before exposing tools.
-type Pending = (acyclic_fs::OperationId, GitGenerationRef);
+pub(in crate::local) type Pending = (acyclic_fs::OperationId, GitGenerationRef);
 
 pub(in crate::local) async fn prepare(
     workspace: &LocalWorkspace,
@@ -68,12 +68,21 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<()>> + Send,
 {
-    let root = workspace.view().workspace().id();
-    let Some(pending) = GitCompatStore::load(&workspace.store, root)
-        .await
-        .map_err(storage)?
-        .and_then(|state| state.checkout_reconciliation)
-    else {
+    let (_, pending) = workspace.checkout_selection().await?;
+    recover_pending(workspace, view, pending, before_effect).await
+}
+
+pub(in crate::local) async fn recover_pending<F, Fut>(
+    workspace: &LocalWorkspace,
+    view: &workspace::View,
+    pending: Option<Pending>,
+    before_effect: &F,
+) -> Result<bool>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<()>> + Send,
+{
+    let Some(pending) = pending else {
         return Ok(false);
     };
     let (_, source) = pending;

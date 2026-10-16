@@ -33,6 +33,11 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ),
     ("objects/list", "ListObjectsRequest", "ListObjectsResponse"),
     (
+        "objects/restore",
+        "RestoreObjectsRequest",
+        "RestoreObjectsResponse",
+    ),
+    (
         "multipart/create",
         "CreateMultipartRequest",
         "MultipartUpload",
@@ -213,6 +218,14 @@ pub trait ObjectsProvider: Send + Sync {
         &self,
         request: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error>;
+    /// Atomically restores a retained prefix. Expired coverage is PreconditionFailed;
+    /// repeating the same mutation identity returns its original result.
+    async fn restore(
+        &self,
+        _request: wire::RestoreObjectsRequest,
+    ) -> Result<wire::RestoreObjectsResponse, Error> {
+        Err(wire::ErrorCode::Unsupported.into())
+    }
     /// Traverses a live eventual listing in lexical key order.
     async fn list(
         &self,

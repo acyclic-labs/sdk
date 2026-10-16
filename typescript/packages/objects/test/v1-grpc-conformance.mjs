@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { createClient, Code, ConnectError } from "@connectrpc/connect";
@@ -15,6 +17,7 @@ import { lifecycle } from "./v1-lifecycle.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const file = fileURLToPath(import.meta.url);
+const restoreOnly = process.argv.includes("--restore-only");
 if (process.argv.includes("--client")) {
   let config = "";
   for await (const chunk of process.stdin) config += chunk;
@@ -23,69 +26,83 @@ if (process.argv.includes("--client")) {
   const wrong = new GrpcObjectsV1({ ...options, token: "wrong" });
   const bounded = new GrpcObjectsV1(options, 32);
   try {
-    const bucket = { name: "bounded.inputs" };
-    await client.createBucket(create(wire.CreateBucketRequestSchema, { name: bucket.name }));
-    const session = new Http2SessionManager(new URL(options.endpoint), {}, { ca: options.caCertificate });
-    try {
-      const retiredService = { ...wire.BucketsService, typeName: "acyclic.objects.v2.BucketsService" };
-      retiredService.methods = wire.BucketsService.methods.map(method => ({ ...method, parent: retiredService }));
-      const obsolete = createClient(retiredService, createGrpcTransport({ baseUrl: options.endpoint, sessionManager: session, defaultTimeoutMs: 2000 }));
-      await assert.rejects(obsolete.headBucket({ bucket }, { headers: { authorization: `Bearer ${options.token}` } }), error => error instanceof ConnectError && error.code === Code.Unimplemented);
-    } finally { session.abort(); }
-    const streamed = create(wire.PutObjectHeaderSchema, { bucket, objectKey: "streamed" });
-    const payload = new Uint8Array(135000).map((_, index) => index % 251);
-    async function* source() { yield new Uint8Array(0); yield payload; }
-    assert.equal((await client.putStream(streamed, source())).size, 135000n);
-    assert.deepEqual((await client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "streamed" }), 135000n)).body, payload);
-    async function* failedSource() { yield new Uint8Array([1]); throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); }
-    await assert.rejects(client.putStream(streamed, failedSource()), error => error.code === wire.ErrorCode.ACCESS_DENIED);
-    assert.deepEqual((await client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "streamed" }), 135000n)).body, payload);
-    let ready;
-    const pulled = new Promise(resolve => { ready = resolve; });
-    const cancellation = new AbortController();
-    async function* pendingSource() { yield new Uint8Array([1]); ready(); await new Promise(() => {}); }
-    const cancelled = client.putStream(create(wire.PutObjectHeaderSchema, { bucket, objectKey: "cancelled" }), pendingSource(), cancellation.signal);
-    const rejection = assert.rejects(cancelled, error => error.code === wire.ErrorCode.UNAVAILABLE);
-    await pulled;
-    cancellation.abort();
-    await rejection;
-    await assert.rejects(client.head(create(wire.HeadObjectRequestSchema, { bucket, objectKey: "cancelled" })), error => error.code === wire.ErrorCode.NOT_FOUND);
-    const upload = await client.createMultipart(create(wire.CreateMultipartRequestSchema, { bucket, objectKey: "part-streamed" }));
-    const partHeader = create(wire.UploadPartHeaderSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId, partNumber: 1 });
-    const receipt = await client.uploadPartStream(partHeader, source());
-    await assert.rejects(client.uploadPartStream(partHeader, failedSource()), error => error.code === wire.ErrorCode.ACCESS_DENIED);
-    assert.deepEqual((await client.listParts(create(wire.ListPartsRequestSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId, limit: 10 }))).parts, [receipt]);
-    await client.abortMultipart(create(wire.AbortMultipartRequestSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId }));
-    await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey: "streamed" }));
-    await client.put(create(wire.PutObjectHeaderSchema, { bucket, objectKey: "large" }), new Uint8Array(135000));
-    await assert.rejects(bounded.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "large" }), 135000n), error => error.code === wire.ErrorCode.QUOTA_EXCEEDED);
-    assert.equal((await client.head(create(wire.HeadObjectRequestSchema, { bucket, objectKey: "large" }))).object.size, 135000n);
-    await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey: "large" }));
-    for (const codec of [0, 3]) {
-      const objectKey = `invalid-codec-${codec}`;
-      await client.put(create(wire.PutObjectHeaderSchema, { bucket, objectKey }), new Uint8Array([1]));
-      let timer;
+    if (restoreOnly) {
+      const query = create(wire.RestoreObjectsRequestSchema, {
+        bucket: { name: "customer.inputs" }, prefix: "orders/", at: { seconds: 43n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
+      });
+      assert.equal((await client.restore(query)).restoredObjects, 2n);
+      await assert.rejects(wrong.restore(query), error => error.code === wire.ErrorCode.ACCESS_DENIED);
+      await assert.rejects(client.restore({ ...query, mutation: undefined }), error => error.code === wire.ErrorCode.INVALID_ARGUMENT);
+      await assert.rejects(client.restore({ ...query, at: { ...query.at, seconds: 42n } }), error => error.code === wire.ErrorCode.UNSUPPORTED);
+    } else {
+      const bucket = { name: "bounded.inputs" };
+      await client.createBucket(create(wire.CreateBucketRequestSchema, { name: bucket.name }));
+      const session = new Http2SessionManager(new URL(options.endpoint), {}, { ca: options.caCertificate });
       try {
-        await assert.rejects(Promise.race([
-          client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey }), 1n),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("invalid codec waited for peer EOF")), 2000); }),
-        ]), error => error.code === wire.ErrorCode.UNAVAILABLE);
-      } finally { clearTimeout(timer); }
-      await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey }));
+        const retiredService = { ...wire.BucketsService, typeName: "acyclic.objects.v2.BucketsService" };
+        retiredService.methods = wire.BucketsService.methods.map(method => ({ ...method, parent: retiredService }));
+        const obsolete = createClient(retiredService, createGrpcTransport({ baseUrl: options.endpoint, sessionManager: session, defaultTimeoutMs: 2000 }));
+        await assert.rejects(obsolete.headBucket({ bucket }, { headers: { authorization: `Bearer ${options.token}` } }), error => error instanceof ConnectError && error.code === Code.Unimplemented);
+      } finally { session.abort(); }
+      const streamed = create(wire.PutObjectHeaderSchema, { bucket, objectKey: "streamed" });
+      const payload = new Uint8Array(135000).map((_, index) => index % 251);
+      async function* source() { yield new Uint8Array(0); yield payload; }
+      assert.equal((await client.putStream(streamed, source())).size, 135000n);
+      assert.deepEqual((await client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "streamed" }), 135000n)).body, payload);
+      async function* failedSource() { yield new Uint8Array([1]); throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); }
+      await assert.rejects(client.putStream(streamed, failedSource()), error => error.code === wire.ErrorCode.ACCESS_DENIED);
+      assert.deepEqual((await client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "streamed" }), 135000n)).body, payload);
+      let ready;
+      const pulled = new Promise(resolve => { ready = resolve; });
+      const cancellation = new AbortController();
+      async function* pendingSource() { yield new Uint8Array([1]); ready(); await new Promise(() => {}); }
+      const cancelled = client.putStream(create(wire.PutObjectHeaderSchema, { bucket, objectKey: "cancelled" }), pendingSource(), cancellation.signal);
+      const rejection = assert.rejects(cancelled, error => error.code === wire.ErrorCode.UNAVAILABLE);
+      await pulled;
+      cancellation.abort();
+      await rejection;
+      await assert.rejects(client.head(create(wire.HeadObjectRequestSchema, { bucket, objectKey: "cancelled" })), error => error.code === wire.ErrorCode.NOT_FOUND);
+      const upload = await client.createMultipart(create(wire.CreateMultipartRequestSchema, { bucket, objectKey: "part-streamed" }));
+      const partHeader = create(wire.UploadPartHeaderSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId, partNumber: 1 });
+      const receipt = await client.uploadPartStream(partHeader, source());
+      await assert.rejects(client.uploadPartStream(partHeader, failedSource()), error => error.code === wire.ErrorCode.ACCESS_DENIED);
+      assert.deepEqual((await client.listParts(create(wire.ListPartsRequestSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId, limit: 10 }))).parts, [receipt]);
+      await client.abortMultipart(create(wire.AbortMultipartRequestSchema, { bucket, objectKey: "part-streamed", uploadId: upload.uploadId }));
+      await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey: "streamed" }));
+      await client.put(create(wire.PutObjectHeaderSchema, { bucket, objectKey: "large" }), new Uint8Array(135000));
+      await assert.rejects(bounded.get(create(wire.GetObjectRequestSchema, { bucket, objectKey: "large" }), 135000n), error => error.code === wire.ErrorCode.QUOTA_EXCEEDED);
+      assert.equal((await client.head(create(wire.HeadObjectRequestSchema, { bucket, objectKey: "large" }))).object.size, 135000n);
+      await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey: "large" }));
+      for (const codec of [0, 3]) {
+        const objectKey = `invalid-codec-${codec}`;
+        await client.put(create(wire.PutObjectHeaderSchema, { bucket, objectKey }), new Uint8Array([1]));
+        let timer;
+        try {
+          await assert.rejects(Promise.race([
+            client.get(create(wire.GetObjectRequestSchema, { bucket, objectKey }), 1n),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("invalid codec waited for peer EOF")), 2000); }),
+          ]), error => error.code === wire.ErrorCode.UNAVAILABLE);
+        } finally { clearTimeout(timer); }
+        await client.delete(create(wire.DeleteObjectRequestSchema, { bucket, objectKey }));
+      }
+      await client.deleteBucket(create(wire.DeleteBucketRequestSchema, { bucket }));
+      await lifecycle(client);
+      await assert.rejects(wrong.headBucket(create(wire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === wire.ErrorCode.ACCESS_DENIED);
     }
-    await client.deleteBucket(create(wire.DeleteBucketRequestSchema, { bucket }));
-    await lifecycle(client);
-    await assert.rejects(wrong.headBucket(create(wire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === wire.ErrorCode.ACCESS_DENIED);
   } finally { client.close(); wrong.close(); bounded.close(); }
-  console.log(`${process.versions.bun ? "Bun" : "Node"} Objects v1 TLS gRPC: all 13 operations, streaming, canonical errors and authentication pass`);
+  console.log(`${process.versions.bun ? "Bun" : "Node"} Objects v1 TLS gRPC: ${restoreOnly ? "restore contract" : "streaming, canonical errors and authentication"} pass`);
 } else {
   await MemoryObjectsV1.create();
-  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
+  const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE_BIN
+    ?? join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", "examples", `conformance-certificate${process.platform === "win32" ? ".exe" : ""}`);
+  const generated = existsSync(certificate)
+    ? spawnSync(certificate, [], { cwd: root, encoding: "utf8" })
+    : spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
   if (generated.status !== 0) throw new Error(generated.stderr);
   const identity = JSON.parse(generated.stdout);
   const routes = {
     CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
-    PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head", DeleteObject: "objects/delete", ListObjects: "objects/list",
+    PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head", DeleteObject: "objects/delete", ListObjects: "objects/list", RestoreObjects: "objects/restore",
     CreateMultipart: "multipart/create", UploadPart: "multipart/upload-part", ListParts: "multipart/list-parts", CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
   };
   let memory;
@@ -141,6 +158,13 @@ if (process.argv.includes("--client")) {
         } else implementation[method.localName] = async (query, context) => {
           try {
             check(context);
+            if (restoreOnly && method.name === "RestoreObjects" && query.at?.seconds === 43n) {
+              assert.equal(query.bucket?.name, "customer.inputs");
+              assert.equal(query.prefix, "orders/");
+              assert.equal(query.at.nanos, 1000);
+              assert.equal(query.mutation?.idempotencyKey, "restore");
+              return create(wire.RestoreObjectsResponseSchema, { restoredObjects: 2n });
+            }
             let bytes;
             let body = new Uint8Array(0);
             if (method.methodKind === "client_streaming") {
@@ -180,12 +204,14 @@ if (process.argv.includes("--client")) {
       cancelledInvalidCodecs.clear();
       const cancelled = [0, 3].map(codec => new Promise(resolve => cancelledInvalidCodecs.set(codec, resolve)));
       await new Promise((resolve, reject) => {
-        const child = spawn(runtime, [file, "--client"], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
+        const child = spawn(runtime, [file, "--client", ...(restoreOnly ? ["--restore-only"] : [])], { cwd: root, stdio: ["pipe", "inherit", "inherit"] });
         child.stdin.end(JSON.stringify(options));
         child.on("error", reject);
         child.on("exit", code => code === 0 ? resolve() : reject(new Error(`${runtime} exited ${code}`)));
       });
-      assert.deepEqual([...seen].sort(), Object.keys(routes).sort());
+      // Restore has its own short suite; the streaming walkthrough keeps its original call set.
+      assert.deepEqual([...seen].sort(), restoreOnly ? ["RestoreObjects"] : Object.keys(routes).filter(name => name !== "RestoreObjects").sort());
+      if (restoreOnly) continue;
       let timer;
       try {
         await Promise.race([

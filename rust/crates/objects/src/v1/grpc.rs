@@ -522,6 +522,10 @@ list(ListObjectsRequest) -> ListObjectsResponse, objects.list_objects,
     }, {
         response::listing(&expected, &result)?;
     };
+restore(RestoreObjectsRequest) -> RestoreObjectsResponse, objects.restore_objects,
+    |query, result| {
+        request::restore(&query)?;
+    }, {};
 create_multipart(CreateMultipartRequest) -> MultipartUpload, multipart.create_multipart,
     |query, result| {
         request::bucket(&query.bucket)?;

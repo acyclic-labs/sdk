@@ -3,6 +3,7 @@ use super::{
     task_query_case::{Expectations, File, TaskQueryCase},
 };
 use acyclic_harness::task_volume::Channel;
+use futures::FutureExt as _;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
@@ -169,6 +170,18 @@ fn history() -> impl Strategy<Value = Vec<(String, bool, u8)>> {
     prop::collection::vec((text, any::<bool>(), 0..4_u8), 0..8)
 }
 
+#[test]
+fn task_query_rejects_pending_or_ended_published_streams() {
+    use acyclic_harness::task_volume::ChangeStream;
+    let streams: [ChangeStream; 2] = [
+        Box::pin(futures::stream::pending()),
+        Box::pin(futures::stream::empty()),
+    ];
+    for mut changes in streams {
+        assert!(super::task_queries::next_published(&mut changes).is_err());
+    }
+}
+
 proptest! {
     #[test]
     fn task_query_codec_preserves_unicode_channels_and_exact_expectations(
@@ -187,8 +200,8 @@ proptest! {
         chunks in any::<bool>(), selection in 0..4_u8,
     ) {
         let case = generated_case(records, chunks, selection);
-        let result = futures::executor::block_on(super::task_queries::run(case));
-        prop_assert!(result.is_ok(), "{result:?}");
+        let result = super::task_queries::run(case).now_or_never();
+        prop_assert!(matches!(result, Some(Ok(()))), "{result:?}");
     }
 }
 
