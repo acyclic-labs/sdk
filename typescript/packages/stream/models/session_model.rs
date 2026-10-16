@@ -213,6 +213,97 @@ fn reservation_negative_control_waits_for_generator_cleanup() {
     run("reservation", "reservation", &["abort"], &["drop"]);
 }
 
+fn deadline_run(fault: &str, events: &'static [&'static str]) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    for trace in traces(&["expire"], events) {
+        let mut driver = driver::Driver::configured(&root, "deadline", fault);
+        let ready = driver.call(json!({"action":"ready"}));
+        assert_eq!(ready["active"], 2);
+        let mut terminal = None;
+        for action in trace {
+            let state = driver.call(json!({"action":action}));
+            if action == "expire" || action == "cleanup" {
+                let expected = *terminal.get_or_insert(if action == "expire" { 4 } else { 1 });
+                assert_eq!(
+                    state["settled"], true,
+                    "deadline or cleanup must settle the real raw follow: {action}"
+                );
+                assert_eq!(
+                    state["code"], expected,
+                    "the first terminal event must retain its status"
+                );
+                assert_eq!(state["timerActive"], false);
+            }
+            if terminal.is_some() {
+                assert_eq!(
+                    state["seen"], state["stoppedAt"],
+                    "no delivery may cross the terminal boundary"
+                );
+            }
+            if action == "reconnect" {
+                assert_eq!(
+                    state["connecting"], true,
+                    "the model must pause the real reconnection await"
+                );
+            }
+        }
+        let state = driver.call(json!({"action":"finish"}));
+        assert_eq!(state["settled"], true);
+        assert_eq!(
+            state["connections"],
+            if events.contains(&"reconnect") { 2 } else { 1 },
+            "a logical deadline must not close the shared connection"
+        );
+        assert_eq!(
+            state["timerCreated"], 1,
+            "only the logical deadline owns a timer"
+        );
+        assert_eq!(
+            state["timerCleaned"], 1,
+            "wrapper cleanup must release its timer once"
+        );
+        assert_eq!(
+            state["active"], 1,
+            "deadline must remove only its own interest"
+        );
+        assert_eq!(
+            state["siblingSeen"], 1,
+            "the shared session must survive its sibling's deadline"
+        );
+        assert_eq!(
+            state["outstanding"], 0,
+            "delivery or discard must return every frame credit"
+        );
+        let stopped = driver.call(json!({"action":"stop"}));
+        assert_eq!(stopped["active"], 0);
+        assert_eq!(stopped["outstanding"], 0);
+    }
+}
+#[test]
+fn raw_follow_deadline_races_delivery() {
+    deadline_run("", &["deliver"]);
+}
+#[test]
+fn raw_follow_deadline_races_reconnection() {
+    deadline_run("", &["reconnect", "releaseReconnect"]);
+}
+#[test]
+fn raw_follow_deadline_races_cleanup() {
+    deadline_run("", &["cleanup"]);
+}
+#[test]
+fn raw_follow_deadline_races_delivery_reconnect_and_cleanup() {
+    deadline_run("", &["deliver", "reconnect", "releaseReconnect", "cleanup"]);
+}
+#[test]
+#[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
+fn raw_follow_deadline_negative_control_drops_timeout_forwarding() {
+    deadline_run(
+        "deadline",
+        &["deliver", "reconnect", "releaseReconnect", "cleanup"],
+    );
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 128,

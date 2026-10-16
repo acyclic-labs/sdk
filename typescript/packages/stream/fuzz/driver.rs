@@ -16,7 +16,11 @@ impl Driver {
     }
     pub fn configured(root: &Path, scenario: &str, fault: &str) -> Self {
         let mut child = Command::new("bun")
-            .arg("typescript/packages/stream/test/session-model-driver.ts")
+            .arg(if scenario == "deadline" {
+                "typescript/packages/stream/test/session-deadline-model-driver.ts"
+            } else {
+                "typescript/packages/stream/test/session-model-driver.ts"
+            })
             .current_dir(root)
             .env("STREAM_SESSION_SCENARIO", scenario)
             .env("STREAM_SESSION_FAULT", fault)
