@@ -1,6 +1,9 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "claim_ledger.rs"]
+mod claim_ledger;
+
 #[derive(Clone, Debug)]
 enum Exercise {
     Event(Box<SchedulerEvent>),

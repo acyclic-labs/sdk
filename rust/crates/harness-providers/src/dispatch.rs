@@ -18,25 +18,60 @@ pub(crate) fn generate(
             Err(invalid("model dispatch digest differs from prepared request"))?;
         }
         let names = crate::tool_names::Names::new(request.request());
-        let auth = authenticate(provider).await?;
-        let (response, input_bytes) = send(provider, &request, &names, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
-        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        drop(auth);
-        if !(200..300).contains(&response.status) {
-            Err(crate::http_error(response.status))?;
+        let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut auth = auth;
+        let mut recovery = Recovery::default();
+        loop {
+            let (response, input_bytes) = send(provider, &request, &names, dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+            let failure = if !(200..300).contains(&response.status) {
+                Some(crate::http_error(response.status))
+            } else {
+                let mut events = crate::stream::events_named(provider.config.adapter, response.body,
+                    provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
+                let mut failure = None;
+                while let Some(event) = events.next().await {
+                    match event {
+                        Ok(event) => {
+                            recovery.output = true;
+                            if let ModelEvent::Completed { metadata } = &event {
+                                provider.observe(&request, input_bytes, metadata)?;
+                            }
+                            yield event;
+                        }
+                        Err(error) => { failure = Some(error); break; }
+                    }
+                }
+                failure
+            };
+            let Some(error) = failure else { break; };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(login) = &provider.codex_login {
+                if recovery.retry(&error) {
+                    drop(error);
+                    let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
+                    auth = (Some(Cow::Owned(key)), account);
+                    continue;
+                }
+            }
+            Err(error)?;
         }
-        let mut events = crate::stream::events_named(provider.config.adapter, response.body, provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
-        while let Some(event) = events.next().await {
-            let event = event?;
-            if let ModelEvent::Completed { metadata } = &event { provider.estimator.observe(input_bytes, metadata); }
-            yield event;
-        }
+
     })
 }
 
-pub(crate) async fn authenticate(
-    provider: &ResolvedModel,
-) -> Result<(Option<Cow<'_, str>>, Option<String>)> {
+pub(crate) async fn authenticate<'a>(
+    provider: &'a ResolvedModel,
+    #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
+) -> Result<(Option<Cow<'a, str>>, Option<String>)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(login) = &provider.codex_login {
+        let (key, account) = login
+            .bearer(provider.transport.as_ref(), None, custody)
+            .await?;
+        return Ok((Some(Cow::Owned(key)), account));
+    }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }
 
@@ -69,8 +104,22 @@ pub(crate) fn request(
     key: Option<&str>,
     account: Option<&str>,
 ) -> Result<(String, BTreeMap<String, String>, Vec<u8>)> {
-    let body = projection::body_named(provider, request.request(), names)?;
+    let origin = provider.reasoning_origin(key, account);
+    let body = projection::body_named(provider, request.request(), names, &origin)?;
     let headers = headers(provider, key, account, true);
+    #[cfg(not(target_arch = "wasm32"))]
+    let headers = {
+        let mut headers = headers;
+        if provider.codex_login.is_some() {
+            headers.insert("session-id".into(), dispatch.operation_id.to_string());
+            headers.insert("thread-id".into(), dispatch.operation_id.to_string());
+            headers.insert(
+                "x-client-request-id".into(),
+                format!("{}-{}", dispatch.operation_id, dispatch.step),
+            );
+        }
+        headers
+    };
     let _ = dispatch;
     let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
     Ok((projection::endpoint(provider)?, headers, encoded))
@@ -110,5 +159,35 @@ pub(crate) fn headers(
     if let Some(account) = account {
         headers.insert("chatgpt-account-id".into(), account.into());
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    if provider.codex_login.is_some() {
+        headers.insert("originator".into(), "acyclic_harness".into());
+        headers.insert(
+            "user-agent".into(),
+            concat!("acyclic-harness/", env!("CARGO_PKG_VERSION")).into(),
+        );
+    }
     headers
+}
+
+/// One budget for both HTTP and SSE authentication failures. Once an event has
+/// escaped, replay could repeat a caller's side effects and is forbidden.
+#[derive(Default)]
+pub(crate) struct Recovery {
+    pub(crate) output: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    retried: bool,
+}
+impl Recovery {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retry(&mut self, error: &acyclic_harness::Error) -> bool {
+        if error.code() != acyclic_harness::wire::ErrorCode::Unauthorized
+            || self.output
+            || self.retried
+        {
+            return false;
+        }
+        self.retried = true;
+        true
+    }
 }

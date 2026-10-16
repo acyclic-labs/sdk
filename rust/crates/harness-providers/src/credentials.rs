@@ -26,6 +26,10 @@ impl Default for Credentials {
 }
 
 impl Credentials {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn allows_native_sources(&self) -> bool {
+        self.native_sources
+    }
     /// Uses only supplied keys, with no keychain, environment or filesystem reads.
     pub fn explicit(api_keys: BTreeMap<String, String>) -> Self {
         Self {

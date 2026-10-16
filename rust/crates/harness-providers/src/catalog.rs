@@ -12,7 +12,7 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
         "openai",
         Adapter::Responses,
-        Authentication::ApiKey,
+        Authentication::ApiKeyOrCodexLogin,
         "https://api.openai.com/v1",
     ),
     (

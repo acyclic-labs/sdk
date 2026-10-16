@@ -3,6 +3,17 @@ use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tonic::transport::{ClientTlsConfig, Endpoint};
 
 impl HttpStream {
+    /// Receives canonical ALL/LATEST data on the same session as ordinary follows.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
+        StreamError,
+    > {
+        self.session_client()?.follow_data(follow, from).await
+    }
     pub(super) fn session_client(&self) -> Result<crate::grpc::Client, StreamError> {
         shared::shared(&self.sessions, || {
             let channel = self.session_endpoint.connect_lazy();

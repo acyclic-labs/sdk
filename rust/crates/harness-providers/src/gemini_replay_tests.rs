@@ -115,6 +115,7 @@ fn round_trip(provider: &ResolvedModel, request: ModelRequest, answer: &str, sig
             provider,
             restored.request(),
             &crate::tool_names::Names::new(restored.request()),
+            &provider.reasoning_origin(provider.key.as_deref(), None),
         )
         .unwrap(),
     )

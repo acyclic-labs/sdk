@@ -20,9 +20,33 @@ impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
                 return Poll::Ready(Some(Err(cause.into())));
             }
         }
-        Pin::new(&mut this.stream).poll_next(cx)
+        let next = Pin::new(&mut this.stream).poll_next(cx);
+        match (next, &this.custody) {
+            (Poll::Ready(Some(Ok(bytes))), Some(owner)) if !bytes.is_empty() => {
+                // Admit the entire received buffer before exposing it to a reader.
+                // SSE may suspend at any frame with the remainder still resident.
+                let result = owner
+                    .work()
+                    .claim(
+                        bytes.len() as u64,
+                        0,
+                        WorkCounters {
+                            source_bytes_read: bytes.len() as u64,
+                            ..WorkCounters::UNCHARGED
+                        },
+                    )
+                    .map_err(acyclic_harness::Error::from)
+                    .and_then(|custody| super::owned_bytes::owned(bytes, custody));
+                Poll::Ready(Some(result))
+            }
+            (next, _) => next,
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;
 
 pub(super) fn body<S>(
     stream: S,

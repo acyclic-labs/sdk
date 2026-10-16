@@ -94,6 +94,7 @@ pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<V
         provider,
         request,
         &crate::tool_names::Names::new(request),
+        &provider.reasoning_origin(provider.key.as_deref(), None),
     )?)
     .map_err(|_| invalid("cannot encode projected request"))
 }
@@ -102,21 +103,26 @@ pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
     names: &crate::tool_names::Names,
+    target: &acyclic_harness::model::ReasoningOrigin,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
-    let target = provider.reasoning_origin(provider.key.as_deref(), None);
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
     for message in &request.messages {
+        #[cfg(not(target_arch = "wasm32"))]
+        if provider.codex_login.is_some() && message.role == ModelRole::System {
+            system.push(text_content(&message.content)?);
+            continue;
+        }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
             system.push(text_content(&message.content)?);
         } else {
             for mut projected in
-                project_message(adapter, message, names, &call_ids, &target, &mut gemini)?
+                project_message(adapter, message, names, &call_ids, target, &mut gemini)?
             {
                 match (messages.last_mut(), &mut projected) {
                     (
@@ -222,6 +228,17 @@ pub(crate) fn body_named<'a>(
             map.insert("store".into(), json!(false));
             map.insert("max_output_tokens".into(), json!(max));
             map.insert("tools".into(), json!(tools));
+            #[cfg(not(target_arch = "wasm32"))]
+            if provider.codex_login.is_some() {
+                map.remove("max_output_tokens");
+                map.insert("instructions".into(), json!(system.join("\n\n")));
+                map.entry("tool_choice").or_insert_with(|| json!("auto"));
+                map.entry("parallel_tool_calls")
+                    .or_insert_with(|| json!(true));
+                if map.get("reasoning").is_some_and(Value::is_null) {
+                    map.remove("reasoning");
+                }
+            }
         }
         Adapter::Anthropic => {
             map.insert("stream".into(), json!(true));
@@ -503,7 +520,10 @@ fn project_text(
 ) {
     match adapter {
         Adapter::Chat => texts.push(text),
-        Adapter::Responses => ordered.push(Item::Json(json!({"role":role,"content":text}))),
+        Adapter::Responses => ordered.push(Item::Json(json!({
+            "type":"message", "role":if role == "tool" { "user" } else { role },
+            "content":[{"type":"input_text","text":text}],
+        }))),
         Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }

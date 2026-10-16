@@ -25,7 +25,7 @@ pub fn verify_follow_data(broken: u8) {
             !progress.consume_latest(1, 9).unwrap(),
             "fenced LATEST must not advance its cursor"
         );
-        assert!(matches!(progress.next().unwrap(), 0 | 4));
+        assert!(matches!(progress.next().unwrap(), 0 | 5));
 
         let (mut pool, _old) = fixture(channel.clone());
         let (records, mut received) = mpsc::channel(3);

@@ -10,7 +10,7 @@ fuzz_target!(|bytes: &[u8]| {
     for (to, from) in next.iter_mut().zip(bytes.iter()) {
         *to = *from;
     }
-    follow_data::check(u64::from_le_bytes(next), bytes.len() as u16, bytes, false);
+    follow_data::exercise(u64::from_le_bytes(next), bytes.len() as u16, bytes, false);
     let generated = acyclic_stream::wire::SessionFrame {
         channel_id: bytes.first().copied().unwrap_or_default() as u64,
         body: Some(acyclic_stream::wire::session_frame::Body::Window(

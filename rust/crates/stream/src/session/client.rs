@@ -40,6 +40,8 @@ pub use pool::model::{
 };
 mod progress;
 use progress::Progress;
+#[cfg(acyclic_stream_loom)]
+pub use progress::verify_latest_progress;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
@@ -78,7 +80,7 @@ struct Delivery {
     credit: Credit,
 }
 enum Received {
-    Record(crate::Record),
+    Data(wire::SessionData),
     Child(crate::Child),
     Frame(wire::SessionFrame),
 }
@@ -259,24 +261,56 @@ impl Client {
         preceding: Option<crate::CommitId>,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
-        let kind = Kind::Follow(wire::SessionFollow {
+        let follow = wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-        });
+        };
         Ok(super::runtime::boxed(
-            self.open_kind(kind, from, acknowledge)
+            self.follow_data_with_ack(follow, from, acknowledge)
                 .await?
-                .filter_map(|item| {
-                    future::ready(match item {
-                        Ok(Received::Record(record)) => Some(Ok(record)),
-                        Ok(Received::Frame(_)) => None,
-                        Ok(_) => Some(Err(StreamError::Unavailable)),
-                        Err(error) => Some(Err(error)),
-                    })
+                .map(|data| match data?.item {
+                    Some(Item::Record(record)) => wire_codec::record(record),
+                    _ => Err(StreamError::Unavailable),
                 }),
         ))
+    }
+    /// Follows ALL records or LATEST values on the shared per-node session,
+    /// retaining the exact data cursor and accepted/durable watermarks.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<BoxProviderStream<'static, Result<wire::SessionData, StreamError>>, StreamError>
+    {
+        Ok(super::runtime::boxed(
+            self.follow_data_with_ack(follow, from, true).await?,
+        ))
+    }
+    pub(crate) async fn follow_data_with_ack(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+        acknowledge: bool,
+    ) -> Result<
+        impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
+        StreamPath::validate(&follow.path)?;
+        if !matches!(
+            wire::SessionDelivery::try_from(follow.delivery),
+            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
+        ) {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(self
+            .open_kind(Kind::Follow(follow), from, acknowledge)
+            .await?
+            .map(|item| match item? {
+                Received::Data(data) => Ok(data),
+                _ => Err(StreamError::Unavailable),
+            }))
     }
     /// Discovers direct children on the same per-node session as record follows.
     pub async fn children(
@@ -304,7 +338,10 @@ impl Client {
         kind: Kind,
         from: u64,
         acknowledge: bool,
-    ) -> Result<BoxProviderStream<'static, Result<Received, StreamError>>, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
         self.open_subscription(
             kind,
             wire::SessionCursor {
@@ -352,7 +389,10 @@ impl Client {
         resume: wire::SessionCursor,
         acknowledge: bool,
         raw: bool,
-    ) -> Result<BoxProviderStream<'static, Result<Received, StreamError>>, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
         let (records, receiver) = mpsc::channel(QUEUE + usize::from(raw));
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
@@ -362,7 +402,6 @@ impl Client {
             _ => None,
         };
         let progress = Arc::new(Progress::from_cursor(resume, preceding));
-        let latest = matches!(&kind, Kind::Follow(follow) if follow.delivery == wire::SessionDelivery::Latest as i32);
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -399,9 +438,8 @@ impl Client {
             return Err(error);
         }
         operation.record("registration", "opened");
-        Ok(super::runtime::boxed(operation.scope(stream::try_unfold(
-            cursor,
-            move |mut cursor| async move {
+        Ok(
+            operation.scope(stream::try_unfold(cursor, move |mut cursor| async move {
                 loop {
                     let delivery = match cursor
                         .receiver
@@ -418,47 +456,48 @@ impl Client {
                     // Delivery disposal returns capacity on every exit, including
                     // stale-generation suppression and cancellation of the cursor.
                     let fresh = match &delivery.item {
-                        Received::Record(record) => cursor.progress.consume_record(
-                            delivery.generation,
-                            delivery.sequence,
-                            *record.commit_id.as_bytes(),
-                        )?,
+                        Received::Data(data)
+                        | Received::Frame(wire::SessionFrame {
+                            body: Some(Body::Data(data)),
+                            ..
+                        }) => match &data.item {
+                            Some(Item::Record(record)) => cursor.progress.consume_record(
+                                delivery.generation,
+                                delivery.sequence,
+                                record
+                                    .commit_id
+                                    .as_ref()
+                                    .try_into()
+                                    .map_err(|_| StreamError::Unavailable)?,
+                            )?,
+                            Some(Item::LatestValue(_)) => cursor
+                                .progress
+                                .consume_latest(delivery.generation, delivery.sequence)?,
+                            Some(Item::Child(_)) => cursor.progress.consume_opaque(
+                                delivery.generation,
+                                delivery.sequence,
+                                &delivery.opaque,
+                            )?,
+                            _ => return Err(StreamError::Unavailable),
+                        },
                         Received::Child(_) => cursor.progress.consume_opaque(
                             delivery.generation,
                             delivery.sequence,
                             &delivery.opaque,
                         )?,
-                        Received::Frame(frame) => match &frame.body {
-                            Some(Body::Data(data)) if latest => cursor.progress.consume_latest(
-                                delivery.generation,
-                                data.after.as_ref().ok_or(StreamError::Unavailable)?.next,
-                            )?,
-                            Some(Body::Data(data)) => match data.item.as_ref() {
-                                Some(Item::Record(record)) => cursor.progress.consume_record(
-                                    delivery.generation,
-                                    delivery.sequence,
-                                    *wire_codec::commit_id(&record.commit_id)?.as_bytes(),
-                                )?,
-                                Some(Item::Child(_)) => cursor.progress.consume_opaque(
-                                    delivery.generation,
-                                    delivery.sequence,
-                                    &delivery.opaque,
-                                )?,
-                                _ => return Err(StreamError::Unavailable),
-                            },
-                            Some(Body::Watermark(_)) => {
-                                cursor.progress.current(delivery.generation)?
-                            }
-                            _ => return Err(StreamError::Unavailable),
-                        },
+                        Received::Frame(wire::SessionFrame {
+                            body: Some(Body::Watermark(_)),
+                            ..
+                        }) => cursor.progress.current(delivery.generation)?,
+                        _ => return Err(StreamError::Unavailable),
                     };
                     drop(delivery.credit);
                     if fresh {
                         return Ok(Some((delivery.item, cursor)));
                     }
                 }
-            },
-        ))))
+            })),
+        )
     }
     fn cursor(
         &self,

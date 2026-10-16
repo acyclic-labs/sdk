@@ -100,6 +100,7 @@ fn projection(provider: &crate::ResolvedModel, events: Vec<ModelEvent>) -> Resul
         provider,
         prepared.request(),
         &names,
+        &provider.reasoning_origin(provider.key.as_deref(), None),
     )?)
     .map_err(|_| invalid("fixture request encoding failed"))
 }

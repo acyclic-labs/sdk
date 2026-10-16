@@ -13,7 +13,7 @@ mod follow_data;
 #[test]
 #[should_panic(expected = "LATEST accepts a conflated cursor")]
 fn negative_control_treating_latest_as_consecutive_is_detected() {
-    follow_data::check(17, 2, b"status", true);
+    follow_data::exercise(17, 2, b"status", true);
 }
 
 proptest! {
@@ -23,7 +23,7 @@ proptest! {
     fn follow_data_preserves_mode_anchor_cursor_and_watermarks(
         next in any::<u64>(), gap in any::<u16>(), payload in prop::collection::vec(any::<u8>(), 0..512),
     ) {
-        follow_data::check(next, gap, &payload, false);
+        follow_data::exercise(next, gap, &payload, false);
     }
 
     // Every accepted untrusted frame round-trips through canonical protobuf.

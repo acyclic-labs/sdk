@@ -390,46 +390,43 @@ impl Pool {
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
         let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
-        let (item, sequence) = match (&route.kind, data.item.as_ref()) {
+        let sequence = match (&route.kind, data.item.as_ref()) {
             (Kind::Follow(follow), _) => {
-                let sequence =
-                    wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?;
-                let item = if route.raw {
-                    None
-                } else if let Some(Item::Record(record)) = data.item.as_ref() {
-                    Some(Received::Record(wire_codec::record(record.clone())?))
-                } else {
-                    return Err(StreamError::Unavailable);
-                };
-                (item, sequence)
+                wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
             (Kind::Children(request), Some(Item::Child(child))) => {
                 let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
-                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref() {
+                if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref()
+                    || after.next
+                        != route
+                            .received
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?
+                    || data.durable > data.accepted
+                    || data.accepted < after.next
+                {
                     return Err(StreamError::Unavailable);
                 }
-                (
-                    if route.raw {
-                        None
-                    } else {
-                        Some(Received::Child(crate::Child { path }))
-                    },
-                    route.received,
-                )
+                route.received
             }
             _ => return Err(StreamError::Unavailable),
         };
-        if after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
-            || data.durable > data.accepted
-            || data.accepted < after.next
-        {
-            return Err(StreamError::Unavailable);
-        }
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
         let opaque = after.opaque.clone();
+        let item = if route.raw {
+            Received::Frame(frame(id, generation, Body::Data(data)))
+        } else if matches!(route.kind, Kind::Follow(_)) {
+            Received::Data(data)
+        } else if let Some(Item::Child(child)) = data.item {
+            Received::Child(crate::Child {
+                path: StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?,
+            })
+        } else {
+            return Err(StreamError::Unavailable);
+        };
         let delivery = Delivery {
-            item: item.unwrap_or_else(|| Received::Frame(frame(id, generation, Body::Data(data)))),
+            item,
             sequence,
             opaque,
             generation,

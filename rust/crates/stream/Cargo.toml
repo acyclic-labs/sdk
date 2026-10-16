@@ -85,6 +85,7 @@ proptest.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+allocation-counter = "=0.8.1"
 axum = { workspace = true, features = ["ws"] }
 tonic-web.workspace = true
 tower-http = { version = "0.6", features = ["cors"] }

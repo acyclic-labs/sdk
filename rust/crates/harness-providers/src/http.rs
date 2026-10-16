@@ -6,6 +6,8 @@ use futures::StreamExt as _;
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod owned_bytes;
 
 /// One streaming JSON request. Headers may contain credentials; deliberately not Debug.
 pub struct HttpRequest {
@@ -28,6 +30,7 @@ pub struct HttpResponse {
 #[cfg(not(target_arch = "wasm32"))]
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.
+    /// Charges received bytes once; downstream codecs charge their own copies/decoding.
     pub fn with_native_body<S>(
         status: u16,
         stream: S,

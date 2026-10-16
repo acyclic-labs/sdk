@@ -31,9 +31,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        fixture
-            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1),
+        )
+        .await?;
         if observed_first {
             assert_eq!(first.closed("first.request"), 1, "{CLOSE}");
         }
@@ -45,9 +47,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        fixture
-            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2)
-            .await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2),
+        )
+        .await?;
         assert_eq!(second.closed("second.request"), 1);
         assert_eq!(
             first.spans("stream.session").len(),

@@ -41,7 +41,9 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             calibrated > initial,
             "{adapter:?}: {initial} -> {calibrated}"
         );
-        assert!(calibrated >= 512);
+        // Usage calibrates provider wire bytes. Canonical transcript weights
+        // differ with framing and are not verified admission token counts.
+        assert!(provider.estimator.tokens(bytes).expect("wire estimate") >= 512);
         provider
             .generate(prepared.clone(), dispatch)
             .try_collect::<Vec<_>>()

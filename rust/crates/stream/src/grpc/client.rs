@@ -17,6 +17,21 @@ impl Client {
             )
         })
     }
+    /// Receives canonical ALL/LATEST data through this client's shared session pool.
+    pub async fn follow_data(
+        &self,
+        follow: wire::SessionFollow,
+        from: u64,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>,
+        StreamError,
+    > {
+        Ok(self
+            .session()?
+            .follow_data_with_ack(follow, from, self.acknowledge_deliveries)
+            .await?
+            .boxed())
+    }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
     pub fn without_delivery_acknowledgements(mut self) -> Self {

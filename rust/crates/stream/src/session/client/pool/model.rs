@@ -347,7 +347,11 @@ pub fn verify_link_isolation(broken: bool) {
             Err(StreamError::Unavailable)
         ));
         let delivery = healthy.try_recv().unwrap().unwrap();
-        let Received::Record(record) = &delivery.item else {
+        let Received::Data(wire::SessionData {
+            item: Some(Item::Record(record)),
+            ..
+        }) = &delivery.item
+        else {
             panic!("healthy route must deliver its record");
         };
         assert!(
@@ -356,7 +360,7 @@ pub fn verify_link_isolation(broken: bool) {
                 .consume_record(
                     delivery.generation,
                     delivery.sequence,
-                    *record.commit_id.as_bytes()
+                    record.commit_id.as_ref().try_into().unwrap()
                 )
                 .unwrap()
         );

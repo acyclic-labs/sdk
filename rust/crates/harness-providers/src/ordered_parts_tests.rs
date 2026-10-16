@@ -15,7 +15,7 @@ fn labels(adapter: Adapter, body: &Value) -> Vec<String> {
         .iter()
         .map(|item| {
             if adapter == Adapter::Responses && item["role"] == "assistant" {
-                item["content"].as_str().unwrap().into()
+                item["content"][0]["text"].as_str().unwrap().into()
             } else if let Some(text) = item["text"].as_str() {
                 text.into()
             } else if adapter == Adapter::Gemini {

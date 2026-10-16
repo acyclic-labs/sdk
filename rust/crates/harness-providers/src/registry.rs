@@ -8,6 +8,8 @@ pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl Registry {
@@ -22,11 +24,26 @@ impl Registry {
             .into_iter()
             .map(|(id, spec)| (id, Arc::new(spec)))
             .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        let codex_login = credentials
+            .allows_native_sources()
+            .then(crate::CodexLogin::discover)
+            .flatten()
+            .map(Arc::new);
         Self {
             providers,
             credentials,
             transport,
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login,
         }
+    }
+
+    /// Supplies a specific native Codex CLI login, including for scripted refresh tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
+        self.codex_login = Some(Arc::new(login));
+        self
     }
 
     /// Borrows declarative endpoint, authentication and capacity specifications.
@@ -80,14 +97,47 @@ impl Registry {
         let capacity = config.models.get(name).copied().ok_or_else(|| {
             invalid("register the exact selected model context and output capacities")
         })?;
-        if config.token_counter.is_none() {
+        let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
+        let key = self.credentials.api_key(provider)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let codex_login =
+            if config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none() {
+                self.codex_login
+                    .as_ref()
+                    .map(|login| Arc::new(login.fresh()))
+            } else {
+                None
+            };
+        #[cfg(not(target_arch = "wasm32"))]
+        let config = if codex_login.is_some() {
+            if config.adapter != crate::Adapter::Responses
+                || config.base_url != "https://api.openai.com/v1"
+            {
+                return Err(invalid(
+                    "Codex CLI credentials require the built-in Responses route",
+                ));
+            }
+            Arc::new(ProviderSpec {
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                token_counter: None,
+                ..config.as_ref().clone()
+            })
+        } else {
+            config
+        };
+        #[cfg(target_arch = "wasm32")]
+        let local_count = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let local_count = codex_login.is_some();
+        if config.token_counter.is_none() && !local_count {
             return Err(acyclic_harness::Error::Unsupported(
                 "configure a verified input token counter for this endpoint".into(),
             ));
         }
-        let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
-        let key = self.credentials.api_key(provider)?;
-        if key.is_none() && config.authentication == Authentication::ApiKey {
+        let authenticated = key.is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        let authenticated = authenticated || codex_login.is_some();
+        if !authenticated && config.authentication != Authentication::Optional {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {
@@ -97,6 +147,10 @@ impl Registry {
             capacity,
             key,
             transport: self.transport.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_count: crate::codex_count::Counter::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login,
         })
     }
 }
