@@ -28,6 +28,8 @@ use std::{
 mod checkout_tools;
 mod compaction;
 mod config;
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+mod mcp;
 mod owner;
 mod owner_record;
 mod runtime;
@@ -61,6 +63,8 @@ pub struct LocalHarness {
     context: ContextPipeline,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
@@ -84,6 +88,11 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation =
+                mcp::install(&config.project, config.settings, tools, config.mcp_limits).await?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let tools = installation.tools;
             let compaction = compaction::select(
                 config.compaction,
                 &model,
@@ -200,6 +209,8 @@ impl LocalHarness {
                 scratch: &scratch,
                 journal: &journal,
                 tools: &tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &installation.capabilities,
                 limits: config.limits,
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
@@ -220,6 +231,8 @@ impl LocalHarness {
                 context: config.context,
                 limits: config.limits,
                 compaction,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                mcp_diagnostics: installation.diagnostics,
                 #[cfg(feature = "native-execution")]
                 workspace,
             })
@@ -250,6 +263,13 @@ impl LocalHarness {
     #[must_use]
     pub fn tools(&self) -> &ToolRegistry {
         self.runtime.tool_registry()
+    }
+
+    /// Optional configured servers that failed startup; required failures reject opening.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn mcp_diagnostics(&self) -> &[crate::mcp::McpServerFailure] {
+        &self.mcp_diagnostics
     }
 
     /// Canonical checkout path, absent for a configured volume.

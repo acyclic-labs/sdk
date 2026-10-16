@@ -25,6 +25,10 @@ pub struct LocalHarnessConfig {
     pub(super) session_limits: SessionLimits,
     pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) settings: Option<crate::native_settings::SettingsConfig>,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
@@ -48,6 +52,10 @@ impl LocalHarnessConfig {
             },
             concurrency: 1,
             compaction: None,
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            settings: None,
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }
@@ -113,6 +121,20 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
         self.compaction = Some(policy);
+        self
+    }
+    /// Selects native settings locations and explicit project trust using the shared loader.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+    /// Selects independent finite MCP discovery and tool-exchange bounds.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {
+        self.mcp_limits = limits;
         self
     }
     /// Selects the clock used by durable admission and leases.

@@ -734,3 +734,6 @@ mod volume_tools;
 
 #[cfg(all(feature = "native-execution", unix))]
 mod reconciliation_interruptions;
+
+#[cfg(feature = "mcp-http")]
+mod mcp;
