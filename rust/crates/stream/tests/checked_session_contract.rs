@@ -5,6 +5,55 @@ use acyclic_stream::{
 };
 use proptest::prelude::*;
 use prost::Message;
+mod checks {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/follow_contract.rs"
+    ));
+}
+use checks::{Fault, check};
+
+fn tagged(kind: u8, value: impl Message) -> Vec<u8> {
+    let mut bytes = vec![kind];
+    value.encode(&mut bytes).unwrap();
+    bytes
+}
+fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
+    let guards =
+        (any::<[u8; 32]>(), 1_u64..=u64::MAX, 31_usize..34).prop_map(|(anchor, next, length)| {
+            let mut guard = anchor.to_vec();
+            guard.resize(length, 0);
+            tagged(
+                0,
+                wire::SessionSubscription {
+                    resume: Some(wire::SessionCursor {
+                        next,
+                        ..Default::default()
+                    }),
+                    kind: Some(wire::session_subscription::Kind::Follow(
+                        wire::SessionFollow {
+                            path: "events".into(),
+                            delivery: wire::SessionDelivery::All as i32,
+                            preceding_commit_id: guard.into(),
+                        },
+                    )),
+                    ..Default::default()
+                },
+            )
+        });
+    let snapshots = (any::<[u8; 32]>(), 1_u64..=u64::MAX).prop_map(|(anchor, next)| {
+        tagged(
+            1,
+            wire::SessionCursor {
+                next,
+                opaque: anchor.to_vec().into(),
+            },
+        )
+    });
+    let watermarks = (any::<u64>(), prop::option::of(any::<u64>()))
+        .prop_map(|(tail, durable)| tagged(2, wire::TailResponse { tail, durable }));
+    prop_oneof![guards, snapshots, watermarks]
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
@@ -37,20 +86,26 @@ proptest! {
         prop_assert_eq!(&decoded, &cursor);
         let expected = match (next, cursor.opaque.as_ref().try_into()) {
             (0, _) if cursor.opaque.is_empty() => Ok(None),
-            (1.., Ok(anchor)) => Ok(Some(CommitId::from_bytes(anchor))),
+            (1.., Ok(anchor)) => Ok(Some(anchor)),
             _ => Err(StreamError::InvalidArgument),
         };
-        prop_assert_eq!(record_anchor(&decoded), expected);
+        prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), expected);
     }
 
     #[test]
     fn every_nonzero_snapshot_cut_reencodes_exactly(next in 1_u64..=u64::MAX, anchor in any::<[u8;32]>()) {
-        let anchor = CommitId::from_bytes(anchor);
-        let cursor = record_cursor(next, anchor)?;
+        let cursor = record_cursor(next, CommitId::from_bytes(anchor))?;
+        prop_assert_eq!(cursor.opaque.as_ref(), &anchor);
         let decoded = wire::SessionCursor::decode(cursor.encode_to_vec().as_slice())?;
-        prop_assert_eq!(record_anchor(&decoded), Ok(Some(anchor)));
+        prop_assert_eq!(decoded.opaque.as_ref(), &anchor);
+        prop_assert_eq!(record_anchor(&decoded).map(|id| id.map(|id| *id.as_bytes())), Ok(Some(anchor)));
         prop_assert_eq!(decoded.next, next);
-        prop_assert_eq!(record_cursor(0, anchor), Err(StreamError::InvalidArgument));
+        prop_assert_eq!(record_cursor(0, CommitId::from_bytes(anchor)), Err(StreamError::InvalidArgument));
+    }
+
+    #[test]
+    fn the_fuzz_driver_preserves_the_independent_wire_contract(input in contract_inputs()) {
+        check(&input, Fault::None).map_err(TestCaseError::fail)?;
     }
 
     // Malformed nonempty IDs, missing predecessor positions and conflating
@@ -78,4 +133,61 @@ fn an_older_peer_cannot_confirm_a_checked_follow() {
         Err(StreamError::Unsupported)
     );
     assert_eq!(confirm_follow(None, &opened), Ok(()));
+}
+
+fn reject_mutant(fault: Fault, invariant: &str) {
+    use proptest::test_runner::{Config, RngSeed, TestError, TestRunner};
+    let mut runner = TestRunner::new(Config {
+        cases: 128,
+        rng_seed: RngSeed::Fixed(705),
+        failure_persistence: None,
+        ..Default::default()
+    });
+    let result = runner.run(&contract_inputs(), |input| {
+        check(&input, fault).map_err(TestCaseError::fail)
+    });
+    let Err(TestError::Fail(reason, input)) = result else {
+        panic!("mutant {fault:?} escaped the shared property/fuzz driver")
+    };
+    assert_eq!(reason.to_string(), invariant);
+    assert_eq!(
+        check(&input, Fault::None),
+        Ok(()),
+        "shrunk counterexample must pass the production codecs"
+    );
+    assert_eq!(check(&input, fault), Err(invariant));
+}
+
+#[test]
+fn negative_control_accepts_a_31_byte_guard() {
+    reject_mutant(Fault::AcceptShortGuard, "checked guard");
+}
+#[test]
+fn negative_control_drops_checked_state() {
+    reject_mutant(Fault::DropChecked, "checked guard");
+}
+#[test]
+fn negative_control_accepts_every_nonempty_confirmation() {
+    reject_mutant(Fault::AcceptAnyConfirmation, "confirmation anchor");
+}
+#[test]
+fn negative_control_reverses_snapshot_encoding() {
+    reject_mutant(Fault::ReverseEncode, "snapshot encode bytes");
+}
+#[test]
+fn negative_control_reverses_snapshot_decoding() {
+    reject_mutant(Fault::ReverseDecode, "snapshot decode bytes");
+}
+#[test]
+fn negative_control_reverses_both_snapshot_codecs() {
+    reject_mutant(Fault::ReverseBoth, "snapshot decode bytes");
+}
+#[test]
+fn negative_control_infers_durability_from_acceptance() {
+    reject_mutant(Fault::InferDurability, "durability boundary");
+}
+
+#[test]
+fn negative_control_drops_snapshot_checked_state() {
+    reject_mutant(Fault::DropSnapshotAnchor, "snapshot decode bytes");
 }
