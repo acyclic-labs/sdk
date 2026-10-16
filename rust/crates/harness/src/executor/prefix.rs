@@ -30,11 +30,12 @@ impl StockExecution<'_> {
         let mut request = crate::model::clone_request(prepared.request(), self.io)?;
         let mut calls = Vec::new();
         for event in retained.events {
-            if let ModelEvent::ToolCall {
+            if let ModelEvent::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } = event
+                metadata,
+            }) = event
             {
                 let invocation = ToolInvocation::for_model_call(
                     input.operation_id,
@@ -44,21 +45,24 @@ impl StockExecution<'_> {
                     arguments,
                     self.native_work(),
                 )?;
-                stock_vec_push(&mut calls, invocation, self.io)?;
+                stock_vec_push(&mut calls, (invocation, metadata), self.io)?;
             }
         }
         if !retained.admission.completed
             || calls.is_empty()
-            || through_call.is_some_and(|id| !calls.iter().any(|call| call.call_id == id))
+            || through_call.is_some_and(|id| !calls.iter().any(|(call, _)| call.call_id == id))
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        for invocation in calls {
+        for (invocation, metadata) in calls {
             let projection = completed_tool_projection(
                 journal,
                 &records,
                 step,
-                &invocation,
+                crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &metadata,
+                },
                 &request.tools,
                 self.stock.limits,
                 self.io,
@@ -68,11 +72,14 @@ impl StockExecution<'_> {
                 &mut request.messages,
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                        name: stock_string_copy(&invocation.name, self.io)?,
-                        arguments: invocation.arguments,
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        crate::model::ToolCall::new(
+                            stock_string_copy(&invocation.call_id, self.io)?,
+                            stock_string_copy(&invocation.name, self.io)?,
+                            invocation.arguments,
+                        )
+                        .with_metadata(metadata),
+                    )),
                 },
                 self.io,
             )?;

@@ -199,7 +199,7 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config { cases: 48, ..Default::default() })]
     #[test]
     fn source_paths_are_canonical_and_round_trip(path in ".{0,256}") {
-        for prefix in ["commands/", "workspace/"] {
+        for prefix in ["commands/", "workspace/", "config/"] {
             let path = format!("{prefix}{path}");
             path_sequences::exercise(path.as_bytes());
             if let Ok(key) = FileKey::parse(&path) {

@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
-test("qualification instruments only the selected target and executes its built binary", () => {
+test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];
-  qualifyMcpLoom(["--all-features"], (command, args) => {
+  qualifyMcpLoom(["--all-features"], (command, args, options) => {
+    if (command === "cargo") assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom(?: |$)/);
     calls.push([command, args]);
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom", "--all-features", "--", "--cfg", "loom"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom", "--all-features", "--features", "model-checking"]],
     ["model-binary", []],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
@@ -67,4 +68,20 @@ test("qualification rejects failed builds and missing or ambiguous artifacts", (
     assert.throws(() => qualifyMcpLoom(undefined, () => ({ status, stdout, stderr: "" })),
       /MCP Loom build (failed|must produce)/);
   }
+});
+
+
+test("filesystem qualification models the production mutex only in its dedicated target", () => {
+  const calls = [];
+  qualifyFsBindingLoom(["--all-features"], (command, args) => {
+    calls.push([command, args]);
+    const fs = { ...artifact, target: { name: "native_binding_model" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(3) };
+  });
+  assert.deepEqual(calls, [
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--", "--cfg", "acyclic_fs_loom"]],
+    ["model-binary", []],
+  ]);
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-binding --all-features/);
 });

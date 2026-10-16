@@ -1,0 +1,6 @@
+{"folder":".tasks/t/turns/1/text.md","writes":[{"path":".tasks/t/turns/1/chunks/0","text":"private","channel":
+  "Reasoning"},{"path":".tasks/t/turns/1/chunks/1","text":"shown","channel":"Text"},{"path":".tasks/t/turns/1/chunks/2",
+  "text":"hidden","channel":"Reasoning"},{"path":".tasks/t/turns/1/chunks/3","text":" tail","channel":"Text"}],"expect":
+  {"files":{".tasks/t/turns/1/chunks/1":"shown",".tasks/t/turns/1/chunks/3":" tail"},"changes":[null,{"path":
+  ".tasks/t/turns/1/chunks/1","text":"shown","channel":"Text"},null,{"path":".tasks/t/turns/1/chunks/3","text":" tail",
+  "channel":"Text"}],"heads":{".tasks/t/turns/1/text.md":"shown tail"}}}

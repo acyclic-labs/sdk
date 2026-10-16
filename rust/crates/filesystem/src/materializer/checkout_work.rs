@@ -40,6 +40,7 @@ impl NativeMaterializationWork {
             bytes,
         })
     }
+    #[cfg(test)]
     pub(crate) fn allocations<T, E: From<NativeTreeMaterializationError>>(
         &self,
         operation: impl FnOnce(

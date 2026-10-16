@@ -1,0 +1,4 @@
+{"folder":".tasks/t/notifications","writes":[{"path":".tasks/t/approvals/a/request.json","text":"binding"},{"path":
+  ".tasks/t/notifications/a.json","text":"ready"},{"path":".tasks/u/notifications/a.json","text":"other"},{"path":
+  ".tasks/t/status.json","text":"done"}],"expect":{"files":{".tasks/t/notifications/a.json":"ready"},"changes":[null,{
+  "path":".tasks/t/notifications/a.json","text":"ready"},null,null]}}

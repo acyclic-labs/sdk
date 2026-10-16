@@ -14,13 +14,13 @@ mod parsing;
 #[path = "goal_files/writes.rs"]
 mod writes;
 
-#[path = "../fuzz/fuzz_targets/goal_parser_input.rs"]
+#[path = "../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
 mod goal_parser_input;
 
 #[test]
 fn checked_in_fuzz_corpus() -> Result<()> {
     let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/goal_parser");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/goal_parser");
     let mut seeds = 0;
     for entry in std::fs::read_dir(directory).map_err(|error| Error::Storage(error.to_string()))? {
         let entry = entry.map_err(|error| Error::Storage(error.to_string()))?;

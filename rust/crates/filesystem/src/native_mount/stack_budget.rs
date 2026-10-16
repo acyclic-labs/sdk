@@ -204,6 +204,7 @@ fn measure_common(view: &dyn MountFilesystem) -> TestResult {
     })?;
     measure("readdir", || view.read_directory(&path("dir"), None, 256))?;
     measure("lookup", || view.lookup(&read))?;
+    measure("binding-lease", || view.acquire_view_lease())?;
     let pinned = measure("lookup-pinned", || view.lookup_pinned(&read))?;
     let opened = measure("open", || view.open_file(&read))?;
     measure("getattr", || opened.lookup())?;
@@ -275,6 +276,7 @@ const _: () = {
 };
 
 const BUDGETS: &[(&str, usize, usize)] = &[
+    ("binding-lease", 48, 32),
     ("readdir-root", 384, 96),
     ("readdir", 368, 96),
     ("lookup", 352, 96),
@@ -340,5 +342,13 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;
     }
     measure_common(authored.as_ref())?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binding_leases_fit_the_existing_callback_stack_margin() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (_lazy, authored) = lazy_workspace(root.path()).await?;
+    measure("binding-lease", || authored.acquire_view_lease())?;
     Ok(())
 }

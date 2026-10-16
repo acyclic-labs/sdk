@@ -47,12 +47,32 @@ mod diff;
 pub use diff::*;
 mod notifications;
 pub use notifications::*;
+mod task_list;
+pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
+mod file_query;
+pub use file_query::FileQueryView;
+#[cfg(feature = "tui")]
+mod plan_panel;
+#[cfg(feature = "tui")]
+pub use plan_panel::PlanPanel;
 mod interests;
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
 mod swarm;
 pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
+mod file_views;
+pub use file_views::QueryViewLimits;
+mod query;
+pub use query::ClientQuery;
+mod query_subscription;
+pub(crate) use file_views::FileViews;
+pub(crate) use query_subscription::{QuerySubscription, query_error};
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod query_verification {
+    pub use super::file_views::FileViews;
+}
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 

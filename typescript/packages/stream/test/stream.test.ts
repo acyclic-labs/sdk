@@ -481,9 +481,7 @@ describe("website Stream contract", () => {
     const provider = new MemoryStreamProvider();
     const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
-    const children = [];
-    for await (const child of new StreamClient(provider).children("parent", 10)) children.push(child);
-    expect(children).toEqual([]);
+    expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
   });
 
@@ -519,6 +517,27 @@ describe("website Stream contract", () => {
     const next = pending.next();
     pending.close();
     expect(await next).toBeNull();
+  });
+
+  test("memory children remain live, exclude rejected writes and cancel a parked read", async () => {
+    const provider = new MemoryStreamProvider();
+    const cancel = new AbortController();
+    const children = new StreamClient(provider).children("agents", 1, cancel.signal)[Symbol.asyncIterator]();
+    let delivered = false;
+    const first = children.next().then(value => { delivered = true; return value; });
+    await checkpoint();
+    await provider.append("agents/rejected", [new Uint8Array([1])], { ifTail: 1n });
+    await checkpoint();
+    expect(delivered).toBe(false);
+    await provider.append("agents/m", [new Uint8Array([1])]);
+    expect((await first).value?.path).toBe("agents/m");
+    const later = children.next();
+    await provider.append("agents/a/deep", [new Uint8Array([1])]);
+    expect((await later).value?.path).toBe("agents/a");
+    const parked = children.next();
+    await checkpoint(); cancel.abort();
+    expect((await parked).done).toBe(true);
+    await children.return?.();
   });
 
   test("rejects a failed multi-stream commit atomically", async () => {

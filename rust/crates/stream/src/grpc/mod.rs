@@ -31,16 +31,19 @@ use crate::{
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
+#[cfg(test)]
+mod children_tests;
 mod client;
 #[cfg(test)]
 mod credential_tests;
+#[cfg(test)]
+mod latency_tests;
 mod server;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
-const FOLLOW_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(500);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Connection configuration failure.
@@ -70,6 +73,9 @@ pub struct Client {
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
+    sessions: Arc<crate::session::Cache>,
+    session_ca: Option<Arc<[u8]>>,
+    session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -107,6 +113,7 @@ impl Client {
         let mut client = self.clone();
         client.authorization = Some(authorization(bearer_token)?);
         client.credential = None;
+        client.sessions = Arc::new(crate::session::Cache::new());
         Ok(client)
     }
 
@@ -115,6 +122,7 @@ impl Client {
         let mut client = self.clone();
         client.authorization = None;
         client.credential = Some(credential);
+        client.sessions = Arc::new(crate::session::Cache::new());
         client
     }
 
@@ -124,12 +132,12 @@ impl Client {
         credential: CredentialProvider,
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        Ok(Self {
-            channel: Self::connect_channel(endpoint.as_ref(), certificate_pem).await?,
-            authorization: None,
-            credential: Some(credential),
-            acknowledge_deliveries: true,
-        })
+        let mut client = Self::from_channel_with_credential(
+            Self::connect_channel(endpoint.as_ref(), certificate_pem).await?,
+            credential,
+        );
+        client.session_ca = certificate_pem.map(Arc::from);
+        Ok(client)
     }
 
     /// Connects eagerly through TLS and HTTP/2 trusting the platform roots.
@@ -159,10 +167,10 @@ impl Client {
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token)?;
-        Ok(Self::from_channel(
-            Self::connect_channel(endpoint, certificate_pem).await?,
-            authorization,
-        ))
+        let channel = Self::connect_channel(endpoint, certificate_pem).await?;
+        let mut client = Self::from_channel(channel, authorization);
+        client.session_ca = certificate_pem.map(Arc::from);
+        Ok(client)
     }
 
     async fn connect_channel(
@@ -173,30 +181,43 @@ impl Client {
         {
             return Err(ConnectError::InvalidCaCertificate);
         }
-        let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
-        if endpoint.uri().scheme_str() != Some("https") {
-            return Err(ConnectError::InsecureEndpoint);
-        }
-        let endpoint = if let Some(pem) = certificate_pem {
-            endpoint
-                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
-        } else {
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .map_err(ConnectError::PlatformVerifier)?;
-            endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-        };
-        Ok(endpoint.connect().await?)
+        channel_tls(endpoint, certificate_pem).await
     }
 
-    fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
+    pub(crate) fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             channel,
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
+            sessions: Arc::new(crate::session::Cache::new()),
+            session_ca: None,
+            session_verifier: None,
         }
+    }
+
+    pub(crate) fn from_channel_with_credential(
+        channel: Channel,
+        credential: CredentialProvider,
+    ) -> Self {
+        Self {
+            channel,
+            authorization: None,
+            credential: Some(credential),
+            acknowledge_deliveries: true,
+            sessions: Arc::new(crate::session::Cache::new()),
+            session_ca: None,
+            session_verifier: None,
+        }
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn with_session_verifier(
+        mut self,
+        verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    ) -> Self {
+        self.session_verifier = Some(verifier);
+        self
     }
 
     fn service(&self) -> wire::stream_service_client::StreamServiceClient<Channel> {
@@ -204,17 +225,8 @@ impl Client {
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
-        let authorization = if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-            authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?
-        } else {
-            self.authorization
-                .clone()
-                .ok_or_else(|| Status::unauthenticated("missing credential"))?
-        };
+        let authorization =
+            request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);
         request
             .metadata_mut()
@@ -279,6 +291,58 @@ impl Client {
     }
 }
 
+pub(crate) async fn channel_tls(
+    endpoint: &str,
+    certificate_pem: Option<&[u8]>,
+) -> Result<Channel, ConnectError> {
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    let endpoint = if let Some(pem) = certificate_pem {
+        endpoint.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
+    } else {
+        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .map_err(ConnectError::PlatformVerifier)?;
+        endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+    };
+    Ok(endpoint.tcp_nodelay(true).connect().await?)
+}
+
+pub(crate) async fn channel_with_verifier(
+    endpoint: &str,
+    verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+) -> Result<Channel, ConnectError> {
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    if endpoint.uri().scheme_str() != Some("https") {
+        return Err(ConnectError::InsecureEndpoint);
+    }
+    Ok(endpoint
+        .tls_config_with_verifier(ClientTlsConfig::new(), verifier)?
+        .tcp_nodelay(true)
+        .connect()
+        .await?)
+}
+
+pub(crate) async fn request_authorization(
+    fixed: Option<&MetadataValue<Ascii>>,
+    credential: Option<&CredentialProvider>,
+) -> Result<MetadataValue<Ascii>, Status> {
+    if let Some(provider) = credential {
+        let token = provider
+            .resolve()
+            .await
+            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
+        authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))
+    } else {
+        fixed
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing credential"))
+    }
+}
+
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
     if !acyclic_auth::credential::valid_credential(bearer_token) {
         return Err(ConnectError::InvalidCredential);
@@ -291,7 +355,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
 }
 
 /// Whether the outcome of an attempt is unknown because the transport was lost.
-fn retryable(error: &Status) -> bool {
+pub(crate) fn retryable(error: &Status) -> bool {
     match error.code() {
         Code::Unavailable | Code::DeadlineExceeded => return true,
         Code::Unknown if std::error::Error::source(error).is_none() => return true,
@@ -358,7 +422,7 @@ fn error_status(error: &StreamError) -> Status {
     }
 }
 
-fn status(error: &Status) -> StreamError {
+pub(crate) fn status(error: &Status) -> StreamError {
     match (error.code(), error.message()) {
         (Code::InvalidArgument, "invalid_path") => StreamError::InvalidPath,
         (Code::InvalidArgument, "limit_exceeded") => StreamError::LimitExceeded,

@@ -77,6 +77,8 @@ pub use root_source::FsRootProjectSourceProvider;
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::NativePreparationCompletionTemplate;
+#[cfg(all(fuzzing, feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_execution::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -110,9 +112,7 @@ pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
     ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
 };
-pub use default_tools::{
-    MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_default_tools,
-};
+pub use default_tools::{MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_tools};
 pub(in crate::filesystem) use default_tools::{
     RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
     RecursiveMergeToolBinding, RecursiveMergeToolPlan,
@@ -153,7 +153,9 @@ use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
+mod file_query;
 use content_verifier::*;
+pub use file_query::FilesystemFileQuery;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
 mod project_verifier;

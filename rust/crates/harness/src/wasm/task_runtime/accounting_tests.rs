@@ -2,8 +2,11 @@
 
 use super::*;
 use crate::{
+    context::ModelContextCapacity,
     conversation::Limits,
-    model::{ModelContent, ModelMessage, ModelRequest, ModelRole},
+    model::{
+        ModelContent, ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+    },
 };
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

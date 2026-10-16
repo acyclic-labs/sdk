@@ -526,7 +526,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.append(
             path,
             expected_tail,
-            key,
+            Some(key),
             bytes,
             Self::execution_write(operation, event)?,
             quota.work(),
@@ -558,7 +558,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.append(
             path,
             expected_tail,
-            key,
+            Some(key),
             bytes,
             crate::distributed::JournalWrite::Fresh,
             quota.work(),
@@ -570,7 +570,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
-        key: &StreamKey,
+        key: Option<&StreamKey>,
         bytes: OwnedBytes,
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
@@ -599,17 +599,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() {
             io.hashed_bytes(bytes.len() as u64)?;
         }
+        let payload = blake3::hash(&bytes);
+        // Native journals use the payload digest itself as the caller key.
+        // Reuse this hash rather than hashing the same immutable buffer twice.
+        let key = key.map_or(payload.as_bytes().as_slice(), StreamKey::as_bytes);
         let digest = crate::executor::json::canonical_json_digest(
             &(
                 "harness/v2/owned-journal",
-                key.as_bytes(),
+                key,
                 self.task_id(),
                 &self.fence,
                 expected,
                 path.as_str(),
                 expected_tail,
                 matches!(target, CommitCondition::Absent { .. }),
-                blake3::hash(&bytes).as_bytes(),
+                payload.as_bytes(),
             ),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,

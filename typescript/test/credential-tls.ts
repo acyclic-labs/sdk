@@ -19,9 +19,11 @@ export async function credentialTlsFixture(routes: (router: ConnectRouter) => vo
     certificates = { directory, key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
   }
   const server = createSecureServer(certificates, connectNodeAdapter({ routes }));
+  let connections = 0;
+  server.on("session", () => { connections++; });
   const close = ownFixtureServer(server);
   await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("missing fixture address");
-  return { endpoint: `https://localhost:${address.port}`, certificate: certificates.cert, close };
+  return { endpoint: `https://localhost:${address.port}`, certificate: certificates.cert, close, get connections() { return connections; } };
 }

@@ -17,9 +17,9 @@ proptest! {
         prop_assert_eq!(format_history(&parse_history(&expected)?)?, expected);
         prop_assert_eq!(&history.entries()[0], &format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n")));
         prop_assert!(history.entries().iter().all(|entry| !entry.contains('\r')));
-        let json = serde_json::to_string(&std::collections::BTreeMap::from([("Ctrl+l", KEYMAP[target].chord)]))?;
-        let map = InputKeymap::from_json(&json)?;
-        prop_assert_eq!(InputKeymap::from_json(&map.to_json()?)?, map);
+        let json = serde_json::json!({"bindings":{"Ctrl+l":KEYMAP[target].action.name()}}).to_string();
+        let map = InputKeymap::parse(&json).unwrap();
+        prop_assert_eq!(InputKeymap::parse(&map.encode()).unwrap(), map);
     }
 
     #[test]
@@ -51,7 +51,7 @@ proptest! {
     #[test]
     fn expired_chord_prefixes_preserve_text(text in "[a-z]{0,32}") {
         let mut input = PromptInput::default();
-        input.keymap = InputKeymap::from_json(r#"{"g e":"Ctrl+x Ctrl+e"}"#)?;
+        input.keymap = InputKeymap::parse(r#"{"bindings":{"g e":"external-editor"}}"#).unwrap();
         for (index, character) in text.chars().enumerate() {
             let at = index as u64 * 1000;
             input.key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE), at, 80);

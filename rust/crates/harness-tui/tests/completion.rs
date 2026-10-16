@@ -204,7 +204,7 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
     let mut editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
     refresh_commands(&mut menu, &editor);
-    let map = InputKeymap::from_json(r#"{"Ctrl+j":"Enter"}"#)?;
+    let map = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#).unwrap();
     assert!(menu.key(
         &mut editor,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),

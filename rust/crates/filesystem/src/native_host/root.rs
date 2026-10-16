@@ -202,6 +202,14 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<File, DemandError> {
+        if path.as_os_str().is_empty() {
+            return open_unix(
+                self.directory.as_raw_fd(),
+                c".",
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                work,
+            );
+        }
         with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             open_unix(
                 parent.as_raw_fd(),

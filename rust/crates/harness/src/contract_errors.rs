@@ -28,12 +28,23 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A task reached a terminal failed outcome.
+    #[error("task {task} failed: {message}")]
+    TaskFailed {
+        /// The failed durable task.
+        task: crate::TaskId,
+        /// The task's retained failure diagnostic.
+        message: String,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
     /// The request is malformed.
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// A definitive tool rejection; safe to journal without allocating a diagnostic.
+    #[error("tool rejected: {0}")]
+    ToolRejected(&'static str),
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -291,8 +302,7 @@ pub(crate) fn native_work_error_code(
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::AllocationFailed(_)
-        | Native::IndeterminatePreparation => ErrorCode::Storage,
+        | Native::AllocationFailed(_) => ErrorCode::Storage,
     }
 }
 
@@ -322,7 +332,7 @@ impl Error {
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Unsupported(_) => ErrorCode::Unsupported,
-            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -334,7 +344,7 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -382,10 +392,12 @@ impl Error {
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
+                | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::TaskFailed { .. }
         )
     }
 }

@@ -46,11 +46,11 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
     let model = Arc::new(
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![
-                ScriptedEvent::Event(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "acyclic.read_file".into(),
-                    arguments: json!({"file":file}),
-                }),
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "read".into(),
+                    "read".into(),
+                    json!({"file":file}),
+                ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: first_metadata.clone(),
                 }),
@@ -78,12 +78,10 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
             Model::new("test".into(), "usage".into(), "1".into(), Value::Null)?,
             model.clone(),
         )
-        .tools(storage.default_tools(limits, None)?)
         .grant("model:generate")
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
-        .grant("tool:call:acyclic.list_files")
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .compaction(CompactionPolicy::Disabled)
         .limits(limits)
         .build()?;
