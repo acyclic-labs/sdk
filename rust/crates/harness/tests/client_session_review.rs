@@ -237,7 +237,7 @@ fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
 
 #[test]
 fn long_journal_names_survive_automatic_checkpoint_and_reopen() {
-    for name in ["a".repeat(220), "b".repeat(250), "ÃƒÆ’Ã‚Â©".repeat(110)] {
+    for name in ["a".repeat(220), "b".repeat(250), "\u{e9}".repeat(110)] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(name);
         let mut writer = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();

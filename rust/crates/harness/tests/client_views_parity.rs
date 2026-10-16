@@ -149,7 +149,7 @@ async fn exercise(wrong_handle: bool) -> Result<(), String> {
         .unwrap();
     let mut chunk = Write::new(
         FileKey::parse(".tasks/t/turns/9007199254740993/chunks/1").unwrap(),
-        "Ã¨ÂªÂ¿Ã¦Å¸Â»".as_bytes(),
+        "\u{8abf}\u{67fb}".as_bytes(),
     );
     chunk.channel = Some(Channel::Text);
     volume
