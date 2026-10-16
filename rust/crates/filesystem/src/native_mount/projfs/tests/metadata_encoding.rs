@@ -9,15 +9,15 @@ proptest! {
         tails in proptest::collection::vec(proptest::collection::vec(any::<u16>().prop_filter("canonical unit", |u| !matches!(u, 0 | 47 | 58 | 92)), 0..12), 0..5),
         limit in 0_u64..128,
     ) {
-        crate::initialize_native_mount_services().expect("native services");
+        crate::initialize_native_mount_services().map_err(|e| TestCaseError::fail(e.to_string()))?;
         let mut path = MountPath::root();
         for tail in tails {
             let bytes = std::iter::once(120_u16).chain(tail).flat_map(u16::to_le_bytes).collect();
             path = path.child(bytes);
         }
-        let host = host_relative_path(&path).expect("host path");
+        let host = host_relative_path(&path).map_err(|e| TestCaseError::fail(e.to_string()))?;
         let overhead = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map_err(|(e, _)| e).expect("meter overhead").receipt();
+            .map_err(|(e, _)| TestCaseError::fail(e.to_string()))?.receipt();
         let budgets = [
             crate::WorkBudget::UNBOUNDED,
             crate::WorkBudget { items_examined: limit, ..crate::WorkBudget::UNBOUNDED },
@@ -27,11 +27,11 @@ proptest! {
         ];
         for budget in budgets {
             let cancellation = crate::CancellationToken::new();
-            let old = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e).expect("old work");
-            let direct = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e).expect("direct work");
+            let old = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
+            let direct = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| TestCaseError::fail(e.to_string()))?;
             let before = direct.receipt();
             let old_result = crate::native_host::with_wide_path(&host, &mut &old, |wide, _| Ok(wide.to_vec()));
-            let units = super::super::callback_path::wide_components(path.components()).expect("canonical parts");
+            let units = super::super::callback_path::wide_components(path.components()).ok_or_else(|| TestCaseError::fail("canonical parts"))?;
             let direct_result = crate::native_host::with_wide_units(units, &mut &direct, |wide, _| Ok(wide.to_vec()));
             prop_assert_eq!(old_result.map_err(|e| e.to_string()), direct_result.map_err(|e| e.to_string()));
             prop_assert_eq!(old.receipt(), direct.receipt());
@@ -47,7 +47,7 @@ proptest! {
             }
             cancellation.cancel();
             let before = direct.receipt();
-            let units = super::super::callback_path::wide_components(path.components()).expect("canonical parts");
+            let units = super::super::callback_path::wide_components(path.components()).ok_or_else(|| TestCaseError::fail("canonical parts"))?;
             prop_assert!(crate::native_host::with_wide_units(units, &mut &direct, |_, _| Ok(())).is_err());
             prop_assert_eq!(direct.receipt(), before);
         }

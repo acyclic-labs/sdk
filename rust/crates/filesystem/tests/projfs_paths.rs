@@ -37,7 +37,10 @@ fn callback_paths_keep_windows_component_rules() {
         ("a\\b/./c/", Some(vec![units("a"), units("b"), units("c")])),
         ("a//b\\\\c", Some(vec![units("a"), units("b"), units("c")])),
         ("1:a", Some(vec![units("1:a")])),
-        ("ÃƒÆ’Ã‚Â©:a", Some(vec![units("ÃƒÆ’Ã‚Â©:a")])),
+        (
+            "ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©:a",
+            Some(vec![units("ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©:a")]),
+        ),
         ("a/.:", Some(vec![units("a"), units(".:")])),
         (".", None),
         (".\\a", None),
@@ -134,14 +137,12 @@ fn noncanonical_metadata_parts_keep_the_platform_fallback() {
         assert!(callback_path::wide_components(&[part]).is_none());
     }
     assert_eq!(
-        callback_path::wide_components(&[]).expect("root").count(),
-        0
+        callback_path::wide_components(&[]).map(Iterator::count),
+        Some(0)
     );
     let parts = vec![vec![0, 0xd8], vec![0, 0xdc]];
     assert_eq!(
-        callback_path::wide_components(&parts)
-            .expect("surrogates")
-            .collect::<Vec<_>>(),
-        [0xd800, 92, 0xdc00]
+        callback_path::wide_components(&parts).map(Iterator::collect::<Vec<_>>),
+        Some(vec![0xd800, 92, 0xdc00])
     );
 }

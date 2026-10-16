@@ -42,9 +42,13 @@ fn previous(bencher: divan::Bencher, depth: usize) {
 
 #[divan::bench(args = [0, 1, 4, 16, 32], sample_count = 20, sample_size = 32)]
 fn metadata_direct(bencher: divan::Bencher, depth: usize) {
-    let parts = callback_path::components(&path(depth)).expect("path");
+    let parts = callback_path::components(&path(depth));
+    assert!(parts.is_some());
+    let parts = parts.unwrap_or_default();
     bencher.bench_local(|| {
-        let units = callback_path::wide_components(divan::black_box(&parts)).expect("canonical");
+        let Some(units) = callback_path::wide_components(divan::black_box(&parts)) else {
+            unreachable!("canonical benchmark path");
+        };
         let mut name = Vec::with_capacity(units.clone().count());
         name.extend(units);
         name
@@ -55,7 +59,9 @@ fn metadata_direct(bencher: divan::Bencher, depth: usize) {
 #[divan::bench(args = [0, 1, 4, 16, 32], sample_count = 20, sample_size = 32)]
 fn metadata_previous(bencher: divan::Bencher, depth: usize) {
     use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-    let parts = callback_path::components(&path(depth)).expect("path");
+    let parts = callback_path::components(&path(depth));
+    assert!(parts.is_some());
+    let parts = parts.unwrap_or_default();
     bencher.bench_local(|| {
         let mut host = std::path::PathBuf::new();
         for part in divan::black_box(&parts) {
