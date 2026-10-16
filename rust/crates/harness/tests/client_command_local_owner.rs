@@ -101,7 +101,12 @@ async fn production_pause_stop_resume_commands_gate_real_owner_dispatch_and_reop
         assert_eq!(send(&local, &mut client, text).await?["paused"], paused);
     }
     let mut running = Box::pin(local.resume(task_id));
-    assert!(futures::poll!(&mut running).is_pending());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), running.as_mut())
+            .await
+            .is_err(),
+        "paused task completed before resume"
+    );
     assert!(
         provider.requests().is_empty(),
         "paused owner dispatched a model"
