@@ -108,7 +108,24 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         writes: &[ObjectWrite],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        operate!(context, work, self.publish_batch(writes, &mut work).await)
+        operate!(
+            context,
+            work,
+            self.publish_batch::<false, _, _>(writes, write::raw_parts, &mut work)
+                .await
+        )
+    }
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        operate!(
+            context,
+            work,
+            self.publish_batch::<true, _, _>(objects, write::hashed_parts, &mut work)
+                .await
+        )
     }
     async fn flush_before_publish(
         &self,
@@ -211,3 +228,6 @@ mod requests;
 use requests::*;
 mod read;
 mod write;
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;
