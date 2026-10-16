@@ -137,7 +137,14 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
     assert!(FileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
     assert!(FileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
-    // The normal streaming input path also publishes file queries to shared views.
+    // Check both the bounded source and the client's independent revision validation.
+    let mut volume_changes = volume
+        .follow(
+            Query::Plans,
+            volume.snapshot(&Query::Plans, 2).await.unwrap().cursor,
+        )
+        .await
+        .unwrap();
     for path in ["plans/second.md", "plans/third.md"] {
         generation = volume
             .append(
@@ -146,7 +153,16 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
             )
             .await
             .unwrap();
-        let change = follow.next().await.unwrap().unwrap();
+        let bounded = follow.next().await.unwrap();
+        if path == "plans/second.md" {
+            assert!(bounded.is_ok());
+        } else {
+            assert!(matches!(
+                bounded,
+                Err(acyclic_harness::task_volume::Error::LimitExceeded)
+            ));
+        }
+        let change = volume_changes.next().await.unwrap().unwrap();
         let mut updates =
             futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
         let before = client.session().views().clone();
