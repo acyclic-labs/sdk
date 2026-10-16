@@ -35,6 +35,11 @@ where
                 "model command provider is not bound",
             )
         })?;
+        let compaction = if command.summary_source.is_some() {
+            &crate::context::CompactionPolicy::Disabled
+        } else {
+            &binding.compaction
+        };
         let steering = if stock || command.mailbox_operation.is_some() {
             BoundedContentFuture::new(io, || async {
                 let journal = 'journal: {
@@ -181,7 +186,7 @@ where
                         tools,
                         journal,
                         work,
-                        &binding.compaction,
+                        compaction,
                         command.max_output_tokens,
                     )?
                     .with_summary_source(command.summary_source);
@@ -218,8 +223,8 @@ where
                     command.selected_output_volume.as_ref(),
                 )
                 .await?
-                .with_summary_source(command.summary_source)
-                .with_compaction_policy(binding.compaction.clone());
+                .with_compaction_policy(compaction.clone())
+                .with_summary_source(command.summary_source);
             let execution = match command.max_output_tokens {
                 Some(maximum) => execution.with_max_output_tokens(maximum)?,
                 None => execution,

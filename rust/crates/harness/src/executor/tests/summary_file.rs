@@ -38,8 +38,10 @@ fn file_summary_returns_collected_text_without_reading_its_published_output() ->
                         Limits::default(),
                     )?;
                     let (provider, _) =
-                        counted_model(131_072, None, [ScriptedTurn::Text(text.clone())], []);
-                    let executor = uncompacted_executor(
+                        counted_model(8_192, None, [ScriptedTurn::Text(text.clone())], []);
+                    // The default automatic policy does not fit this small model.
+                    // A selected summary uses only its explicit output ceiling.
+                    let executor = StockExecutor::new(
                         Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
                         provider.clone(),
                         ContextPipeline::default(),

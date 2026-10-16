@@ -67,6 +67,9 @@ impl StockExecutor {
     }
 
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        if source.is_some() {
+            self.compaction = crate::context::CompactionPolicy::Disabled;
+        }
         self.summary_source = source;
         self
     }
