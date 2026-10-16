@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", features, run);
+  return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
 }
 
 export function qualifyTimerLoom(run = spawnSync) {

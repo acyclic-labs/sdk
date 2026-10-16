@@ -1,6 +1,6 @@
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectStore, ObjectId, ObjectKind,
-    ObjectRead, ObjectReadRequest, ObjectStoreError, ObjectWrite,
+    AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectBackend, ObjectId, ObjectKind,
+    ObjectRead, ObjectReadRequest, ObjectStoreError, storage::ObjectWrite,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::{
@@ -8,10 +8,20 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct CountingObjects {
-    inner: Arc<MemoryObjectStore>,
+    inner: Arc<MemoryObjectBackend>,
     pub(super) reads: Arc<AtomicUsize>,
+}
+
+impl Default for CountingObjects {
+    fn default() -> Self {
+        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        Self {
+            inner: Arc::new(MemoryObjectBackend::new(Arc::new(objects), bucket)),
+            reads: Arc::default(),
+        }
+    }
 }
 
 impl AsyncObjectStore for CountingObjects {

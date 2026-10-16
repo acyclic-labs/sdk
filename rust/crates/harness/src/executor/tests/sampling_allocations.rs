@@ -2,7 +2,7 @@ use super::*;
 use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
 
 fn catalog(count: usize) -> Result<ToolRegistry> {
-    let template = crate::tool::files::read_file()?;
+    let template = crate::tool::files::read()?;
     let mut tools = ToolRegistry::default();
     for index in 0..count {
         let name = format!("tool_{index:05}");

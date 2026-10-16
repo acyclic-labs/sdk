@@ -162,6 +162,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .fork(
                         &destination,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        self.permit,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await

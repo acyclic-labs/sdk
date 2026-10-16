@@ -81,6 +81,8 @@ const FILE_NOTIFICATIONS: PRJ_NOTIFY_TYPES = PRJ_NOTIFY_TYPES(
 const NOTIFICATION_ROOT: [u16; 1] = [0];
 const WRITE_CHUNK_BYTES: u32 = 1 << 20;
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
+mod constant_callbacks;
+use constant_callbacks::*;
 mod directory;
 use directory::*;
 mod callback_path;

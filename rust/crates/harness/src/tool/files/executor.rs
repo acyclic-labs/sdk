@@ -246,6 +246,16 @@ impl FileTool {
         let bytes = context.read_file(&input.0.file, io).await?;
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("file read requires UTF-8 content"))?;
+        let source = if let Some(range) = input.0.range {
+            let start =
+                usize::try_from(range.start).map_err(|_| invalid("read start is too large"))?;
+            let end = usize::try_from(range.end).map_err(|_| invalid("read end is too large"))?;
+            source
+                .get(start..end)
+                .ok_or_else(|| invalid("read range is outside the file or splits UTF-8"))?
+        } else {
+            source
+        };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let (text, mut custody) = work.display(source)?;

@@ -117,4 +117,7 @@ pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_g
 pub(crate) use materialize::RootMaterializingGitExecutor;
 
 mod run;
+pub(crate) use run::run_with_guard;
 pub use run::{Output, Workspace, run};
+
+pub(crate) use materialize::publish_checkout_transition;

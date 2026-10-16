@@ -16,6 +16,7 @@ pub struct HarnessBuilder {
     bound_scope: Option<RuntimeScope>,
     original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
+    disable_default_tools: bool,
 }
 
 impl HarnessBuilder {
@@ -86,10 +87,23 @@ impl HarnessBuilder {
         self
     }
 
-    /// Selects the versioned tool registry.
+    /// Adds the custom tool registry to the enabled defaults.
+    pub fn tools(mut self, value: ToolRegistry) -> Result<Self> {
+        self.bindings.tools.extend(value)?;
+        Ok(self)
+    }
+
+    /// Enables the standard coding tools; enabled unless explicitly disabled.
     #[must_use]
-    pub fn tools(mut self, value: ToolRegistry) -> Self {
-        self.bindings.tools = value;
+    pub fn default_tools(mut self, enabled: bool) -> Self {
+        self.disable_default_tools = !enabled;
+        self
+    }
+
+    /// Binds command execution to the workspace selected by this task's route.
+    #[must_use]
+    pub fn workspace_tools(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
+        self.bindings.workspace_tools = Some(executor);
         self
     }
 
@@ -247,7 +261,13 @@ impl HarnessBuilder {
         if name.trim().is_empty() {
             return Err(Error::Invalid("harness name is empty".into()));
         }
-        let capabilities = Capabilities::new(self.capabilities);
+        let mut grants = self.capabilities;
+        if !self.disable_default_tools && self.bound_scope.is_none() {
+            grants.extend(
+                ["bash", "fs", "read", "write", "edit"].map(crate::contract::capability::tool_call),
+            );
+        }
+        let capabilities = Capabilities::new(grants);
         let mut scope = if let Some(bound) = self.bound_scope {
             bound.narrow(capabilities.clone(), self.limits)?
         } else {
@@ -262,6 +282,9 @@ impl HarnessBuilder {
             scope = scope.with_extension_runtime(runtime)?;
         }
         let mut bindings = self.bindings;
+        if !self.disable_default_tools {
+            bindings.tools.extend(crate::tools::defaults()?)?;
+        }
         bindings.scope = scope.clone();
         let agent_loop = self.agent_loop;
         if let Some(component) = agent_loop.as_ref().cloned() {
