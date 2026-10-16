@@ -77,11 +77,8 @@ impl WasmTaskVolume {
         #[wasm_bindgen(unchecked_param_type = "Channel | null")] channel: JsValue,
     ) -> Result<JsValue, JsValue> {
         let expected: Generation = from_js(expected)?;
-        let write = Write {
-            key: from_js(key)?,
-            bytes: bytes.into(),
-            channel: from_js(channel)?,
-        };
+        let mut write = Write::new(from_js(key)?, bytes);
+        write.channel = from_js(channel)?;
         to_js(&self.volume.append(expected, &write).await.map_err(error)?)
     }
 }
