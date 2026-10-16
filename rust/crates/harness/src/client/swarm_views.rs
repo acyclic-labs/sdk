@@ -1,4 +1,7 @@
 //! One disposable fold for overview status and selected full-fidelity files.
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod retention;
+
 use super::{ClientInterests, FileViews, InterestTier, QueryViewLimits, SwarmUpdate, query_error};
 use crate::{
     Error, Result,
@@ -409,9 +412,10 @@ impl SwarmViews {
         status.watermarks.accepted = status.watermarks.accepted.max(data.accepted);
         status.watermarks.durable = status.watermarks.durable.max(data.durable);
         let key = value.key.clone();
-        status
-            .values
-            .insert(key.clone(), StatusValue { after, value });
+        // BTreeMap::insert preserves its existing key. That key may share the
+        // old compact payload, so retire it before publishing the replacement.
+        status.values.remove(&key);
+        status.values.insert(key, StatusValue { after, value });
         self.overview_bytes = bytes;
         self.overview_values = count;
         Ok(())
