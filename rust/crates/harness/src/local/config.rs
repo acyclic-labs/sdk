@@ -15,8 +15,7 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
-    /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
-    pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
@@ -120,6 +119,15 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn session_limits(mut self, limits: SessionLimits) -> Self {
         self.session_limits = limits;
+        self
+    }
+    /// Selects the finite goal admission policy; `None` disables automatic continuations.
+    #[must_use]
+    pub fn goal_continuations(
+        mut self,
+        policy: Option<crate::goal::GoalContinuationPolicy>,
+    ) -> Self {
+        self.goal_continuations = policy;
         self
     }
     /// Selects maximum concurrent local tasks.
