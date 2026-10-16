@@ -141,7 +141,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             std::future::ready(Ok("renewed".into()))
         }));
         let typed = domain::InvokeActorRequest::try_from(renewed.clone())?;
-        assert_eq!(client.invoke_actor(&typed).await?.body, vec![8]);
+        assert_eq!(client.invoke_actor(&typed).await?.body(), &[8]);
         let output = client.call("InvokeActor", &renewed.encode_to_vec()).await?;
         assert_eq!(wire::InvokeActorResponse::decode(output.as_slice())?.body, vec![8]);
         assert_eq!(renewals.load(Ordering::Relaxed), 2);
