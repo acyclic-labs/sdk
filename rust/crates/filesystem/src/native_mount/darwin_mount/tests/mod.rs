@@ -809,4 +809,5 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
 
 mod callbacks;
 
+mod folded;
 mod lifecycle;

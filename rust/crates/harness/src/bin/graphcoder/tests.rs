@@ -11,9 +11,13 @@ struct Probe {
     authorize: AtomicUsize,
     mismatch: bool,
     events: usize,
+    idle: bool,
 }
 
 impl HarnessWireApi for Probe {
+    fn acknowledge<'a>(&'a self, _: wire::Acknowledge) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn handshake<'a>(
         &'a self,
         request: wire::HandshakeRequest,
@@ -44,8 +48,16 @@ impl HarnessWireApi for Probe {
     fn replay<'a>(
         &'a self,
         _: wire::ResumeRequest,
+        mode: acyclic_harness::wire_api::ReplayMode,
     ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
         async move {
+            if self.idle {
+                return Ok(match mode {
+                    acyclic_harness::wire_api::ReplayMode::Snapshot => Box::pin(stream::empty())
+                        as BoxProviderStream<'static, Result<wire::Delivery>>,
+                    acyclic_harness::wire_api::ReplayMode::Follow => Box::pin(stream::pending()),
+                });
+            }
             let delivery = wire::Delivery {
                 events: vec![wire::EventEnvelope::default(); self.events],
                 ..wire::Delivery::default()
@@ -74,6 +86,13 @@ impl HarnessWireApi for Probe {
         async { Err(Error::Unsupported("unused".into())) }.boxed()
     }
 
+    fn watch_operation<'a>(
+        &'a self,
+        _: wire::ObserveRequest,
+    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::OperationStatus>>>>
+    {
+        Box::pin(async { Err(Error::Unsupported("probe".into())) })
+    }
     fn cancel<'a>(
         &'a self,
         _: wire::CancelRequest,
@@ -171,6 +190,22 @@ fn replay_reads_one_delivery_and_renderer_rejects_oversized_pages() -> Result<()
         Err(Error::Invalid(_))
     ));
     Ok(())
+}
+
+#[test]
+fn next_at_current_cut_finishes_without_waiting_for_a_live_append() {
+    let api = Probe {
+        idle: true,
+        ..Probe::default()
+    };
+    let request = wire::client_frame::Frame::Resume(wire::ResumeRequest {
+        protocol: Some(current_protocol()),
+        cursors: Vec::new(),
+    });
+    let result = dispatch(&api, request)
+        .now_or_never()
+        .expect("finite inspection must not wait on live replay");
+    assert!(matches!(result, Ok(None)));
 }
 
 #[test]

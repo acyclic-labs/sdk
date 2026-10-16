@@ -19,8 +19,10 @@ pub use declaration::{
     ContextRoot, InstructionScope, PinnedContextPath,
 };
 mod skills;
+pub(crate) use skills::discover_skills;
 pub use skills::{SkillMetadata, parse_skill_metadata};
-pub(crate) use skills::{discover_skills, frontmatter_end, parse_frontmatter};
+mod frontmatter;
+pub(crate) use frontmatter::{frontmatter_end, parse_frontmatter};
 mod capture;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::reserve_context_vec_native;

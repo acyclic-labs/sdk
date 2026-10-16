@@ -94,6 +94,16 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         result
     }
 
+    async fn head_payload(
+        &self,
+        authority: AuthorityId,
+        maximum_payload_bytes: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError> {
+        self.head_payload_checked::<true>(authority, maximum_payload_bytes, work)
+            .await
+    }
+
     async fn replay(
         &self,
         authority: AuthorityId,

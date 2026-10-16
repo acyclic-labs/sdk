@@ -439,9 +439,7 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     std::fs::rename(&destination, temporary.path().join("original"))?;
     std::fs::create_dir(&destination)?;
     std::fs::write(destination.join("foreign"), b"untouched")?;
-    let original = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(
-        restoration_work(),
-    )));
+    let original = Arc::new(NativeDemandReadMeter::new(restoration_work()));
     let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
     let allocation_work = native_work.clone();
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
@@ -525,9 +523,7 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     let (started, entered) = tokio::sync::oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let (finished, completion) = tokio::sync::oneshot::channel();
-    let original = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(
-        restoration_work(),
-    )));
+    let original = Arc::new(NativeDemandReadMeter::new(restoration_work()));
     let waiter = tokio::spawn(host_io(
         Some(lock),
         crate::NativeMaterializationWork::from_meter(Arc::clone(&original)),

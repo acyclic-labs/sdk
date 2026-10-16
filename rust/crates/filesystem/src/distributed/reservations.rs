@@ -76,6 +76,7 @@ fn digest(
         .ok_or(crate::WorkError::Overflow)?;
     for condition in &request.conditions {
         let (path, scalar) = match condition {
+            CommitCondition::Head { path, .. } => (path, 40),
             CommitCondition::Tail { path, .. } => (path, 8),
             CommitCondition::Absent { path } => (path, 0),
         };

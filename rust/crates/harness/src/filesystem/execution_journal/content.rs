@@ -304,7 +304,11 @@ where
                 }
                 let mut work = io.history_io();
                 self.verifier.verify(&self.scope, &mut Some(&mut work))?;
-                if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
+                if !io.contains_capability(
+                    self.scope.capabilities(),
+                    reference,
+                    acyclic_fs::access::FILE_READ_PREFIX,
+                )? {
                     return Err(canonical_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Unauthorized,

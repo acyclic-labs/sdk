@@ -1,0 +1,1 @@
+{"kind":"modified","binary":false,"added":1,"removed":1,"hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":1}],"patch":"--- original\n+++ modified\n@@ -1 +1 @@\n-a\n+b\n"}

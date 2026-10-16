@@ -545,12 +545,12 @@ where
                         let directory = io.contains_capability(
                             context.scope().grants(),
                             &(volume, granted_prefix),
-                            "directory:read:",
+                            acyclic_fs::access::DIRECTORY_READ_PREFIX,
                         )?;
                         let whole_volume = io.contains_capability(
                             context.scope().grants(),
                             volume,
-                            "volume:read:",
+                            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                         )?;
                         if !directory && !whole_volume {
                             return Err(Error::NativeBoundary {
@@ -588,7 +588,11 @@ pub(in crate::filesystem) fn require_file_read(
             "internal storage file is not public content",
         ));
     }
-    if io.contains_capability(scope.capabilities(), reference.volume(), "volume:read:")? {
+    if io.contains_capability(
+        scope.capabilities(),
+        reference.volume(),
+        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+    )? {
         return Ok(());
     }
     if internal_owner {
@@ -598,7 +602,11 @@ pub(in crate::filesystem) fn require_file_read(
             "volume operation is not granted",
         ));
     }
-    if io.contains_capability(scope.capabilities(), reference, "file:read:")? {
+    if io.contains_capability(
+        scope.capabilities(),
+        reference,
+        acyclic_fs::access::FILE_READ_PREFIX,
+    )? {
         return Ok(());
     }
     if !internal
@@ -608,7 +616,7 @@ pub(in crate::filesystem) fn require_file_read(
         if io.contains_capability(
             scope.capabilities(),
             &(reference.volume(), ""),
-            "directory:read:",
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
         )? {
             return Ok(());
         }
@@ -620,7 +628,7 @@ pub(in crate::filesystem) fn require_file_read(
             if io.contains_capability(
                 scope.capabilities(),
                 &(reference.volume(), prefix),
-                "directory:read:",
+                acyclic_fs::access::DIRECTORY_READ_PREFIX,
             )? {
                 return Ok(());
             }

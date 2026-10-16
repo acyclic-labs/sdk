@@ -11,19 +11,9 @@ pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
             length = length.checked_add(1)?;
         }
         let wide = std::slice::from_raw_parts(pointer.0, length);
-        let host_path = PathBuf::from(std::ffi::OsString::from_wide(wide));
-        let mut path = MountPath::root();
-        for component in host_path.components() {
-            let std::path::Component::Normal(component) = component else {
-                return None;
-            };
-            let bytes = component
-                .encode_wide()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>();
-            path = path.child(bytes);
-        }
-        Some(path)
+        Some(MountPath {
+            components: super::callback_path::components(wide)?,
+        })
     }
 }
 
@@ -222,17 +212,14 @@ pub(super) fn capture_missing_host_ancestors(
 
 pub(super) struct MetadataProbeGuard<'a> {
     pub(super) probes: &'a Mutex<HashMap<MountPath, usize>>,
-    pub(super) path: MountPath,
+    pub(super) path: &'a MountPath,
 }
 
 impl<'a> MetadataProbeGuard<'a> {
-    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> Self {
+    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &'a MountPath) -> Self {
         let mut active = lock_recover(probes);
         *active.entry(path.clone()).or_default() += 1;
-        Self {
-            probes,
-            path: path.clone(),
-        }
+        Self { probes, path }
     }
 
     pub(super) fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
@@ -245,12 +232,12 @@ impl<'a> MetadataProbeGuard<'a> {
 impl Drop for MetadataProbeGuard<'_> {
     fn drop(&mut self) {
         let mut active = lock_recover(self.probes);
-        let Some(count) = active.get_mut(&self.path) else {
+        let Some(count) = active.get_mut(self.path) else {
             return;
         };
         *count -= 1;
         if *count == 0 {
-            active.remove(&self.path);
+            active.remove(self.path);
         }
     }
 }

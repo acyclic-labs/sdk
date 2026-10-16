@@ -406,7 +406,9 @@ impl StreamProvider for BrowserStream {
                 loop {
                     let record = provider
                         .with_provider(async |memory| {
-                            memory.next_follow_record(&path, &mut cursor).await
+                            memory
+                                .next_checked_record(&path, &mut cursor, &mut None)
+                                .await
                         })
                         .await?;
                     if let Some(record) = record {

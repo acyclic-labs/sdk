@@ -30,6 +30,7 @@ mod commit;
 mod completion;
 mod coordinator;
 mod journal;
+mod observe;
 mod proof;
 mod results;
 mod scheduling;
