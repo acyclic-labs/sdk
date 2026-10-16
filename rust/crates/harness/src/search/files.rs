@@ -12,7 +12,10 @@ use std::sync::Arc;
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SearchOutcome {
     /// The provider returned the normalized, ranked sources.
-    Succeeded { response: SearchResponse },
+    Succeeded {
+        /// Ranked, normalized sources returned by the provider.
+        response: SearchResponse,
+    },
     /// The request or the complete provider response was definitively rejected.
     Rejected,
     /// A known failure occurred before a successful result could be published.
