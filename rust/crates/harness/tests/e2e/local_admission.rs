@@ -23,6 +23,7 @@ pub(super) async fn submit(
     };
     let resolution: CommandResolution = serde_json::from_slice(&request.bytes)?;
     if request.key != key
+        || request.channel.is_some()
         || resolution
             != (CommandResolution::Prompt {
                 text: prompt.into(),
