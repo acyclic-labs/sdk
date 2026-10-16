@@ -323,13 +323,22 @@ async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
     let (packet, guard) = packet.into_parts();
     drop(packet);
     drop(guard);
+    assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
+    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+    // Preparation may grow the provider's funded retained-entry buffer. Its
+    // allocation belongs to the open provider, not the abandoned worker.
+    let terminal = Arc::downgrade(&provider.inner);
+    drop(provider);
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while meter.held.load(Ordering::SeqCst) != 0 {
             tokio::task::yield_now().await;
         }
     })
     .await?;
-    assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
+    assert!(
+        terminal.upgrade().is_none(),
+        "abandoned worker retained the provider"
+    );
     assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
     Ok(())

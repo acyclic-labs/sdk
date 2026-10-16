@@ -3,6 +3,7 @@ use sdk_docs::rustdoc_profiles::{
     api_owner_for_package, extract_owned_api, observe_rustdoc, project_into_docs,
     validate_rustdoc_version, ApiOwnerKind, ProfileId, ProfileSpec,
 };
+use sdk_docs::CommandOutput;
 use sdk_docs::{
     build_data, merge_profile_catalog, scenarios, write_bundle, write_bundle_files, BuildInput,
     Channel, GeneratedSource, PackageMetadata,
@@ -29,10 +30,11 @@ mod toolchains;
 use toolchains::*;
 mod artifacts;
 mod cache_record;
-mod file_cache;
-mod shared_cache;
 #[path = "../../sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
+mod file_cache;
+mod shared_cache;
+mod source_selection;
 pub use artifacts::materialize_generated_sources;
 use artifacts::*;
 use file_cache::rustdoc_digest;
@@ -129,8 +131,7 @@ pub fn run(
     values: impl IntoIterator<Item = String>,
     stdout: &mut dyn Write,
 ) -> Result<(), CliError> {
-    file_cache::begin_run();
-    sdk_docs::with_rustdoc_cache(|| run_inner(values, stdout))
+    file_cache::with_run(|| sdk_docs::with_rustdoc_cache(|| run_inner(values, stdout)))
 }
 
 fn run_inner(

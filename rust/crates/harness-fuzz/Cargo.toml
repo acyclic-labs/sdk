@@ -280,3 +280,11 @@ path = "fuzz_targets/provider_scenario.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "model_request"
+path = "fuzz_targets/model_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false

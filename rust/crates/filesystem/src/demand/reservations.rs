@@ -9,6 +9,14 @@ impl DemandWork {
         }
         self.reconcile_cancellation_registry()?;
         self.check()?;
+        self.reserve_reconciled(maximum)
+    }
+    // The caller has reconciled and checked the original context under the same leaf.
+    // Keep the resource transaction atomic with the original reservation.
+    pub(crate) fn reserve_reconciled(&mut self, maximum: WorkCounters) -> Result<(), DemandError> {
+        if maximum.peak_allocation_bytes != 0 || maximum.allocation_operations != 0 {
+            return Err(DemandError::InvalidRequest);
+        }
         let resource = self.resource();
         let mut reserve = || {
             self.work.admit(&maximum, &self.budget)?;

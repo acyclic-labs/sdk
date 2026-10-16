@@ -1,7 +1,11 @@
 #[cfg(acyclic_sdk_docs_loom)]
-use loom::{sync::Arc, thread};
+pub(crate) use loom::sync::Arc;
+#[cfg(acyclic_sdk_docs_loom)]
+use loom::thread;
 #[cfg(not(acyclic_sdk_docs_loom))]
-use std::{sync::Arc, thread};
+pub(crate) use std::sync::Arc;
+#[cfg(not(acyclic_sdk_docs_loom))]
+use std::thread;
 
 // Callers provide disjoint outputs. No lock is held while spawning or joining;
 // worker initialization uses the existing leaf slots. Join every worker before

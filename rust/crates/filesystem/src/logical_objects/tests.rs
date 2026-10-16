@@ -190,3 +190,6 @@ proptest::proptest! {
         })?;
     }
 }
+
+#[path = "decoded.rs"]
+mod decoded;

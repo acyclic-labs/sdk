@@ -21,6 +21,7 @@ flate2 = "1"
 tempfile = "=3.27.0"
 
 [dev-dependencies]
+sdk-docs = { path = "../sdk-docs", features = ["test-support"] }
 proptest = "=1.11.0"
 toml = "=0.9.8"
 

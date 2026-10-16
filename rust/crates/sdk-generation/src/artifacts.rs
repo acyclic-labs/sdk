@@ -111,13 +111,17 @@ pub(super) fn validate_published_coverage(
 }
 
 pub(super) fn canonical(path: &Path) -> Result<PathBuf, CliError> {
-    path.canonicalize().map_err(io_error)
+    absolute(path)?.canonicalize().map_err(io_error)
 }
 pub(super) fn absolute(path: &Path) -> Result<PathBuf, CliError> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
-        Ok(env::current_dir().map_err(io_error)?.join(path))
+        Ok(sdk_docs::command_directory()
+            .map(Ok)
+            .unwrap_or_else(env::current_dir)
+            .map_err(io_error)?
+            .join(path))
     }
 }
 pub(super) fn path_string(path: &Path) -> String {
@@ -767,7 +771,7 @@ pub(super) fn git_revision(root: &Path) -> Result<String, CliError> {
     let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["rev-parse", "HEAD"])
-        .output()
+        .run_output()
         .map_err(io_error)?;
     if !output.status.success() {
         return Err(CliError("git rev-parse HEAD failed".into()));
@@ -783,7 +787,7 @@ pub(super) fn git_dirty(root: &Path) -> Result<bool, CliError> {
     let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["status", "--porcelain"])
-        .output()
+        .run_output()
         .map_err(io_error)?;
     Ok(!output.status.success() || !output.stdout.is_empty())
 }

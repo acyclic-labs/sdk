@@ -115,7 +115,7 @@ pub(super) fn finish_regular_capture(
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &after)?;
     let current = source_root
-        .stat(host_path, &mut meter.clone())
+        .stat_source(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &current)?;
     meter.clone().check().map_err(capture_demand_error)

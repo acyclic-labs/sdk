@@ -2,6 +2,7 @@ use super::{
     observe_binary_rustdoc, observe_rustdoc, package_by_name, ProfileError, ProfileSpec,
     RustdocObservation,
 };
+use crate::CommandOutput;
 use cargo_metadata::{Metadata, MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,6 +77,9 @@ impl CargoExecutionContext<'_> {
             }
         }
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
+        if let Some(directory) = crate::command_directory() {
+            command.current_dir(directory);
+        }
         if let Some(cargo) = self.cargo_path {
             command.cargo_path(cargo);
         }
@@ -93,10 +97,8 @@ pub fn load_metadata(
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
     context.configure_metadata(&mut command)?;
-    command
-        .no_deps()
-        .manifest_path(manifest.as_ref())
-        .exec()
+    command.no_deps().manifest_path(manifest.as_ref());
+    crate::execute_metadata(&command)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("cargo metadata failed: {error}")))
 }
 
@@ -136,7 +138,7 @@ fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     crate::command("rustup")
         .env("RUSTUP_AUTO_INSTALL", "0")
         .args(args)
-        .output()
+        .run_output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
 }
 
@@ -145,7 +147,7 @@ fn compiler_probe(rustc: &Path, args: &[&str]) -> Result<String, ProfileError> {
     PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let output = crate::command(rustc)
         .args(args)
-        .output()
+        .run_output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
     if !output.status.success() {
         return Err(ProfileError::InvalidRustdoc(format!(
@@ -382,7 +384,7 @@ pub fn execute_profile(
     }
     context.configure(&mut command)?;
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
-    let output = command.output().map_err(|error| {
+    let output = command.run_output().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
             "could not start Cargo for {}: {error}",
             profile.id().0
@@ -460,7 +462,7 @@ fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
         let output = crate::command(std::env::current_exe().unwrap())
             .args(["--exact", thread.name().unwrap(), "--nocapture"])
             .env("SDK_DOCS_PREPARED_CHILD", "1")
-            .output()
+            .run_output()
             .unwrap();
         assert!(
             output.status.success(),

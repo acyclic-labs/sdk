@@ -700,6 +700,8 @@ mod output_bounds;
 mod recovery;
 mod replay;
 mod summary_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,0 +1,6 @@
+{"seed":{"plans/a.md":"abc def"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit",
+  "arguments":{"file":"plans/a.md","old_text":"abc","new_text":"ABC"}},{"type":"event","kind":"completed",
+  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":"ABC def"},"results":{"call":{"name":"edit",
+  "content":{"kind":"json","value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":7,"sha256":[137,
+  42,190,160,167,126,165,210,63,53,183,13,168,166,94,244,54,6,152,79,81,128,24,220,167,95,200,118,169,80,
+  25,181],"media_type":"text/plain"},"display_name":"a.md"}}}}}}}
