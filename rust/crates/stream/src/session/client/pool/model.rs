@@ -1,6 +1,9 @@
 use super::fixture::fixture;
 use super::*;
 
+mod follow_data;
+pub use follow_data::verify_follow_data;
+
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -36,10 +39,12 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 (
                     cursor,
                     Command::Open {
+                        raw: false,
                         id,
                         attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
                         acknowledge: false,
                         kind: Kind::Follow(wire::SessionFollow {
+                            delivery: wire::SessionDelivery::All as i32,
                             path: "healthy".into(),
                             ..Default::default()
                         }),
@@ -139,10 +144,12 @@ pub fn verify_pool_lifetime(fault: u8) {
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
             let command = Command::Open {
+                raw: false,
                 id,
                 attempt_epoch: 0,
                 acknowledge: false,
                 kind: Kind::Follow(wire::SessionFollow {
+                    delivery: wire::SessionDelivery::All as i32,
                     path: "healthy".into(),
                     ..Default::default()
                 }),
@@ -360,10 +367,12 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open {
+            raw: false,
             id: 5,
             attempt_epoch: 0,
             acknowledge: false,
             kind: Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
                 path: "later".into(),
                 ..Default::default()
             }),

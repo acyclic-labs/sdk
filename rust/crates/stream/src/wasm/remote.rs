@@ -9,6 +9,9 @@ pub(super) struct Remote {
     sessions: crate::session::Client,
 }
 impl Remote {
+    pub(super) fn session(&self) -> crate::session::Client {
+        self.sessions.clone()
+    }
     pub(super) fn connections(&self) -> crate::session::Connections {
         self.sessions.connections()
     }

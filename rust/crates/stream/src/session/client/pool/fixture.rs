@@ -69,6 +69,7 @@ pub(in crate::session::client) fn fixture(
             3,
             "good",
             Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
                 path: "healthy".into(),
                 ..Default::default()
             }),
@@ -81,6 +82,8 @@ pub(in crate::session::client) fn fixture(
         pool.routes.insert(
             id,
             Route {
+                raw: false,
+                watermark: None,
                 node: node.into(),
                 attempt_epoch: 0,
                 kind,

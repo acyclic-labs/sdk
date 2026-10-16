@@ -3,6 +3,7 @@
 pub struct WasmStream {
     provider: std::sync::Arc<dyn StreamProvider>,
     connections: Option<crate::session::Connections>,
+    session: Option<crate::session::Client>,
 }
 
 #[wasm_bindgen]
@@ -13,6 +14,7 @@ impl WasmStream {
     pub fn new() -> Self {
         Self {
             connections: None,
+            session: None,
             provider: std::sync::Arc::new(MemoryStream::default()),
         }
     }
@@ -31,6 +33,7 @@ impl WasmStream {
         };
         Ok(Self {
             connections: None,
+            session: None,
             provider: std::sync::Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
@@ -45,6 +48,7 @@ impl WasmStream {
         let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
         Ok(Self {
             connections: Some(remote.connections()),
+            session: Some(remote.session()),
             provider: std::sync::Arc::new(remote),
         })
     }
@@ -58,6 +62,26 @@ impl WasmStream {
             .changed(after)
             .await
             .map_err(js_error)
+    }
+
+    /// Opens a canonical SessionSubscription, yielding encoded SessionFrame data
+    /// and watermarks. Rust owns IDs, ALL/LATEST cursors, anchors and bounded credit.
+    #[wasm_bindgen(js_name = openData)]
+    pub async fn open_data(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        check_command_size(input)?;
+        let subscription = decode::<wire::SessionSubscription>(input)?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?;
+        let frames = session.subscribe(subscription).await.map_err(js_error)?;
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(
+                frames
+                    .map(|frame| frame.map(|frame| frame.encode_to_vec()))
+                    .boxed_local(),
+            )),
+        })
     }
 
     /// Executes one finite unary operation over canonical protobuf bytes.

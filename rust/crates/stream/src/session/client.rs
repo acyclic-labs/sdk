@@ -34,8 +34,8 @@ pub use admissions::verify_admission_binding;
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
 pub use pool::model::{
-    verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
-    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_abandoned_reconnect, verify_follow_data, verify_interest_accounting,
+    verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
     verify_terminal_cursor_dial,
 };
 mod progress;
@@ -80,6 +80,7 @@ struct Delivery {
 enum Received {
     Record(crate::Record),
     Child(crate::Child),
+    Frame(wire::SessionFrame),
 }
 enum Command {
     Open {
@@ -87,6 +88,7 @@ enum Command {
         attempt_epoch: u64,
         acknowledge: bool,
         kind: Kind,
+        raw: bool,
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
@@ -97,6 +99,8 @@ struct Route {
     node: String,
     attempt_epoch: u64,
     kind: Kind,
+    raw: bool,
+    watermark: Option<wire::SessionFrame>,
     generation: u64,
     placement_epoch: u64,
     received: u64,
@@ -264,9 +268,13 @@ impl Client {
         Ok(super::runtime::boxed(
             self.open_kind(kind, from, acknowledge)
                 .await?
-                .map(|item| match item? {
-                    Received::Record(record) => Ok(record),
-                    _ => Err(StreamError::Unavailable),
+                .filter_map(|item| {
+                    future::ready(match item {
+                        Ok(Received::Record(record)) => Some(Ok(record)),
+                        Ok(Received::Frame(_)) => None,
+                        Ok(_) => Some(Err(StreamError::Unavailable)),
+                        Err(error) => Some(Err(error)),
+                    })
                 }),
         ))
     }
@@ -281,12 +289,14 @@ impl Client {
             limit: request.limit,
         });
         Ok(super::runtime::boxed(
-            self.open_kind(kind, 0, true)
-                .await?
-                .map(|item| match item? {
-                    Received::Child(child) => Ok(child),
-                    _ => Err(StreamError::Unavailable),
-                }),
+            self.open_kind(kind, 0, true).await?.filter_map(|item| {
+                future::ready(match item {
+                    Ok(Received::Child(child)) => Some(Ok(child)),
+                    Ok(Received::Frame(_)) => None,
+                    Ok(_) => Some(Err(StreamError::Unavailable)),
+                    Err(error) => Some(Err(error)),
+                })
+            }),
         ))
     }
     async fn open_kind(
@@ -295,23 +305,64 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<BoxProviderStream<'static, Result<Received, StreamError>>, StreamError> {
-        let (records, receiver) = mpsc::channel(QUEUE);
+        self.open_subscription(
+            kind,
+            wire::SessionCursor {
+                next: from,
+                opaque: Bytes::new(),
+            },
+            acknowledge,
+            false,
+        )
+        .await
+    }
+
+    /// Follows canonical ALL/LATEST data and standalone watermarks on the shared pool.
+    /// Credit is returned only as frames are consumed or the subscription is dropped.
+    pub async fn subscribe(
+        &self,
+        subscription: wire::SessionSubscription,
+    ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
+    {
+        if subscription.channel.is_some() {
+            return Err(StreamError::InvalidArgument);
+        }
+        let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
+        let kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
+        match &kind {
+            Kind::Follow(follow) => wire_codec::session::validate_follow(follow, &resume)?,
+            Kind::Children(request) => {
+                wire_codec::children_from_wire(request.clone())?;
+            }
+            _ => return Err(StreamError::Unsupported),
+        }
+        Ok(super::runtime::boxed(
+            self.open_subscription(kind, resume, true, true)
+                .await?
+                .map(|item| match item? {
+                    Received::Frame(frame) => Ok(frame),
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
+    }
+
+    async fn open_subscription(
+        &self,
+        kind: Kind,
+        resume: wire::SessionCursor,
+        acknowledge: bool,
+        raw: bool,
+    ) -> Result<BoxProviderStream<'static, Result<Received, StreamError>>, StreamError> {
+        let (records, receiver) = mpsc::channel(QUEUE + usize::from(raw));
         let (ready, opened) = oneshot::channel();
         let preceding = match &kind {
-            Kind::Follow(follow) => wire_codec::session::preceding_follow(
-                follow,
-                &wire::SessionCursor {
-                    next: from,
-                    opaque: Bytes::new(),
-                },
-            )?
-            .map(|id| *id.as_bytes()),
+            Kind::Follow(follow) => {
+                wire_codec::session::preceding_follow(follow, &resume)?.map(|id| *id.as_bytes())
+            }
             _ => None,
         };
-        let progress = Arc::new(match preceding {
-            Some(preceding) => Progress::with_preceding(from, Some(preceding)),
-            None => Progress::new(from),
-        });
+        let progress = Arc::new(Progress::from_cursor(resume, preceding));
+        let latest = matches!(&kind, Kind::Follow(follow) if follow.delivery == wire::SessionDelivery::Latest as i32);
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -324,6 +375,7 @@ impl Client {
                     attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
                     acknowledge,
                     kind,
+                    raw,
                     progress,
                     records,
                     ready,
@@ -349,7 +401,7 @@ impl Client {
         operation.record("registration", "opened");
         Ok(super::runtime::boxed(operation.scope(stream::try_unfold(
             cursor,
-            |mut cursor| async move {
+            move |mut cursor| async move {
                 loop {
                     let delivery = match cursor
                         .receiver
@@ -376,6 +428,29 @@ impl Client {
                             delivery.sequence,
                             &delivery.opaque,
                         )?,
+                        Received::Frame(frame) => match &frame.body {
+                            Some(Body::Data(data)) if latest => cursor.progress.consume_latest(
+                                delivery.generation,
+                                data.after.as_ref().ok_or(StreamError::Unavailable)?.next,
+                            )?,
+                            Some(Body::Data(data)) => match data.item.as_ref() {
+                                Some(Item::Record(record)) => cursor.progress.consume_record(
+                                    delivery.generation,
+                                    delivery.sequence,
+                                    *wire_codec::commit_id(&record.commit_id)?.as_bytes(),
+                                )?,
+                                Some(Item::Child(_)) => cursor.progress.consume_opaque(
+                                    delivery.generation,
+                                    delivery.sequence,
+                                    &delivery.opaque,
+                                )?,
+                                _ => return Err(StreamError::Unavailable),
+                            },
+                            Some(Body::Watermark(_)) => {
+                                cursor.progress.current(delivery.generation)?
+                            }
+                            _ => return Err(StreamError::Unavailable),
+                        },
                     };
                     drop(delivery.credit);
                     if fresh {

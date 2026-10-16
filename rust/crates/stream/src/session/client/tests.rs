@@ -13,6 +13,7 @@ mod checked;
 mod connections;
 mod context;
 mod credentials;
+mod data;
 mod isolation;
 mod lifecycle;
 mod outbound;

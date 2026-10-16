@@ -89,7 +89,9 @@ impl Future for Change<'_> {
 }
 impl Drop for Change<'_> {
     fn drop(&mut self) {
-        let retired = self.id.and_then(|id| self.connections.0.lock().ok()?.waiters.remove(&id));
+        let retired = self
+            .id
+            .and_then(|id| self.connections.0.lock().ok()?.waiters.remove(&id));
         drop(retired);
     }
 }
@@ -122,7 +124,11 @@ pub fn verify_connections(omit_wake: bool) {
                 "connection publication lost its wakeup"
             );
         }
-        let result = if parked { change.as_mut().poll(&mut cx) } else { first };
+        let result = if parked {
+            change.as_mut().poll(&mut cx)
+        } else {
+            first
+        };
         assert!(matches!(result, Poll::Ready(Ok(1))));
         drop(change);
         let mut cancelled = Box::pin(connections.changed(1));
