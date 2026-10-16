@@ -62,13 +62,25 @@ impl ClientQuery {
         F: for<'a> std::ops::AsyncFnMut(&'a Change) -> Result<()>,
     {
         let views = &mut self.views;
-        self.subscription
+        let mut rejected = false;
+        let result = self
+            .subscription
             .publish_next(async |change| {
-                let apply = views.prepare(change).map_err(query_error)?;
+                let apply = match views.prepare(change) {
+                    Ok(apply) => apply,
+                    Err(error) => {
+                        rejected = true;
+                        return Err(query_error(error));
+                    }
+                };
                 publish(change).await?;
                 apply(views).map_err(query_error)
             })
-            .await
+            .await;
+        if rejected {
+            self.subscription.discard_rejected();
+        }
+        result
     }
 
     /// Resumes matching views directly, or atomically installs a validated reset

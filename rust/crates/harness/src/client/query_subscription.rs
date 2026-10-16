@@ -68,6 +68,10 @@ impl QuerySubscription {
         self.reset
     }
 
+    pub fn discard_rejected(&mut self) {
+        self.pending = None;
+    }
+
     pub async fn wait_next(&mut self) -> Result<()> {
         if self.pending.is_none() {
             self.pending = Some(

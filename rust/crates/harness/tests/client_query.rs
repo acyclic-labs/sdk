@@ -300,7 +300,67 @@ async fn validation_and_quota_failures_precede_publication() -> Result<()> {
     Ok(())
 }
 
+async fn rejected_frame_recovers(payload: &[u8], misclassify_as_output_failure: bool) -> bool {
+    let old = volume().await;
+    let limits = QueryViewLimits {
+        bytes: payload.len() as u64 - u64::from(!misclassify_as_output_failure),
+        ..LIMITS
+    };
+    let mut query = ClientQuery::open(&old, Query::Root, None, limits)
+        .await
+        .unwrap();
+    let before = query.cursor().clone();
+    put(&old, &Write::new(FileKey::Goal, payload.to_vec())).await;
+    let mut attempts = 0;
+    assert!(
+        query
+            .publish_next(async |_| {
+                attempts += 1;
+                // Broken classification: treat validation failure as a publication error.
+                Err(Error::Storage(
+                    "rejected frame misclassified as output failure".into(),
+                ))
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(attempts, usize::from(misclassify_as_output_failure));
+    assert_eq!(query.cursor(), &before);
+    assert_eq!(query.files().count(), 0);
+
+    let replacement = volume().await;
+    put(&replacement, &Write::new(FileKey::Goal, b"x".to_vec())).await;
+    if !query.reconnect(&replacement).await.is_ok_and(|reset| reset) {
+        return false;
+    }
+    assert!(query.reset());
+    assert_eq!(
+        query.file(&FileKey::Goal).unwrap().segments[0].as_ref(),
+        b"x"
+    );
+    put(&replacement, &Write::new(FileKey::Goal, b"y".to_vec())).await;
+    query.publish_next(async |_| Ok(())).await.unwrap();
+    query.file(&FileKey::Goal).unwrap().segments[0].as_ref() == b"y"
+}
+
+#[tokio::test]
+async fn rejected_frame_allows_reconnect_to_a_valid_replacement_history() {
+    assert!(rejected_frame_recovers(b"too large", false).await);
+}
+
+#[tokio::test]
+async fn negative_control_confusing_validation_with_output_failure_blocks_recovery() {
+    assert!(!rejected_frame_recovers(b"too large", true).await);
+}
+
 proptest::proptest! {
+    // Every rejected payload leaves the published cut unchanged and permits a
+    // replacement snapshot followed by valid live delivery.
+    #[test]
+    fn rejected_frames_can_reset(payload in proptest::collection::vec(proptest::num::u8::ANY, 2..64)) {
+        assert!(futures::executor::block_on(rejected_frame_recovers(&payload, false)));
+    }
+
     #[test]
     fn query_inputs_round_trip(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256)) {
         query_inputs::exercise(&bytes);
