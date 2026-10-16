@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 autotests = false
 name = "acyclic-fs"
 version = "0.2.0"
@@ -119,11 +120,9 @@ proptest.workspace = true
 loom = "=0.7.2"
 
 [build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
 icu_casemap.workspace = true
 cc = "1.2.56"
-prost.workspace = true
-prost-types.workspace = true
-tonic-prost-build.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
@@ -179,6 +178,7 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
   "Win32_System_WindowsProgramming",
 ] }
+
 
 [features]
 model-checking = ["dep:loom"]

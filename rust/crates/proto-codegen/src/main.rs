@@ -1,14 +1,12 @@
 //! Repository-local protobuf generator entry point.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 mod native_absence;
 mod native_family;
 mod readonly;
 mod service;
 
-use prost::Message;
-use protoc_gen_prost::GeneratorResultExt;
 
 fn main() -> io::Result<()> {
     let generator = std::env::args().nth(1);
@@ -39,32 +37,5 @@ fn main() -> io::Result<()> {
             .map_err(|error| io::Error::other(error.to_string()))?;
         return serde_json::to_writer(io::stdout(), &facts).map_err(io::Error::other);
     }
-    if generator.as_deref() == Some("rust-projection") {
-        let directory = std::env::args().nth(2).ok_or_else(|| {
-            io::Error::other("rust-projection expects the generated Rust directory")
-        })?;
-        for family in ["objects", "machines"] {
-            for suffix in ["rs", "tonic.rs"] {
-                let name = format!("acyclic/{family}/v1/acyclic.{family}.v1.{suffix}");
-                let source = std::fs::read_to_string(std::path::Path::new(&directory).join(&name))?;
-                for (name, content) in sdk_proto_codegen::rust_projection::project(&name, &source)
-                    .map_err(io::Error::other)?
-                {
-                    std::fs::write(std::path::Path::new(&directory).join(name), content)?;
-                }
-            }
-        }
-        return Ok(());
-    }
-    let mut request = Vec::new();
-    io::stdin().read_to_end(&mut request)?;
-    let response = match generator.as_deref() {
-        Some("prost") => protoc_gen_prost::execute(&request),
-        Some("tonic") => protoc_gen_tonic::execute(&request),
-        _ => return Err(io::Error::other("expected prost or tonic generator")),
-    }
-    .unwrap_codegen_response();
-    let mut encoded = Vec::new();
-    response.encode(&mut encoded).map_err(io::Error::other)?;
-    io::stdout().write_all(&encoded)
+    Err(io::Error::other("expected readonly, native-absence, service or native-family generator"))
 }

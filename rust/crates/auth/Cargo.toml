@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-auth"
 version.workspace = true
 edition.workspace = true
@@ -6,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared capability chain contract and verification"
+
 
 [dependencies]
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
@@ -31,3 +33,6 @@ workspace = true
 [[bench]]
 name = "verify"
 harness = false
+
+[build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }

@@ -1,3 +1,0 @@
-/// Wire payload.
-#[derive(Clone)]
-pub struct Payload { pub bytes: Vec<u8> }

@@ -11,8 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // independently buildable instead of depending on the monorepo layout.
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
-    println!("cargo:rerun-if-changed={proto}");
-    println!("cargo:rerun-if-changed={include}/protocol/v1/protocol.proto");
+    println!("cargo:rerun-if-changed=proto");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");

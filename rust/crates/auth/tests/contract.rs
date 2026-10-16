@@ -63,7 +63,7 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
     let root = tempfile::tempdir()?;
     render(root.path())?;
     let checked_in =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../proto/auth/v1/auth.proto");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proto/auth/v1/auth.proto");
     assert_eq!(
         std::fs::read(root.path().join("auth/v1/auth.proto"))?,
         std::fs::read(checked_in)?
@@ -113,7 +113,7 @@ fn objects_opaque_key_examples() {
 #[test]
 fn packaged_options_are_identical() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let canonical = std::fs::read(root.join("proto/validation/v1/options.proto")).unwrap();
+    let canonical = std::fs::read(root.join("rust/crates/contract-derive/proto/validation/v1/options.proto")).unwrap();
     for copy in [
         "rust/crates/contract-derive/proto/validation/v1/options.proto",
         "rust/crates/stream/proto/validation/v1/options.proto",

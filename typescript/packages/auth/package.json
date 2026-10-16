@@ -12,7 +12,16 @@
       "default": "./generated/proto/auth/v1/auth_pb.js"
     }
   },
-  "files": ["dist", "generated"],
-  "dependencies": { "@bufbuild/protobuf": "2.16.0" },
-  "scripts": { "build": "tsc -b" }
+  "files": [
+    "dist",
+    "generated"
+  ],
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0"
+  },
+  "scripts": {
+    "build": "bun run generate && tsc -b",
+    "generate": "bun ../../../scripts/generate.mjs auth",
+    "prepack": "bun run generate"
+  }
 }

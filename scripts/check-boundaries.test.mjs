@@ -59,7 +59,7 @@ test("literal source credentials, plaintext configuration and private implementa
     ["identity.pem", "-----BEGIN " + "PRIVATE KEY-----"],
     ["example.rs", "use acyclic_" + "internal::client;"],
     ["proto/private/admin.proto", 'syntax = "proto3";'],
-    ["proto/machines/v1/leak.proto", "package vmm." + "fleet.v1;"],
+    ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm." + "fleet.v1;"],
   ];
   for (const [path, content] of cases) {
     const result = scan(t, { [path]: content });

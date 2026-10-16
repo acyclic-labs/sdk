@@ -100,6 +100,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
   let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
   let family, producer, source, revision;
   if (packages[name].family) {
+    run(process.execPath, [join(root, "scripts/generate.mjs"), name]);
     const { nativeFamily } = await import("./native-family.mjs");
     const { createNativeProducer } = await import("./build-native-family.mjs");
     family = nativeFamily(name);

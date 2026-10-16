@@ -35,7 +35,7 @@ bash() {
   return ${harnessStatus}
 }
 bun() {
-  [[ "$#" == 2 && "$1" == run && "$2" == check:generated ]]
+  [[ "$#" == 2 && "$1" == run && "$2" == check:baselines ]]
   while [[ ! -f "$SDK_TEMP_DIR/harness-started" ]]; do sleep 0.01; done
   [[ ! -f "$SDK_TEMP_DIR/harness-done" ]]
   echo generated-complete

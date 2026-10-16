@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-stream"
 version = "0.2.0"
 edition.workspace = true
@@ -19,6 +20,7 @@ crate-type = ["cdylib", "rlib"]
 [[example]]
 name = "http-conformance"
 required-features = ["http"]
+
 
 [features]
 default = ["grpc"]
@@ -65,8 +67,7 @@ rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 
 [build-dependencies]
-protoc-bin-vendored.workspace = true
-tonic-prost-build.workspace = true
+acyclic-proto-build = { version = "=0.2.0", path = "../proto-build" }
 
 [dev-dependencies]
 proptest.workspace = true

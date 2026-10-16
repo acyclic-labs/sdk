@@ -4,11 +4,33 @@
   "private": false,
   "license": "Apache-2.0",
   "description": "Client for Cloud's public Swarm HTTP contract",
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/swarm" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/swarm"
+  },
   "type": "module",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md", "CHANGELOG.md"],
-  "scripts": { "build": "tsc -b", "check:types": "tsc -p tsconfig.type-tests.json", "test": "tsc -b && tsc -p tsconfig.type-tests.json && node --test test/http.test.mjs", "pack:dry": "bun pm pack --dry-run" },
-  "devDependencies": { "typescript": "7.0.2" }
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "bun run generate && tsc -b",
+    "check:types": "tsc -p tsconfig.type-tests.json",
+    "test": "bun run generate && tsc -b && tsc -p tsconfig.type-tests.json && node --test test/http.test.mjs",
+    "pack:dry": "bun pm pack --dry-run",
+    "generate": "bun ../../../scripts/generate.mjs swarm",
+    "prepack": "bun run generate"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
 }

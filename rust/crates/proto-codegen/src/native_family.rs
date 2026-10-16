@@ -165,7 +165,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         command
             .manifest_path(selected.manifest_path.as_std_path())
             .features(CargoOpt::SomeFeatures(features.clone()))
-            .other_options(vec!["--locked".into(), "--offline".into()]);
+            .other_options(vec!["--locked".into()]);
         if no_defaults {
             command.features(CargoOpt::NoDefaultFeatures);
         }
@@ -226,13 +226,14 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "buf.lock",
         "buf.gen.yaml",
         "rust/crates/proto-codegen",
+        "scripts/generate-proto.mjs",
         "scripts/native-family.mjs",
         "scripts/build-native-family.mjs",
         "scripts/assemble-native-family.mjs",
         "scripts/archive-utils.mjs",
         "scripts/build-wasm.mjs",
         "scripts/generate.mjs",
-        "scripts/check-generated.mjs",
+        "scripts/check-baselines.mjs",
         "scripts/generated-bindings.mjs",
         "scripts/ensure-bun.ps1",
         "scripts/ensure-bun.sh",
@@ -243,7 +244,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     for path in [
         format!("scripts/build-{key}-native.mjs"),
         format!("scripts/assemble-{key}-native-package.mjs"),
-        format!("scripts/generated/native-families/{key}.json"),
+        format!("compatibility/native-families/{key}.json"),
         format!("{package_path}/package.json"),
         format!("{package_path}/tsconfig.json"),
         format!("{package_path}/src"),

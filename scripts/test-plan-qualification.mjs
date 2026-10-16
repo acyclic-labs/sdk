@@ -31,9 +31,9 @@ test("packaged conformance copies cover the complete vector inventory", () => {
 });
 
 test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
-  const source = readFileSync("scripts/check-generated.mjs", "utf8");
-  const start = source.indexOf("  for (const [source, packaged] of packagedSourceCopies) {");
-  const end = source.indexOf("  const harnessSuite", start);
+  const source = readFileSync("scripts/check-baselines.mjs", "utf8");
+  const start = source.indexOf("for (const [source, packaged] of packagedSourceCopies) {");
+  const end = source.indexOf("const harnessSuite", start);
   assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
   const guard = source.slice(start, end);
   const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
@@ -114,7 +114,7 @@ test("release lanes cover the Rust workspace, docs crate, and TypeScript workspa
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
   const testCommand = linux.search(/^ +bun run test$/m);
-  const generatedCommand = linux.search(/^ +bun run check:generated \|\| generated_status=\$\?$/m);
+  const generatedCommand = linux.search(/^ +bun run check:baselines \|\| generated_status=\$\?$/m);
   assert.ok(testCommand >= 0, "Linux package lane must run tests");
   assert.ok(generatedCommand > testCommand, "Linux package generated check must follow tests");
 });
