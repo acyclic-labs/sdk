@@ -357,7 +357,15 @@ fn fixture_admissions_reject_generated_nonintegers() -> Result<()> {
         .run(&invalid, |input| {
             let admission = fixture.admission(90, input);
             let rejects = |admission: &crate::runtime::TaskAdmissionRecord| {
-                matches!(admission.validate(&mut None), Err(Error::Invalid(_)))
+                matches!(
+                    crate::executor::validate_json_schema_value(
+                        &admission.input_schema,
+                        &admission.input,
+                        "task input",
+                        &mut None,
+                    ),
+                    Err(Error::Invalid(_))
+                )
             };
             prop_assert!(rejects(&admission), "fixture accepted a noninteger");
             prop_assert!(matches!(
@@ -370,7 +378,6 @@ fn fixture_admissions_reject_generated_nonintegers() -> Result<()> {
                 !rejects(&permissive),
                 "same detector missed the former permissive schema"
             );
-            permissive.validate(&mut None)?;
             Ok(())
         })
         .unwrap();

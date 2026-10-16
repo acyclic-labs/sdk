@@ -64,7 +64,6 @@ async fn releases_all(
     )?;
     io.retain_owned(23)?;
     let before = io.owned_bytes()?;
-    let mut released = true;
     for _ in 0..repetitions {
         if release_list {
             crate::executor::verify_model_contents_scoped(
@@ -87,9 +86,11 @@ async fn releases_all(
             )
             .await?;
         }
-        released &= io.owned_bytes()? == before;
+        if io.owned_bytes()? != before {
+            return Ok(false);
+        }
     }
-    Ok(released)
+    Ok(true)
 }
 
 #[test]
