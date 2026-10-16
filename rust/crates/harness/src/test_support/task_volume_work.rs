@@ -36,6 +36,7 @@ pub(crate) fn examined() {
 
 // The same BTreeMap and access operations as production. Charge iterator items
 // before consumer filters, including entries a full scan eventually discards.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Files<V>(BTreeMap<FileKey, V>);
 
 impl<V> Default for Files<V> {
@@ -65,5 +66,26 @@ impl<V> Files<V> {
         range: R,
     ) -> impl DoubleEndedIterator<Item = (&FileKey, &V)> {
         self.0.range(range).inspect(|_| examined())
+    }
+}
+
+impl<V> FromIterator<(FileKey, V)> for Files<V> {
+    fn from_iter<T: IntoIterator<Item = (FileKey, V)>>(values: T) -> Self {
+        Self(values.into_iter().inspect(|_| examined()).collect())
+    }
+}
+impl<V> Files<V> {
+    pub fn as_map(&self) -> &BTreeMap<FileKey, V> {
+        &self.0
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn remove(&mut self, key: &FileKey) -> Option<V> {
+        examined();
+        self.0.remove(key)
+    }
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&FileKey, &V)> {
+        self.0.iter().inspect(|_| examined())
     }
 }

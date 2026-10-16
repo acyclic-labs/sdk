@@ -237,8 +237,15 @@ fn model_file_view(input: &[u8]) {
         .unwrap();
     let observed = serde_json::to_value(&views).unwrap()["models"].clone();
     assert_eq!(observed.as_array().unwrap().len(), 1);
+    let decoded = serde_json::from_slice::<serde_json::Value>(input);
+    if decoded.is_err() {
+        assert_eq!(
+            observed[0]["model"]["kind"], "invalid",
+            "malformed skipped JSON must invalidate the identity"
+        );
+    }
     if observed[0]["model"]["kind"] == "selected" {
-        if let Ok(request) = serde_json::from_slice::<serde_json::Value>(input) {
+        if let Ok(request) = decoded {
             for field in ["provider", "name", "revision"] {
                 assert_eq!(observed[0]["model"][field], request["model"][field]);
             }
@@ -275,11 +282,62 @@ fn model_file_view(input: &[u8]) {
     cursor.commit = [2; 32];
     views
         .query_change(Change {
-            cursor,
+            cursor: cursor.clone(),
             file: None,
             files: vec![],
-            removed: vec![key],
+            removed: vec![key.clone()],
         })
         .unwrap();
     assert_eq!(views.models().count(), 0);
+    if input.len() > 512 {
+        let bounded_key = FileKey::Task {
+            task: Component::new("task").unwrap(),
+            file: TaskFile::TurnRequest(1),
+        };
+        let valid = br#"{"model":{"provider":"openai","name":"x","revision":"1"}}"#;
+        cursor.position = 3;
+        cursor.accepted = 3;
+        cursor.durable = 3;
+        cursor.commit = [3; 32];
+        let mut bounded = ClientViews::default();
+        bounded
+            .query_snapshot(
+                Query::Root,
+                Snapshot {
+                    generation: Generation {
+                        volume: cursor.volume,
+                        epoch: cursor.epoch,
+                        position: cursor.position,
+                        commit: cursor.commit,
+                    },
+                    cursor: cursor.clone(),
+                    files: vec![
+                        FileValue::new(key.clone(), input.to_vec()),
+                        FileValue::new(bounded_key.clone(), valid.to_vec()),
+                    ],
+                },
+                2,
+                256,
+            )
+            .unwrap();
+        assert_eq!(bounded.models().count(), 2);
+        assert_eq!(
+            serde_json::to_value(bounded.models().find(|row| row.turn == 0).unwrap().model)
+                .unwrap()["kind"],
+            "invalid"
+        );
+        cursor.position = 4;
+        cursor.accepted = 4;
+        cursor.durable = 4;
+        cursor.commit = [4; 32];
+        bounded
+            .query_change(Change {
+                cursor,
+                file: Some(FileValue::new(bounded_key, valid.to_vec())),
+                files: vec![],
+                removed: vec![key],
+            })
+            .unwrap();
+        assert_eq!(bounded.models().count(), 1);
+    }
 }

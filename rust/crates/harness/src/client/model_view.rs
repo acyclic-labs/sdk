@@ -1,10 +1,7 @@
 //! Model identity is a disposable fold over each immutable turn request file.
 use super::{ClientViews, FileQueryView};
-use crate::{
-    model::Model,
-    task_volume::{Component, Cursor, FileKey, FileValue, TaskFile},
-};
-use serde::{Deserialize, Serialize};
+use crate::task_volume::{Component, Cursor, FileKey, FileValue, TaskFile};
+use serde::Serialize;
 
 /// Selected identity from a request; model options and prompt bytes stay in the file.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -25,32 +22,15 @@ pub enum ModelFileView {
 
 impl ModelFileView {
     pub(super) fn from_file(file: &FileValue) -> Self {
-        #[derive(Deserialize)]
-        struct Identity {
-            provider: String,
-            name: String,
-            revision: String,
-        }
-        #[derive(Deserialize)]
-        struct Request {
-            model: Identity,
-        }
-        let Ok(Request { model }) = serde_json::from_slice(&file.bytes) else {
-            return Self::Invalid;
-        };
-        // Reuse model identity validation without decoding/copying request options.
-        match Model::new(
-            model.provider,
-            model.name,
-            model.revision,
-            serde_json::Value::Null,
-        ) {
-            Ok(model) => Self::Selected {
+        #[cfg(feature = "test-support")]
+        crate::test_support::model_view_work::parsed(file.bytes.len());
+        match super::model_identity::read(&file.bytes) {
+            Some(model) => Self::Selected {
                 provider: model.provider,
                 name: model.name,
                 revision: model.revision,
             },
-            Err(_) => Self::Invalid,
+            None => Self::Invalid,
         }
     }
 }

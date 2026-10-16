@@ -284,7 +284,8 @@ async fn live_turn_files_publish_choices_and_reopen_at_the_same_cut() {
 #[test]
 fn invalid_request_identity_never_inherits_an_earlier_selection() {
     for bytes in [
-        br#"{"model":{"provider":"openai","name":"x","revision":"1"},"model":null}"#.as_slice(),
+        br#"{"model":["openai","x","1"]}"#.as_slice(),
+        br#"{"model":{"provider":"openai","name":"x","revision":"1"},"model":null}"#,
         br#"{"model":{"provider":"openai","provider":"gemini","name":"x","revision":"1"}}"#,
         br#"{"model":{"provider":"openai","name":"x","revision":"1"}} trailing"#,
         br#"{"model":{"provider":"openai","name":"x","revision":"\ud800"}}"#,
@@ -318,4 +319,150 @@ fn invalid_request_identity_never_inherits_an_earlier_selection() {
             &ModelFileView::Invalid
         );
     }
+}
+
+fn ignored_request(location: u8, depth: usize, payload: &[u8]) -> Vec<u8> {
+    let value = [vec![b'['; depth], payload.to_vec(), vec![b']'; depth]].concat();
+    let identity = br#""provider":"openai","name":"chosen","revision":"1""#;
+    match location % 3 {
+        0 => [
+            b"{\"model\":{".as_slice(),
+            identity,
+            b",\"options\":",
+            &value,
+            b"}}",
+        ]
+        .concat(),
+        1 => [
+            b"{\"model\":{".as_slice(),
+            identity,
+            b"},\"messages\":",
+            &value,
+            b"}",
+        ]
+        .concat(),
+        _ => [
+            b"{\"model\":{".as_slice(),
+            identity,
+            b"},\"unknown\":",
+            &value,
+            b"}",
+        ]
+        .concat(),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    #[test]
+    fn malformed_ignored_fields_always_clear_selection(location in 0u8..3,depth in 0usize..8,bad in 0usize..3) {
+        let payloads=[br#""\ud800""#.as_slice(),br#""\udfff""#,b"\"bad\xff\""];
+        let bytes=ignored_request(location,depth,payloads[bad]);
+        prop_assert!(serde_json::from_slice::<Value>(&bytes).is_err());
+        let mut views=ClientViews::default();
+        views.query_snapshot(Query::Root,snapshot(cut([5;32],1),&BTreeMap::from([(key("task",0),bytes)])),1,8192)?;
+        prop_assert_eq!(views.models().next().unwrap().model,&ModelFileView::Invalid);
+    }
+
+    #[test]
+    fn oversized_model_rows_do_not_block_other_updates(extra in 513usize..2048,edits in 1u64..8) {
+        let volume=[6;32];
+        let mut files=BTreeMap::from([
+            (key("task",0),request("openai","chosen","1","")),
+            (key("task",1),request("gemini","large","1",&"x".repeat(extra))),
+        ]);
+        let mut views=ClientViews::default();
+        views.query_snapshot(Query::Root,snapshot(cut(volume,1),&files),2,512)?;
+        prop_assert_eq!(views.models().count(),2);
+        prop_assert_eq!(views.models().find(|row|row.turn==1).unwrap().model,&ModelFileView::Invalid);
+        for step in 0..edits {
+            let bytes=request("anthropic","chosen","1",&step.to_string());
+            files.insert(key("task",0),bytes.clone());
+            views.query_change(Change {cursor:cut(volume,step+2),file:Some(FileValue::new(key("task",0),bytes)),files:vec![],removed:vec![]})?;
+            prop_assert_eq!(views.models().next().unwrap().cursor.position,step+2);
+            prop_assert!(matches!(views.models().find(|row|row.turn==0).unwrap().model,ModelFileView::Selected{..}), "selected model was lost");
+            let mut fresh=ClientViews::default();
+            fresh.query_snapshot(Query::Root,snapshot(cut(volume,step+2),&files),2,512)?;
+            prop_assert_eq!(export(&views),export(&fresh));
+        }
+        let bytes=request("gemini","recovered","1","");
+        views.query_change(Change {cursor:cut(volume,edits+2),file:Some(FileValue::new(key("task",1),bytes)),files:vec![],removed:vec![]})?;
+        prop_assert!(matches!(views.models().find(|row|row.turn==1).unwrap().model,ModelFileView::Selected{..}), "selected model was lost");
+        views.query_change(Change {cursor:cut(volume,edits+3),file:None,files:vec![],removed:vec![key("task",1)]})?;
+        prop_assert_eq!(views.models().count(),1);
+    }
+}
+
+#[test]
+fn oversized_follow_preserves_small_rows_and_discards_only_the_large_payload() {
+    use acyclic_harness::client::FileQueryView;
+    let volume = [7; 32];
+    let files = BTreeMap::from([(key("task", 0), request("openai", "chosen", "1", ""))]);
+    let mut view =
+        FileQueryView::from_snapshot(Query::Root, snapshot(cut(volume, 1), &files), 3, 512)
+            .unwrap();
+    let change = || Change {
+        cursor: cut(volume, 2),
+        file: Some(FileValue::new(
+            key("task", 1),
+            request("gemini", "large", "1", &"x".repeat(2048)),
+        )),
+        files: vec![FileValue::new(FileKey::Goal, b"unrelated".to_vec())],
+        removed: vec![],
+    };
+    assert!(view.apply(change()).unwrap());
+    assert!(!view.apply(change()).unwrap());
+    assert_eq!(view.cursor().position, 2);
+    assert_eq!(view.files().len(), 2);
+    assert!(!view.files().contains_key(&key("task", 1)));
+    assert_eq!(
+        view.models().find(|row| row.turn == 1).unwrap().model,
+        &ModelFileView::Invalid
+    );
+    assert!(
+        view.files()
+            .values()
+            .map(|file| file.bytes.len())
+            .sum::<usize>()
+            <= 512
+    );
+    view.apply(Change {
+        cursor: cut(volume, 3),
+        file: Some(FileValue::new(FileKey::Goal, b"next".to_vec())),
+        files: vec![],
+        removed: vec![],
+    })
+    .unwrap();
+    assert_eq!(view.cursor().position, 3);
+    view.apply(Change {
+        cursor: cut(volume, 4),
+        file: None,
+        files: vec![],
+        removed: vec![key("task", 1)],
+    })
+    .unwrap();
+    assert_eq!(view.models().count(), 1);
+}
+
+#[cfg(feature = "test-support")]
+#[path = "client_model_view_work.rs"]
+mod work;
+
+#[test]
+fn skipped_fields_keep_the_json_decoders_recursion_bound() {
+    let bytes = ignored_request(0, 256, b"null");
+    assert!(serde_json::from_slice::<Value>(&bytes).is_err());
+    let mut views = ClientViews::default();
+    views
+        .query_snapshot(
+            Query::Root,
+            snapshot(cut([9; 32], 1), &BTreeMap::from([(key("task", 0), bytes)])),
+            1,
+            8192,
+        )
+        .unwrap();
+    assert_eq!(
+        views.models().next().unwrap().model,
+        &ModelFileView::Invalid
+    );
 }

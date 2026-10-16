@@ -36,3 +36,6 @@ pub fn local_task_stream(
 ) -> std::sync::Arc<acyclic_stream::LocalStream> {
     harness.task_stream()
 }
+
+pub(crate) mod model_view_work;
+pub use model_view_work::measure as measure_model_view_work;
