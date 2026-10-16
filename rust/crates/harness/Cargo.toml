@@ -213,7 +213,7 @@ search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false }
