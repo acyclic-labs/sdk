@@ -81,62 +81,144 @@ fn guarantee(index: u8) -> EffectGuarantee {
     }
 }
 
-fn commit(reducer: &mut Reducer, replay: &mut Reducer, next: &mut u8, action: Action) -> Command {
-    let cmd = command(operation(*next), reducer.revision(), action);
-    *next += 1;
+type History = Vec<(Option<EffectAttemptId>, EffectStatus)>;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    None,
+    WidenRetry,
+    DuplicateAttempt,
+    AcceptStale,
+    ReplayAgain,
+}
+
+fn assert_history(reducer: &Reducer, history: &History) {
+    assert_eq!(
+        reducer.revision(),
+        history.len() as u64,
+        "revision differs from independent history"
+    );
+    let effect = reducer.effect(EffectId::from_bytes([9; 16]));
+    let Some((_, status)) = history.last() else {
+        assert!(effect.is_none());
+        return;
+    };
+    let effect = effect.unwrap();
+    let attempts: Vec<_> = history.iter().filter_map(|(attempt, _)| *attempt).collect();
+    assert_eq!(
+        effect.attempts.len(),
+        attempts.len(),
+        "dispatch attempt count differs from independent history"
+    );
+    assert_eq!(
+        effect.attempts, attempts,
+        "dispatch attempt order differs from independent history"
+    );
+    assert_eq!(
+        &effect.status, status,
+        "status differs from independent history"
+    );
+}
+
+fn commit(
+    reducer: &mut Reducer,
+    replay: &mut Reducer,
+    history: &mut History,
+    fault: Fault,
+    action: Action,
+) -> Command {
+    assert_history(reducer, history);
+    let expected = match &action {
+        Action::PlanEffect { .. } => (None, EffectStatus::Planned),
+        Action::MarkEffectDispatched { attempt_id, .. } => {
+            (Some(*attempt_id), EffectStatus::Dispatched)
+        }
+        Action::ResolveEffect { observation } => (None, observation.status.clone()),
+        _ => unreachable!("only effect transitions are recorded"),
+    };
+    let cmd = command(
+        operation(history.len() as u8 + 1),
+        history.len() as u64,
+        action,
+    );
     let before = reducer.copy(&mut None).unwrap();
     let planned = reducer.plan(&cmd).unwrap();
     assert_eq!(*reducer, before, "effect planning changed state");
     let applied = reducer.apply(&cmd).unwrap();
+    history.push(expected);
+    if fault == Fault::DuplicateAttempt
+        && let Action::MarkEffectDispatched {
+            effect_id,
+            attempt_id,
+        } = &cmd.action
+    {
+        reducer
+            .projection
+            .effects
+            .get_mut(effect_id)
+            .unwrap()
+            .attempts
+            .push(*attempt_id);
+    }
+    assert_history(reducer, history);
     assert_eq!(applied, planned);
     let ApplyResult::Applied { event } = applied else {
         panic!("fresh effect operation replayed")
     };
-    replay.apply_committed(event, &mut None).unwrap();
+    assert_eq!(event.revision, history.len() as u64);
+    replay.apply_committed(event.clone(), &mut None).unwrap();
+    assert_history(replay, history);
     assert_eq!(reducer, replay, "committed effect replay diverged");
-    assert_eq!(restore(reducer, &issuer()).unwrap(), *reducer);
+    let restored = restore(reducer, &issuer()).unwrap();
+    assert_history(&restored, history);
+    assert_eq!(restored, *reducer);
     let settled = reducer.copy(&mut None).unwrap();
     assert!(matches!(
         reducer.apply(&cmd).unwrap(),
         ApplyResult::Replayed { .. }
     ));
+    if fault == Fault::ReplayAgain
+        && matches!(&cmd.action,
+        Action::ResolveEffect { observation } if observation.status == EffectStatus::Indeterminate)
+    {
+        reducer
+            .apply_payload_with_work(&event.payload, event.revision + 1, &mut None)
+            .unwrap();
+        reducer.revision += 1;
+    }
+    assert_eq!(
+        reducer.revision(),
+        history.len() as u64,
+        "exact retry advanced independent history"
+    );
+    assert_history(reducer, history);
     assert_eq!(*reducer, settled, "exact effect retry changed state");
     cmd
 }
 
-fn plan_effect(
-    reducer: &mut Reducer,
-    replay: &mut Reducer,
-    next: &mut u8,
-    id: EffectId,
-    guarantee: EffectGuarantee,
-    payload: &[u8],
-) {
-    commit(
-        reducer,
-        replay,
-        next,
-        Action::PlanEffect {
-            effect_id: id,
-            provider: "example.provider".into(),
-            guarantee,
-            effect_kind: "example.send".into(),
-            request: request_file(payload).unwrap(),
-            result_schema: schema_file(&json!({"type":"object"})).unwrap(),
-        },
-    );
+fn plan_effect(id: EffectId, guarantee: EffectGuarantee, payload: &[u8]) -> Action {
+    Action::PlanEffect {
+        effect_id: id,
+        provider: "example.provider".into(),
+        guarantee,
+        effect_kind: "example.send".into(),
+        request: request_file(payload).unwrap(),
+        result_schema: schema_file(&json!({"type":"object"})).unwrap(),
+    }
 }
 
-fn rejected(reducer: &mut Reducer, id: u8, action: Action) {
+fn rejected(reducer: &mut Reducer, history: &History, id: u8, action: Action) {
+    assert_history(reducer, history);
     let before = reducer.copy(&mut None).unwrap();
-    let cmd = command(operation(id), reducer.revision(), action);
+    let cmd = command(operation(id), history.len() as u64, action);
     assert!(reducer.plan(&cmd).is_err(), "invalid effect was planned");
     assert_eq!(*reducer, before);
     assert!(reducer.apply(&cmd).is_err(), "invalid effect was applied");
     assert_eq!(*reducer, before, "effect rejection changed state");
+    assert_history(reducer, history);
     let mut event = reducer.events.back().unwrap().clone();
     event.operation_id = cmd.operation_id;
-    event.revision = reducer.revision() + 1;
+    event.revision = history.len() as u64 + 1;
     event.intent_digest = crate::executor::json::canonical_json_digest(
         &cmd,
         crate::store::default_projection_read_limits().maximum_bytes,
@@ -164,6 +246,7 @@ fn rejected(reducer: &mut Reducer, id: u8, action: Action) {
         "invalid authenticated effect event was applied"
     );
     assert_eq!(*reducer, before, "committed effect rejection changed state");
+    assert_history(reducer, history);
 }
 
 fn attestation_fields(payload: &[u8], key_byte: usize, bit: u8, use_original: bool) {
@@ -173,19 +256,19 @@ fn attestation_fields(payload: &[u8], key_byte: usize, bit: u8, use_original: bo
     let attempt = EffectAttemptId::from_bytes([10; 16]);
     let mut reducer = reducer_fixture();
     let mut replay = reducer_fixture();
-    let mut next = 1;
-    plan_effect(
+    let mut history = Vec::new();
+    commit(
         &mut reducer,
         &mut replay,
-        &mut next,
-        id,
-        EffectGuarantee::IdempotentRetry,
-        payload,
+        &mut history,
+        Fault::None,
+        plan_effect(id, EffectGuarantee::IdempotentRetry, payload),
     );
     commit(
         &mut reducer,
         &mut replay,
-        &mut next,
+        &mut history,
+        Fault::None,
         Action::MarkEffectDispatched {
             effect_id: id,
             attempt_id: attempt,
@@ -228,6 +311,7 @@ fn attestation_fields(payload: &[u8], key_byte: usize, bit: u8, use_original: bo
         );
         rejected(
             &mut reducer,
+            &history,
             200,
             Action::ResolveEffect {
                 observation: candidate,
@@ -237,25 +321,33 @@ fn attestation_fields(payload: &[u8], key_byte: usize, bit: u8, use_original: bo
     commit(
         &mut reducer,
         &mut replay,
-        &mut next,
+        &mut history,
+        Fault::None,
         Action::ResolveEffect {
             observation: original,
         },
     );
 }
 
-fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, widen_retry: bool) {
+fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, fault: Fault) {
     let guarantee = guarantee(index);
     let id = EffectId::from_bytes([9; 16]);
     let mut reducer = reducer_fixture();
     let mut replay = reducer_fixture();
-    let mut next = 1;
-    plan_effect(&mut reducer, &mut replay, &mut next, id, guarantee, payload);
+    let mut history = Vec::new();
+    commit(
+        &mut reducer,
+        &mut replay,
+        &mut history,
+        fault,
+        plan_effect(id, guarantee, payload),
+    );
     let mut attempt = EffectAttemptId::from_bytes([10; 16]);
     commit(
         &mut reducer,
         &mut replay,
-        &mut next,
+        &mut history,
+        fault,
         Action::MarkEffectDispatched {
             effect_id: id,
             attempt_id: attempt,
@@ -274,19 +366,31 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, wide
         commit(
             &mut reducer,
             &mut replay,
-            &mut next,
+            &mut history,
+            fault,
             Action::ResolveEffect { observation },
         );
+        if guarantee == EffectGuarantee::IdempotentRetry {
+            rejected(
+                &mut reducer,
+                &history,
+                200,
+                Action::MarkEffectDispatched {
+                    effect_id: id,
+                    attempt_id: attempt,
+                },
+            );
+        }
         let before = reducer.copy(&mut None).unwrap();
-        if widen_retry {
+        if fault == Fault::WidenRetry {
             reducer.projection.effects.get_mut(&id).unwrap().guarantee =
                 EffectGuarantee::IdempotentRetry;
         }
         let previous_attempt = attempt;
         let next_attempt = EffectAttemptId::from_bytes([20 + round as u8; 16]);
         let cmd = command(
-            operation(next),
-            reducer.revision(),
+            operation(history.len() as u8 + 1),
+            history.len() as u64,
             Action::MarkEffectDispatched {
                 effect_id: id,
                 attempt_id: next_attempt,
@@ -300,10 +404,10 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, wide
         );
         if guarantee != EffectGuarantee::IdempotentRetry {
             assert_eq!(reducer, before);
-            rejected(&mut reducer, next, cmd.action);
+            rejected(&mut reducer, &history, history.len() as u8 + 1, cmd.action);
             break;
         }
-        commit(&mut reducer, &mut replay, &mut next, cmd.action);
+        commit(&mut reducer, &mut replay, &mut history, fault, cmd.action);
         attempt = next_attempt;
         let stale = issuer()
             .attest_effect(
@@ -321,13 +425,46 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, wide
             .unwrap()
             .verify_effect(&stale, &mut None)
             .unwrap();
+        let expected_attempt = history
+            .iter()
+            .rev()
+            .find_map(|(attempt, _)| *attempt)
+            .unwrap();
+        assert_eq!(expected_attempt, attempt);
+        assert_ne!(
+            stale.attempt_id, expected_attempt,
+            "stale probe used the latest attempt"
+        );
+        if fault == Fault::AcceptStale {
+            *reducer
+                .projection
+                .effects
+                .get_mut(&id)
+                .unwrap()
+                .attempts
+                .last_mut()
+                .unwrap() = previous_attempt;
+        }
+        let stale_command = command(
+            operation(200),
+            history.len() as u64,
+            Action::ResolveEffect {
+                observation: stale.clone(),
+            },
+        );
+        assert!(
+            reducer.plan(&stale_command).is_err(),
+            "stale attempt was accepted"
+        );
         rejected(
             &mut reducer,
+            &history,
             200,
             Action::ResolveEffect { observation: stale },
         );
         rejected(
             &mut reducer,
+            &history,
             200,
             Action::MarkEffectDispatched {
                 effect_id: id,
@@ -356,15 +493,22 @@ fn effect_history(index: u8, retries: usize, payload: &[u8], success: bool, wide
     commit(
         &mut reducer,
         &mut replay,
-        &mut next,
+        &mut history,
+        fault,
         Action::ResolveEffect {
             observation: observation.clone(),
         },
     );
     assert_eq!(reducer.effect(id).unwrap().status, status);
-    rejected(&mut reducer, 200, Action::ResolveEffect { observation });
     rejected(
         &mut reducer,
+        &history,
+        200,
+        Action::ResolveEffect { observation },
+    );
+    rejected(
+        &mut reducer,
+        &history,
         200,
         Action::MarkEffectDispatched {
             effect_id: id,
@@ -389,7 +533,7 @@ proptest! {
     ) {
         for index in 0..3 {
             for success in [false, true] {
-                effect_history(index, retries, &payload, success, false);
+                effect_history(index, retries, &payload, success, Fault::None);
             }
         }
     }
@@ -410,5 +554,23 @@ fn negative_control_detects_authenticating_the_original_observation() {
 #[test]
 #[should_panic(expected = "dispatch crossed a delivery-guarantee boundary")]
 fn negative_control_detects_widening_a_nonretryable_guarantee() {
-    effect_history(1, 1, b"{}", false, true);
+    effect_history(1, 1, b"{}", false, Fault::WidenRetry);
+}
+
+#[test]
+#[should_panic(expected = "dispatch attempt count differs from independent history")]
+fn negative_control_detects_double_appended_dispatch_attempts() {
+    effect_history(0, 1, b"{}", false, Fault::DuplicateAttempt);
+}
+
+#[test]
+#[should_panic(expected = "stale attempt was accepted")]
+fn negative_control_detects_accepting_a_stale_attempt() {
+    effect_history(0, 1, b"{}", false, Fault::AcceptStale);
+}
+
+#[test]
+#[should_panic(expected = "exact retry advanced independent history")]
+fn negative_control_detects_double_applied_exact_retry() {
+    effect_history(0, 1, b"{}", false, Fault::ReplayAgain);
 }
