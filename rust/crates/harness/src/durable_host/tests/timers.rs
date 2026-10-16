@@ -69,8 +69,9 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
                 .map(|_| ()),
         };
         assert!(
-            matches!(rejected, Err(Error::Conflict(_))),
-            "stale entry point {entry} retained a timer"
+            matches!(rejected, Err(Error::Unauthorized(ref reason))
+                if reason == "stale or foreign lease fence"),
+            "unexpected stale entry point {entry} result: {rejected:?}"
         );
         let (tail, found) = f.host.timer_state(task, operation, 1, &mut None).await?;
         assert!(!found);
