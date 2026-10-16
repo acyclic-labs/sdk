@@ -1,6 +1,6 @@
 import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
-import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ReadResponseSchema, RecordBatchSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema, SessionLatestValueSchema } from "../generated/proto/stream/v1/session_pb.js";
 
 export async function test(endpoint: string) {
@@ -42,6 +42,19 @@ export async function test(endpoint: string) {
   if (latestFrame.body.case !== "data" || latestFrame.body.value.item.case !== "latestValue" || !latestFrame.body.value.item.value.attention) throw new Error("LATEST lost its typed attention value");
   if (allFrame.body.case !== "data" || allFrame.body.value.item.case !== "record") throw new Error("ALL did not preserve the full record");
   if (await (await fetch(`${endpoint}/fixture/connections`)).text() !== "2") throw new Error("ALL and LATEST created another pool");
+  // The response page exceeds a unary budget while every message remains bounded.
+  const payload = new Uint8Array(65_536).fill(7);
+  for (const count of [8, 8, 1]) {
+    await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, {
+      path: "browser/history", records: Array.from({ length: count }, () => payload),
+    })));
+  }
+  const pages = await stream.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "browser/history", from: 0n, limit: 17 })));
+  const records = pages.flatMap(page => fromBinary(RecordBatchSchema, fromBinary(ReadResponseSchema, page).data).records);
+  const exact = records.length === 17 && records.every((record, index) => record.sequence === BigInt(index) && record.value.length === payload.length && record.value[0] === 7);
+  if (!exact) throw new Error("large history was truncated by a unary response budget");
+  const oldUnaryBudget = StreamLimit.MAX_COMMAND_BYTES + 16_384 + 10;
+  if (records.reduce((sum, record) => sum + record.value.length, 0) <= oldUnaryBudget) throw new Error("large-history negative control did not exceed the former aggregate limit");
   follow.close(); sibling.close(); latest.close(); all.close(); stream.free();
-  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"] };
+  return { follows: 4, reconnects: 1, records: 5, modes: ["ALL", "LATEST"], history: records.length };
 }

@@ -74,6 +74,10 @@ pub use query::ClientQuery;
 mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod retry;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use retry::submission_retry;
 pub use file_error::FileClientError;
 mod offline;
 pub use offline::validate_offline_request;

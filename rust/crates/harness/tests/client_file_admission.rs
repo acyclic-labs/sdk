@@ -59,7 +59,7 @@ async fn reject_then_continue(id: u8, checkpoint_failure: bool) {
         );
         assert!(matches!(
             client.flush().await,
-            Err(FileClientError::Harness(_))
+            Err(FileClientError::Unavailable { .. })
         ));
         assert_eq!(
             client.pending(),

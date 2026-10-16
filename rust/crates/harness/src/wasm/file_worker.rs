@@ -6,9 +6,13 @@ use super::{
 use crate::client::mailbox;
 use crate::{
     client::{FileClient, FileClientError},
-    task_volume::{ChangeStream, Cursor, FileKey, Query},
+    task_volume::{Cursor, FileKey, Query},
 };
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{
+    BoxProviderFuture, BoxProviderStream, StreamError, StreamProvider,
+    session::runtime::{Executor, PlatformExecutor},
+    wire,
+};
 use futures::{FutureExt as _, StreamExt as _};
 use std::{
     cell::{Cell, RefCell},
@@ -20,7 +24,8 @@ type Inner = FileClient<dyn StreamProvider, dyn StreamProvider>;
 enum Wake {
     Command(Option<Command>),
     Connected(Result<u64, acyclic_stream::StreamError>),
-    Published(Option<Result<crate::task_volume::Change, crate::task_volume::Error>>),
+    Published(Option<Result<(), StreamError>>),
+    Retry,
 }
 pub(super) enum Command {
     Enqueue {
@@ -42,6 +47,18 @@ impl State {
         *self.cursor.borrow_mut() = inner.cursor().clone();
     }
 }
+fn retry_after(
+    error: Option<&FileClientError>,
+    remote: bool,
+    failures: &mut u32,
+) -> Option<BoxProviderFuture<'static, ()>> {
+    if !remote {
+        return None;
+    }
+    let delay = crate::client::submission_retry(error, failures)?;
+    Some(PlatformExecutor.sleep(delay))
+}
+
 pub(super) async fn start(
     mut inner: Inner,
     target: &WasmTaskVolume,
@@ -49,16 +66,36 @@ pub(super) async fn start(
     let connections = target.connections.clone();
     // A target file follow owns the session while offline intent is retained.
     // It consumes credit without needing a renderer to be attached.
-    let mut changes: ChangeStream = if connections.is_some() {
-        let cursor = target.volume.cut(&Query::Tasks).await.map_err(error)?;
-        target
-            .volume
-            .follow(Query::Tasks, cursor)
-            .await
-            .map_err(error)?
-    } else {
-        Box::pin(futures::stream::pending())
-    };
+    let mut changes: BoxProviderStream<'static, Result<(), StreamError>> =
+        if let Some(session) = &target.session {
+            let cursor = target.volume.cut(&Query::Tasks).await.map_err(error)?;
+            let frames = session
+                .subscribe(wire::SessionSubscription {
+                    channel: None,
+                    resume: Some(wire::SessionCursor {
+                        next: cursor.position,
+                        opaque: Default::default(),
+                    }),
+                    kind: Some(wire::session_subscription::Kind::Follow(
+                        wire::SessionFollow {
+                            path: target.volume.path().to_string(),
+                            delivery: wire::SessionDelivery::All as i32,
+                            preceding_commit_id: if cursor.position == 0 {
+                                Default::default()
+                            } else {
+                                cursor.commit.to_vec().into()
+                            },
+                        },
+                    )),
+                })
+                .await
+                .map_err(error)?;
+            // Records AND standalone watermarks wake the durable outbox. The shared
+            // pool retains cursor validation, fencing and receive credit.
+            Box::pin(frames.map(|frame| frame.map(|_| ())))
+        } else {
+            Box::pin(futures::stream::pending())
+        };
     let state = Rc::new(State {
         pending: Cell::new(inner.pending()),
         cursor: RefCell::new(inner.cursor().clone()),
@@ -68,6 +105,8 @@ pub(super) async fn start(
     let current = state.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let mut generation = 0;
+        let mut failures = 0_u32;
+        let mut retry: Option<BoxProviderFuture<'static, ()>> = None;
         let mut idle: Option<mailbox::Sender<Result<(), JsValue>>> = None;
         loop {
             let event = {
@@ -79,11 +118,19 @@ pub(super) async fn start(
                     }
                 }
                 .fuse();
-                futures::pin_mut!(recovered);
+                let retry_ready = async {
+                    match &mut retry {
+                        Some(deadline) => deadline.await,
+                        None => futures::future::pending().await,
+                    }
+                }
+                .fuse();
+                futures::pin_mut!(recovered, retry_ready);
                 futures::select! {
                     command = receiver.recv().fuse() => Wake::Command(command),
                     connection = recovered => Wake::Connected(connection),
                     change = changes.next().fuse() => Wake::Published(change),
+                    () = retry_ready => Wake::Retry,
                 }
             };
             let automatic = match event {
@@ -99,17 +146,30 @@ pub(super) async fn start(
                                     crate::client::validate_offline_request(&bytes)?;
                                     Ok(bytes.into())
                                 })
-                                .await
-                                .map_err(admission_error);
+                                .await;
+                            if let Some(deadline) = retry_after(
+                                result.as_ref().err(),
+                                connections.is_some(),
+                                &mut failures,
+                            ) {
+                                retry = Some(deadline);
+                            }
                             current.refresh(&inner);
                             let admitted = result.is_ok();
-                            let _ = reply.reply(result);
+                            let _ = reply.reply(result.map_err(admission_error));
                             admitted && connections.is_some()
                         }
                         Command::Flush(reply) => {
-                            let result = inner.flush().await.map_err(admission_error);
+                            let result = inner.flush().await;
+                            if let Some(deadline) = retry_after(
+                                result.as_ref().err(),
+                                connections.is_some(),
+                                &mut failures,
+                            ) {
+                                retry = Some(deadline);
+                            }
                             current.refresh(&inner);
-                            let _ = reply.reply(result);
+                            let _ = reply.reply(result.map_err(admission_error));
                             false
                         }
                         Command::Idle(reply) => {
@@ -135,6 +195,7 @@ pub(super) async fn start(
                         false
                     }
                 },
+                Wake::Retry => true,
                 Wake::Published(change) => {
                     let ended = change.is_none();
                     if let Some(Err(failure)) = change {
@@ -148,14 +209,20 @@ pub(super) async fn start(
             };
             if automatic {
                 // Rejections retire in Rust, then later requests proceed.
-                // Indeterminate publication waits for a pushed recovery.
+                // Indeterminate HTTP publication retries the same immutable identity
+                // with bounded error backoff. Durability waits remain push-driven.
+                retry = None;
                 loop {
                     match inner.flush().await {
-                        Ok(_) => break,
+                        Ok(_) => {
+                            failures = 0;
+                            break;
+                        }
                         Err(failure @ FileClientError::Rejected { .. }) => {
                             *current.error.borrow_mut() = admission_error(failure);
                         }
                         Err(failure) => {
+                            retry = retry_after(Some(&failure), true, &mut failures);
                             *current.error.borrow_mut() = admission_error(failure);
                             break;
                         }

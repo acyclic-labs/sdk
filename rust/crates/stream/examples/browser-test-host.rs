@@ -1,5 +1,7 @@
 //! Local platform host for browser qualification, using the real service and session.
-use acyclic_stream::{MemoryStream, StreamError, grpc, session, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamProvider, grpc, session, wire, wire_codec};
+#[path = "browser-test-host/provider.rs"]
+mod provider;
 use axum::{
     Router,
     extract::{
@@ -11,9 +13,12 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use prost::Message as _;
+use provider::Provider;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 use tower::Layer as _;
@@ -21,7 +26,11 @@ use tower_http::cors::CorsLayer;
 
 #[derive(Clone)]
 struct Host {
-    streams: Arc<MemoryStream>,
+    streams: Arc<Provider>,
+    fail_next: Arc<AtomicUsize>,
+    saved: tokio::sync::watch::Sender<bool>,
+    consumed: Arc<AtomicU64>,
+    consumed_changed: Arc<Notify>,
     disconnect: Arc<Notify>,
     online: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
@@ -30,13 +39,18 @@ struct Host {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = Host {
-        streams: Arc::new(MemoryStream::default()),
+        streams: Arc::new(Provider::default()),
+        fail_next: Arc::new(AtomicUsize::new(0)),
+        saved: tokio::sync::watch::channel(false).0,
+        consumed: Arc::new(AtomicU64::new(0)),
+        consumed_changed: Arc::new(Notify::new()),
         disconnect: Arc::new(Notify::new()),
         online: Arc::new(AtomicBool::new(true)),
         connections: Arc::new(AtomicUsize::new(0)),
         refusals: Arc::new(AtomicUsize::new(0)),
     };
     let online = host.online.clone();
+    let fail_next = host.fail_next.clone();
     let service = wire::stream_service_server::StreamServiceServer::with_interceptor(
         grpc::Service::new(host.streams.clone()),
         move |request: tonic::Request<()>| {
@@ -47,6 +61,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 != Some("Bearer browser-test")
             {
                 return Err(tonic::Status::unauthenticated("test credential"));
+            }
+            if fail_next
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(tonic::Status::unavailable("one failed HTTP request"));
             }
             if !online.load(Ordering::Acquire) {
                 return Err(tonic::Status::unavailable("injected outage"));
@@ -76,6 +98,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host.online.store(true, Ordering::Release);
                 host.refusals.store(4, Ordering::Release);
                 host.disconnect.notify_waiters();
+            }),
+        )
+        .route(
+            "/fixture/fail-next",
+            post(|State(host): State<Host>| async move {
+                host.fail_next.store(1, Ordering::Release);
+            }),
+        )
+        .route(
+            "/fixture/save",
+            post(|State(host): State<Host>| async move {
+                host.streams.saved.store(true, Ordering::Release);
+                let _ = host.saved.send(true);
+            }),
+        )
+        .route(
+            "/fixture/consumed",
+            get(|State(host): State<Host>| async move {
+                loop {
+                    let changed = host.consumed_changed.notified();
+                    if host.consumed.load(Ordering::Acquire) >= 3 {
+                        break;
+                    }
+                    changed.await;
+                }
             }),
         )
         .with_state(host)
@@ -119,6 +166,11 @@ async fn upgrade(
 async fn serve(host: Host, socket: WebSocket) {
     host.connections.fetch_add(1, Ordering::AcqRel);
     let (mut sender, incoming) = socket.split();
+    // Test observation lock only. Never nested or held across I/O/await.
+    let routes = Arc::new(Mutex::new(BTreeMap::<u64, (u64, String, bool, u64)>::new()));
+    let observing = routes.clone();
+    let progress = host.clone();
+    let mut saved = host.saved.subscribe();
     let incoming = incoming
         .filter_map(|message| async move {
             match message {
@@ -127,9 +179,65 @@ async fn serve(host: Host, socket: WebSocket) {
                 _ => Some(Err(StreamError::Unavailable)),
             }
         })
+        .inspect(move |frame| {
+            if let Ok(frame) = frame {
+                let mut routes = observing.lock().expect("test routes poisoned");
+                match &frame.body {
+                    Some(wire::session_frame::Body::Interest(interest)) => {
+                        for remove in &interest.remove {
+                            routes.remove(&remove.channel_id);
+                        }
+                        for subscription in &interest.upsert {
+                            if let (
+                                Some(channel),
+                                Some(wire::session_subscription::Kind::Follow(follow)),
+                            ) = (&subscription.channel, &subscription.kind)
+                            {
+                                routes.insert(
+                                    channel.channel_id,
+                                    (
+                                        channel.generation,
+                                        follow.path.clone(),
+                                        false,
+                                        subscription
+                                            .resume
+                                            .as_ref()
+                                            .map_or(0, |cursor| cursor.next),
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Some(wire::session_frame::Body::Window(window)) => {
+                        if let Some((_, path, opened, next)) = routes.get_mut(&frame.channel_id) {
+                            if *opened {
+                                *next += u64::from(window.frames);
+                                if path == "durable/files" {
+                                    progress.consumed.fetch_max(*next, Ordering::AcqRel);
+                                    progress.consumed_changed.notify_waiters();
+                                }
+                            } else {
+                                *opened = true;
+                            }
+                        }
+                    }
+                    Some(wire::session_frame::Body::Ack(ack))
+                        if routes
+                            .get(&frame.channel_id)
+                            .is_some_and(|(_, path, _, _)| path == "durable/files") =>
+                    {
+                        if let Some(applied) = &ack.applied {
+                            progress.consumed.fetch_max(applied.next, Ordering::AcqRel);
+                            progress.consumed_changed.notify_waiters();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
         .boxed();
     let Ok(mut frames) = session::serve(
-        host.streams,
+        host.streams.clone(),
         "browser-test".into(),
         session::Limits::default(),
         incoming,
@@ -139,6 +247,16 @@ async fn serve(host: Host, socket: WebSocket) {
     loop {
         tokio::select! {
             _ = host.disconnect.notified() => break,
+            changed = saved.changed() => {
+                if changed.is_err() { break; }
+                let subscriptions = routes.lock().expect("test routes poisoned").clone();
+                for (channel_id, (generation, path, _, _)) in subscriptions {
+                    let Ok(marks) = host.streams.watermarks(acyclic_stream::StreamPath::new(path).unwrap()).await else { continue; };
+                    let frame = wire::SessionFrame { channel_id, generation,
+                        body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: marks.accepted, durable: marks.durable })) };
+                    if sender.send(Message::Binary(frame.encode_to_vec().into())).await.is_err() { return; }
+                }
+            },
             frame = frames.next() => match frame {
                 Some(Ok(frame)) => if sender.send(Message::Binary(frame.encode_to_vec().into())).await.is_err() { break; },
                 _ => break,

@@ -261,6 +261,11 @@ impl WasmStream {
     pub fn connections(&self) -> Option<crate::session::Connections> {
         self.connections.clone()
     }
+    /// Shares the platform pool, including standalone durability updates.
+    #[must_use]
+    pub fn session_client(&self) -> Option<crate::session::Client> {
+        self.session.clone()
+    }
     /// Shares the exact provider with higher-level Rust WASM clients.
     #[must_use]
     pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {

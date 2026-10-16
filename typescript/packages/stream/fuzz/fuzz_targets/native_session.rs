@@ -11,6 +11,15 @@ fuzz_target!(|bytes: &[u8]| {
         *to = *from;
     }
     follow_data::exercise(u64::from_le_bytes(next), bytes.len() as u16, bytes, false);
+    let limits = tonic_web_wasm_client::limits::UnaryResponseLimits::new(bytes.len()).unwrap();
+    for text in [false, true] {
+        assert_eq!(limits.body_bytes(true, text), None);
+        assert_eq!(
+            limits.body_bytes(false, text),
+            Some((bytes.len() + 16_384 + 10) * if text { 4 } else { 1 })
+        );
+        assert_eq!(limits.message_bytes(), bytes.len());
+    }
     let generated = acyclic_stream::wire::SessionFrame {
         channel_id: bytes.first().copied().unwrap_or_default() as u64,
         body: Some(acyclic_stream::wire::session_frame::Body::Window(

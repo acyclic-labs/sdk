@@ -14,6 +14,12 @@ pub enum FileClientError {
         /// Target diagnostic, without persisted credentials or command bodies.
         reason: String,
     },
+    /// A transient provider failure; publication may have committed and is retried by identity.
+    #[error("submission unavailable: {reason}")]
+    Unavailable {
+        /// Provider diagnostic, without changing the durable pending state.
+        reason: String,
+    },
     /// The pending command count has reached its configured bound.
     #[error("outbox command quota reached ({limit})")]
     CommandQuota {
@@ -38,4 +44,20 @@ pub enum FileClientError {
 
 fn diagnostic<S: serde::Serializer>(error: &Error, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_str(error)
+}
+
+impl FileClientError {
+    pub(crate) fn publication(error: crate::task_volume::Error) -> Self {
+        use acyclic_stream::StreamError;
+        match error {
+            crate::task_volume::Error::Storage(
+                error @ (StreamError::Unavailable
+                | StreamError::DeadlineElapsed
+                | StreamError::Capacity),
+            ) => Self::Unavailable {
+                reason: error.to_string(),
+            },
+            error => Self::Harness(super::query_error(error)),
+        }
+    }
 }

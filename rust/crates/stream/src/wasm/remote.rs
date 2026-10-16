@@ -21,19 +21,27 @@ impl Remote {
         Ok(Self { endpoint, sessions })
     }
     fn service(&self) -> Service {
-        use tonic_web_wasm_client::{
-            limits::UnaryResponseLimits,
-            options::{FetchOptions, Redirect},
-        };
+        self.service_with_options(tonic_web_wasm_client::options::FetchOptions::new())
+    }
+    fn read_service(&self) -> Service {
+        self.service_with_options(
+            tonic_web_wasm_client::options::FetchOptions::new().streaming_response(),
+        )
+    }
+    fn service_with_options(
+        &self,
+        options: tonic_web_wasm_client::options::FetchOptions,
+    ) -> Service {
+        use tonic_web_wasm_client::options::Redirect;
         Service::new(tonic_web_wasm_client::Client::new_with_options(
             self.endpoint.url.clone(),
-            FetchOptions::new()
-                .redirect(Redirect::Error)
-                .timeout(std::time::Duration::from_secs(1))
+            options
                 .response_limits(
-                    UnaryResponseLimits::new(MAX_COMMAND_BYTES)
+                    tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
                         .expect("fixed positive command bound"),
-                ),
+                )
+                .redirect(Redirect::Error)
+                .timeout(std::time::Duration::from_secs(1)),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)
@@ -172,7 +180,7 @@ impl StreamProvider for Remote {
             limit: request.limit,
         };
         let source = self
-            .service()
+            .read_service()
             .read(self.request(body).await?)
             .await
             .map_err(|e| wire_codec::status(&e))?
@@ -183,7 +191,10 @@ impl StreamProvider for Remote {
             |(mut source, mut next, mut remaining, mut pending)| async move {
                 loop {
                     if let Some(record) = pending.next() {
-                        next += 1;
+                        if record.sequence < next {
+                            continue;
+                        }
+                        next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
                         remaining -= 1;
                         return Ok(Some((record, (source, next, remaining, pending))));
                     }

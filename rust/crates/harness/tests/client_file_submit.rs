@@ -272,7 +272,7 @@ async fn indeterminate_enqueue_preserves_capacity(
     }
     let Err(error) = result else { return false };
     if mode == 2 {
-        assert!(matches!(error, FileClientError::Harness(_)));
+        assert!(matches!(error, FileClientError::Unavailable { .. }));
     } else if byte_quota {
         assert!(matches!(error, FileClientError::ByteQuota { limit: 1 }));
     } else {
