@@ -1,5 +1,17 @@
 use super::*;
 use proptest::prelude::*;
+use serde_json::Value;
+
+fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
+    let field = match adapter {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        _ => "messages",
+    };
+    let generation = crate::projection::wire::Body::fixture(value, field);
+    serde_json::to_value(super::body(generation, model, adapter))
+        .map_err(|_| invalid("fixture encoding failed"))
+}
 
 fn spec(adapter: Adapter) -> TokenCounterSpec {
     TokenCounterSpec {

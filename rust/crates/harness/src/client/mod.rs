@@ -55,6 +55,7 @@ mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
 mod goal_view;
+mod goal_selection;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]
 mod goal_panel;

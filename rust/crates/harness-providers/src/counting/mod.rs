@@ -101,14 +101,8 @@ pub(crate) async fn count(
     let prepared = (|| {
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let generation = serde_json::to_value(projection::body_named(
-            provider,
-            request.request(),
-            &names,
-            &origin,
-        )?)
-        .map_err(|_| crate::invalid("cannot encode token count request"))?;
-        let body = wire::body(generation, &provider.model.name, spec.adapter)?;
+        let generation = projection::body_named(provider, request.request(), &names, &origin)?;
+        let body = wire::body(generation, &provider.model.name, spec.adapter);
         let bytes =
             serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
