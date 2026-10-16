@@ -73,6 +73,7 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 workspace = true
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
 

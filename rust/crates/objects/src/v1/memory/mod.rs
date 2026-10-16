@@ -262,6 +262,7 @@ use publication::*;
 use read::*;
 pub(super) use state::State;
 use state::{Bucket, Receipt, SharedInfo, Stored, Upload, stored_bytes};
+use transaction::{PendingObject, Transaction};
 
 #[cfg(test)]
 mod bootstrap_tests;

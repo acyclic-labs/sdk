@@ -634,6 +634,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "blake3",
