@@ -151,27 +151,9 @@ impl Template {
     }
 
     pub(crate) fn events(&self, references: &References) -> Vec<Event<'static>> {
-        #[cfg(test)]
-        PARSED_BYTES.with(|work| work.set(work.get() + self.source.len()));
-        let mut callback = |link: BrokenLink<'_>| {
-            references
-                .get(&normalize(&link.reference))
-                .map(|_| ("".into(), "".into()))
-        };
-        let mut events: Vec<_> = Parser::new_with_broken_link_callback(
-            &self.source,
-            options(self.paragraph),
-            Some(&mut callback),
-        )
-        .into_offset_iter()
-        .map(|(event, range)| {
-            #[cfg(test)]
-            crate::work::event(&event);
-            (event.into_static(), range)
-        })
-        .collect();
+        let mut events =
+            crate::events::parse_with(&self.source, references, options(self.paragraph));
         if self.task {
-            events = crate::events::paragraphs(&self.source, &events);
             events.drain(..2);
             events.truncate(events.len().saturating_sub(2));
         }

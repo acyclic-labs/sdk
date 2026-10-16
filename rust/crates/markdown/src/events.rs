@@ -1,19 +1,27 @@
 use pulldown_cmark::{BrokenLink, Event, Parser, Tag, TagEnd};
 use std::ops::Range;
 
-pub(crate) fn parse<'a>(
-    source: &'a str,
+pub(crate) fn parse(
+    source: &str,
     references: &crate::References,
-) -> Vec<(Event<'a>, Range<usize>)> {
+) -> Vec<(Event<'static>, Range<usize>)> {
+    parse_with(source, references, crate::options())
+}
+
+pub(crate) fn parse_with(
+    source: &str,
+    references: &crate::References,
+    options: pulldown_cmark::Options,
+) -> Vec<(Event<'static>, Range<usize>)> {
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut callback = |link: BrokenLink<'_>| {
         references
             .get(&crate::normalize(&link.reference))
-            .map(|_| ("".into(), "".into()))
+            .map(|(destination, title, _)| (destination.as_ref().into(), title.as_ref().into()))
     };
     let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, crate::options(), Some(&mut callback))
+        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
             .into_offset_iter()
             .map(|(mut event, range)| {
                 if let Event::Start(
@@ -36,7 +44,9 @@ pub(crate) fn parse<'a>(
                     *dest_url = "".into();
                     *title = "".into();
                 }
-                (event, range)
+                #[cfg(test)]
+                crate::work::event(&event);
+                (event.into_static(), range)
             })
             .collect();
     if events
