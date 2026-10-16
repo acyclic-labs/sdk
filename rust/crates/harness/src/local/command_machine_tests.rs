@@ -32,7 +32,7 @@ proptest! {
     // A persisted initialized/sent state can be reconstructed and emits exactly
     // one matching command; a terminal response must carry its exact identity.
     #[test]
-    fn direct_tool_state_round_trip_and_result_identity(operation in any::<[u8;16]>(), text in ".{0,80}") {
+    fn direct_tool_state_round_trip_and_result_identity(operation in any::<[u8;16]>(), text in ".{0,80}", succeeds in any::<bool>()) {
         let machine = DirectTool::new();
         let operation = crate::OperationId::from_bytes(operation);
         let state = machine.initialize(&input(operation)).unwrap();
@@ -42,10 +42,11 @@ proptest! {
         let sent = machine.transition(&restored, &Value::Null).unwrap();
         prop_assert_eq!(sent.commands.len(), 1);
         prop_assert_eq!(sent.commands[0].operation_id, operation);
-        let result = json!({"commands":[{"operation_id":operation,"value":{"Succeeded":{"value":{"text":text}}}}]});
+        let value = if succeeds { json!({"Succeeded":{"value":{"text":text}}}) } else { json!({"Failed":{"message":text}}) };
+        let result = json!({"commands":[{"operation_id":operation,"value":value}]});
         let terminal = machine.transition(&sent.state, &result).unwrap();
         prop_assert!(terminal.commands.is_empty());
-        let expected = MachineStatus::Completed { value: json!({"text":text}) };
+        let expected = if succeeds { MachineStatus::Completed { value: json!({"text":text}) } } else { MachineStatus::Failed { message: text } };
         prop_assert_eq!(terminal.status, expected);
         let mut wrong = result;
         wrong["commands"][0]["operation_id"] = json!("mismatched");
