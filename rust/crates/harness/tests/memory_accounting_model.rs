@@ -11,7 +11,7 @@ mod owned_scan;
 
 use acyclic_fs::kernel::{KernelAccounting, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, WorkBudget, WorkCounters};
-use primitives::{Arc, Mutex, atomic};
+use primitives::{Arc, Mutex};
 use std::collections::BTreeMap;
 
 fn paths() -> BTreeMap<String, ()> {
@@ -41,11 +41,9 @@ fn competing_scans_keep_every_charge_and_consistent_state() {
             .claim_owned(5, 0)
             .unwrap();
             let work = Arc::new(Mutex::new((spent, Ok(allocations))));
-            let successes = Arc::new(atomic::AtomicUsize::new(0));
             let mut threads = Vec::new();
             for _ in 0..2 {
                 let work = Arc::clone(&work);
-                let successes = Arc::clone(&successes);
                 let cancellation = cancellation.clone();
                 threads.push(loom::thread::spawn(move || {
                     let result = owned_scan::conflict(
@@ -60,14 +58,13 @@ fn competing_scans_keep_every_charge_and_consistent_state() {
                             first_conflict
                         },
                     );
-                    if result.is_ok() {
-                        successes.fetch_add(1, atomic::Ordering::SeqCst);
-                    }
+                    result.is_ok()
                 }));
             }
-            let observer = Arc::clone(&work);
-            threads.push(loom::thread::spawn(move || {
-                let state = observer.lock().unwrap();
+            // The parent is the observer: the same read may occur anywhere
+            // between the two writers, without an idle fourth model thread.
+            {
+                let state = work.lock().unwrap();
                 assert_eq!(state.0.source_bytes_read, state.0.items_examined * 4);
                 assert!(
                     state.0.items_examined == 0
@@ -79,18 +76,16 @@ fn competing_scans_keep_every_charge_and_consistent_state() {
                     state.0.peak_allocation_bytes,
                     state.1.as_ref().unwrap().live_bytes()
                 );
-            }));
-            for thread in threads {
-                thread.join().unwrap();
             }
+            let successes = threads
+                .into_iter()
+                .map(|thread| usize::from(thread.join().unwrap()))
+                .sum::<usize>();
             let state = work.lock().unwrap();
             assert_eq!(state.0.items_examined, allowance);
             assert_eq!(state.0.source_bytes_read, allowance * 4);
             assert_eq!(state.0.peak_allocation_bytes, 5);
-            assert_eq!(
-                successes.load(atomic::Ordering::SeqCst),
-                (allowance / items_per_scan) as usize
-            );
+            assert_eq!(successes, (allowance / items_per_scan) as usize);
         });
     }
 }

@@ -114,6 +114,7 @@ fn profile(accounted: bool) -> Result<()> {
             tracing::Dispatch::none()
         };
         let _guard = tracing::dispatcher::set_default(&dispatch);
+        assert_eq!(tracing::enabled!(tracing::Level::TRACE), tracing);
         let cancellation = CancellationToken::default();
         let ledgers = [
             PreparationIo::from_budget(budget(1_000_000, 64 * 1024 * 1024), &cancellation)?,
@@ -221,14 +222,16 @@ fn contended_retained_path_accounting() -> Result<()> {
     let store = fixture(4096)?;
     let selected = std::env::var("HARNESS_PATH_PROFILE").ok();
     let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
+    let samples = if syscalls { 1 } else { 8 };
+    let calls = if syscalls { 1_u32 } else { 32 };
     for tracing in [false, true] {
         let dispatch = if tracing {
             tracing::Dispatch::new(tracing_subscriber::registry())
         } else {
             tracing::Dispatch::none()
         };
-        let mut times = [Vec::with_capacity(8), Vec::with_capacity(8)];
-        for sample in 0..8 {
+        let mut times = [Vec::with_capacity(samples), Vec::with_capacity(samples)];
+        for sample in 0..samples {
             for index in if sample % 2 == 0 { [0, 1] } else { [1, 0] } {
                 if selected
                     .as_deref()
@@ -249,11 +252,12 @@ fn contended_retained_path_accounting() -> Result<()> {
                             let _guard = tracing::dispatcher::set_default(dispatch);
                             barrier.wait();
                             barrier.wait();
+                            assert_eq!(tracing::enabled!(tracing::Level::TRACE), tracing);
                             if syscalls {
                                 eprintln!("PATH_BEGIN");
                             }
                             let allocations = allocation_counter::measure(|| {
-                                for _ in 0..32 {
+                                for _ in 0..calls {
                                     if index == 0 {
                                         scan(store, "files/new", io).unwrap();
                                     } else {
@@ -282,17 +286,17 @@ fn contended_retained_path_accounting() -> Result<()> {
                 assert_eq!(
                     io.receipt(),
                     WorkCounters {
-                        items_examined: 64 * 4096,
-                        source_bytes_read: 64 * 4096 * 23,
+                        items_examined: 2 * u64::from(calls) * 4096,
+                        source_bytes_read: 2 * u64::from(calls) * 4096 * 23,
                         ..Default::default()
                     }
                 );
-                times[index].push(elapsed / 64);
+                times[index].push(elapsed / (2 * calls));
             }
         }
         for (index, samples) in times.iter_mut().enumerate() {
             samples.sort_unstable();
-            if let Some(median) = samples.get(4) {
+            if let Some(median) = samples.get(samples.len() / 2) {
                 eprintln!(
                     "contended-path tracing={tracing} legacy={} median={median:?} alloc=0 bytes=0 peak=0",
                     index == 0
