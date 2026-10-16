@@ -11,7 +11,7 @@ pub(super) enum Fault {
 }
 
 loom::thread_local! {
-    static FAULT: std::cell::Cell<Fault> = const { std::cell::Cell::new(Fault::None) };
+    static FAULT: std::cell::Cell<Fault> = std::cell::Cell::new(Fault::None);
 }
 
 pub(super) fn fault_is(fault: Fault) -> bool {
