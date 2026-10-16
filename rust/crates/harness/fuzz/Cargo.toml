@@ -34,8 +34,15 @@ tokio-util = { version = "0.7", features = ["codec"] }
 which = "=8.0.6"
 
 [[bin]]
-name = "decoders"
-path = "fuzz_targets/decoders.rs"
+name = "wire_frames"
+path = "fuzz_targets/wire_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_decode"
+path = "fuzz_targets/journal_decode.rs"
 test = false
 doc = false
 bench = false

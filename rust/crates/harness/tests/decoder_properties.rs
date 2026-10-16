@@ -1,21 +1,24 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-#[path = "support/decoder_input.rs"]
-mod input;
+#[path = "support/journal_input.rs"]
+mod journal;
+#[path = "support/wire_input.rs"]
+mod wire;
 use proptest::prelude::*;
 
 #[test]
 fn decoder_seed_corpus() {
     for data in [
-        include_bytes!("../fuzz/corpus/decoders/acknowledge").as_slice(),
-        include_bytes!("../fuzz/corpus/decoders/admission"),
-        include_bytes!("../fuzz/corpus/decoders/truncated-protobuf"),
-        include_bytes!("../fuzz/corpus/decoders/invalid-json"),
-        include_bytes!("../fuzz/corpus/decoders/oversized-journal-header"),
-        include_bytes!("../fuzz/corpus/decoders/utf8"),
+        include_bytes!("../fuzz/corpus/wire_frames/acknowledge").as_slice(),
+        include_bytes!("../fuzz/corpus/wire_frames/admission"),
+        include_bytes!("../fuzz/corpus/journal_decode/truncated-protobuf"),
+        include_bytes!("../fuzz/corpus/wire_frames/invalid-json"),
+        include_bytes!("../fuzz/corpus/journal_decode/oversized-journal-header"),
+        include_bytes!("../fuzz/corpus/wire_frames/utf8"),
+        include_bytes!("../fuzz/corpus/journal_decode/empty-request"),
     ] {
-        input::wire(data);
-        input::journal(data);
+        wire::check(data);
+        journal::check(data);
     }
 }
 
@@ -23,7 +26,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn wire_and_journal_decode_arbitrary_bytes(data in prop::collection::vec(any::<u8>(), 0..4096)) {
-        input::wire(&data);
-        input::journal(&data);
+        wire::check(&data);
+        journal::check(&data);
     }
 }

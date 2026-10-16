@@ -1,70 +1,10 @@
 use acyclic_harness::{
-    client::{ClientStateStore, FileClientState, SessionRecord, jsonl},
+    client::{ClientStateStore, FileClientState, SessionRecord},
     wire,
 };
 use prost::Message;
 
-pub fn wire(data: &[u8]) {
-    if let Ok(frame) = wire::ClientFrame::decode(data) {
-        assert_eq!(
-            wire::ClientFrame::decode(frame.encode_to_vec().as_slice()).unwrap(),
-            frame
-        );
-    }
-    if let Ok(frame) = wire::ServerFrame::decode(data) {
-        assert_eq!(
-            wire::ServerFrame::decode(frame.encode_to_vec().as_slice()).unwrap(),
-            frame
-        );
-    }
-    if let Ok(text) = std::str::from_utf8(data) {
-        if let Ok(frame) = jsonl::parse_client_frame(text) {
-            assert_eq!(
-                jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap(),
-                frame
-            );
-        }
-        if let Ok(frame) = jsonl::parse_server_frame(text) {
-            assert_eq!(
-                jsonl::parse_server_frame(&jsonl::server_frame(&frame).unwrap()).unwrap(),
-                frame
-            );
-        }
-    }
-    // Every input also exercises valid messages, arbitrary UTF-8 escaping,
-    // unknown enum values and the full u64 range.
-    let text = String::from_utf8_lossy(data).into_owned();
-    let mut number = [0; 8];
-    let copied = data.len().min(number.len());
-    number[..copied].copy_from_slice(&data[..copied]);
-    let frame = wire::ClientFrame {
-        frame: Some(wire::client_frame::Frame::Acknowledge(wire::Acknowledge {
-            authority: None,
-            generation: text.clone(),
-            through_revision: u64::from_le_bytes(number),
-        })),
-    };
-    assert_eq!(
-        jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap(),
-        frame
-    );
-    let frame = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Admission(wire::Admission {
-            operation: Some(wire::OperationIdentity {
-                operation_id: text.clone(),
-                idempotency_key: text,
-            }),
-            state: i32::from_le_bytes(number[..4].try_into().unwrap()),
-            error: None,
-        })),
-    };
-    assert_eq!(
-        jsonl::parse_server_frame(&jsonl::server_frame(&frame).unwrap()).unwrap(),
-        frame
-    );
-}
-
-pub fn journal(data: &[u8]) {
+pub fn check(data: &[u8]) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state");
     std::fs::write(&path, data).unwrap();
