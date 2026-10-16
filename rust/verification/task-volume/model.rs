@@ -360,6 +360,10 @@ fn recovery_and_acknowledgement(fault: Fault) {
     });
 }
 
+loom::thread_local! {
+    static ADVANCE_DEADLINE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
 fn fenced_publication(expiry: bool, broken: bool) {
     use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     struct Clock {
@@ -368,6 +372,9 @@ fn fenced_publication(expiry: bool, broken: bool) {
     }
     impl acyclic_stream::UnixMillisClock for Clock {
         fn now_unix_millis(&self) -> u64 {
+            if ADVANCE_DEADLINE.with(std::cell::Cell::get) {
+                self.now.store(3, Ordering::SeqCst);
+            }
             if self.tick {
                 self.now.fetch_add(1, Ordering::SeqCst)
             } else {
@@ -403,7 +410,19 @@ fn fenced_publication(expiry: bool, broken: bool) {
             move || {
                 block_on(async {
                     let invalidated_at = if expiry {
-                        clock.now.store(3, Ordering::SeqCst);
+                        // The unrelated append advances time under the real
+                        // provider's lock, without changing the owner condition.
+                        // Its clock sample cannot land between a successful
+                        // publication's final deadline check and timestamp.
+                        ADVANCE_DEADLINE.with(|advance| advance.set(true));
+                        provider
+                            .append(AppendRequest {
+                                path: StreamPath::new("clock")?,
+                                records: vec![OwnedBytes::from_static(b"expire")],
+                                if_tail: Some(0),
+                                idempotency_key: None,
+                            })
+                            .await?;
                         None
                     } else {
                         provider
@@ -464,7 +483,7 @@ fn fenced_publication(expiry: bool, broken: bool) {
         if lost_at_entry {
             assert!(!committed, "stale publisher committed");
         }
-        if committed && let Some(invalidated_at) = invalidated_at {
+        if committed {
             let mut records = block_on(provider.read(acyclic_stream::ReadRequest {
                 path: StreamPath::new("model")?,
                 from: expected.position,
@@ -474,7 +493,12 @@ fn fenced_publication(expiry: bool, broken: bool) {
             // The tick clock is sampled under the provider's state lock.
             // These distinct commit times order publication and revocation.
             assert!(
-                record.committed_at_micros < invalidated_at,
+                record.committed_at_micros
+                    < if expiry {
+                        2_000
+                    } else {
+                        invalidated_at.unwrap()
+                    },
                 "stale publisher committed"
             );
         }
