@@ -13,7 +13,6 @@ pub(super) struct Checkpoint {
     offset: usize,
     mark: Mark,
     cost: usize,
-    escaped: bool,
     pub(super) valid: Range<usize>,
     openers: delimiters::State,
 }
@@ -64,9 +63,9 @@ impl Markdown {
             .contains('\n')
             || tail.contains('\n')
         {
-            row_prefix(self.source.get(..base).unwrap_or_default(), checkpoint.escaped)
+            row_prefix(self.source.get(..base).unwrap_or_default())
         } else {
-            left_context(self.source.get(..base).unwrap_or_default(), checkpoint.escaped)
+            left_context(self.source.get(..base).unwrap_or_default())
         };
         let prefix = checkpoint.openers.prefix(&context);
         let sentinel = prefix.len();
@@ -172,7 +171,6 @@ impl Markdown {
                 offset: base + boundary.saturating_sub(sentinel),
                 mark: committed,
                 cost,
-                escaped: escaped_context(&source, boundary),
                 valid,
                 openers: delimiters::State::compile(&openers, boundary),
             },
@@ -186,7 +184,6 @@ impl Markdown {
                     offset: base + end.saturating_sub(sentinel),
                     mark: previous_mark,
                     cost,
-                    escaped: escaped_context(&source, end),
                     valid,
                     openers: delimiters::State::compile(&openers, end),
                 }
@@ -233,7 +230,6 @@ impl Markdown {
                 offset: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
                 mark: Mark::default(),
                 cost: 0,
-                escaped: false,
                 valid: 0..usize::MAX,
                 openers: delimiters::State::default(),
             },
@@ -247,23 +243,10 @@ impl Markdown {
     }
 }
 
-fn escaped_context(source: &str, end: usize) -> bool {
-    // Scan the current parser input, not the committed source prefix.
-    let count = source.as_bytes()[..end]
-        .iter()
-        .rev()
-        .take_while(|&&byte| byte == b'\\')
-        .count();
-    #[cfg(test)]
-    work::scan(count + 1);
-    count % 2 == 1
-}
-
-fn left_context(source: &str, escaped: bool) -> String {
+fn left_context(source: &str) -> String {
     match source.chars().next_back() {
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
-        Some('\\') if escaped => "x\\".into(),
         Some(c) if !c.is_ascii_punctuation() => "x".into(),
         _ => "x.".into(),
     }
@@ -278,12 +261,12 @@ fn table_candidate(source: &str) -> bool {
 
 // Only column structure is needed to recognize a table interrupt after a soft
 // break. Keep its source text in the rendered checkpoint, not in parser input.
-fn row_prefix(source: &str, escaped: bool) -> String {
+fn row_prefix(source: &str) -> String {
     let row = source.rsplit('\n').next().unwrap_or_default();
     #[cfg(test)]
     work::scan(row.len() * 2);
     if !row.contains('|') {
-        return left_context(source, escaped);
+        return left_context(source);
     }
     #[cfg(test)]
     work::scan(row.len());
@@ -299,7 +282,7 @@ fn row_prefix(source: &str, escaped: bool) -> String {
         }
         escaped = byte == b'\\' && !escaped;
     }
-    match left_context(source, escaped).as_str() {
+    match left_context(source).as_str() {
         "x " => prefix.push(' '),
         "x" => {}
         _ if prefix.ends_with('|') => {}
@@ -497,6 +480,10 @@ fn boundary(
                 if cut >= range.start && delimiters::safe_boundary(source, cut) {
                     provisional = Some(cut);
                 }
+            }
+            // An escaped character is complete; never split its escape pair.
+            if range.end == quoted_end {
+                provisional = None;
             }
             boundary = range.end;
         }
