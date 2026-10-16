@@ -196,6 +196,26 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
     }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
+        // A separate file stream cannot contend with unrelated parent-volume writes.
+        // Release the parent index before opening/locking the child volume.
+        let identity = {
+            let index = self.index.lock().await;
+            let mut hash = blake3::Hasher::new();
+            hash.update(&index.volume);
+            hash.update(index.epoch.as_bytes());
+            hash.update(key.path().as_bytes());
+            hash.finalize()
+        };
+        let path = StreamPath::new(format!(
+            "{}/files/{}",
+            self.path.as_str(),
+            identity.to_hex()
+        ))?;
+        Self::open(self.provider.clone(), path).await
+    }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {

@@ -131,7 +131,7 @@ fn run_worker(
 fn outcome(volume: &TaskVolume<MemoryStream>) -> SearchOutcome {
     let snapshot =
         block_on(volume.snapshot(&Query::Task(Component::new("model").unwrap()), 4)).unwrap();
-    assert_eq!(snapshot.files.len(), 4, "unfinished search lifecycle");
+    assert_eq!(snapshot.files.len(), 3, "unfinished search lifecycle");
     let result = snapshot
         .files
         .iter()
@@ -157,10 +157,12 @@ fn competing_claims_dispatch_once_and_replay_the_terminal_file() {
             let stream = stream.clone();
             let volume = volume.clone();
             let provider = provider.clone();
-            move || run_worker(&stream, &volume, provider, 1, false).unwrap()
+            move || run_worker(&stream, &volume, provider, 1, false)
         });
-        run_worker(&stream, &volume, provider.clone(), 1, false).unwrap();
-        worker.join().unwrap();
+        let result = run_worker(&stream, &volume, provider.clone(), 1, false);
+        for result in [result, worker.join().unwrap()] {
+            assert!(result.is_ok() || matches!(result, Err(Error::SearchPublicationDeferred)));
+        }
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
             1,
@@ -355,7 +357,8 @@ fn saturated_tail(broken: bool) {
         );
         assert_eq!(attempts.get(), PUBLICATION_ATTEMPTS);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
-        let saved = block_on(volume.snapshot(&Query::File(ready(&task, &id)), 1)).unwrap();
+        let completion = block_on(volume.file_volume(&ready(&task, &id))).unwrap();
+        let saved = block_on(completion.snapshot(&Query::File(ready(&task, &id)), 1)).unwrap();
         assert_eq!(saved.files.len(), 1);
         assert!(
             block_on(volume.snapshot(&Query::File(file(&task, &id, true)), 1))
@@ -394,4 +397,25 @@ fn every_conflict_is_bounded_and_resumes_from_the_ready_file() {
 #[should_panic(expected = "publication attempt bound was ignored")]
 fn negative_control_detects_ignoring_the_attempt_bound() {
     saturated_tail(true);
+}
+
+#[test]
+fn parent_writes_cannot_starve_completion_staging() {
+    model(|| {
+        let provider = Arc::new(Provider::new(None));
+        block_on(super::staging_tests::schedule(provider.clone(), false)).unwrap();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "completed response was not retained")]
+fn negative_control_detects_shared_staging_generation() {
+    model(|| {
+        block_on(super::staging_tests::schedule(
+            Arc::new(Provider::new(None)),
+            true,
+        ))
+        .unwrap();
+    });
 }

@@ -210,7 +210,7 @@ async fn search_file_scenarios() -> Result<()> {
             first?;
             assert_eq!(
                 after.files.len(),
-                if case.submit { 4 } else { 0 },
+                if case.submit { 3 } else { 0 },
                 "{}",
                 case.name
             );
@@ -379,7 +379,7 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
             .await
             .map_err(storage)?;
     }
-    drive_for_test(
+    let interrupted = drive_for_test(
         &volume,
         &task,
         old.task_binding().1,
@@ -388,7 +388,8 @@ async fn replaced_owner_settles_started_request_without_redispatch_and_fences_st
         None,
         6,
     )
-    .await?;
+    .await;
+    assert!(matches!(interrupted, Err(Error::SearchPublicationDeferred)));
     let replacement = fixture.replace(1).await?;
     let mut client = volume
         .observe(Query::File(file(&task, &id, true)), None, 1)
@@ -542,7 +543,7 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         .snapshot(&Query::Task(task.clone()), 4)
         .await
         .map_err(storage)?;
-    assert_eq!(snapshot.files.len(), 4);
+    assert_eq!(snapshot.files.len(), 3);
     let result = snapshot
         .files
         .iter()
@@ -565,6 +566,16 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
             assert!(published.bytes.matches_meter(&work.runtime_meter()));
         }
     }
+    let completion = volume
+        .file_volume(&ready(&task, &id))
+        .await
+        .map_err(storage)?;
+    let retained = completion
+        .snapshot(&Query::File(ready(&task, &id)), 1)
+        .await
+        .map_err(storage)?;
+    assert_eq!(retained.files.len(), 1);
+    assert!(retained.files[0].bytes.matches_meter(&work.runtime_meter()));
     assert!(work.receipt().source_bytes_read > 0);
     assert!(work.receipt().bytes_encoded > 0);
     assert!(work.receipt().bytes_copied >= 2 * 32_768);
@@ -786,7 +797,7 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
         .snapshot(&Query::Root, maximum_files * 4)
         .await
         .map_err(storage)?;
-    assert_eq!(snapshot.files.len(), maximum_files * 4);
+    assert_eq!(snapshot.files.len(), maximum_files * 3);
     assert_eq!(
         volume
             .snapshot(&Query::Requests(task.clone()), maximum_files)

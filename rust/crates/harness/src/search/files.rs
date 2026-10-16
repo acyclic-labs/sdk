@@ -286,17 +286,29 @@ where
                     .snapshot(&Query::File(ready(task, id)), 1)
                     .await
                     .map_err(storage)?;
-                if let Some(response) = retained.files.first() {
-                    if let Some(work) = work {
-                        work.charge(acyclic_fs::WorkCounters {
-                            source_bytes_read: response.bytes.len() as u64,
-                            items_examined: 1,
-                            ..Default::default()
-                        })?;
-                    }
-                    return finish(volume, result, response.bytes.clone(), authorize, work).await;
+                let retained = if retained.files.is_empty() {
+                    let completion = volume
+                        .file_volume(&ready(task, id))
+                        .await
+                        .map_err(storage)?;
+                    completion
+                        .snapshot(&Query::File(ready(task, id)), 1)
+                        .await
+                        .map_err(storage)?
+                } else {
+                    retained
+                };
+                let Some(response) = retained.files.first() else {
+                    return Err(Error::SearchPublicationDeferred);
+                };
+                if let Some(work) = work {
+                    work.charge(acyclic_fs::WorkCounters {
+                        source_bytes_read: response.bytes.len() as u64,
+                        items_examined: 1,
+                        ..Default::default()
+                    })?;
                 }
-                return Ok(());
+                return finish(volume, result, response.bytes.clone(), authorize, work).await;
             }
             break (SearchOutcome::Indeterminate, false);
         }
@@ -329,6 +341,11 @@ where
             Err(error) => return Err(storage(error)),
             Ok(_) => {}
         }
+        // Open the request-scoped file stream before contacting the provider.
+        let completion = volume
+            .file_volume(&ready(task, id))
+            .await
+            .map_err(storage)?;
         let dispatch = async {
             // Tuple fields retire the decoded query before its allocation owner.
             let input = request(&input.bytes, work)?;
@@ -378,7 +395,8 @@ where
         }
         .await;
         match dispatch {
-            Ok(encoded) => match retain_response(volume, ready(task, id), encoded, work).await {
+            Ok(encoded) => match retain_response(&completion, ready(task, id), encoded, work).await
+            {
                 Ok(encoded) => return finish(volume, result, encoded, authorize, work).await,
                 Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
                     break (SearchOutcome::Rejected, true);
@@ -401,7 +419,11 @@ where
     };
     let encoded = encode(&outcome, work)?;
     let encoded = if retain {
-        retain_response(volume, ready(task, id), encoded, work).await?
+        let completion = volume
+            .file_volume(&ready(task, id))
+            .await
+            .map_err(storage)?;
+        retain_response(&completion, ready(task, id), encoded, work).await?
     } else {
         encoded
     };
@@ -556,6 +578,10 @@ pub async fn drive_for_test<P: StreamProvider>(
 #[cfg(all(test, acyclic_loom))]
 mod model;
 #[cfg(test)]
+mod native_retry_tests;
+#[cfg(test)]
 mod retry_tests;
+#[cfg(test)]
+mod staging_tests;
 #[cfg(test)]
 mod tests;

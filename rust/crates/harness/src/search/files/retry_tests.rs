@@ -94,7 +94,11 @@ async fn saturated_tail(broken: bool) -> Result<()> {
         crate::wire::ErrorCode::Indeterminate
     );
     assert_eq!(provider.remaining(), 0);
-    let saved = volume
+    let completion = volume
+        .file_volume(&ready(&task, &id))
+        .await
+        .map_err(storage)?;
+    let saved = completion
         .snapshot(&Query::File(ready(&task, &id)), 1)
         .await
         .map_err(storage)?;
@@ -168,4 +172,49 @@ async fn every_attempt_conflicts_but_completion_survives_resume() -> Result<()> 
 #[should_panic(expected = "publication attempt bound was ignored")]
 async fn negative_control_detects_ignoring_the_attempt_bound() {
     saturated_tail(true).await.unwrap();
+}
+
+#[tokio::test]
+async fn claimed_request_without_completion_returns_typed_deferred() -> Result<()> {
+    let stream = Arc::new(MemoryStream::default());
+    let volume = TaskVolume::open(stream, StreamPath::new("missing-completion").unwrap())
+        .await
+        .map_err(storage)?;
+    let task = Component::new("task").unwrap();
+    let id = Component::new("search-missing").unwrap();
+    let fence = LeaseFence {
+        reservation_id: "owner".into(),
+        placement: "test".into(),
+    };
+    let generation = volume
+        .snapshot(&Query::Root, 0)
+        .await
+        .map_err(storage)?
+        .generation;
+    volume
+        .append(
+            generation,
+            &FileValue::new(file(&task, &id, false), encode(&fence, None)?),
+        )
+        .await
+        .map_err(storage)?;
+    let result = settle(
+        &volume,
+        &task,
+        &id,
+        &fence,
+        &mut || panic!("claimed request was redispatched"),
+        &|_| std::future::ready(Ok(vec![])),
+        None,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(Error::SearchPublicationDeferred)),
+        "{result:?}"
+    );
+    assert_eq!(
+        result.unwrap_err().code(),
+        crate::wire::ErrorCode::Indeterminate
+    );
+    Ok(())
 }

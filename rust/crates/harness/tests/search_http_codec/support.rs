@@ -153,7 +153,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
         .snapshot(&Query::Task(task.clone()), 4)
         .await
         .unwrap();
-    assert_eq!(before.files.len(), 4);
+    assert_eq!(before.files.len(), 3);
     for replacement in [false, true] {
         if replacement {
             fence.reservation_id = "replacement".into();

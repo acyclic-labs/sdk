@@ -148,7 +148,7 @@ pub async fn check(bytes: &[u8]) {
             .snapshot(&Query::Task(task.clone()), 4)
             .await
             .unwrap();
-        assert_eq!(before.files.len(), 4);
+        assert_eq!(before.files.len(), 3);
         let terminal = before.files.iter().find(|file| file.key == result).unwrap();
         let outcome: SearchOutcome = serde_json::from_slice(&terminal.bytes).unwrap();
         assert_eq!(
