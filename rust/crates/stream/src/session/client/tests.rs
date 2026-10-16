@@ -17,6 +17,9 @@ type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 struct Counts {
     connections: AtomicUsize,
     sessions: AtomicUsize,
+    closed_sessions: AtomicUsize,
+    received_bytes: AtomicUsize,
+    transmitted_bytes: AtomicUsize,
     sent: AtomicUsize,
     follows: AtomicUsize,
     actors: AtomicUsize,
@@ -26,6 +29,13 @@ struct Counts {
     // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
     guards: Mutex<Vec<(u64, u64, Bytes)>>,
+}
+struct CountSessionDrop(Arc<Counts>);
+impl Drop for CountSessionDrop {
+    fn drop(&mut self) {
+        self.0.closed_sessions.fetch_add(1, Ordering::Relaxed);
+        self.0.changed.notify_one();
+    }
 }
 struct Host<P> {
     provider: Arc<P>,
@@ -67,6 +77,12 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         let input = request
             .into_inner()
             .map(move |input| {
+                if let Ok(frame) = &input {
+                    // Uncompressed gRPC message prefix plus the complete protobuf.
+                    counts
+                        .received_bytes
+                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
+                }
                 if let Ok(wire::SessionFrame {
                     body: Some(Body::Interest(interest)),
                     ..
@@ -142,6 +158,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         });
         let sent = Arc::clone(&self.counts);
         let confirm_checked = self.confirm_checked;
+        let lifetime = CountSessionDrop(Arc::clone(&self.counts));
         Ok(Reply::new(
             stream::select(
                 output.map(move |mut item| {
@@ -164,6 +181,15 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 }),
                 controls,
             )
+            .inspect(move |item| {
+                if let Ok(frame) = item {
+                    lifetime
+                        .0
+                        .transmitted_bytes
+                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
+                    lifetime.0.changed.notify_one();
+                }
+            })
             .boxed(),
         ))
     }
@@ -794,3 +820,5 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     }
     Ok(())
 }
+
+mod tenk;

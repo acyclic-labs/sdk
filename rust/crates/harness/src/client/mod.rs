@@ -50,7 +50,13 @@ pub use notifications::*;
 mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod file_query;
-pub use file_query::FileQueryView;
+pub use file_query::{FileQueryView, GoalFileView};
+mod goal_view;
+pub use goal_view::{GoalProgress, GoalQueryView};
+#[cfg(feature = "tui")]
+mod goal_panel;
+#[cfg(feature = "tui")]
+pub use goal_panel::GoalPanel;
 #[cfg(feature = "tui")]
 mod plan_panel;
 #[cfg(feature = "tui")]
@@ -75,6 +81,8 @@ pub mod query_verification {
 }
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmClientViews;
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;
 /// Persisted data specialized to a domain; never authoritative evidence.

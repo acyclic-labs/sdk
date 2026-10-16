@@ -45,6 +45,7 @@ impl Cursor {
 }
 
 /// One atomic-cut snapshot; file payloads remain shared segment slices.
+#[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     /// Current matching files in typed identity order (chunk sequences are numeric).
     pub files: Vec<FileValue>,
@@ -55,7 +56,7 @@ pub struct Snapshot {
 }
 
 /// One matching change, or a checkpoint after a nonmatching publication.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
     /// Logical file value; `None` advances a filtered query past unrelated records.
     pub file: Option<FileValue>,
