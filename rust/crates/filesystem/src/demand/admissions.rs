@@ -1,13 +1,12 @@
+use super::ownership::accounting as mount_accounting;
 use super::*;
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
 };
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, AtomicU64, Ordering, fence},
-};
+use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
+use std::sync::Arc;
 
 #[path = "admissions_accounting.rs"]
 mod accounting;
@@ -50,15 +49,14 @@ pub(crate) struct Admissions {
     paid_non_native: u64,
     pub(super) native_mount_admission_pending: bool,
     pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
-    pub(super) native_mount_admissions: (
-        Vec<(Weak<NativeMountAllocationCustody>, u64)>,
-        LogicalVecCapacity,
-    ),
+    pub(super) native_mount_admissions: (Vec<(Arc<AtomicU64>, u64)>, LogicalVecCapacity),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
-fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
-    entry.0.upgrade().map_or(0, |owner| owner.retained_bytes())
+fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
+    // The registry retains only this inert gauge. Upgrading custody here could
+    // drop its last owner under the leaf and re-enter it through metadata Drop.
+    mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
@@ -181,7 +179,7 @@ impl DemandWork {
         let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
             return self.prune_native_mount_admissions();
         };
-        if !dirty.load(Ordering::Acquire) || !dirty.swap(false, Ordering::AcqRel) {
+        if !mount_accounting::take_dirty(dirty) {
             return Ok(());
         }
         let mut empty = true;
@@ -200,7 +198,7 @@ impl DemandWork {
                 Ok(())
             };
             if let Err(error) = recorded {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
                 return Err(error);
             }
             if actual > entry.1
@@ -217,7 +215,7 @@ impl DemandWork {
         }
         if empty && self.roots.native_mount_admission_pending {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
         } else if empty {
             drop(self.roots.native_mount_dirty.take());
@@ -230,7 +228,7 @@ impl DemandWork {
     fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
         if self.roots.native_mount_admission_pending {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
             return Ok(());
         }
@@ -241,29 +239,35 @@ impl DemandWork {
         let live = owners.iter().filter(|entry| entry.1 != 0).count();
         let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
         let copied = WorkCounters {
-            bytes_copied: (moved * std::mem::size_of::<(Weak<NativeMountAllocationCustody>, u64)>())
-                as u64,
+            bytes_copied: (moved * std::mem::size_of::<(Arc<AtomicU64>, u64)>()) as u64,
             ..WorkCounters::UNCHARGED
         };
         // Retirement is unconditional. Moving survivors requires the current
         // cancellation, invocation, resource and original-ledger admission.
         let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
         let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        let mut released = 0;
         while owners.last().is_some_and(|entry| entry.1 == 0) {
             owners.pop();
+            released += super::ownership::GAUGE_ALLOCATION_BYTES;
         }
         if deferred {
             if let Some(dirty) = &self.roots.native_mount_dirty {
-                dirty.store(true, Ordering::Release);
+                mount_accounting::publish(dirty);
             }
-            return Ok(());
+            return self
+                .allocations
+                .release(released)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow));
         }
         let mut index = 0;
         while index < owners.len() {
             if owners[index].1 == 0 {
                 owners.swap_remove(index);
+                released += super::ownership::GAUGE_ALLOCATION_BYTES;
                 while owners.last().is_some_and(|entry| entry.1 == 0) {
                     owners.pop();
+                    released += super::ownership::GAUGE_ALLOCATION_BYTES;
                 }
             } else {
                 index += 1;
@@ -271,12 +275,12 @@ impl DemandWork {
         }
         if owners.is_empty() {
             let backing = std::mem::take(owners);
-            let bytes = std::mem::take(capacity).logical_bytes();
+            released += std::mem::take(capacity).logical_bytes();
             drop(backing);
-            self.allocations
-                .release(bytes)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         }
+        self.allocations
+            .release(released)
+            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         Ok(())
     }
     fn proof_accounting(&mut self) -> Result<Arc<NativeProofAccounting>, DemandError> {

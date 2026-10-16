@@ -194,7 +194,9 @@ pub(super) fn ensure_directory_page(
     work: &Work,
 ) -> Result<(), NativeMountError> {
     directory.keep_current(context, work)?;
-    for _ in 0..MAXIMUM_LISTING_RESTARTS {
+    let mut restarts = 0;
+    loop {
+        work.charge(scan_work(1))?;
         if directory
             .page
             .as_ref()
@@ -214,15 +216,14 @@ pub(super) fn ensure_directory_page(
         )?;
         directory.keep_current(context, work)?;
         if directory.epochs != read_in {
+            restarts += 1;
+            if restarts == MAXIMUM_LISTING_RESTARTS {
+                return Err(driver_errno(libc::ESTALE));
+            }
             continue;
-        }
-        if page.entries().is_empty() && page.next_cursor().is_some() {
-            return Err(driver_errno(libc::EIO));
         }
         work.charge(scan_work(page.entries.len() as u64))?;
         page.entries.reverse();
         directory.page = Some(page);
-        return Ok(());
     }
-    Err(driver_errno(libc::ESTALE))
 }

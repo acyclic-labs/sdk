@@ -1,0 +1,153 @@
+import { createInterface } from "node:readline";
+import { plugin } from "bun";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { SessionNode, checkpoint } from "./session-node.js";
+
+// Only the transport factory is substituted: the public raw-follow wrapper,
+// StreamSessions, and Connect's deadline/link helpers run unchanged. The clock
+// fires the real helper callback, without wall time or a second implementation.
+const peer = new SessionNode();
+const fault = process.env.STREAM_SESSION_FAULT;
+const scenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
+plugin({ name: "raw-follow-deadline-model", setup(build) {
+  build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
+    let source = await Bun.file(args.path).text();
+    if (fault === "write") {
+      const cancellation = "const signals = [signal, other].filter((value): value is AbortSignal => value !== undefined);";
+      if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
+      source = source.replace(cancellation, "const signals: AbortSignal[] = [];");
+    }
+    return { contents: source, loader: "ts" };
+  });
+  build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
+    let source = await Bun.file(args.path).text();
+    const factory = "const { client, sessions } = streamGrpc(options);";
+    if (!source.includes(factory)) throw new Error("raw-follow factory probe no longer matches");
+    source = source.replace(factory, "const { client, sessions } = { client: {}, sessions: globalThis.sessionDeadlineSessions };");
+    if (fault === "deadline") {
+      const forwarding = "const timeoutMs = callOptions?.timeoutMs;";
+      if (fault !== "deadline" || !source.includes(forwarding)) throw new Error("deadline negative control no longer matches");
+      source = source.replace(forwarding, "const timeoutMs = undefined;");
+    }
+    return { contents: source, loader: "ts" };
+  });
+} });
+const { StreamSessions } = await import("../src/session.js");
+let releaseWrite: (() => void) | undefined;
+let blocked = false;
+let writesReleased = false;
+const sessions = new StreamSessions(async (node, signal) => {
+  const transport = await peer.connect(node, signal);
+  return { ...transport, async send(input, writeSignal) {
+    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events");
+    const acknowledgement = input.body.case === "ack";
+    if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
+      blocked = true;
+      await new Promise<void>(resolve => { releaseWrite = resolve; });
+    }
+    writeSignal?.throwIfAborted();
+    await transport.send(input, writeSignal);
+  } };
+});
+Object.assign(globalThis, { sessionDeadlineSessions: sessions });
+const { createStreamGrpcClient } = await import("../src/grpc.js");
+const nativeSetTimeout = globalThis.setTimeout;
+const nativeClearTimeout = globalThis.clearTimeout;
+const duration = 421337;
+const handle = {};
+let callback: (() => void) | undefined;
+let timerActive = false;
+let timerCreated = 0;
+let timerCleaned = 0;
+Object.assign(globalThis, {
+  setTimeout(fn: () => void, delay?: number, ...args: unknown[]) {
+    if (delay !== duration) return nativeSetTimeout(fn, delay, ...args);
+    timerCreated += 1;
+    timerActive = true;
+    callback = fn;
+    return handle;
+  },
+  clearTimeout(value: ReturnType<typeof setTimeout>) {
+    if (value !== handle) return nativeClearTimeout(value);
+    timerActive = false;
+    timerCleaned += 1;
+  },
+});
+const client = createStreamGrpcClient({ endpoint: "https://home", token: "model" });
+const cancel = new AbortController();
+const siblingCancel = new AbortController();
+let settled = false;
+let code: number | null = null;
+let cleanup = false;
+let expired = false;
+let seen = 0;
+let stoppedAt: number | undefined;
+let siblingSeen = 0;
+let siblingError: unknown;
+const sibling = (async () => {
+  try {
+    for await (const _ of client.follow({ path: "healthy", from: 0n }, { timeoutMs: 0, signal: siblingCancel.signal })) siblingSeen += 1;
+  } catch (error) { if (!siblingCancel.signal.aborted) siblingError = error; }
+})();
+// Establish the healthy channel before parking the other channel's write.
+await peer.until(() => peer.active === 1);
+const records = client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal })[Symbol.asyncIterator]();
+const follow = (async () => {
+  try {
+    for await (const _ of { [Symbol.asyncIterator]: () => records }) seen += 1;
+  } catch (error) { code = error instanceof ConnectError ? error.code : -1; }
+  finally { settled = true; }
+})();
+let returned = false;
+let releaseReconnect: (() => void) | undefined;
+let connecting = false;
+async function command(action: string): Promise<unknown> {
+  switch (action) {
+    case "ready":
+      if (scenario === "deadline-ack") peer.append("events");
+      if (scenario.startsWith("deadline-")) {
+        await checkpoint();
+        if (!blocked) throw new Error("model did not park the actual channel write");
+      } else await peer.until(() => peer.active === 2);
+      break;
+    case "releaseWrite": writesReleased = true; releaseWrite?.(); break;
+    case "return": void records.return?.().then(() => { returned = true; }); break;
+    case "deliver": peer.append("events"); break;
+    case "expire":
+      expired = true;
+      stoppedAt ??= seen;
+      if (timerActive) { timerActive = false; callback!(); }
+      break;
+    case "reconnect":
+      peer.beforeConnect = async () => {
+        connecting = true;
+        await new Promise<void>(resolve => { releaseReconnect = resolve; });
+      };
+      peer.disconnect();
+      break;
+    case "releaseReconnect": peer.beforeConnect = undefined; releaseReconnect?.(); break;
+    case "cleanup": cleanup = true; stoppedAt ??= seen; cancel.abort(); break;
+    case "finish":
+      peer.beforeConnect = undefined;
+      releaseReconnect?.();
+      await checkpoint();
+      peer.append("healthy");
+      await checkpoint();
+      break;
+    case "stop":
+      cancel.abort(); siblingCancel.abort();
+      await Promise.all([follow, sibling]);
+      break;
+    default: throw new Error(`unknown deadline action ${action}`);
+  }
+  await checkpoint();
+  if (siblingError !== undefined) throw siblingError;
+  return { settled, returned, blocked, code, cleanup, expired, seen, stoppedAt, siblingSeen,
+    active: peer.active, outstanding: peer.outstandingFrames, connections: peer.connections.length, connecting,
+    timerActive, timerCreated, timerCleaned, deadlineCode: Code.DeadlineExceeded };
+}
+for await (const line of createInterface({ input: process.stdin })) {
+  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action))}\n`); }
+  catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
+}
+cancel.abort(); siblingCancel.abort();

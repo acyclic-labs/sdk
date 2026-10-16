@@ -33,18 +33,28 @@ impl ExecutionReplay {
                 io,
             )?
             .await?;
+        self.observe_page(page.iter(), io)?;
+        Ok((!page.is_empty()).then_some(page))
+    }
+
+    /// Validates a retained-model page without copying its execution records.
+    pub(crate) fn observe_page<'a>(
+        &mut self,
+        page: impl ExactSizeIterator<Item = &'a ExecutionRecord> + Clone,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
             return Err(Error::Storage("execution replay page exceeds bound".into()));
         }
-        if page.is_empty() {
-            return Ok(None);
+        if page.len() == 0 {
+            return Ok(());
         }
         let next_tail = self
             .after
             .checked_add(page.len() as u64)
             .ok_or_else(|| Error::Conflict("execution journal sequence overflows".into()))?;
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
-        for (index, record) in page.iter().enumerate() {
+        for (index, record) in page.clone().enumerate() {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 io.preflight(acyclic_fs::WorkCounters {
@@ -85,7 +95,7 @@ impl ExecutionReplay {
         }
         self.keys.sort_unstable();
         self.after = next_tail;
-        Ok(Some(page))
+        Ok(())
     }
 }
 

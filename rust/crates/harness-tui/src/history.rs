@@ -117,6 +117,7 @@ impl Delta {
             .chain(restore.iter().cloned())
             .collect();
         buffer.folds.sort_by_key(|r| r.start);
+        buffer.changed(self.start..self.start + old.len(), new.len());
         buffer
             .text
             .replace_range(self.start..self.start + old.len(), new);
@@ -162,12 +163,40 @@ impl Edit {
 #[derive(Clone, Debug, Default)]
 pub struct PromptHistory {
     entries: Vec<String>,
+    generation: u64,
+    pub(crate) navigation: Navigation,
+}
+
+// Search cancellation snapshots navigation without copying the shared entries.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Navigation {
+    generation: u64,
     index: Option<usize>,
     draft: String,
     search_before: Option<usize>,
 }
 
 impl PromptHistory {
+    /// Replace the history-file projection and invalidate saved navigation.
+    pub fn replace(&mut self, snapshot: Self) {
+        self.entries = snapshot.entries;
+        self.generation = self.generation.wrapping_add(1);
+        self.reset();
+    }
+
+    /// Revision of the loaded history projection, independent of its contents.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn restore_navigation(&mut self, saved: Navigation) {
+        if saved.generation == self.generation {
+            self.navigation = saved;
+        } else {
+            self.reset();
+        }
+    }
+
     /// Record a nonblank prompt, suppressing adjacent duplicates.
     pub fn push(&mut self, text: String) {
         let text = normalize(&text);
@@ -184,8 +213,10 @@ impl PromptHistory {
 
     /// Begin a new history navigation session.
     pub fn reset(&mut self) {
-        self.index = None;
-        self.search_before = None;
+        self.navigation = Navigation {
+            generation: self.generation,
+            ..Navigation::default()
+        };
     }
 
     /// Go backwards, saving the live draft on the first invocation.
@@ -193,29 +224,33 @@ impl PromptHistory {
         if self.entries.is_empty() {
             return None;
         }
-        if self.index.is_none() {
-            self.draft = normalize(draft);
+        if self.navigation.index.is_none() {
+            self.navigation.draft = normalize(draft);
         }
-        let index = self.index.unwrap_or(self.entries.len()).saturating_sub(1);
-        self.index = Some(index);
+        let index = self
+            .navigation
+            .index
+            .unwrap_or(self.entries.len())
+            .saturating_sub(1);
+        self.navigation.index = Some(index);
         self.entries.get(index).cloned()
     }
 
     /// Go forwards, restoring the draft after the newest entry.
     pub fn next_entry(&mut self) -> Option<String> {
-        let index = self.index? + 1;
+        let index = self.navigation.index? + 1;
         if index >= self.entries.len() {
-            self.index = None;
-            Some(self.draft.clone())
+            self.navigation.index = None;
+            Some(self.navigation.draft.clone())
         } else {
-            self.index = Some(index);
+            self.navigation.index = Some(index);
             self.entries.get(index).cloned()
         }
     }
 
     /// Find the previous substring match; reset navigation to restart a query.
     pub fn reverse_search(&mut self, query: &str) -> Option<String> {
-        let end = self.search_before.unwrap_or(self.entries.len());
+        let end = self.navigation.search_before.unwrap_or(self.entries.len());
         let found = self
             .entries
             .iter()
@@ -224,7 +259,7 @@ impl PromptHistory {
             .rev()
             .find(|(_, entry)| entry.contains(query));
         if let Some((index, entry)) = found {
-            self.search_before = Some(index);
+            self.navigation.search_before = Some(index);
             Some(entry.clone())
         } else {
             None

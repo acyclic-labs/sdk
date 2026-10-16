@@ -3,7 +3,5 @@ import type { CurrentHeadMarker } from "./CurrentHeadMarker.js";
 
 /**
  * The published subscription-start message owns its oneof declaration.
- * Contract derivation generates the wire shadow and fallible ingress from this semantic
- * declaration, preserving cursor zero and the current-head boolean payload.
  */
 export type SubscriptionStart = { start: { "case": "cursor", "value": bigint } | { "case": "currentHead", "value": CurrentHeadMarker }, };

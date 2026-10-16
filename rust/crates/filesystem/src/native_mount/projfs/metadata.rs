@@ -11,19 +11,9 @@ pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
             length = length.checked_add(1)?;
         }
         let wide = std::slice::from_raw_parts(pointer.0, length);
-        let host_path = PathBuf::from(std::ffi::OsString::from_wide(wide));
-        let mut path = MountPath::root();
-        for component in host_path.components() {
-            let std::path::Component::Normal(component) = component else {
-                return None;
-            };
-            let bytes = component
-                .encode_wide()
-                .flat_map(u16::to_le_bytes)
-                .collect::<Vec<_>>();
-            path = path.child(bytes);
-        }
-        Some(path)
+        Some(MountPath {
+            components: super::callback_path::components(wide)?,
+        })
     }
 }
 

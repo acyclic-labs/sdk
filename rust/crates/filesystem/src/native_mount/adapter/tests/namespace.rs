@@ -496,8 +496,7 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
 /// of a directory that is not empty, fail with their own POSIX error, which
 /// a native mount reports as is, not as an I/O error.
 #[test]
-fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn std::error::Error>>
-{
+fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let (directory, file, full, absent) = (
@@ -577,5 +576,25 @@ fn a_linux_mount_refuses_replacing_or_removing_a_full_directory_with_enotempty()
     );
     assert!(empty.is_dir() && full.join("child").is_file());
     assert!(mount.stop()?);
+    Ok(())
+}
+
+#[test]
+fn full_case_fold_native_comparison_keys_can_expand_past_name_limits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = source(FilesystemProfile::Portable)?;
+    source.folds_names = true;
+    let text = "ΐ".repeat(100);
+    let path = native_test_path(&text);
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    source.create_file(&path, metadata(), None, &work)?;
+    let folded = source
+        .fold_path(&path, &work)?
+        .ok_or("missing comparison key")?;
+    assert_eq!(
+        folded.0.components()[0],
+        native_test_path(&"ι\u{308}\u{301}".repeat(100)).components()[0]
+    );
+    assert!(source.lookup(&path)?.is_some());
     Ok(())
 }

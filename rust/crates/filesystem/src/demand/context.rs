@@ -5,6 +5,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+// Lock order: observer registry (35), source cursors (40), original leaf (50),
+// gate counters (60). Resource allowances follow the leaf, ancestors first.
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl std::fmt::Debug for NativeDemandReadMeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

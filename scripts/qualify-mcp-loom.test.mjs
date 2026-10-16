@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { qualifyMcpLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyGuestLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -19,8 +19,22 @@ test("qualification instruments only the selected target and executes its built 
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   const gate = qualification.match(/  gate\)\n([\s\S]*?);;/)?.[1];
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --all-features/);
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --guest/);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
+});
+
+test("guest qualification instruments only the guest target and runs its models", () => {
+  const calls = [];
+  qualifyGuestLoom((command, args) => {
+    calls.push([command, args]);
+    const guest = { ...artifact, target: { name: "guest_loom" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4) };
+  });
+  assert.deepEqual(calls, [
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "guest_loom", "--", "--cfg", "loom"]],
+    ["model-binary", []],
+  ]);
 });
 
 test("qualification rejects zero, skipped, filtered and failed model execution", () => {

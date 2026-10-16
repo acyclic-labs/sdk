@@ -64,6 +64,7 @@ pub(crate) fn initialize_test_native_io() {
     });
 }
 
+pub mod access;
 mod sync;
 
 pub mod accounting;

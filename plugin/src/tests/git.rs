@@ -1,0 +1,175 @@
+use super::*;
+
+async fn open_child(fixture: &Fixture) -> ControlPlane {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    acyclic_fs::initialize_native_mount_services().unwrap();
+    let mut control = ControlPlane::open(fixture.data.clone()).await.unwrap();
+    control
+        .session_start(json!({"session_id":"git-review","cwd":fixture.root}))
+        .await
+        .unwrap();
+    control
+        .user_prompt(json!({"session_id":"git-review","turn_id":"root-turn"}))
+        .unwrap();
+    // Give branch forks an authored common base rather than unresolved source entries.
+    for workspace in control.roots.values() {
+        use acyclic_fs::facade::FsWork as _;
+        workspace
+            .exactify(
+                "/",
+                PublicationPermit::Unrestricted,
+                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+    }
+    control.pre_tool(json!({"session_id":"git-review","turn_id":"root-turn", "tool_use_id":"spawn-child", "tool_name":"spawn_agent","tool_input":{}})).await.unwrap();
+    control
+        .subagent_start(
+            json!({"session_id":"git-review","turn_id":"child-turn","agent_id":"child"}),
+        )
+        .await
+        .unwrap();
+    control
+}
+
+async fn child_git(control: &mut ControlPlane, args: &[&str]) -> Result<Value, String> {
+    let route = control.state.routes["child"].clone();
+    control
+        .git_tool(
+            "child",
+            &route,
+            WorkspaceRootId::from_bytes(route.root_id),
+            args.iter().map(|s| (*s).to_owned()).collect(),
+        )
+        .await
+}
+
+async fn write_child(control: &ControlPlane, name: &str, text: &'static str) {
+    let path = control.state.routes["child"]
+        .active_path()
+        .unwrap()
+        .join(name);
+    tokio::task::spawn_blocking(move || fs::write(path, text))
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+async fn write_child_text(control: &ControlPlane, text: &'static str) {
+    use acyclic_fs::facade::FsWork as _;
+    let route = &control.state.routes["child"];
+    let root = WorkspaceRootId::from_bytes(route.root_id);
+    let workspace = control.lazy_workspace_root(route, root).await.unwrap();
+    let cancellation = CancellationToken::new();
+    workspace
+        .write(
+            "/conflict.txt",
+            bytes::Bytes::from_static(text.as_bytes()).into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await
+        .unwrap();
+    control.mounts["child"].advance_to_head().await.unwrap();
+}
+
+#[test]
+fn git_merge_error_exposes_conflict_markers_in_the_agent_mount() {
+    run_large_stack("git-conflict-visibility", || async {
+        let fixture = Fixture::new();
+        fs::write(fixture.root.join("conflict.txt"), "base\n").unwrap();
+        let mut control = open_child(&fixture).await;
+        child_git(&mut control, &["commit", "-m", "base"])
+            .await
+            .unwrap();
+        child_git(&mut control, &["checkout", "-b", "review-main"])
+            .await
+            .unwrap();
+        child_git(&mut control, &["checkout", "-b", "review-other"])
+            .await
+            .unwrap();
+        write_child_text(&control, "theirs\n").await;
+        child_git(&mut control, &["commit", "-m", "theirs"])
+            .await
+            .unwrap();
+        child_git(&mut control, &["checkout", "review-main"])
+            .await
+            .unwrap();
+        write_child_text(&control, "ours\n").await;
+        child_git(&mut control, &["commit", "-m", "ours"])
+            .await
+            .unwrap();
+        let error = child_git(&mut control, &["merge", "review-other"])
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("projected unresolved text conflicts"),
+            "{error}"
+        );
+        let path = control.state.routes["child"]
+            .active_path()
+            .unwrap()
+            .join("conflict.txt");
+        let markers = tokio::task::spawn_blocking(move || fs::read_to_string(path))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            acyclic_fs::text_merge::has_conflict_markers(&markers),
+            "{markers}"
+        );
+        assert!(
+            markers.contains("ours") && markers.contains("theirs"),
+            "{markers}"
+        );
+        control.shutdown().await.unwrap();
+    });
+}
+
+async fn merge_child_attributes(attributes: &'static [u8]) {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("base.txt"), "base\n").unwrap();
+    fs::write(fixture.root.join(".gitattributes"), "*.txt merge=text\n").unwrap();
+    let mut control = open_child(&fixture).await;
+    let path = control.state.routes["child"]
+        .active_path()
+        .unwrap()
+        .join(".gitattributes");
+    tokio::task::spawn_blocking(move || fs::write(path, attributes))
+        .await
+        .unwrap()
+        .unwrap();
+    write_child(&control, ".gitignore", "ignored/\n").await;
+    write_child(&control, "result.txt", "child result\n").await;
+    control
+        .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("result.txt")).unwrap(),
+        "child result\n"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("base.txt")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join(".gitattributes")).unwrap(),
+        attributes
+    );
+    control.shutdown().await.unwrap();
+}
+
+#[test]
+fn child_merge_ignores_unregistered_child_attributes() {
+    run_large_stack("child-merge-driver", || {
+        merge_child_attributes(b"*.lock merge=ours\n")
+    });
+}
+
+#[test]
+fn child_merge_ignores_non_utf8_child_attributes() {
+    run_large_stack("child-merge-non-utf8", || merge_child_attributes(b"\xff"));
+}

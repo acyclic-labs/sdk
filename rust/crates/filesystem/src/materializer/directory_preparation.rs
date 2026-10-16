@@ -98,3 +98,51 @@ impl NativeTreeMaterializationBackend {
         persist_preparation(store, journal).await
     }
 }
+
+/// Creates shared staging ancestors through held directories before journaling the operation.
+pub(super) async fn prepare_publication_parent<F, Fut>(
+    operation: &Path,
+    work: &NativeMaterializationWork,
+    before_effect: &mut F,
+) -> Result<HostRoot, NativeWorkspacePublicationError>
+where
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
+{
+    let requested = operation
+        .parent()
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    let mut existing = requested;
+    let mut parent = loop {
+        match HostRoot::open(existing, &mut &*work) {
+            Ok(parent) => break parent,
+            Err(NativeTreeMaterializationError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                existing = existing.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let suffix = requested
+        .strip_prefix(existing)
+        .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
+    for component in suffix.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(NativeTreeMaterializationError::InvalidLayout.into());
+        };
+        let leaf = Path::new(name);
+        before_effect().await?;
+        let created = work.with_original_leaf(|state| {
+            host_path(leaf, state, |path, work| parent.create_dir(path, work))
+        });
+        match created {
+            Ok(()) => crate::native_host::sync_directory_held(&parent.directory, &mut &*work)?,
+            Err(crate::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(native_materialization_work_error(error).into()),
+        }
+        parent = held_child(&parent, leaf, work)?;
+    }
+    Ok(parent)
+}
