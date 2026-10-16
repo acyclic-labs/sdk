@@ -20,6 +20,13 @@ async fn local(
     directory: &std::path::Path,
     provider: Arc<ScriptedModelProvider>,
 ) -> Result<LocalHarness> {
+    local_with_limits(directory, provider, Default::default()).await
+}
+async fn local_with_limits(
+    directory: &std::path::Path,
+    provider: Arc<ScriptedModelProvider>,
+    limits: acyclic_harness::conversation::Limits,
+) -> Result<LocalHarness> {
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|e| Error::Storage(e.to_string()))?;
     let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
@@ -43,7 +50,9 @@ async fn local(
         .await?;
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     LocalHarness::open(
-        LocalHarnessConfig::new(directory.join("filesystem"), (model, provider)).volume(volume),
+        LocalHarnessConfig::new(directory.join("filesystem"), (model, provider))
+            .volume(volume)
+            .limits(limits),
     )
     .await
 }
@@ -399,5 +408,59 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
         json!({"url":"https://example.test/page"})
     );
     assert!(provider.requests().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let local = local_with_limits(
+        directory.path(),
+        provider([]),
+        acyclic_harness::conversation::Limits {
+            context_messages: 8,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let mut client = CommandSession::open(
+        local.task_files().clone(),
+        uuid::Uuid::new_v4(),
+        65_536,
+        128,
+    )
+    .await?;
+    let root = send(&local, &mut client, "root").await?;
+    let root = TaskId::parse(root["task"].as_str().unwrap())?;
+    let child = send(&local, &mut client, "child").await?;
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    for index in 0..25 {
+        let key = FileKey::parse(&format!(".ui/archive-{index:04}/settings.json"))
+            .map_err(volume_error)?;
+        let cut = local
+            .task_files()
+            .snapshot(&Query::File(key.clone()), 1)
+            .await
+            .map_err(volume_error)?
+            .generation;
+        local
+            .task_files()
+            .append(cut, &FileValue::new(key, b"{}".to_vec()))
+            .await
+            .map_err(volume_error)?;
+    }
+    assert!(matches!(
+        client.submit("/clearall", &NoReads).await,
+        Err(Error::Conflict(_))
+    ));
+    client.submit("/clearall", &NoReads).await?;
+    client.submit("yes", &NoReads).await?;
+    let request = client.next_request().await?;
+    let result = consume_local_command(&mut client, &local, &request)
+        .await?
+        .unwrap();
+    assert_eq!(result["deleted_count"], 2);
+    assert!(local.resume(root).await.is_err() && local.resume(child).await.is_err());
+    assert!(client.selected_task()?.is_none());
     Ok(())
 }

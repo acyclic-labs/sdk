@@ -3,6 +3,7 @@
 pub(crate) mod command_query;
 mod follow;
 mod heads;
+mod page;
 mod plan_name;
 mod schema;
 mod segment;
@@ -275,51 +276,60 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     async fn refresh(&self, index: &mut Index) -> Result<()> {
         let tail = self.provider.watermarks(self.path.clone()).await?.accepted;
+        while !self
+            .refresh_to(index, tail, acyclic_stream::MAX_ITEMS as usize - 1)
+            .await?
+        {}
+        Ok(())
+    }
+
+    // One anchored, bounded suffix read. The index lock owns replay order;
+    // callers may yield between slices without retaining a second snapshot.
+    async fn refresh_to(
+        &self,
+        index: &mut Index,
+        tail: u64,
+        maximum_records: usize,
+    ) -> Result<bool> {
         if tail < index.next {
             return Err(Error::ResetRequired);
         }
-        loop {
-            // Anchor and suffix belong to one immutable provider read. Separate
-            // reads could splice a replaced accepted history into the cached files.
-            let mut records = self
-                .provider
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: index.next - 1,
-                    limit: u32::try_from(
-                        (tail - index.next + 1).min(acyclic_stream::MAX_ITEMS as u64),
-                    )
-                    .map_err(|_| Error::LimitExceeded)?,
-                })
-                .await?;
-            let anchor = records.next().await.ok_or(Error::ResetRequired)??;
-            item_examined();
-            if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
-                return Err(Error::ResetRequired);
-            }
-            let before = index.next;
-            while let Some(record) = records.next().await {
-                item_examined();
-                let record = record?;
-                if record.sequence >= tail {
-                    break;
-                }
-                if record.sequence != index.next {
-                    return Err(Error::ResetRequired);
-                }
-                let files = segment::decode(&record.value)?;
-                validate_file(index, &files)?;
-                apply(index, files);
-                index.commit = record.commit_id;
-                index.next += 1;
-            }
-            if index.next == tail {
-                return Ok(());
-            }
-            if index.next == before {
-                return Err(Error::ResetRequired);
-            }
+        let suffix = (tail - index.next)
+            .min(maximum_records as u64)
+            .min(acyclic_stream::MAX_ITEMS as u64 - 1);
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: index.next - 1,
+                limit: u32::try_from(suffix + 1).map_err(|_| Error::LimitExceeded)?,
+            })
+            .await?;
+        // Anchor and suffix belong to one immutable read: a replaced accepted
+        // history cannot be spliced into the materialized index.
+        let anchor = records.next().await.ok_or(Error::ResetRequired)??;
+        item_examined();
+        if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
+            return Err(Error::ResetRequired);
         }
+        let before = index.next;
+        let through = index.next + suffix;
+        while let Some(record) = records.next().await {
+            item_examined();
+            let record = record?;
+            if record.sequence != index.next || record.sequence >= through {
+                return Err(Error::ResetRequired);
+            }
+            let file = segment::decode(&record.value)?;
+            validate_file(index, &file)?;
+            apply(index, file);
+            index.commit = record.commit_id;
+            index.next += 1;
+        }
+        if index.next == before && index.next < tail {
+            return Err(Error::ResetRequired);
+        }
+        Ok(index.next == tail)
     }
 
     /// Accepts one file event in its own append, without a batching boundary.

@@ -66,6 +66,8 @@ impl CheckoutTools {
                     );
                     let identity = acyclic_fs::capture_root_identity(&path).map_err(storage)?;
                     let workspace = Arc::new(LocalWorkspace {
+                        #[cfg(all(test, not(acyclic_harness_loom)))]
+                        selection_reads: std::sync::atomic::AtomicUsize::new(0),
                         path: path.clone(),
                         fresh: false,
                         mount_directory: self.workspace.mount_directory.clone(),

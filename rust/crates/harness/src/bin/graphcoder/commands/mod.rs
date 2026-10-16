@@ -5,6 +5,7 @@ mod native;
 pub(super) async fn execute_sdk(
     command: &str,
     arguments: &str,
+    settings: &serde_json::Value,
     backend: &mut Option<Backend>,
     cursor: &mut acyclic_harness::wire::ReplayCursor,
     #[cfg(feature = "filesystem-local")] parent: &mut Option<acyclic_harness::TaskId>,
@@ -18,7 +19,7 @@ pub(super) async fn execute_sdk(
         .as_ref()
         .ok_or_else(|| Error::Conflict("session is closed".into()))?;
     #[cfg(not(feature = "filesystem-local"))]
-    let _ = output;
+    let _ = (output, settings);
     if command == "reset" {
         match api {
             Backend::Fixture(fixture) => *cursor = fixture.start_cursor(),
@@ -58,7 +59,10 @@ pub(super) async fn execute_sdk(
         read_request(arguments)?
     } else {
         #[cfg(feature = "filesystem-local")]
-        return native::execute_sdk(command, arguments, backend, parent, workers, output).await;
+        return native::execute_sdk(
+            command, arguments, settings, backend, parent, workers, output,
+        )
+        .await;
         #[cfg(not(feature = "filesystem-local"))]
         return Err(Error::Unsupported(
             "operation requires a durable product host".into(),

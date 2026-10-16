@@ -119,16 +119,23 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 .await?;
         }
     }
+    #[cfg(feature = "filesystem-local")]
+    if let Backend::Native(native) = &backend {
+        let tools = json!({"tools":native.owner.tools().definitions(None)?, "diagnostics":native.owner.mcp_diagnostics().iter().map(|failure| json!({"server":failure.server,"message":failure.message})).collect::<Vec<_>>()});
+        if client.state(CommandFileRoot::Config, "tools.json")? != Some(tools.clone()) {
+            client
+                .write_state(CommandFileRoot::Config, "tools.json", &tools)
+                .await?;
+        }
+    }
     let mut cursor = backend.cursor();
     let mut backend = Some(backend);
     let mut input = input_lines()?;
     #[cfg(feature = "filesystem-local")]
-    let mut documents: acyclic_stream::BoxProviderStream<
-        'static,
-        Result<acyclic_harness::client::ViewUpdate>,
-    > = Box::pin(futures::stream::pending());
-    #[cfg(all(feature = "filesystem-local", feature = "tui"))]
-    let mut plans: Option<plans::Plans> = None;
+    let mut documents: acyclic_harness::task_volume::ChangeStream =
+        Box::pin(futures::stream::pending());
+    let mut view_files = acyclic_harness::client::CommandViewFiles::default();
+    let mut last_render = None;
     #[cfg(feature = "filesystem-local")]
     let mut workers = tokio::task::JoinSet::<Result<String>>::new();
     #[cfg(feature = "filesystem-local")]
@@ -173,51 +180,50 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                             .map(|request| CommandResolution::Submit { request })
                     })
                     .map_err(invalid)?;
-                if matches!(
-                    resolution,
-                    CommandResolution::Tool {
-                        tool: acyclic_harness::client::CommandTool::Bash
-                            | acyclic_harness::client::CommandTool::WebSearch
-                            | acyclic_harness::client::CommandTool::UrlFetch,
-                        ..
-                    } | CommandResolution::Submit {
-                        request: acyclic_harness::client::CommandRequest::Compact { .. }
-                    }
-                ) {
-                    let owner = Arc::clone(owner);
-                    let volume = Arc::clone(&volume);
-                    effects.spawn(async move {
-                        let mut consumer = CommandSession::open(
-                            volume,
-                            session,
-                            terminal::MAX_FRAME_BYTES as u64,
-                            4096,
+                let worker_owner = Arc::clone(owner);
+                let volume = Arc::clone(&volume);
+                let owned_request = request.clone();
+                let effect = Box::pin(async move {
+                    let mut consumer = CommandSession::open(
+                        volume,
+                        session,
+                        terminal::MAX_FRAME_BYTES as u64,
+                        4096,
+                    )
+                    .await?;
+                    loop {
+                        match acyclic_harness::client::consume_local_command(
+                            &mut consumer,
+                            &worker_owner,
+                            &owned_request,
                         )
-                        .await?;
-                        loop {
-                            match acyclic_harness::client::consume_local_command(
-                                &mut consumer,
-                                &owner,
-                                &request,
-                            )
-                            .await
+                        .await
+                        {
+                            Err(Error::Conflict(message))
+                                if message == "command query advanced; retry from the new cut" =>
                             {
-                                Err(Error::Conflict(message))
-                                    if message
-                                        == "command query advanced; retry from the new cut" =>
-                                {
-                                    continue;
-                                }
-                                result => return result,
+                                continue;
                             }
+                            result => return result,
                         }
-                    });
-                    continue;
-                }
-                Some(
-                    acyclic_harness::client::consume_local_command(&mut client, owner, &request)
-                        .await,
+                    }
+                });
+                match acyclic_harness::client::schedule_command_effect(
+                    &resolution,
+                    Box::pin(acyclic_harness::client::consume_local_command(
+                        &mut client,
+                        owner,
+                        &request,
+                    )),
+                    || {
+                        effects.spawn(effect);
+                    },
                 )
+                .await
+                {
+                    Some(result) => Some(result),
+                    None => continue,
+                }
             } else {
                 None
             };
@@ -282,6 +288,68 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         if client.exit_requested()? {
             break;
         }
+        #[cfg(feature = "filesystem-local")]
+        {
+            let queries = client.view_queries()?;
+            if !view_files.selects(&queries) {
+                if let Some(Backend::Native(native)) = backend.as_ref() {
+                    let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+                        native.files.clone(),
+                        &native.config.owner.verifier()?,
+                        &native.config.owner.scope,
+                        terminal::MAX_FRAME_BYTES as u64,
+                        None,
+                    )?;
+                    let source = reader.file_query(
+                        &native.config.private_volume,
+                        native.config.tools.content_budget,
+                    )?;
+                    let (private, task): (Vec<_>, Vec<_>) =
+                        queries.iter().cloned().partition(|query| {
+                            matches!(
+                                query,
+                                acyclic_harness::task_volume::Query::Plans
+                                    | acyclic_harness::task_volume::Query::File(
+                                        acyclic_harness::task_volume::FileKey::Goal
+                                    )
+                            )
+                        });
+                    let (mut private_views, private_changes) =
+                        acyclic_harness::client::CommandViewFiles::observe(
+                            &source,
+                            &private,
+                            4096,
+                            terminal::MAX_FRAME_BYTES,
+                        )
+                        .await?;
+                    let (task_views, task_changes) =
+                        acyclic_harness::client::CommandViewFiles::observe(
+                            volume.as_ref(),
+                            &task,
+                            4096,
+                            terminal::MAX_FRAME_BYTES,
+                        )
+                        .await?;
+                    private_views.0.extend(task_views.0);
+                    view_files = private_views;
+                    documents =
+                        Box::pin(futures::stream::select_all([private_changes, task_changes]));
+                    if queries.is_empty() {
+                        documents = Box::pin(futures::stream::pending());
+                    }
+                }
+            }
+        }
+        let rendered = client
+            .render_view(&view_files)
+            .unwrap_or_else(|error| format!("view: {error}\n"));
+        let request = client
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("view_request").cloned());
+        if last_render.as_ref() != Some(&(request.clone(), rendered.clone())) {
+            write!(output, "{}", terminal::text(&rendered)).map_err(invalid)?;
+            last_render = Some((request, rendered));
+        }
         if interactive {
             write!(output, "graphcoder> ").map_err(invalid)?;
         }
@@ -310,23 +378,14 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 continue;
             }
             update = futures::StreamExt::next(&mut documents) => {
-                #[cfg(feature = "tui")]
-                {
-                    let result = (|| {
-                        let view = plans.as_mut().ok_or_else(|| Error::Conflict("plan selection missing".into()))?;
-                        if view.update(update.ok_or_else(|| Error::Conflict("plan query ended".into()))??)? {
-                            view.render(&mut output)?;
-                        }
-                        Ok::<_, Error>(())
-                    })();
-                    if let Err(error) = result {
+                match update {
+                    Some(Ok(change)) => { view_files.apply(change)?; }
+                    Some(Err(error)) => {
                         documents = Box::pin(futures::stream::pending());
-                        plans = None;
-                        writeln!(output, "plans: {}", terminal::text(&error.to_string())).map_err(invalid)?;
+                        writeln!(output, "view: {}", terminal::text(&error.to_string())).map_err(invalid)?;
                     }
+                    None => { documents = Box::pin(futures::stream::pending()); }
                 }
-                #[cfg(not(feature = "tui"))]
-                let _ = update;
                 continue;
             }
             outcome = workers.join_next(), if !workers.is_empty() => {
@@ -352,7 +411,9 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
         if text.is_empty() {
             continue;
         }
-        let old_layout = client.state(CommandFileRoot::Session, "layout.json")?;
+        let previous_view_request = client
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout.get("view_request").cloned());
         let reader: Arc<dyn ContentResidencyVerifier> = match backend.as_ref() {
             #[cfg(feature = "filesystem-local")]
             Some(Backend::Native(native)) => {
@@ -408,39 +469,16 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 };
                 writeln!(output, "{question} Type yes or no.").map_err(invalid)?;
             }
-            if layout
-                .as_ref()
-                .and_then(|layout| layout.get("view_request"))
-                == old_layout
-                    .as_ref()
-                    .and_then(|layout| layout.get("view_request"))
-            {
-                continue;
-            }
             let view = layout
                 .as_ref()
                 .and_then(|layout| layout.get("open_view"))
                 .and_then(Value::as_str);
-            #[cfg(all(feature = "filesystem-local", feature = "tui"))]
-            if view == Some("plan") {
-                plans = None;
-                documents = Box::pin(futures::stream::pending());
-                let native = backend
+            if view == Some("history")
+                && layout
                     .as_ref()
-                    .ok_or_else(|| Error::Conflict("session closed".into()))?
-                    .native()?
-                    .clone();
-                match plans::Plans::open(native).await {
-                    Ok((view, updates)) => {
-                        view.render(&mut output)?;
-                        plans = Some(view);
-                        documents = updates;
-                    }
-                    Err(error) => writeln!(output, "plans: {}", terminal::text(&error.to_string()))
-                        .map_err(invalid)?,
-                }
-            }
-            if view == Some("history") {
+                    .and_then(|layout| layout.get("view_request"))
+                    != previous_view_request.as_ref()
+            {
                 let back = layout
                     .as_ref()
                     .and_then(|layout| layout.get("history_page"))
@@ -465,17 +503,6 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                     writeln!(
                         output,
                         "display page unavailable; request an explicit archival page"
-                    )
-                    .map_err(invalid)?;
-                }
-            }
-            if view == Some("shortcuts") {
-                for spec in client.catalog().commands() {
-                    writeln!(
-                        output,
-                        "/{} — {}",
-                        spec.name,
-                        terminal::text(&spec.description)
                     )
                     .map_err(invalid)?;
                 }
@@ -519,6 +546,7 @@ async fn dispatch(
         let rendered = commands::execute_sdk(
             &command,
             &arguments,
+            settings,
             backend,
             cursor,
             #[cfg(feature = "filesystem-local")]

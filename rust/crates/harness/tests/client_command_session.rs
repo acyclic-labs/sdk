@@ -265,7 +265,7 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
                         Some("/resume\n")
                     }
                     3 if observed.contains("shell-completed") => Some(
-                        "/KEYS\n/back 0\n/back 0\n/stop\n/shell echo never > quit-effect.txt\n/q\n",
+                        "/reason\n/detail\n/term\n/agents\n/view\n/m\n/find\nshell-completed\n/feedback\na local report\n/model selected\n/model\n/mcp\n/KEYS\n/back 0\n/back 0\n/stop\n/shell echo never > quit-effect.txt\n/q\n",
                     ),
                     _ => None,
                 };
@@ -313,6 +313,23 @@ async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live(
         7,
         "repeated archive renders: {rendered}"
     );
+    for expected in [
+        "reasoning=true",
+        "tool-details=true",
+        "terminal=true",
+        "tree=true",
+        "diff-mode=unified",
+        "mode=plan",
+        "Find in transcript",
+        "Feedback saved locally: a local report",
+        "Model: selected",
+        "Registered tools and MCP diagnostics",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing parity consumer {expected}: {rendered}"
+        );
+    }
     assert_eq!(
         stage, 4,
         "client failed to process the complete control sequence: {observed}"

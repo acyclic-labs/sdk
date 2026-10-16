@@ -10,6 +10,8 @@ use std::{collections::VecDeque, sync::Arc};
 mod archive;
 #[path = "session_confirmation.rs"]
 mod confirmation;
+#[path = "session_view.rs"]
+mod view;
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
@@ -124,6 +126,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         Ok(client)
+    }
+
+    pub(super) fn position(&self) -> u64 {
+        self.generation.position
     }
 
     /// Catalog from the latest observed command-definition file.
@@ -249,7 +255,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     pub async fn install_catalog(&mut self, bytes: Vec<u8>) -> Result<()> {
         let _ = CommandCatalog::from_bytes(&bytes, self.maximum_bytes)?;
         let key = ui("config", "commands.json")?;
-        self.read_file(&key).await?;
+        let expected = self.files.get(&key).map(|file| file.bytes.clone());
+        let current = self.read_file(&key).await?;
+        if current.as_ref().map(|file| &file.bytes) != expected.as_ref() {
+            return Err(Error::Conflict(
+                "command catalog changed; review the new revision".into(),
+            ));
+        }
         self.publish(key, bytes, false).await
     }
 
@@ -314,6 +326,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "no" | "n" => return self.confirm_request(confirmation, false).await,
                 _ => {}
             }
+        }
+        if let Some(operation) = self.view_input(input).await? {
+            return Ok(operation);
         }
         let cut = self.generation;
         let resolution = self

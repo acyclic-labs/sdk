@@ -128,6 +128,7 @@ macro_rules! dispatch {
 pub(super) async fn execute_sdk(
     operation: &str,
     argument: &str,
+    settings: &Value,
     backend: &mut Option<Backend>,
     parent: &mut Option<TaskId>,
     workers: &mut tokio::task::JoinSet<Result<String>>,
@@ -477,13 +478,10 @@ pub(super) async fn execute_sdk(
             let context = native.caller_context(caller, &lease).await?;
             let old = context.read_file(&before, None).await?;
             let new = context.read_file(&after, None).await?;
-            Ok(format!(
-                "diff exact before={} after={}\n--- before\n{}\n+++ after\n{}\n",
-                terminal::text(before.path()),
-                terminal::text(after.path()),
-                terminal::text(utf8(&old)?),
-                terminal::text(utf8(&new)?)
-            ))
+            acyclic_harness::client::render_command_diff(
+                &old, &new, settings["diff_mode"].as_str().unwrap_or("auto"),
+                terminal::MAX_FRAME_BYTES, terminal::MAX_FRAME_BYTES * 16,
+            )
         }
     )
 }

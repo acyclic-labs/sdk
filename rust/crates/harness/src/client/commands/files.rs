@@ -337,10 +337,11 @@ impl CommandResolution {
             } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 let attention = document(snapshot, CommandFileRoot::Session, "attention.json")?;
-                let candidates = attention
-                    .get("tasks")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| Error::Invalid("attention query requires tasks".into()))?;
+                let candidates = match attention.get("tasks") {
+                    None => &[][..],
+                    Some(Value::Array(tasks)) => tasks.as_slice(),
+                    _ => return Err(Error::Invalid("attention query requires tasks".into())),
+                };
                 if candidates.is_empty() {
                     return Ok(Vec::new());
                 }
@@ -363,6 +364,17 @@ impl CommandResolution {
             }
             Self::Select { query } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                layout.insert(
+                    "view_input".into(),
+                    if matches!(
+                        query,
+                        CommandQuery::Find | CommandQuery::Theme | CommandQuery::Feedback
+                    ) {
+                        serde_json::to_value(query).map_err(codec)?
+                    } else {
+                        Value::Null
+                    },
+                );
                 layout.insert("view_request".into(), json!(operation));
                 layout.insert(
                     "open_view".into(),

@@ -16,6 +16,7 @@ pub struct CommandSources {
     maximum_bytes: u64,
     pending: bool,
     published: Option<[u8; 32]>,
+    catalog_position: u64,
     maximum_files: usize,
     files: BTreeMap<crate::task_volume::FileKey, acyclic_stream::OwnedBytes>,
 }
@@ -58,6 +59,10 @@ impl CommandSources {
             maximum_bytes,
             pending: true,
             published: None,
+            catalog_position: observed
+                .snapshot
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.cursor.position),
             maximum_files,
             files,
         };
@@ -149,10 +154,12 @@ impl CommandSources {
                 .map_err(|error| Error::Storage(error.to_string()))?;
             if let Some(file) = &change.file
                 && file.key.path() == "commands/catalog.json"
+                && change.cursor.position > self.catalog_position
                 && self.published != Some(*blake3::hash(&file.bytes).as_bytes())
             {
                 let catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
                 self.rebase(&catalog)?;
+                self.catalog_position = change.cursor.position;
                 self.pending = true;
             }
             if let Some(file) = change.file
@@ -174,6 +181,14 @@ impl CommandSources {
         client: &mut CommandSession<P>,
     ) -> Result<()> {
         let result = self.publish(client).await;
+        if matches!(result, Err(Error::Conflict(_))) {
+            // install_catalog followed the winning revision before rejecting
+            // our stale edit. Future captures must use that reviewed base;
+            // older queued source checkpoints cannot roll it backwards.
+            self.rebase(client.catalog())?;
+            self.catalog_position = client.position();
+            self.pending = true;
+        }
         if matches!(result, Err(Error::Invalid(_))) {
             self.pending = false;
         }
@@ -297,6 +312,7 @@ impl CommandSources {
                 let digest = *blake3::hash(&bytes).as_bytes();
                 client.install_catalog(bytes).await?;
                 self.published = Some(digest);
+                self.catalog_position = client.position();
             }
             self.pending = false;
         }

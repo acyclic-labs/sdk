@@ -16,13 +16,6 @@ mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/options.rs"]
 mod options;
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "filesystem-local",
-    feature = "tui"
-))]
-#[path = "graphcoder/plans.rs"]
-mod plans;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/terminal.rs"]
 mod terminal;

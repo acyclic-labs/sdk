@@ -10,65 +10,68 @@ struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 fn source_wakeup(broken: bool) {
     check(move || {
-        let volume = Arc::new(block_on(TaskVolume::open(
-            Arc::new(MemoryStream::default()),
-            StreamPath::new("source-model")?,
-        ))?);
-        let mut client = block_on(CommandSession::open(
-            volume.clone(),
-            uuid::Uuid::from_bytes([1; 16]),
-            32_768,
-            64,
-        ))?;
-        let mut sources = block_on(CommandSources::observe(
-            &mut client,
-            &volume,
-            DEFAULT_COMMANDS_JSON.to_vec(),
-            vec![],
-            vec![],
-            Arc::new(NoReads),
-            Default::default(),
-            32_768,
-            64,
-        ))?;
-        let cut = block_on(volume.snapshot(&Query::Inputs, 64))?;
-        let publisher = loom::thread::spawn({
-            let volume = volume.clone();
-            move || {
-                block_on(volume.append(
-                    cut.generation,
-                    &FileValue::new(
-                        FileKey::parse(".codex/prompts/followed.md")?,
-                        b"Updated $ARGUMENTS".to_vec(),
+        // The publisher's append is atomic (modeled in TaskVolume). Exhaust
+        // both orders around the source consumer's first follow poll, without
+        // rescheduling the entire catalog bootstrap against one append.
+        for early in [false, true] {
+            let volume = Arc::new(block_on(TaskVolume::open(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("source-model")?,
+            ))?);
+            let mut client = block_on(CommandSession::open(
+                volume.clone(),
+                uuid::Uuid::from_bytes([1; 16]),
+                32_768,
+                64,
+            ))?;
+            let mut sources = block_on(CommandSources::observe(
+                &mut client,
+                &volume,
+                DEFAULT_COMMANDS_JSON.to_vec(),
+                vec![],
+                vec![],
+                Arc::new(NoReads),
+                Default::default(),
+                32_768,
+                64,
+            ))?;
+            let cut = block_on(volume.snapshot(&Query::Inputs, 64))?;
+            let file = FileValue::new(
+                FileKey::parse(".codex/prompts/followed.md")?,
+                b"Updated $ARGUMENTS".to_vec(),
+            );
+            let publish = || volume.append(cut.generation, &file);
+            if broken {
+                block_on(publish())?;
+                // Broken: opening a new follow drops the committed edit.
+                sources.changes = block_on(volume.observe(Query::Inputs, None, 64))?.changes;
+                let mut next = Box::pin(sources.changed());
+                assert!(
+                    matches!(
+                        next.as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                        Poll::Ready(Ok(()))
                     ),
-                ))
+                    "source wakeup lost"
+                );
+            } else {
+                let mut next = Box::pin(sources.changed());
+                if !early {
+                    assert!(
+                        next.as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                            .is_pending()
+                    );
+                }
+                block_on(publish())?;
+                block_on(next)?;
+                block_on(sources.refresh(&mut client))?;
+                let resolution =
+                    block_on(client.catalog().resolve("/followed now", &NoReads, 32_768))?;
+                assert!(
+                    matches!(resolution, CommandResolution::Prompt { text, .. } if text == "Updated now")
+                );
             }
-        });
-        if broken {
-            publisher
-                .join()
-                .map_err(|_| "source publisher panicked")??;
-            // Broken: opening a new follow drops the already committed edit.
-            sources.changes = block_on(volume.observe(Query::Inputs, None, 64))?.changes;
-            let mut next = Box::pin(sources.changed());
-            assert!(
-                matches!(
-                    next.as_mut()
-                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
-                    Poll::Ready(Ok(()))
-                ),
-                "source wakeup lost"
-            );
-        } else {
-            block_on(sources.changed())?;
-            publisher
-                .join()
-                .map_err(|_| "source publisher panicked")??;
-            block_on(sources.refresh(&mut client))?;
-            let resolution = block_on(client.catalog().resolve("/followed now", &NoReads, 32_768))?;
-            assert!(
-                matches!(resolution, CommandResolution::Prompt { text, .. } if text == "Updated now")
-            );
         }
         Ok(())
     });

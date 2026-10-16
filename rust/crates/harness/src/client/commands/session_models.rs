@@ -57,3 +57,49 @@ fn completed_effect_cursor_survives_competing_publications() {
 fn negative_control_detects_returning_a_cursor_conflict() {
     activity_race(true);
 }
+
+fn catalog_conflict(broken: bool) {
+    check(move || {
+        let volume = Arc::new(block_on(files::TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("catalog-conflict-model")?,
+        ))?);
+        let session = uuid::Uuid::from_bytes([1; 16]);
+        let mut editor = block_on(CommandSession::open(volume.clone(), session, 32_768, 64))?;
+        let mut winner = block_on(CommandSession::open(volume.clone(), session, 32_768, 64))?;
+        let mut winning: Value = serde_json::from_slice(DEFAULT_COMMANDS_JSON)?;
+        let mut stale = winning.clone();
+        winning[0]["description"] = json!("winning edit");
+        stale[0]["description"] = json!("stale edit");
+        block_on(winner.install_catalog(serde_json::to_vec(&winning)?))?;
+        let result = if broken {
+            // Original defect: silently advance a stale editor's base before
+            // publishing its already computed bytes.
+            let key = ui("config", "commands.json")?;
+            block_on(editor.read_file(&key))?;
+            block_on(editor.publish(key, serde_json::to_vec(&stale)?, false))
+        } else {
+            block_on(editor.install_catalog(serde_json::to_vec(&stale)?))
+        };
+        assert!(
+            matches!(result, Err(Error::Conflict(_))),
+            "catalog edit overwritten"
+        );
+        let saved =
+            block_on(volume.snapshot(&files::Query::File(ui("config", "commands.json")?), 1))?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&saved.files[0].bytes)?,
+            winning
+        );
+        Ok(())
+    });
+}
+#[test]
+fn catalog_edit_conflict_preserves_the_winning_publication() {
+    catalog_conflict(false);
+}
+#[test]
+#[should_panic(expected = "catalog edit overwritten")]
+fn negative_control_detects_refreshing_away_a_catalog_conflict() {
+    catalog_conflict(true);
+}

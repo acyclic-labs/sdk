@@ -94,46 +94,82 @@ fn worker_keeps_resume_input_live(broken: bool) {
             StreamPath::new("worker-control-model")?,
         ))?);
         let task = TaskId::from_bytes([1; 16]);
-        block_on(CommandControl::change(
-            &volume,
-            Some(task),
-            &[task],
-            Some(true),
-            1024,
-        ))?;
-        let lineage = [task];
-        if broken {
-            // Awaiting the owner inside input cannot publish its resume.
-            let mut waiting = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+        // The same scheduling function called by command_line::run decides
+        // whether the input owner waits or launches the owner effect. Model
+        // both legal orders of the executor's first poll relative to input.
+        for early in [false, true] {
+            let stop = CommandResolution::Submit {
+                request: CommandRequest::Pause {
+                    scope: CommandTaskScope::Subtree,
+                },
+            };
+            block_on(super::super::schedule_command_effect(
+                &stop,
+                Box::pin(CommandControl::change(
+                    &volume,
+                    Some(task),
+                    &[task],
+                    Some(true),
+                    1024,
+                )),
+                || panic!("control input was detached"),
+            ))
+            .expect("stop must publish before reading the next input")?;
+            let lineage = [task];
+            let effect = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+            let inline = Box::pin(CommandControl::wait(&volume, &lineage, 1024));
+            let mut worker = None;
+            let spawn = || {
+                worker = Some(Box::pin(effect));
+            };
+            let shell = CommandResolution::Tool {
+                tool: CommandTool::Bash,
+                input: serde_json::json!({"command":"echo ready"}),
+            };
+            let mut input = Box::pin(async {
+                if broken {
+                    super::super::scheduling::schedule(false, inline, spawn).await
+                } else {
+                    super::super::schedule_command_effect(&shell, inline, spawn).await
+                }
+            });
             assert!(
-                matches!(
-                    waiting
-                        .as_mut()
-                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
-                    Poll::Ready(_)
-                ),
+                input
+                    .as_mut()
+                    .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                    .is_ready(),
                 "resume input blocked by paused owner"
             );
+            drop(input);
+            let mut worker = worker.expect("owner effect must be launched");
+            if !early {
+                assert!(
+                    worker
+                        .as_mut()
+                        .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                        .is_pending()
+                );
+            }
+            // This is the next input event; an inline await above prevents it.
+            let resume = CommandResolution::Submit {
+                request: CommandRequest::Resume {
+                    scope: CommandTaskScope::Subtree,
+                },
+            };
+            block_on(super::super::schedule_command_effect(
+                &resume,
+                Box::pin(CommandControl::change(
+                    &volume,
+                    Some(task),
+                    &lineage,
+                    Some(false),
+                    1024,
+                )),
+                || panic!("control input was detached"),
+            ))
+            .expect("resume input must publish inline")?;
+            block_on(worker)?;
         }
-        let mut waiting = Box::pin({
-            let volume = volume.clone();
-            async move { CommandControl::wait(&volume, &lineage, 1024).await }
-        });
-        assert!(
-            waiting
-                .as_mut()
-                .poll(&mut Context::from_waker(std::task::Waker::noop()))
-                .is_pending()
-        );
-        let worker = loom::thread::spawn(move || block_on(waiting));
-        block_on(CommandControl::change(
-            &volume,
-            Some(task),
-            &lineage,
-            Some(false),
-            1024,
-        ))?;
-        worker.join().map_err(|_| "owner worker panicked")??;
         Ok(())
     });
 }

@@ -146,74 +146,97 @@ impl LocalHarness {
         Ok(prompt.into())
     }
     async fn delete_commands(&self, target: Option<TaskId>) -> Result<Value> {
-        let mut tasks = std::collections::BTreeSet::new();
         if let Some(task) = target {
-            tasks.insert(task);
-        } else {
-            let snapshot = self
-                .task_files
-                .snapshot(&Query::Root, self.limits.context_messages)
-                .await
-                .map_err(storage)?;
-            for file in snapshot.files {
-                if let FileKey::Ui { directory, name } = file.key
-                    && name.as_str() == "settings.json"
-                    && let Some(task) = directory.as_str().strip_prefix("task-")
-                {
-                    tasks.insert(TaskId::parse(task)?);
-                }
-            }
-        }
-        let mut deleted = Vec::new();
-        for task in &tasks {
-            match self.runtime.task_host().cancel(*task).await {
-                Ok(()) => {}
-                Err(Error::NotFound(_)) => continue,
-                Err(error) => return Err(error),
-            }
-            let key = FileKey::Ui {
-                directory: Component::new(format!("task-{task}")).map_err(storage)?,
-                name: Component::new("settings.json").map_err(storage)?,
-            };
-            loop {
-                let snapshot = self
-                    .task_files
-                    .snapshot(&Query::File(key.clone()), 1)
-                    .await
-                    .map_err(storage)?;
-                let mut settings: Value = snapshot
-                    .files
-                    .first()
-                    .map(|file| serde_json::from_slice(&file.bytes))
-                    .transpose()
-                    .map_err(storage)?
-                    .unwrap_or_else(|| json!({}));
-                settings
-                    .as_object_mut()
-                    .ok_or_else(|| Error::Invalid("settings must be an object".into()))?
-                    .insert("deleted".into(), json!(true));
-                let bytes = serde_json::to_vec(&settings).map_err(storage)?;
-                match self
-                    .task_files
-                    .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
-                    .await
-                {
-                    Ok(_) => break,
-                    Err(crate::task_volume::Error::Conflict(_)) => continue,
-                    Err(error) => return Err(storage(error)),
-                }
-            }
+            let deleted = self.delete_conversation(task).await?;
             CommandControl::change(
                 &self.task_files,
-                Some(*task),
-                &[*task],
+                Some(task),
+                &[task],
                 Some(false),
                 self.limits.file_bytes,
             )
             .await?;
-            deleted.push(*task);
+            return Ok(
+                json!({"selected_task":null,"deleted":if deleted { vec![task] } else { vec![] },"cleared":false}),
+            );
         }
-        Ok(json!({"selected_task":null,"deleted":deleted,"cleared":target.is_none()}))
+        let mut after = None;
+        let mut deleted = 0_u64;
+        loop {
+            let Some(page) = self
+                .task_files
+                .page(after.as_ref(), self.limits.context_messages.min(64))
+                .await
+                .map_err(storage)?
+            else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().map(|file| file.key.clone());
+            for file in page {
+                if let FileKey::Ui { directory, name } = file.key
+                    && name.as_str() == "settings.json"
+                    && let Some(task) = directory.as_str().strip_prefix("task-")
+                    && self.delete_conversation(TaskId::parse(task)?).await?
+                {
+                    deleted = deleted.checked_add(1).ok_or_else(|| {
+                        Error::Invalid("deleted conversation count overflow".into())
+                    })?;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        CommandControl::change(
+            &self.task_files,
+            None,
+            &[],
+            Some(false),
+            self.limits.file_bytes,
+        )
+        .await?;
+        Ok(json!({"selected_task":null,"deleted_count":deleted,"cleared":true}))
+    }
+    async fn delete_conversation(&self, task: TaskId) -> Result<bool> {
+        match self.runtime.task_host().cancel(task).await {
+            Ok(()) => {}
+            Err(Error::NotFound(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        let key = FileKey::Ui {
+            directory: Component::new(format!("task-{task}")).map_err(storage)?,
+            name: Component::new("settings.json").map_err(storage)?,
+        };
+        loop {
+            let snapshot = self
+                .task_files
+                .snapshot(&Query::File(key.clone()), 1)
+                .await
+                .map_err(storage)?;
+            let mut settings: Value = snapshot
+                .files
+                .first()
+                .map(|file| serde_json::from_slice(&file.bytes))
+                .transpose()
+                .map_err(storage)?
+                .unwrap_or_else(|| json!({}));
+            settings
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("settings must be an object".into()))?
+                .insert("deleted".into(), json!(true));
+            let bytes = serde_json::to_vec(&settings).map_err(storage)?;
+            match self
+                .task_files
+                .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(crate::task_volume::Error::Conflict(_)) => continue,
+                Err(error) => return Err(storage(error)),
+            }
+        }
     }
     async fn queue_prompt(
         &self,

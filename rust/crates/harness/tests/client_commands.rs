@@ -24,6 +24,8 @@ mod client_command_parser;
 #[cfg(not(target_arch = "wasm32"))]
 mod client_command_session;
 #[cfg(not(target_arch = "wasm32"))]
+mod client_command_views;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "../src/client/commands/name_index.rs"]
 mod command_name_index;
 #[cfg(not(target_arch = "wasm32"))]

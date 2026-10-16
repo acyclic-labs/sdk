@@ -16,7 +16,14 @@ use parse::{expand, has_frontmatter, validate_name};
 mod presentation;
 pub use presentation::*;
 mod control;
+mod scheduling;
+pub use scheduling::schedule_command_effect;
+mod diff;
 mod files;
+pub use diff::render_command_diff;
+mod view;
+mod view_files;
+pub use view_files::CommandViewFiles;
 #[cfg(all(test, acyclic_loom))]
 mod model;
 pub use control::CommandControl;
