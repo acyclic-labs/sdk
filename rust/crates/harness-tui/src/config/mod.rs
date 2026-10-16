@@ -197,6 +197,12 @@ impl ConfigView {
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
         self.errors.iter().flatten().flatten()
     }
+    /// Validated source-file projection before defaults or higher scopes are merged.
+    /// Borrowing a source never reparses its JSON or schema.
+    pub fn source(&self, scope: Scope, file: ConfigFile) -> Option<&Value> {
+        self.layers[scope.index()][file.index()].as_ref()
+    }
+
     /// Effective file value; defaults are also declarative files.
     pub fn effective(&self, file: ConfigFile) -> Result<Value, Vec<Diagnostic>> {
         let defaults = parse(file, Scope::User, file.defaults())?;

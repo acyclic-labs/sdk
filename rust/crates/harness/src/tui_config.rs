@@ -1,7 +1,7 @@
 //! User/workspace configuration is followed with the existing file query. The
 //! only authority is the selected volume; UI actions publish ordinary file writes.
 use crate::{
-    task_volume::{ChangeStream, Cursor, FileKey, Generation, Query, Snapshot, TaskVolume, Write},
+    task_volume::{ChangeStream, Cursor, FileKey, Generation, Query, TaskVolume, Write},
     tui::{
         AppAction, PromptInput,
         config::{ConfigFile, ConfigView, Diagnostic, Scope, fold, parse, parse_bytes},
@@ -149,7 +149,15 @@ impl ConfigFiles {
     ) -> Result<Generation> {
         let key = FileKey::parse(file.path())?;
         let snapshot = volume.snapshot(&Query::File(key.clone()), 1).await?;
-        publish(volume, snapshot, scope, file, patch).await
+        let old = match snapshot.files.first() {
+            Some(value) => parse_bytes(file, scope, &value.bytes)?,
+            None => serde_json::json!({}),
+        };
+        let value = fold(&old, Some(patch), None);
+        let bytes = parse(file, scope, &value.to_string())?
+            .to_string()
+            .into_bytes();
+        publish(volume, snapshot.generation, file, bytes).await
     }
 
     /// Host setting shortcuts publish files; they do not mutate a private UI flag.
@@ -174,6 +182,14 @@ impl ConfigFiles {
         if let Some(value) = snapshot.files.first() {
             current.set_bytes(scope, file, &value.bytes);
         }
+        let errors: Vec<_> = current
+            .diagnostics()
+            .filter(|error| error.scope == scope && error.file == file)
+            .cloned()
+            .collect();
+        if !errors.is_empty() {
+            return Err(ConfigError::Diagnostics(errors));
+        }
         let settings = current.settings()?;
         let patch = match action {
             AppAction::ToggleWrap => serde_json::json!({"wrap":!settings.wrap}),
@@ -182,23 +198,23 @@ impl ConfigFiles {
             }
             _ => return Ok(false),
         };
-        let before = current.effective(file)?;
-        let saved = match snapshot.files.first() {
-            Some(value) => parse_bytes(file, scope, &value.bytes)?,
-            None => serde_json::json!({}),
-        };
-        let desired = fold(&saved, Some(&patch), None);
-        current.set_bytes(scope, file, desired.to_string().as_bytes());
-        let after = current.effective(file)?;
-        if patch
-            .as_object()
-            .into_iter()
-            .flatten()
-            .any(|(key, value)| after[key] != *value || before[key] == after[key])
+        if scope == Scope::User
+            && current
+                .source(Scope::Workspace, file)
+                .is_some_and(|workspace| {
+                    patch
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .any(|(key, _)| workspace.get(key).is_some())
+                })
         {
             return Err(ConfigError::ShadowedSetting);
         }
-        publish(volume, snapshot, scope, file, &patch).await?;
+        // edit reuses the parsed snapshot and validates the candidate once. Publish
+        // exactly those bytes against the generation from which it was computed.
+        let bytes = current.edit(scope, file, &patch)?;
+        publish(volume, snapshot.generation, file, bytes).await?;
         Ok(true)
     }
     /// Apply the same followed notification settings to existing client encoding.
@@ -229,22 +245,12 @@ impl ConfigFiles {
 // used to compute their new value. A concurrent writer causes a fenced conflict.
 async fn publish<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
-    snapshot: Snapshot,
-    scope: Scope,
+    generation: Generation,
     file: ConfigFile,
-    patch: &Value,
+    bytes: Vec<u8>,
 ) -> Result<Generation> {
-    let old = match snapshot.files.first() {
-        Some(value) => parse_bytes(file, scope, &value.bytes)?,
-        None => serde_json::json!({}),
-    };
-    let value = fold(&old, Some(patch), None);
-    let value = parse(file, scope, &value.to_string())?;
     Ok(volume
-        .append(
-            snapshot.generation,
-            &Write::new(FileKey::parse(file.path())?, value.to_string().into_bytes()),
-        )
+        .append(generation, &Write::new(FileKey::parse(file.path())?, bytes))
         .await?)
 }
 

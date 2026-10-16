@@ -320,3 +320,30 @@ fn unrelated_publications_keep_the_configuration_and_advance_cursors() -> Result
             Ok(())
         })
 }
+
+#[test]
+fn invalid_fresh_toggle_snapshot_is_rejected_without_rewriting_it() -> Result {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let user = volume("invalid/user").await?;
+            let workspace = volume("invalid/workspace").await?;
+            let profile = Capabilities::default();
+            let mut input = PromptInput::default();
+            let files = ConfigFiles::observe(&user, &workspace, &mut input, &profile).await?;
+            // Publish after observation: action must validate the fresh file, not the cached view.
+            put(&workspace, "config/settings.json", br#"{"unknown":true}"#).await?;
+            let before = workspace.snapshot(&Query::Config, 3).await?;
+            assert!(matches!(
+                files
+                    .action(&workspace, Scope::Workspace, AppAction::ToggleWrap)
+                    .await,
+                Err(acyclic_harness::tui_config::ConfigError::Diagnostics(_))
+            ));
+            let after = workspace.snapshot(&Query::Config, 3).await?;
+            assert_eq!(after.generation, before.generation);
+            assert_eq!(after.files[0].bytes, before.files[0].bytes);
+            Ok(())
+        })
+}

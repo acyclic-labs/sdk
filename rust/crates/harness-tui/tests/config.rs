@@ -596,3 +596,27 @@ fn obsolete_flat_and_chord_target_formats_are_rejected() {
         assert!(acyclic_harness_tui::InputKeymap::parse(text).is_err());
     }
 }
+
+fn source_reuses_parsed_file(broken: bool) {
+    let mut view = ConfigView::default();
+    view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
+    let work = allocation_counter::measure(|| {
+        for _ in 0..64 {
+            let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
+            assert_eq!(source["wrap"], false);
+            if broken {
+                std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
+            }
+        }
+    });
+    assert_eq!(work.count_total, 0, "source projection must not reparse");
+}
+#[test]
+fn source_reads_reuse_the_parsed_projection() {
+    source_reuses_parsed_file(false);
+}
+#[test]
+#[should_panic(expected = "source projection must not reparse")]
+fn source_work_negative_control_detects_reparsing() {
+    source_reuses_parsed_file(true);
+}
