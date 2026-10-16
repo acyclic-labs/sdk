@@ -20,6 +20,12 @@ fn control_before_unicode_punctuation_keeps_literal_delimiters() {
         variant[control] = before;
         input::check(&variant);
     }
+    for count in 1..=8 {
+        let mut escaped = bytes[..control].to_vec();
+        escaped.extend(std::iter::repeat_n(b'\\', count));
+        escaped.extend_from_slice(&bytes[control + 1..]);
+        input::check(&escaped);
+    }
 }
 
 #[test]
