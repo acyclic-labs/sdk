@@ -26,6 +26,8 @@ use std::{
 
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod command_machine;
+mod commands;
 mod compaction;
 mod config;
 mod owner;

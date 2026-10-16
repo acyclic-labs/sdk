@@ -43,94 +43,56 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
     Ok(())
 }
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", unix))]
 #[tokio::test]
 async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
-    acyclic_native_runtime::initialize_native_io_services()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    use acyclic_harness::{
+        LocalHarness, LocalHarnessConfig, model::Model, test_support::ScriptedModelProvider,
+    };
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let volume = volume().await?;
+    std::fs::create_dir(directory.path().join(".git")).unwrap();
+    let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
+    let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
+        acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 32_768,
+            output_tokens: 4096,
+        },
+    ));
+    let local = LocalHarness::open(LocalHarnessConfig::new(
+        directory.path(),
+        (model, provider.clone()),
+    ))
+    .await?;
+    let volume = local.task_files().clone();
     let mut client = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
     client
-        .write_state(
-            CommandFileRoot::Config,
-            "settings.json",
-            &json!({"workspace":directory.path()}),
-        )
-        .await?;
-    // The real command client publishes an immutable request file. The consumer
-    // executes precisely that file through the same bounded host binding used
-    // by GraphCoder, without a model or the removed text dispatcher.
-    client
-        .write_state(
-            CommandFileRoot::Session,
-            "layout.json",
-            &json!({"selected_task":TaskId::from_bytes([3;16])}),
-        )
-        .await?;
-    client
-        .write_state(
-            CommandFileRoot::Task,
-            "settings.json",
-            &json!({"agent_mode":"code"}),
-        )
-        .await?;
-    let script = if cfg!(windows) {
-        "Add-Content -NoNewline effect.txt 'hi'; Write-Output hi"
-    } else {
-        "printf hi >> effect.txt; printf hi"
-    };
-    client
-        .submit(&format!("/SH {script}"), &DeniedReader)
+        .submit("/SH printf hi >> effect.txt; printf hi", &DeniedReader)
         .await?;
     let request = client.next_request().await?;
-    let settings = client.request_settings(&request).await?;
-    let run = |_, _, resolution| async move {
-        let CommandResolution::Tool { tool, input } = resolution else {
-            return Err(Error::Invalid("expected direct tool".into()));
-        };
-        acyclic_harness::client::execute_host_command(tool, &input, &settings, 32_768).await
-    };
-    let result = client.consume(&request, run).await?.unwrap();
-    assert_eq!(result["stdout"].as_str().unwrap().trim(), "hi");
+    let result = acyclic_harness::client::consume_local_command(&mut client, &local, &request)
+        .await?
+        .unwrap();
+    assert_eq!(result["stdout"], "hi");
     assert_eq!(
         std::fs::read(directory.path().join("effect.txt")).unwrap(),
         b"hi"
     );
+    assert!(provider.requests().is_empty());
     assert!(
-        client
-            .consume(&request, |_, _, _| async {
-                panic!("claimed request was resent")
-            })
+        acyclic_harness::client::consume_local_command(&mut client, &local, &request)
             .await?
             .is_none()
     );
     drop(client);
-    let mut reopened = CommandSession::open(volume.clone(), session_id(), 32_768, 128).await?;
-    assert!(reopened.take_request().is_none());
-    let recovered = request.clone();
+    let mut reopened = CommandSession::open(volume, session_id(), 32_768, 128).await?;
     assert!(
-        reopened
-            .consume(&recovered, |_, _, _| async {
-                panic!("reopening resent shell effect")
-            })
+        acyclic_harness::client::consume_local_command(&mut reopened, &local, &request)
             .await?
             .is_none()
     );
     assert_eq!(
         std::fs::read(directory.path().join("effect.txt")).unwrap(),
         b"hi"
-    );
-    let snapshot = volume.snapshot(&Query::Root, 128).await.unwrap();
-    let results: Vec<_> = snapshot
-        .files
-        .iter()
-        .filter(|file| file.key.path().ends_with("/result.json"))
-        .collect();
-    assert_eq!(results.len(), 1);
-    assert_eq!(
-        serde_json::from_slice::<Value>(&results[0].bytes).unwrap()["ok"],
-        result
     );
     Ok(())
 }

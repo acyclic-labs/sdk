@@ -5,7 +5,7 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    pub(crate) fn commands(
+    fn stock_commands(
         &self,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
@@ -23,10 +23,21 @@ impl LocalHarness {
             None,
         )
     }
+    pub(crate) fn commands(&self) -> Result<commands::CommandOwner<'_>> {
+        Ok(commands::CommandOwner(self))
+    }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(
         &'a self,
         operation: OperationId,
+        prompt: &'a str,
+    ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+        self.submit_to(operation, None, prompt)
+    }
+    pub(super) fn submit_to<'a>(
+        &'a self,
+        operation: OperationId,
+        parent: Option<TaskId>,
         prompt: &'a str,
     ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
         Box::pin(async move {
@@ -43,8 +54,9 @@ impl LocalHarness {
                 self.limits.file_bytes,
                 None,
             )?;
+            let prompt = self.prompt_context(parent, prompt).await?;
             let model = crate::filesystem::ModelTaskCommand {
-                input: ModelContent::Text(prompt.into()),
+                input: ModelContent::Text(prompt),
                 selected_context: None,
                 max_steps: u32::try_from(self.limits.model_steps)
                     .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
@@ -90,15 +102,21 @@ impl LocalHarness {
                 .runtime
                 .harness()
                 .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-            self.runtime
-                .harness()
-                .admit(
-                    operation,
-                    &definition,
-                    serde_json::json!({"receive":receive,"model":model}),
-                    None,
-                )
-                .await
+            let input = serde_json::json!({"receive":receive,"model":model});
+            if let Some(parent) = parent {
+                let record = self.runtime.task_host().observe_admission(parent).await?;
+                self.runtime
+                    .harness()
+                    .durable_context(parent, record.operation_id, None)
+                    .await?
+                    .admit(operation, &definition, input)
+                    .await
+            } else {
+                self.runtime
+                    .harness()
+                    .admit(operation, &definition, input, None)
+                    .await
+            }
         })
     }
 

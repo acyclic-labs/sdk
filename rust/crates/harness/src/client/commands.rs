@@ -15,9 +15,13 @@ mod parse;
 use parse::{expand, has_frontmatter, validate_name};
 mod presentation;
 pub use presentation::*;
+mod control;
 mod files;
+pub use control::CommandControl;
 mod name_index;
 mod session;
+mod sources;
+pub use sources::CommandSources;
 mod syntax;
 pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -25,6 +29,10 @@ mod host_tools;
 pub use files::*;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use host_tools::execute_host_command;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::consume_local_command;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -125,6 +133,15 @@ pub enum CommandAction {
         source: PinnedContextPath,
         /// Determines override precedence.
         scope: CommandScope,
+    },
+    /// Template captured from a followed command/skill definition file.
+    Template {
+        /// Relative input-file identity for provenance and replacement.
+        file: crate::task_volume::FileKey,
+        /// Exact file digest at the catalog's publication cut.
+        digest: [u8; 32],
+        /// Pinned template text; subsequent file edits publish a new catalog.
+        body: String,
     },
     /// Selected skill using the ordinary context loader.
     Skill {
@@ -627,6 +644,11 @@ impl CommandCatalog {
                 )
             }
             CommandAction::Builtin { command } => Ok(resolve_builtin(*command, arguments)),
+            CommandAction::Template { body, .. } => Ok(CommandResolution::Prompt {
+                text: expand(body, arguments, maximum_bytes)?,
+                source: None,
+                mentions: Vec::new(),
+            }),
             CommandAction::Prompt { source, .. } => {
                 let (_, bytes) = source.read(reader, maximum_bytes).await?;
                 let body = if has_frontmatter(&bytes) {

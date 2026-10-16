@@ -2,10 +2,7 @@
 use super::*;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
-    client::{
-        CommandFileRoot, CommandRequest, CommandResolution, CommandSession, CommandTool,
-        DEFAULT_COMMANDS_JSON,
-    },
+    client::{CommandFileRoot, CommandResolution, CommandSession, DEFAULT_COMMANDS_JSON},
     conversation::ContentResidencyVerifier,
     task_volume::TaskVolume,
 };
@@ -56,44 +53,71 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     };
     let path = StreamPath::new(format!("graphcoder-files/{}", digest.to_hex())).map_err(invalid)?;
     let volume = Arc::new(TaskVolume::open(provider, path).await.map_err(invalid)?);
-    let mut client =
-        CommandSession::open(volume, session, terminal::MAX_FRAME_BYTES as u64, 4096).await?;
+    let mut client = CommandSession::open(
+        volume.clone(),
+        session,
+        terminal::MAX_FRAME_BYTES as u64,
+        4096,
+    )
+    .await?;
     let defaults: Value = serde_json::from_slice(DEFAULT_COMMANDS_JSON).map_err(invalid)?;
-    if client.state(CommandFileRoot::Config, "commands.json")? == Some(defaults.clone()) {
-        let mut specs = defaults
-            .as_array()
-            .ok_or_else(|| Error::Invalid("bootstrap catalog shape".into()))?
-            .clone();
-        let sdk: Vec<Value> =
-            serde_json::from_str(include_str!("commands/sdk.json")).map_err(invalid)?;
-        specs.extend(sdk);
-        let bytes = serde_json::to_vec(&specs).map_err(invalid)?;
-        #[cfg(feature = "filesystem-local")]
-        let bytes = if let Backend::Native(native) = &backend {
-            let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
-                native.files.clone(),
-                &native.config.owner.verifier()?,
-                &native.config.owner.scope,
-                terminal::MAX_FRAME_BYTES as u64,
-                None,
-            )?;
-            let catalog = acyclic_harness::client::CommandCatalog::from_bytes(
-                &bytes,
-                terminal::MAX_FRAME_BYTES as u64,
-            )?
-            .with_sources(
-                reader.as_ref(),
-                &native.config.command_roots,
-                &native.config.skill_roots,
+    let mut specs = defaults
+        .as_array()
+        .ok_or_else(|| Error::Invalid("bootstrap catalog shape".into()))?
+        .clone();
+    let sdk: Vec<Value> =
+        serde_json::from_str(include_str!("commands/sdk.json")).map_err(invalid)?;
+    specs.extend(sdk);
+    let base = serde_json::to_vec(&specs).map_err(invalid)?;
+    #[cfg(feature = "filesystem-local")]
+    let owner = if let Backend::Native(native) = &backend {
+        let mut config = acyclic_harness::LocalHarnessConfig::new(
+            native
+                .config
+                .command_workspace
+                .clone()
+                .unwrap_or_else(|| native.config.filesystem_root.clone()),
+            (
+                crate::provider::model(native.config.deterministic_delay_ms),
+                native.model_provider.clone(),
+            ),
+        );
+        if native.config.command_workspace.is_none() {
+            config = config.volume(native.config.private_volume.clone());
+        }
+        Some(acyclic_harness::LocalHarness::open(config).await?)
+    } else {
+        None
+    };
+    #[cfg(feature = "filesystem-local")]
+    let mut sources = if let Backend::Native(native) = &backend {
+        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
+            native.files.clone(),
+            &native.config.owner.verifier()?,
+            &native.config.owner.scope,
+            terminal::MAX_FRAME_BYTES as u64,
+            None,
+        )?;
+        Some(
+            acyclic_harness::client::CommandSources::observe(
+                &mut client,
+                &volume,
+                base.clone(),
+                native.config.command_roots.clone(),
+                native.config.skill_roots.clone(),
+                reader,
                 Default::default(),
+                terminal::MAX_FRAME_BYTES as u64,
+                4096,
             )
-            .await?;
-            serde_json::to_vec(&catalog.commands().collect::<Vec<_>>()).map_err(invalid)?
-        } else {
-            bytes
-        };
-        client.install_catalog(bytes).await?;
-    }
+            .await?,
+        )
+    } else {
+        client.install_catalog(base.clone()).await?;
+        None
+    };
+    #[cfg(not(feature = "filesystem-local"))]
+    client.install_catalog(base).await?;
     let mut layout = client
         .state(CommandFileRoot::Session, "layout.json")?
         .unwrap_or(json!({}));
@@ -145,23 +169,42 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             let settings = client.request_settings(&request).await?;
             let selected = client.selected_task()?;
             let mut parent = selected;
-            let result = client
-                .consume(&request, |operation, target, resolution| {
-                    dispatch(
-                        operation,
-                        target,
-                        resolution,
-                        &settings,
-                        &mut backend,
-                        &mut cursor,
-                        #[cfg(feature = "filesystem-local")]
-                        &mut parent,
-                        #[cfg(feature = "filesystem-local")]
-                        &mut workers,
-                        &mut output,
-                    )
-                })
-                .await;
+            let sdk = serde_json::from_slice::<CommandResolution>(&request.bytes)
+                .is_ok_and(|resolution| matches!(resolution, CommandResolution::Sdk { .. }));
+            #[cfg(feature = "filesystem-local")]
+            let owned_result = if !sdk && let Some(owner) = owner.as_ref() {
+                Some(
+                    acyclic_harness::client::consume_local_command(&mut client, owner, &request)
+                        .await,
+                )
+            } else {
+                None
+            };
+            #[cfg(not(feature = "filesystem-local"))]
+            let owned_result = None;
+            let result = if let Some(result) = owned_result {
+                result
+            } else {
+                client
+                    .consume(&request, |operation, target, resolution| {
+                        dispatch(
+                            #[cfg(feature = "filesystem-local")]
+                            owner.as_ref(),
+                            operation,
+                            target,
+                            resolution,
+                            &settings,
+                            &mut backend,
+                            &mut cursor,
+                            #[cfg(feature = "filesystem-local")]
+                            &mut parent,
+                            #[cfg(feature = "filesystem-local")]
+                            &mut workers,
+                            &mut output,
+                        )
+                    })
+                    .await
+            };
             match result {
                 Ok(Some(value)) => {
                     if let Some(text) = value.get("rendered").and_then(Value::as_str) {
@@ -204,6 +247,13 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             changed = client.observe_change() => {
                 changed?;
                 if client.output_sequence() != previous_output && let Some(value) = client.output_page(0)? { render_record(&mut output, &value)?; }
+                continue;
+            }
+            changed = async {
+                match sources.as_mut() { Some(sources) => sources.changed().await, None => std::future::pending().await }
+            } => {
+                changed?;
+                if let Some(sources) = &mut sources { sources.refresh(&mut client).await?; }
                 continue;
             }
             outcome = workers.join_next(), if !workers.is_empty() => {
@@ -327,6 +377,7 @@ fn render_record(output: &mut impl std::io::Write, value: &Value) -> Result<()> 
 }
 
 async fn dispatch(
+    #[cfg(feature = "filesystem-local")] owner: Option<&acyclic_harness::LocalHarness>,
     operation: OperationId,
     target: Option<TaskId>,
     resolution: CommandResolution,
@@ -361,65 +412,11 @@ async fn dispatch(
         return Ok(value);
     }
     #[cfg(feature = "filesystem-local")]
-    {
-        let native = backend
-            .as_ref()
-            .ok_or_else(|| Error::Conflict("closed session".into()))?
-            .native()?;
-        match resolution {
-            CommandResolution::Tool {
-                tool: CommandTool::Spawn,
-                input,
-            } => {
-                let text = input
-                    .get("task")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::Invalid("delegate requires a task".into()))?;
-                let command = native.prompt_command(text, operation).await?;
-                return admission(native.queue(operation, command, target).await?, operation);
-            }
-            CommandResolution::Tool { tool, input } => {
-                return acyclic_harness::client::execute_host_command(
-                    tool,
-                    &input,
-                    settings,
-                    terminal::MAX_FRAME_BYTES,
-                )
-                .await;
-            }
-            CommandResolution::Prompt { text, .. } => {
-                let command = native.prompt_command(&text, operation).await?;
-                return admission(native.queue(operation, command, target).await?, operation);
-            }
-            CommandResolution::Submit {
-                request: CommandRequest::New,
-            } => {
-                *parent = None;
-                return Ok(json!({"rendered":"new root conversation selected\n"}));
-            }
-            _ => {}
-        }
+    if let Some(owner) = owner {
+        return owner.dispatch_command(operation, target, resolution).await;
     }
-    let _ = (operation, target, settings);
-    Err(Error::Unsupported(
-        "command requires a composed task-control provider".into(),
+    let _ = (operation, target, resolution, settings);
+    Err(Error::Invalid(
+        "fixture playback has no command owner".into(),
     ))
-}
-
-#[cfg(feature = "filesystem-local")]
-fn admission(
-    admission: acyclic_harness::Admission<
-        acyclic_harness::runtime::RuntimeTask<acyclic_harness::executor::TurnOutput>,
-    >,
-    operation: OperationId,
-) -> Result<Value> {
-    match admission {
-        acyclic_harness::Admission::Accepted(task) => Ok(
-            json!({"rendered":format!("queued task={} admission-operation={operation}\n", task.identity())}),
-        ),
-        acyclic_harness::Admission::Rejected { reason } => Err(Error::Conflict(reason)),
-        acyclic_harness::Admission::Indeterminate { operation_id } => {
-            Err(Error::Indeterminate(operation_id))
-        }
-    }
 }

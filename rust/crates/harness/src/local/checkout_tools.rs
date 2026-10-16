@@ -13,6 +13,7 @@ mod capture;
 mod git;
 mod lock;
 mod output;
+mod task_views;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -29,12 +30,16 @@ pub(super) struct CheckoutTools {
     // index -> provider visibility -> provider state. Command-local git cache
     // and switched-view locks are innermost and never held together. Worker
     // callbacks never reacquire checkout state; the Loom model checks custody.
+    // The root cache lock is released before a selected child command takes
+    // its own checkout lock. Two checkout-state guards are never held together.
     state: StateArc<AsyncMutex<State>>,
+    selected: bool,
 }
 
 struct State {
     active: Option<workspace::View>,
     watcher: Option<NativeWatch>,
+    children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -74,9 +79,11 @@ impl CheckoutTools {
             workspace,
             clock,
             task_files,
+            selected: false,
             state: StateArc::new(AsyncMutex::new(State {
                 active: None,
                 watcher: None,
+                children: Default::default(),
             })),
         })
     }
@@ -124,6 +131,17 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            if !self.selected
+                && let Some(selected) = self
+                    .select(
+                        context
+                            .as_ref()
+                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
+                    )
+                    .await?
+            {
+                return selected.execute(invocation, context).await;
+            }
             let request = if invocation.name == "bash" {
                 serde_json::to_vec(&invocation).map_err(storage)?
             } else {
@@ -163,7 +181,9 @@ impl ToolExecutor for CheckoutTools {
             let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
             serialized(&self.state, async |mut state| {
                 owner.verify(false, &mut None).await?;
-                let State { active, watcher } = &mut *state;
+                let State {
+                    active, watcher, ..
+                } = &mut *state;
                 let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                 self.capture(view, watcher, invocation.operation_id, 0, &owner)
                     .await?;
@@ -185,7 +205,9 @@ impl ToolExecutor for CheckoutTools {
                             .await?;
                     let (result, mut state, mut files) =
                         self.bash(input, maximum, state, files).await?;
-                    let State { active, watcher } = &mut *state;
+                    let State {
+                        active, watcher, ..
+                    } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(view, watcher, invocation.operation_id, 1, &owner)
                         .await?;

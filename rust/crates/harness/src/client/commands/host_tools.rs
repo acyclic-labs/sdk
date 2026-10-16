@@ -2,7 +2,7 @@
 use super::CommandTool;
 use crate::{Error, Result};
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 /// Execute an explicitly submitted host tool using the shared bounded native
 /// process lifecycle. The workspace and search endpoint come from config files.
@@ -35,16 +35,12 @@ pub async fn execute_host_command(
             "direct tool input exceeds its schema/bound".into(),
         ));
     }
-    let workspace = settings
-        .get("workspace")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| {
-            Error::Invalid("direct tools require an absolute configured workspace".into())
-        })?;
     let mut command = match tool {
-        CommandTool::Bash => acyclic_native_runtime::shell_command(argument, None),
+        CommandTool::Bash => {
+            return Err(Error::Invalid(
+                "shell requires the selected task executor".into(),
+            ));
+        }
         CommandTool::UrlFetch | CommandTool::WebSearch => {
             let mut command = std::process::Command::new("curl");
             command.args([
@@ -79,7 +75,6 @@ pub async fn execute_host_command(
         }
         CommandTool::Spawn => unreachable!(),
     };
-    command.current_dir(workspace);
     let output = acyclic_native_runtime::run_blocking_io(
         move || {
             acyclic_native_runtime::process_output(

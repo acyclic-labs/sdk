@@ -40,6 +40,7 @@ impl CommandCatalog {
                 CommandAction::Theme
                 | CommandAction::Sdk { .. }
                 | CommandAction::Prompt { .. }
+                | CommandAction::Template { .. }
                 | CommandAction::Skill { .. } => CommandArguments::Text,
             };
             if spec.arguments != expected {
@@ -62,6 +63,12 @@ impl CommandCatalog {
             }
             match &spec.action {
                 CommandAction::Sdk { command } => validate_name(command)?,
+                CommandAction::Template { file, body, .. } => {
+                    if !matches!(file, crate::task_volume::FileKey::Input(_)) || body.contains('\0')
+                    {
+                        return Err(Error::Invalid("invalid file template".into()));
+                    }
+                }
                 CommandAction::Prompt { source, .. } => source.validate(&mut None)?,
                 CommandAction::Skill { skill } => skill.validate(&mut None)?,
                 _ => {}

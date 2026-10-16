@@ -10,17 +10,42 @@ use acyclic_harness::{
 };
 use libfuzzer_sys::fuzz_target;
 
+#[path = "../../harness/src/local/command_machine.rs"]
+mod command_machine;
 #[path = "../command_oracle.rs"]
 mod command_oracle;
 #[path = "../../harness/src/client/commands/syntax.rs"]
 mod syntax;
+use acyclic_harness::workflow::ResumableMachine as _;
+use acyclic_harness::{Outcome, filesystem, runtime, tool, workflow};
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
 fuzz_target!(|input: &[u8]| {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
+        let machine = command_machine::DirectTool::new();
+        if let Ok(state) = machine.initialize(&value) {
+            let encoded = serde_json::to_vec(&state).unwrap();
+            let restored = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(state, restored);
+            let _ = machine.transition(&restored, &value);
+        }
+        let _ = machine.transition(&value, &value);
+    }
+    if let Ok(control) = acyclic_harness::client::CommandControl::from_bytes(input, 8192) {
+        let bytes = serde_json::to_vec(&control).unwrap();
+        assert_eq!(
+            acyclic_harness::client::CommandControl::from_bytes(&bytes, bytes.len() as u64)
+                .unwrap(),
+            control
+        );
+    }
     if let Ok(query) = serde_json::from_slice::<acyclic_harness::task_volume::Query>(input) {
         let encoded = serde_json::to_vec(&query).unwrap();
-        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded).unwrap(), query);
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded).unwrap(),
+            query
+        );
     }
     if let Ok(catalog) = CommandCatalog::from_bytes(input, 8192) {
         let specs: Vec<_> = catalog.commands().collect();
@@ -66,7 +91,13 @@ fuzz_target!(|input: &[u8]| {
         return;
     };
     if let Ok(query) = acyclic_harness::task_volume::Query::folder(input) {
-        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), query);
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::task_volume::Query>(
+                &serde_json::to_vec(&query).unwrap()
+            )
+            .unwrap(),
+            query
+        );
     }
     if let Ok(key) = acyclic_harness::task_volume::FileKey::parse(input) {
         assert_eq!(

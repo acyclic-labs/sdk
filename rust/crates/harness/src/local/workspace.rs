@@ -4,7 +4,7 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 
-mod mounts;
+pub(super) mod mounts;
 
 pub(super) type View = LazyWorkspace<
     LocalAuthorityBackend,
@@ -16,7 +16,18 @@ pub(super) type View = LazyWorkspace<
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
     pub(super) path: PathBuf,
-    view: View,
+    pub(super) mount_directory: PathBuf,
+    pub(super) view: View,
+    pub(super) mounted: Option<
+        Arc<
+            acyclic_fs::native_mount::LazyMount<
+                LocalAuthorityBackend,
+                LocalObjectBackend,
+                NativeDemandSource,
+                LocalCoreStateStore,
+            >,
+        >,
+    >,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
@@ -149,7 +160,9 @@ pub(super) async fn open(
     Ok(LocalWorkspace {
         mounts: Arc::new(mounts::owner(&path, volume)?),
         path,
+        mount_directory: directory.join("task-views"),
         view,
+        mounted: None,
         filesystem: filesystem.clone(),
         store,
         identity: acyclic_fs::NativeRootIdentity::from_bytes(

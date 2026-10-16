@@ -195,6 +195,26 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
+    /// Owner-attested lineage, closest task first, used to select a workspace.
+    pub(crate) async fn lineage(&self, mut task: TaskId) -> Result<Vec<TaskId>> {
+        let state = self
+            .harness
+            .state
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("task state is absent".into()))?;
+        let mut lineage = Vec::new();
+        loop {
+            if lineage.contains(&task) || lineage.len() >= self.scope.limits().context_messages {
+                return Err(Error::Invalid("invalid or oversized task lineage".into()));
+            }
+            lineage.push(task);
+            match state.observe_admission(task).await?.parent {
+                Some(parent) => task = parent,
+                None => return Ok(lineage),
+            }
+        }
+    }
+
     /// Returns this invocation's stable local operation identity.
     #[must_use]
     pub const fn id(&self) -> OperationId {

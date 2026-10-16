@@ -20,8 +20,24 @@ impl CheckoutTools {
         slot: &mut Option<NativeWatch>,
         operation: OperationId,
         phase: u8,
-        owner: &crate::durable_host::TaskJournalOwner<LocalStream>,
+        owner: &Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
     ) -> Result<()> {
+        if let Some(mount) = &self.workspace.mounted {
+            owner.verify(false, &mut None).await?;
+            let owner = Arc::clone(owner);
+            mount
+                .sync_with_permit(
+                    PublicationPermit::Unrestricted,
+                    &mount.native_work()?,
+                    move |_| {
+                        let owner = Arc::clone(&owner);
+                        async move { owner.verify(false, &mut None).await }
+                    },
+                )
+                .await
+                .map_err(|failure| failure.cause)?;
+            return Ok(());
+        }
         let cancellation = CancellationToken::new();
         let workspace = view.workspace();
         let options = &self.capture_options;
