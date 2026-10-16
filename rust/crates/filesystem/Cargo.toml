@@ -79,12 +79,23 @@ name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
 
+[[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local", "memory", "native-watch"]
+
 [[test]]
 name = "native_source_watch_custody"
 path = "tests/native_source_watch_custody.rs"
 required-features = ["local", "native-mount"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -229,3 +240,13 @@ name = "projfs_paths"
 path = "benches/projfs_paths.rs"
 harness = false
 required-features = ["native-mount"]
+
+[[bench]]
+name = "object_batches"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "object_batches_alloc"
+harness = false
+required-features = ["memory"]

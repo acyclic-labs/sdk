@@ -1,3 +1,4 @@
+import type { CredentialOptions } from "@acyclic-labs/actors/credential";
 import type {
   AppendReceipt as WireAppendReceipt, AppendRequest as WireAppendRequest,
   CommittedAppend as WireCommittedAppend, CommittedFork as WireCommittedFork,
@@ -131,7 +132,7 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
+export interface StreamEnvironment extends CredentialOptions { readonly endpoint: string; readonly caCertificate?: Uint8Array }
 /** Rust-owned and provider/client error codes. */
 export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"

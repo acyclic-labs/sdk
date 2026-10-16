@@ -7,6 +7,7 @@
   "license": "Apache-2.0",
   "exports": {
     ".": "./dist/index.js",
+    "./holder": { "types": "./dist/holder.d.ts", "default": "./dist/holder.js" },
     "./proto": {
       "types": "./generated/proto/auth/v1/auth_pb.d.ts",
       "default": "./generated/proto/auth/v1/auth_pb.js"
@@ -14,5 +15,5 @@
   },
   "files": ["dist", "generated"],
   "dependencies": { "@bufbuild/protobuf": "2.16.0" },
-  "scripts": { "build": "tsc -b" }
+  "scripts": { "build": "bun run build:wasm && tsc -b", "build:wasm": "bun ../../../scripts/build-wasm.mjs auth" }
 }

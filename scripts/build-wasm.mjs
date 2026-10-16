@@ -35,6 +35,7 @@ const narrowMachinesDecoder = output => {
 };
 
 const packages = {
+  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },

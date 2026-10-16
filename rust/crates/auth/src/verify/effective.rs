@@ -4,7 +4,8 @@ use super::*;
 pub struct ScopedFilter<'a> {
     declaring_block: usize,
     filter: &'a Filter,
-    capability: &'a VerifiedCapability,
+    principal: &'a Principal,
+    visible_lineage: usize,
 }
 impl<'a> ScopedFilter<'a> {
     /// Zero-based declaring block index.
@@ -17,28 +18,20 @@ impl<'a> ScopedFilter<'a> {
     }
     /// Issuer and delegation ancestors visible when this filter was declared.
     pub fn lineage(&self) -> impl DoubleEndedIterator<Item = &'a str> {
-        let principal = &self.capability.principal;
-        // The computed lineage contains every append; exclude descendant blocks.
-        let descendants: usize = self
-            .capability
-            .blocks
-            .iter()
-            .skip(self.declaring_block + 1)
-            .flat_map(|block| &block.caveats)
-            .filter_map(|caveat| match &caveat.kind {
-                CaveatKind::LineageAppend(lineage) => Some(lineage.ids.len()),
-                _ => None,
-            })
-            .sum();
-        let visible = principal.lineage.len() - descendants;
-        std::iter::once(principal.id.as_str())
-            .chain(principal.lineage.iter().take(visible).map(String::as_str))
+        let principal = self.principal;
+        std::iter::once(principal.id.as_str()).chain(
+            principal
+                .lineage
+                .iter()
+                .take(self.visible_lineage)
+                .map(String::as_str),
+        )
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
-        self.lineage()
-            .next_back()
-            .unwrap_or(&self.capability.principal.id)
+        self.principal.lineage[..self.visible_lineage]
+            .last()
+            .map_or(self.principal.id.as_str(), String::as_str)
     }
 }
 
@@ -72,22 +65,40 @@ impl<'a> Effective<'a> {
     }
     /// Every returned filter must hold, using its declaring-block identity.
     pub fn filters(&self) -> impl Iterator<Item = ScopedFilter<'a>> {
+        let mut visible_lineage = self.capability.blocks[0]
+            .certificates
+            .as_ref()
+            .and_then(|certificates| certificates.keys.last())
+            .map_or(0, |certificate| certificate.key.principal.lineage.len());
         self.capability
             .blocks
             .iter()
             .enumerate()
             .flat_map(move |(index, block)| {
-                block
-                    .caveats
-                    .iter()
-                    .filter_map(move |caveat| match &caveat.kind {
+                // Every filter in a block binds after all lineage appends in
+                // that block, independent of caveat order. Visit each block
+                // twice, never any descendant once per filter.
+                for caveat in &block.caveats {
+                    #[cfg(test)]
+                    filter_work();
+                    if let CaveatKind::LineageAppend(lineage) = &caveat.kind {
+                        visible_lineage += lineage.ids.len();
+                    }
+                }
+                let visible_lineage = visible_lineage;
+                block.caveats.iter().filter_map(move |caveat| {
+                    #[cfg(test)]
+                    filter_work();
+                    match &caveat.kind {
                         CaveatKind::Filter(filter) => Some(ScopedFilter {
                             declaring_block: index,
                             filter,
-                            capability: self.capability,
+                            principal: &self.capability.principal,
+                            visible_lineage,
                         }),
                         _ => None,
-                    })
+                    }
+                })
             })
     }
     /// Per-dimension minimum; metering remains at the root's owning ledger.
@@ -103,6 +114,17 @@ impl<'a> Effective<'a> {
         self.capability.expires_at
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    static FILTER_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn filter_work() {
+    FILTER_WORK.with(|work| work.set(work.get() + 1));
+}
+#[cfg(test)]
+mod tests;
 
 pub(super) fn unbounded_limits() -> Limits {
     Limits {
