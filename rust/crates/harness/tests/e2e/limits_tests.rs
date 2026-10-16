@@ -30,13 +30,33 @@ async fn limit_oracles_reject_changed_allowances_counts_and_deltas() -> TestResu
 
 #[test]
 fn streamed_output_budget_counts_utf8_bytes_across_every_delta() {
+    let mut seed = TestRunner::default();
+    let cases = seed.config().cases;
+    let workers = std::thread::available_parallelism()
+        .unwrap()
+        .get()
+        .min(cases.max(1) as usize) as u32;
+    std::thread::scope(|scope| {
+        let mut assigned = 0;
+        for worker in 0..workers {
+            let mut config = seed.config().clone();
+            config.cases = cases / workers + u32::from(worker < cases % workers);
+            assigned += config.cases;
+            let mut runner = TestRunner::new_with_rng(config, seed.new_rng());
+            scope.spawn(move || check_streamed_budget(&mut runner));
+        }
+        assert_eq!(assigned, cases);
+    });
+}
+
+fn check_streamed_budget(runner: &mut TestRunner) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     // Arbitrary Unicode chunks succeed at their complete UTF-8 byte length and
     // fail one byte below. Check both boundaries for every generated history.
-    TestRunner::default()
+    runner
         .run(
             &proptest::collection::vec(
                 proptest::collection::vec(any::<char>(), 0..9)
