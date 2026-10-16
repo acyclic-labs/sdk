@@ -22,11 +22,23 @@ impl Progress {
         Self::with_preceding(from, None)
     }
     pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
+        Self::from_cursor(
+            crate::wire::SessionCursor {
+                next: from,
+                opaque: Default::default(),
+            },
+            preceding,
+        )
+    }
+    pub(super) fn from_cursor(
+        cursor: crate::wire::SessionCursor,
+        preceding: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             state: Mutex::new(State {
                 position: Position {
-                    next: from,
-                    opaque: Vec::new(),
+                    next: cursor.next,
+                    opaque: cursor.opaque.to_vec(),
                     preceding,
                 },
                 generation: 1,
@@ -71,6 +83,25 @@ impl Progress {
         commit: [u8; 32],
     ) -> Result<bool, StreamError> {
         self.consume_cut(generation, sequence, &[], Some(commit))
+    }
+    pub(super) fn current(&self, generation: u64) -> Result<bool, StreamError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .generation
+            == generation)
+    }
+    pub(super) fn consume_latest(&self, generation: u64, next: u64) -> Result<bool, StreamError> {
+        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        if generation != state.generation || next <= state.position.next {
+            return Ok(false);
+        }
+        if state.position.preceding.is_some() || !state.position.opaque.is_empty() {
+            return Err(StreamError::Unavailable);
+        }
+        state.position.next = next;
+        Ok(true)
     }
     pub(super) fn consume_opaque(
         &self,

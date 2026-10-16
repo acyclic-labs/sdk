@@ -1,5 +1,8 @@
 use super::*;
 
+mod follow_data;
+pub use follow_data::verify_follow_data;
+
 fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
@@ -66,6 +69,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
             3,
             "good",
             Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
                 path: "healthy".into(),
                 ..Default::default()
             }),
@@ -78,6 +82,8 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         pool.routes.insert(
             id,
             Route {
+                raw: false,
+                watermark: None,
                 node: node.into(),
                 attempt_epoch: 0,
                 kind,
@@ -136,10 +142,12 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 (
                     cursor,
                     Command::Open {
+                        raw: false,
                         id,
                         attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
                         acknowledge: false,
                         kind: Kind::Follow(wire::SessionFollow {
+                            delivery: wire::SessionDelivery::All as i32,
                             path: "healthy".into(),
                             ..Default::default()
                         }),
@@ -238,10 +246,12 @@ pub fn verify_pool_lifetime(fault: u8) {
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
             let command = Command::Open {
+                raw: false,
                 id,
                 attempt_epoch: 0,
                 acknowledge: false,
                 kind: Kind::Follow(wire::SessionFollow {
+                    delivery: wire::SessionDelivery::All as i32,
                     path: "healthy".into(),
                     ..Default::default()
                 }),
@@ -458,10 +468,12 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open {
+            raw: false,
             id: 5,
             attempt_epoch: 0,
             acknowledge: false,
             kind: Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
                 path: "later".into(),
                 ..Default::default()
             }),

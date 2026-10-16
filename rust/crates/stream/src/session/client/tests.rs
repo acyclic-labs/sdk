@@ -10,6 +10,7 @@ use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 mod checked;
 mod connections;
+mod data;
 mod credentials;
 mod isolation;
 mod lifecycle;

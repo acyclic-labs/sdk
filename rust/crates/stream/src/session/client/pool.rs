@@ -133,6 +133,7 @@ impl Pool {
                 attempt_epoch,
                 acknowledge,
                 kind,
+                raw,
                 progress,
                 records,
                 ready,
@@ -156,6 +157,8 @@ impl Pool {
                         node: self.home.clone(),
                         attempt_epoch,
                         kind,
+                        raw,
+                        watermark: None,
                         generation: 1,
                         placement_epoch: 0,
                         received: from,
@@ -194,7 +197,10 @@ impl Pool {
             epoch,
             generation,
         } = released;
-        self.release(&node, epoch, bytes)?;
+        if bytes != 0 {
+            self.release(&node, epoch, bytes)?;
+        }
+        self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
             return Ok(());
         };
@@ -317,7 +323,14 @@ impl Pool {
                     Ok(())
                 }
             }
-            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => Ok(()),
+            Some(Body::Watermark(mark)) if mark.durable <= mark.accepted => {
+                if route.raw {
+                    route.watermark = Some(frame(id, input.generation, Body::Watermark(mark)));
+                    self.flush_watermark(id)
+                } else {
+                    Ok(())
+                }
+            }
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -353,24 +366,37 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let after = data.after.ok_or(StreamError::Unavailable)?;
-        let (item, sequence) = match (&route.kind, data.item) {
-            (Kind::Follow(_), Some(Item::Record(record))) if after.opaque.is_empty() => {
-                let record = wire_codec::record(record)?;
-                let sequence = record.sequence;
-                (Received::Record(record), sequence)
+        let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+        let (item, sequence) = match (&route.kind, data.item.as_ref()) {
+            (Kind::Follow(follow), _) => {
+                let sequence =
+                    wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?;
+                let item = if route.raw {
+                    None
+                } else if let Some(Item::Record(record)) = data.item.as_ref() {
+                    Some(Received::Record(wire_codec::record(record.clone())?))
+                } else {
+                    return Err(StreamError::Unavailable);
+                };
+                (item, sequence)
             }
             (Kind::Children(request), Some(Item::Child(child))) => {
-                let path = StreamPath::new(child.path).map_err(|_| StreamError::Unavailable)?;
+                let path = StreamPath::new(&child.path).map_err(|_| StreamError::Unavailable)?;
                 if path.parent().as_ref().map(StreamPath::as_str) != request.parent.as_deref() {
                     return Err(StreamError::Unavailable);
                 }
-                (Received::Child(crate::Child { path }), route.received)
+                (
+                    if route.raw {
+                        None
+                    } else {
+                        Some(Received::Child(crate::Child { path }))
+                    },
+                    route.received,
+                )
             }
             _ => return Err(StreamError::Unavailable),
         };
-        if sequence != route.received
-            || after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
+        if after.next != sequence.checked_add(1).ok_or(StreamError::OutOfRange)?
             || data.durable > data.accepted
             || data.accepted < after.next
         {
@@ -378,10 +404,11 @@ impl Pool {
         }
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
+        let opaque = after.opaque.clone();
         let delivery = Delivery {
-            item,
+            item: item.unwrap_or_else(|| Received::Frame(frame(id, generation, Body::Data(data)))),
             sequence,
-            opaque: after.opaque,
+            opaque,
             generation,
             credit: Credit::new(
                 self.release_sender.clone(),
@@ -391,6 +418,46 @@ impl Pool {
                     bytes: length,
                     epoch,
                     generation,
+                },
+            ),
+        };
+        match route.records.try_send(Ok(delivery)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => self.remove(id),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(StreamError::Capacity),
+        }
+    }
+
+    fn flush_watermark(&mut self, id: u64) -> Result<(), StreamError> {
+        let Some(route) = self.routes.get_mut(&id) else {
+            return Ok(());
+        };
+        // Reserve slots for every data frame already granted to the peer.
+        // Control-only durability updates occupy at most one additional pending value.
+        if route.records.capacity() <= route.credit.frames as usize {
+            return Ok(());
+        }
+        let Some(value) = route.watermark.take() else {
+            return Ok(());
+        };
+        let epoch = self
+            .links
+            .get(&route.node)
+            .ok_or(StreamError::Unavailable)?
+            .epoch;
+        let delivery = Delivery {
+            item: Received::Frame(value),
+            sequence: route.received,
+            opaque: route.received_opaque.clone(),
+            generation: route.generation,
+            credit: Credit::new(
+                self.release_sender.clone(),
+                Released {
+                    id,
+                    node: route.node.clone(),
+                    bytes: 0,
+                    epoch,
+                    generation: route.generation,
                 },
             ),
         };

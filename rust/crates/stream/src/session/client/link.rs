@@ -94,6 +94,7 @@ impl Pool {
             tracing::debug!(event = "subscribe", generation = route.generation);
         });
         route.opened = false;
+        route.watermark = None;
         route.credit = wire::SessionWindow::default();
         let link = self
             .links
@@ -155,8 +156,9 @@ impl Pool {
         let Some(route) = self.routes.get_mut(&id).filter(|route| route.opened) else {
             return Ok(());
         };
-        let capacity =
-            u32::try_from(route.records.capacity()).map_err(|_| StreamError::Capacity)?;
+        let capacity = u32::try_from(route.records.capacity())
+            .map_err(|_| StreamError::Capacity)?
+            .saturating_sub(u32::from(route.raw));
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
             bytes: (u64::from(capacity)

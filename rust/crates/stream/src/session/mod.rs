@@ -1,19 +1,14 @@
 //! Multiplexed Streams follows shared by client and node-to-node sessions.
 
-use crate::{StreamError, StreamPath, wire, wire_codec};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::StreamProvider;
+use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-use futures::{
-    StreamExt, future,
-    stream,
-};
 #[cfg(not(target_arch = "wasm32"))]
 use futures::stream::{BoxStream, SelectAll};
+use futures::{StreamExt, future, stream};
 use prost::Message as _;
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -46,8 +41,8 @@ pub use client::Client;
 pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
-    verify_abandoned_reconnect, verify_cache, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime, verify_registration_deadline,
+    verify_abandoned_reconnect, verify_cache, verify_follow_data, verify_interest_accounting,
+    verify_link_isolation, verify_pool_lifetime, verify_registration_deadline,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
