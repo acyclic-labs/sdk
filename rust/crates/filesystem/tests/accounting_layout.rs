@@ -73,6 +73,90 @@ fn denied_ledger_does_not_allocate_its_arc() {
     }
 }
 
+#[test]
+fn resource_allowances_fund_each_actual_arc_and_release_the_chain() {
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let baseline = original.live_allocation_bytes();
+    let mut parent = original.clone();
+    for depth in 1..=4 {
+        let before = original.live_allocation_bytes();
+        let (child, allocations) = measured(|| {
+            parent
+                .native_volume_work(WorkBudget {
+                    peak_allocation_bytes: 0,
+                    ..WorkBudget::UNBOUNDED
+                })
+                .unwrap()
+        });
+        assert_eq!(allocations.count_total, 1);
+        assert_eq!(allocations.count_current, 1);
+        assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
+        assert_eq!(allocations.bytes_max, allocations.bytes_total);
+        assert_eq!(
+            original.live_allocation_bytes() - before,
+            allocations.bytes_total
+        );
+        assert_eq!(
+            original.receipt().peak_allocation_bytes,
+            before + allocations.bytes_total
+        );
+        assert_eq!(original.receipt().allocation_operations, 1 + depth);
+        assert_eq!(child.remaining().unwrap().peak_allocation_bytes, 0);
+        eprintln!("resource depth {depth} allocator: {allocations:?}");
+        parent = child;
+    }
+    let receipt = original.receipt();
+    drop(parent);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(original.receipt(), receipt);
+}
+
+#[test]
+fn denied_resource_does_not_allocate_its_arc_or_spend_work() {
+    let cancellation = CancellationToken::new();
+    let probe = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let baseline = probe.live_allocation_bytes();
+    let (resource, allocations) =
+        measured(|| probe.native_volume_work(WorkBudget::UNBOUNDED).unwrap());
+    assert_eq!(allocations.count_total, 1);
+    let required = allocations.bytes_total;
+    drop(resource);
+    assert_eq!(probe.live_allocation_bytes(), baseline);
+    for ceiling in 0..=required {
+        let root = NativeMaterializationWork::new(
+            WorkBudget {
+                peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
+                    + ceiling,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .unwrap();
+        let before = root.receipt();
+        let (result, allocations) = measured(|| root.native_volume_work(WorkBudget::UNBOUNDED));
+        assert_eq!(result.is_ok(), ceiling == required);
+        if let Ok(resource) = result {
+            assert_eq!(allocations.count_total, 1);
+            assert_eq!(allocations.bytes_total, required);
+            assert_eq!(
+                root.live_allocation_bytes(),
+                before.peak_allocation_bytes + required
+            );
+            assert_eq!(
+                root.receipt().allocation_operations,
+                before.allocation_operations + 1
+            );
+            drop(resource);
+        } else {
+            assert_eq!(allocations.count_total, 0);
+            assert_eq!(allocations.bytes_total, 0);
+            assert_eq!(root.receipt(), before);
+        }
+        assert_eq!(root.live_allocation_bytes(), before.peak_allocation_bytes);
+    }
+}
+
 fn assert_name_layout(name: &str, native: bool) -> u64 {
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();

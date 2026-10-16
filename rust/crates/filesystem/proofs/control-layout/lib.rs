@@ -34,4 +34,5 @@ fn missing_weak_counter_is_detected() {
     let (missing_weak, _) = Layout::new::<usize>().extend(payload).unwrap();
     assert_eq!(complete, 3 * std::mem::size_of::<usize>());
     assert_ne!(missing_weak.pad_to_align().size(), complete);
+    assert_ne!(payload.size(), complete);
 }
