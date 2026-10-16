@@ -1,3 +1,4 @@
-{"context":[{"role":"user","content":"abc"}],"limits":{"render_bytes":2},"turns":[],"expect":{"text":null,"error":
-  "model text exceeds render limit","request_count":0,"result":null,"events":[],"not_events":[{"kind":"model_started"}]},"replay":
-  false}
+{"context":[{"role":"user","content":
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }],"limits":{"render_bytes":127},"turns":[],"expect":{"text":null,"error":"model text exceeds render limit","request_count":0,
+  "result":null,"events":[{"kind":"started"}],"not_events":[{"kind":"model_started"}]},"replay":false}
