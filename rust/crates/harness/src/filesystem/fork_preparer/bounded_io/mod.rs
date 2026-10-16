@@ -249,6 +249,7 @@ impl PreparationIo {
                 .bytes()),
         }
     }
+    #[inline]
     fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
