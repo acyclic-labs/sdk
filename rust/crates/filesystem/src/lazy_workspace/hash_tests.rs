@@ -39,7 +39,7 @@ fn measured<T: MemoryLazyNode>(
     }
     let mut accounting = KernelAccounting::native(&work, &explicit_cancellation);
     let result = if legacy {
-        hash_with_charge(value, |delta| accounting.charge(delta))
+        hash_with_charge(value, Charge::Accounting(&mut accounting))
     } else {
         hash_lazy_value(value, &mut accounting)
     };

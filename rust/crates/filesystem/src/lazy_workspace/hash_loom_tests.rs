@@ -30,8 +30,10 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
         let before = original.receipt();
         if reentrant {
             let mut accounting = KernelAccounting::native(&work, &cancellation);
-            work.state(|_| hash_with_charge(&LazyOverlay::Empty, |delta| accounting.charge(delta)))
-                .unwrap();
+            work.state(|_| {
+                hash_with_charge(&LazyOverlay::Empty, Charge::Accounting(&mut accounting))
+            })
+            .unwrap();
             return;
         }
         let scope_cancellation = work.cancellation().clone();
