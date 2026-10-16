@@ -7,7 +7,7 @@ use std::sync::Arc;
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -84,6 +84,8 @@ pub enum TaskFile {
     Request(Component),
     /// Host-owned dispatch claim for an immutable request.
     RequestStarted(Component),
+    /// Host-owned completed response retained before terminal publication.
+    RequestReady(Component),
     /// Host-owned terminal outcome of an immutable request.
     RequestResult(Component),
     /// Current task status.
@@ -145,6 +147,7 @@ impl TaskFile {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
             Self::RequestStarted(id) => format!("requests/{}/started.json", id.as_str()),
+            Self::RequestReady(id) => format!("requests/{}/ready.json", id.as_str()),
             Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
@@ -321,6 +324,7 @@ impl FileKey {
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
             ["requests", request, "started.json"] => TaskFile::RequestStarted(id(request)?),
+            ["requests", request, "ready.json"] => TaskFile::RequestReady(id(request)?),
             ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),

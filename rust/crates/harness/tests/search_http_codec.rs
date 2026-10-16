@@ -1,4 +1,4 @@
-//! Native HTTP codec properties and shared fuzz corpus settlement checks.
+//! Ordinary/native HTTP codec properties and shared fuzz corpus settlement checks.
 #![cfg(not(target_arch = "wasm32"))]
 #[path = "search_http_codec/support.rs"]
 mod support;
@@ -22,11 +22,10 @@ fn json_leaf() -> impl Strategy<Value = serde_json::Value> {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
-    // For funded native decoding, complete JSON either round-trips a result or
-    // records a terminal rejection. Fixed parser limits cannot strand a call.
+    // Both decoding paths agree with the contract; funded native calls settle.
     #[test]
     fn complete_search_responses_always_settle_and_replay(
-        depth in prop_oneof![2 => 0usize..16, 1 => 0usize..1024, 1 => Just(255), 1 => Just(256), 1 => Just(257), 1 => Just(258)],
+        depth in prop_oneof![2 => 0usize..16, 1 => 0usize..4097, 1 => Just(255), 1 => Just(256), 1 => Just(257), 1 => Just(258), 1 => Just(4096)],
         size in prop_oneof![8 => 0usize..8192, 1 => Just(1_048_576), 1 => Just(1_048_577)],
         shape in any::<u8>(),
         leaf in json_leaf(),
@@ -46,6 +45,18 @@ fn exa_codec_seed_corpus_settles() {
 #[test]
 fn tinyfish_codec_seed_corpus_settles() {
     corpus(false);
+}
+
+#[tokio::test]
+async fn incomplete_and_over_depth_responses_publish_rejected() {
+    for exa in [true, false] {
+        for bytes in [
+            br#"{"results":[]"#.to_vec(),
+            support::response(4096, 0, 0, &serde_json::Value::Null),
+        ] {
+            support::check(bytes, exa).await;
+        }
+    }
 }
 
 fn corpus(exa: bool) {
