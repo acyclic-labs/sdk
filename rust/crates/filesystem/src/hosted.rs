@@ -11,6 +11,7 @@ use crate::{
     DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, GenerationId,
     HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
 };
+pub use acyclic_auth::credential::CredentialProvider;
 use bytes::Bytes;
 use futures::Stream;
 #[cfg(test)]
@@ -183,7 +184,8 @@ impl Default for HostedS3AccessOptions {
 #[derive(Clone)]
 pub struct HostedFs {
     client: Client,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<CredentialProvider>,
     capabilities: wire::Capabilities,
     owner: Arc<()>,
 }
@@ -196,11 +198,6 @@ fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsErro
     {
         return Err(HostedFsError::InvalidOptions(
             "request bound must be nonzero and response bound must admit the handshake",
-        ));
-    }
-    if options.bearer_token.is_empty() {
-        return Err(HostedFsError::InvalidOptions(
-            "bearer credential must be nonempty",
         ));
     }
     if options
@@ -229,10 +226,17 @@ fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsErro
 impl HostedFs {
     /// Connects a bounded client and validates the canonical service handshake.
     pub async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
+        Self::connect_inner(options, None).await
+    }
+
+    /// Resolve the callback for the handshake and every subsequent request.
+    pub async fn connect_with_credential(options: HostedFsOptions, credential: CredentialProvider) -> Result<Self, HostedFsError> {
+        Self::connect_inner(options, Some(credential)).await
+    }
+
+    async fn connect_inner(options: HostedFsOptions, credential: Option<CredentialProvider>) -> Result<Self, HostedFsError> {
         validate_hosted_options(&options)?;
-        let authorization: MetadataValue<Ascii> = format!("Bearer {}", options.bearer_token)
-            .parse()
-            .map_err(|_| HostedFsError::InvalidOptions("bearer credential is not HTTP metadata"))?;
+        let authorization = if credential.is_some() { None } else { Some(credential_header(&options.bearer_token)?) };
         let is_https = options.endpoint.starts_with("https://");
         let mut endpoint = Endpoint::new(options.endpoint)?
             .connect_timeout(options.connect_timeout)
@@ -269,7 +273,7 @@ impl HostedFs {
         });
         handshake
             .metadata_mut()
-            .insert("authorization", authorization.clone());
+            .insert("authorization", request_authorization(authorization.as_ref(), credential.as_ref()).await?);
         let mut capabilities = validate_handshake(client.handshake(handshake).await?.into_inner())?;
         let configured_request_bytes =
             u64::try_from(options.maximum_request_bytes).map_err(|_| {
@@ -298,6 +302,7 @@ impl HostedFs {
         Ok(Self {
             client,
             authorization,
+            credential,
             capabilities,
             owner: Arc::new(()),
         })
@@ -309,12 +314,11 @@ impl HostedFs {
         &self.capabilities
     }
 
-    fn request<T>(&self, value: T) -> Request<T> {
+    async fn request<T>(&self, value: T) -> Result<Request<T>, HostedFsError> {
+        let authorization = request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(value);
-        request
-            .metadata_mut()
-            .insert("authorization", self.authorization.clone());
-        request
+        request.metadata_mut().insert("authorization", authorization);
+        Ok(request)
     }
 
     fn require_page_bound(&self, value: u32, name: &'static str) -> Result<(), HostedFsError> {
@@ -354,7 +358,7 @@ impl HostedFs {
                 name: name.into(),
                 profile: profile_to_wire(profile) as i32,
                 operation: Some(operation(idempotency_key)),
-            }))
+            }).await?)
             .await?
             .into_inner();
         self.workspace(response.workspace)
@@ -369,7 +373,7 @@ impl HostedFs {
         let response = client
             .open_workspace(self.request(wire::OpenWorkspaceRequest {
                 selector: Some(wire::open_workspace_request::Selector::Name(name.into())),
-            }))
+            }).await?)
             .await?
             .into_inner();
         self.workspace(response.workspace)
@@ -387,7 +391,7 @@ impl HostedFs {
             .observe(self.request(wire::ObserveRequest {
                 workspace: Some(workspace.reference.clone()),
                 operation_id: idempotency_key.into_bytes().to_vec(),
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -404,7 +408,7 @@ impl HostedFs {
             .cancel(self.request(wire::CancelRequest {
                 workspace: Some(workspace.reference.clone()),
                 operation_id: idempotency_key.into_bytes().to_vec(),
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -420,7 +424,7 @@ impl HostedFs {
             .apply_join(self.request(wire::ApplyJoinRequest {
                 plan: Some(plan),
                 operation: Some(operation(idempotency_key)),
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -431,7 +435,7 @@ impl HostedFs {
         S: Stream<Item = wire::ImportChunk> + Send + 'static,
     {
         let mut client = self.client.clone();
-        Ok(client.import(self.request(chunks)).await?.into_inner())
+        Ok(client.import(self.request(chunks).await?).await?.into_inner())
     }
 
     fn require_owner(&self, workspace: &HostedWorkspace) -> Result<(), HostedFsError> {
@@ -467,6 +471,28 @@ impl HostedFs {
         })
     }
 }
+
+fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, HostedFsError> {
+    if !acyclic_auth::credential::valid_credential(token) {
+        return Err(HostedFsError::InvalidOptions("invalid bearer credential"));
+    }
+    let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse()
+        .map_err(|_| HostedFsError::InvalidOptions("bearer credential is not HTTP metadata"))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+async fn request_authorization(fixed: Option<&MetadataValue<Ascii>>, provider: Option<&CredentialProvider>) -> Result<MetadataValue<Ascii>, HostedFsError> {
+    if let Some(provider) = provider {
+        let token = provider.resolve().await.map_err(|_| Status::unauthenticated("filesystem credential renewal failed"))?;
+        credential_header(&token).map_err(|_| Status::unauthenticated("invalid filesystem credential").into())
+    } else {
+        fixed.cloned().ok_or_else(|| Status::unauthenticated("missing filesystem credential").into())
+    }
+}
+
+#[cfg(test)]
+mod credential_tests;
 
 include!("hosted/workspace.rs");
 include!("hosted/generation.rs");

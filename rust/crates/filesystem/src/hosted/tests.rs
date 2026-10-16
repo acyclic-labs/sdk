@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_ca_https_constructor_requires_handshake_and_exact_bearer()
+    async fn private_ca_https_constructor_renews_credentials_and_checks_handshake()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let certified = generate_simple_self_signed(["localhost".to_owned()])?;
@@ -341,10 +341,26 @@ mod tests {
             Err(HostedFsError::Status(status)) if status.code() == tonic::Code::Unauthenticated
         ));
         let hosted = HostedFs::connect(
-            HostedFsOptions::new(endpoint, "exact-token").with_ca_certificate(certificate_pem),
+            HostedFsOptions::new(&endpoint, "exact-token").with_ca_certificate(certificate_pem.clone()),
         )
         .await?;
         assert_eq!(hosted.capabilities().contract_version, "1");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resolved = calls.clone();
+        let renewed = HostedFs::connect_with_credential(
+            HostedFsOptions::new(endpoint, "ignored-static-token").with_ca_certificate(certificate_pem),
+            CredentialProvider::new(move || std::future::ready(
+                if resolved.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+                    Ok("exact-token".into())
+                } else { Err(acyclic_auth::credential::CredentialError::Invalid) }
+            )),
+        ).await?;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let workspace = renewed.create_workspace("renewal-workspace", EmbeddedProfile::Portable, IdempotencyKey::from_bytes([21; 16])).await?;
+        workspace.head().await?;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert!(matches!(renewed.open_workspace("renewal-workspace").await,
+            Err(HostedFsError::Status(status)) if status.code() == tonic::Code::Unauthenticated));
 
         stop_tx
             .send(())

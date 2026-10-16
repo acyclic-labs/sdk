@@ -211,7 +211,7 @@ impl HostedTransaction {
                             operation: Some(operation(self.idempotency_key)),
                             maximum_conflicts,
                         },
-                    ))
+                    ).await?)
                     .await?
                     .into_inner())
             })
@@ -241,7 +241,7 @@ impl HostedTransaction {
                         mutations: self.mutations.clone(),
                         maximum_conflicts,
                         operation: Some(operation(self.idempotency_key)),
-                    }),
+                    }).await?,
             )
             .await?
             .into_inner())

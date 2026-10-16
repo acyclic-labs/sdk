@@ -32,7 +32,7 @@ impl HostedWorkspace {
         let response = client
             .get_head(self.filesystem.request(wire::GetHeadRequest {
                 workspace: Some(self.reference.clone()),
-            }))
+            }).await?)
             .await?
             .into_inner();
         self.generation_handle(response.generation)
@@ -45,7 +45,7 @@ impl HostedWorkspace {
         let response = client
             .get_source_state(self.filesystem.request(wire::SourceStateRequest {
                 workspace: Some(self.reference.clone()),
-            }))
+            }).await?)
             .await?
             .into_inner();
         self.source_result(&response)
@@ -80,7 +80,7 @@ impl HostedWorkspace {
             .seal_source(self.filesystem.request(wire::SourceOperationRequest {
                 workspace: Some(self.reference.clone()),
                 operation: Some(operation(idempotency_key)),
-            }))
+            }).await?)
             .await?
             .into_inner();
         let result = self.source_result(&response)?;
@@ -111,7 +111,7 @@ impl HostedWorkspace {
         let request = self.filesystem.request(wire::SourceOperationRequest {
             workspace: Some(self.reference.clone()),
             operation: Some(operation(idempotency_key)),
-        });
+        }).await?;
         let mut client = self.filesystem.client.clone();
         let response = match kind {
             SourceOperation::Reconcile => client.reconcile_source(request).await?.into_inner(),
@@ -207,7 +207,7 @@ impl HostedWorkspace {
         let response = client
             .get_generation(self.filesystem.request(wire::GetGenerationRequest {
                 generation: Some(selected),
-            }))
+            }).await?)
             .await?
             .into_inner();
         self.generation_handle(response.generation)
@@ -245,7 +245,7 @@ impl HostedWorkspace {
             .delete_workspace(self.filesystem.request(wire::DeleteWorkspaceRequest {
                 workspace: Some(self.reference.clone()),
                 operation: Some(operation(idempotency_key)),
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -272,7 +272,7 @@ impl HostedWorkspace {
                 operation: Some(operation(idempotency_key)),
                 maximum_generations,
                 maximum_changes,
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -357,7 +357,7 @@ impl HostedWorkspace {
             writable,
             expires_after_seconds,
             operation: Some(operation(idempotency_key)),
-        });
+        }).await?;
         let mut client = self.filesystem.client.clone();
         if s3 {
             Ok(client.issue_s3_credential(request).await?.into_inner())

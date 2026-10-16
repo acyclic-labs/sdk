@@ -30,7 +30,7 @@ impl HostedGeneration {
                 path: path.into(),
                 range: Some(wire::ByteRange { offset, length }),
                 maximum_bytes,
-            }))
+            }).await?)
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -52,7 +52,7 @@ impl HostedGeneration {
                 path: path.into(),
                 range: None,
                 maximum_bytes,
-            }))
+            }).await?)
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -65,7 +65,7 @@ impl HostedGeneration {
             .stat(self.workspace.filesystem.request(wire::StatRequest {
                 generation: Some(self.reference.clone()),
                 path: path.into(),
-            }))
+            }).await?)
             .await?
             .into_inner()
             .stat
@@ -94,7 +94,7 @@ impl HostedGeneration {
                             maximum_items,
                             after,
                         }),
-                    }),
+                    }).await?,
             )
             .await?
             .into_inner()
@@ -117,7 +117,7 @@ impl HostedGeneration {
                 generation: Some(self.reference.clone()),
                 path: path.into(),
                 maximum_bytes,
-            }))
+            }).await?)
             .await?
             .into_inner();
         Ok(Bytes::from(response.contents))
@@ -141,7 +141,7 @@ impl HostedGeneration {
                 path: path.into(),
                 range: Some(wire::ByteRange { offset, length }),
                 maximum_extents,
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -162,7 +162,7 @@ impl HostedGeneration {
                 from: Some(self.reference.clone()),
                 to: Some(to.reference.clone()),
                 maximum_changes,
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -195,7 +195,7 @@ impl HostedGeneration {
                 maximum_conflicts,
                 maximum_generations,
                 history: history as i32,
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -220,7 +220,7 @@ impl HostedGeneration {
                 after,
                 maximum_objects,
                 maximum_bytes,
-            }))
+            }).await?)
             .await?
             .into_inner())
     }
@@ -251,7 +251,7 @@ impl HostedGeneration {
                                 operation: Some(operation(idempotency_key)),
                                 selection: paths.map(|paths| wire::ForkPathSelection { paths }),
                             },
-                        ))
+                        ).await?)
                         .await?
                         .into_inner();
                 self.workspace.filesystem.workspace(response.workspace)
@@ -291,7 +291,7 @@ impl HostedGeneration {
                 generation: Some(self.reference.clone()),
                 identity,
                 operation: Some(operation(idempotency_key)),
-            });
+            }).await?;
         let mut client = self.workspace.filesystem.client.clone();
         if pin {
             Ok(client.pin(request).await?.into_inner())
