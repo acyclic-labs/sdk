@@ -2,6 +2,9 @@
 #[path = "../../conformance/benches/filesystem.rs"]
 mod filesystem;
 
+#[path = "support/admission.rs"]
+mod admission;
+
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 

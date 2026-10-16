@@ -2,6 +2,9 @@
 #[path = "../../conformance/benches/filesystem.rs"]
 mod filesystem;
 
+#[path = "support/admission.rs"]
+mod admission;
+
 fn main() {
     filesystem::main();
 }
