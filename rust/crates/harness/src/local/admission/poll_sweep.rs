@@ -642,14 +642,9 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
     let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
     let baseline = observed.points;
     coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
-    let cut: usize = serde_json::from_slice(
-        &std::fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/local/admission/poll_sweep/coverage/admission_cut.json"),
-        )
-        .map_err(storage)?,
-    )
-    .map_err(storage)?;
+    let cut: usize =
+        serde_json::from_slice(include_bytes!("poll_sweep/coverage/admission_cut.json"))
+            .map_err(storage)?;
     assert_eq!(
         observed.admission_submission,
         Some(cut),
