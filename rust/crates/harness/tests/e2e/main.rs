@@ -3,6 +3,7 @@ mod composer;
 mod discovery;
 mod drivers;
 mod execution;
+mod limits_tests;
 mod matchers;
 mod notification_history;
 mod notifications;
