@@ -1,5 +1,4 @@
 use super::*;
-use prost::Message as _;
 
 fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSubscription {
     wire::SessionSubscription {

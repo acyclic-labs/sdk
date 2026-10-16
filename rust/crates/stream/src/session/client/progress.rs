@@ -18,9 +18,11 @@ pub(super) struct Progress {
     cancelled: AtomicU64,
 }
 impl Progress {
+    #[cfg(any(test, acyclic_stream_loom))]
     pub(super) fn new(from: u64) -> Self {
         Self::with_preceding(from, None)
     }
+    #[cfg(any(test, acyclic_stream_loom))]
     pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
         Self::from_cursor(
             crate::wire::SessionCursor {

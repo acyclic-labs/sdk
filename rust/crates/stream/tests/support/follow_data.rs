@@ -8,6 +8,17 @@ use prost::Message;
 // One oracle for property tests and fuzzing: success, exact cursors, history
 // guards, typed items and watermark bounds must all survive the same boundary.
 pub fn check(next: u64, gap: u16, payload: &[u8], broken: bool) {
+    if let Ok(subscription) = wire::SessionSubscription::decode(payload) {
+        assert_eq!(
+            wire::SessionSubscription::decode(subscription.encode_to_vec().as_slice()).unwrap(),
+            subscription
+        );
+        if let (Some(wire::session_subscription::Kind::Follow(follow)), Some(resume)) =
+            (&subscription.kind, &subscription.resume)
+        {
+            let _ = validate_follow(follow, resume);
+        }
+    }
     let next = next % (u64::MAX - u16::MAX as u64 - 1);
     let gap = u64::from(gap) + 1;
     let mut follow = wire::SessionFollow {
