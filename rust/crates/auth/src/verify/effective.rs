@@ -19,9 +19,16 @@ impl<'a> ScopedFilter<'a> {
     pub fn lineage(&self) -> impl DoubleEndedIterator<Item = &'a str> {
         let principal = &self.capability.principal;
         // The computed lineage contains every append; exclude descendant blocks.
-        let descendants: usize = self.capability.blocks.iter().skip(self.declaring_block + 1)
+        let descendants: usize = self
+            .capability
+            .blocks
+            .iter()
+            .skip(self.declaring_block + 1)
             .flat_map(|block| &block.caveats)
-            .filter_map(|caveat| match &caveat.kind { CaveatKind::LineageAppend(lineage) => Some(lineage.ids.len()), _ => None })
+            .filter_map(|caveat| match &caveat.kind {
+                CaveatKind::LineageAppend(lineage) => Some(lineage.ids.len()),
+                _ => None,
+            })
             .sum();
         let visible = principal.lineage.len() - descendants;
         std::iter::once(principal.id.as_str())
@@ -29,7 +36,9 @@ impl<'a> ScopedFilter<'a> {
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
-        self.lineage().next_back().unwrap_or(&self.capability.principal.id)
+        self.lineage()
+            .next_back()
+            .unwrap_or(&self.capability.principal.id)
     }
 }
 

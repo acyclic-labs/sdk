@@ -9,7 +9,9 @@ mod claims;
 mod trust;
 pub use trust::*;
 
-pub fn limits(value: Option<u64>) -> Limits { claims::limits(value) }
+pub fn limits(value: Option<u64>) -> Limits {
+    claims::limits(value)
+}
 pub const TIP: [u8; 32] = [4; 32];
 
 fn sign_claims(domain: &[u8], claims: &impl Message, signer: &SigningKey) -> Vec<u8> {

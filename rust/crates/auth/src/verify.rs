@@ -287,7 +287,12 @@ impl VerifiedCapability {
             return Err(VerifyError::Trust);
         }
         let account = trust.account(id)?;
-        if self.blocks.iter().any(|block| environments.iter().chain(account.issuer_keys).any(|key| block.next_public_key.as_slice() == key)) {
+        if self.blocks.iter().any(|block| {
+            environments
+                .iter()
+                .chain(account.issuer_keys)
+                .any(|key| block.next_public_key.as_slice() == key)
+        }) {
             return Err(VerifyError::RepeatedKey);
         }
         if !self

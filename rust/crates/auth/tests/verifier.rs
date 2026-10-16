@@ -380,14 +380,25 @@ fn cached_and_fresh_admission_agree_when_issuer_sets_change() {
     for environment in [false, true] {
         let mut trust = Snapshot::default();
         let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
-        let roots = if environment { &mut trust.environments } else { &mut trust.issuers };
+        let roots = if environment {
+            &mut trust.environments
+        } else {
+            &mut trust.issuers
+        };
         roots.push(key(8).verifying_key().to_bytes());
         cap.check(&trust, NOW).unwrap();
         verify(&cap.encode(), &trust, NOW).unwrap();
-        let roots = if environment { &mut trust.environments } else { &mut trust.issuers };
+        let roots = if environment {
+            &mut trust.environments
+        } else {
+            &mut trust.issuers
+        };
         roots.push(key(4).verifying_key().to_bytes());
         assert_eq!(cap.check(&trust, NOW), Err(VerifyError::RepeatedKey));
-        assert!(matches!(verify(&cap.encode(), &trust, NOW), Err(VerifyError::RepeatedKey)));
+        assert!(matches!(
+            verify(&cap.encode(), &trust, NOW),
+            Err(VerifyError::RepeatedKey)
+        ));
     }
 }
 
