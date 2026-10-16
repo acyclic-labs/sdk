@@ -4,6 +4,7 @@
   "seed":{"plans/a.md":"before\n"},
   "chunk_bytes":4096,
   "expect":{
+    "requests":[{}],
     "text":"hé🦀",
     "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed"}],
     "files":{"plans/a.md":"before\n","plans/missing.md":null}

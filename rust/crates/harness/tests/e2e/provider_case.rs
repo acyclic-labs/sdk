@@ -28,6 +28,7 @@ pub struct Expectations {
     pub text: String,
     pub events: Vec<Vec<Value>>,
     pub endpoint: String,
+    pub requests: Vec<BTreeMap<String, Value>>,
     pub frames: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
 }
@@ -38,9 +39,17 @@ impl ProviderCase {
             || self.responses.is_empty()
             || self.responses.len() > 8
             || self.responses.len() != self.expect.events.len()
+            || self.responses.len() != self.expect.requests.len()
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
             })
+            || self.expect.requests.iter().skip(1).any(BTreeMap::is_empty)
+            || self
+                .expect
+                .requests
+                .iter()
+                .flat_map(|fields| fields.keys())
+                .any(|pointer| !pointer.starts_with('/'))
             || self.expect.frames.is_empty()
         {
             return Err("invalid bounded provider scenario");

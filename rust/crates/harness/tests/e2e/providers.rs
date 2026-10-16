@@ -31,7 +31,13 @@ pub(super) fn check_events(expected: &[Value], events: &[ModelEvent]) -> TestRes
     }
     for (expected, actual) in expected.iter().zip(events) {
         let actual = serde_json::to_value(actual)?;
-        if !matchers::subset(expected, &actual) {
+        let reasoning = actual["kind"] == "reasoning_block";
+        if !matchers::subset(expected, &actual)
+            || (reasoning
+                && (expected["block"]["continuity"] != actual["block"]["continuity"]
+                    || expected["block"]["origin"]["credential_scope"]
+                        != actual["block"]["origin"]["credential_scope"]))
+        {
             return Err(
                 format!("provider events differ: expected {expected}, got {actual}").into(),
             );
@@ -85,6 +91,27 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
             broken.insert(0, inserted);
             if check_events(expected, &broken).is_ok() {
                 return Err("provider oracle accepted an inserted delta".into());
+            }
+        }
+        for index in 0..events.len() {
+            if let ModelEvent::ReasoningBlock { .. } = &events[index] {
+                for scope in [false, true] {
+                    let mut broken = events.clone();
+                    let ModelEvent::ReasoningBlock { block } = &mut broken[index] else {
+                        unreachable!()
+                    };
+                    if scope {
+                        block.origin.credential_scope = None;
+                    } else {
+                        block.continuity.push(255);
+                    }
+                    if check_events(expected, &broken).is_ok() {
+                        return Err(
+                            "provider oracle accepted corrupted reasoning ownership or bytes"
+                                .into(),
+                        );
+                    }
+                }
             }
         }
         let mut broken = events.clone();
@@ -186,14 +213,42 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     if requests.len() != case.responses.len() || remaining != 0 {
         return Err("provider task did not consume the exact HTTP script".into());
     }
-    for request in requests {
+    for (request, expected) in requests.iter().zip(&case.expect.requests) {
+        let body: Value = serde_json::from_slice(&request.body)?;
         if request.url != format!("https://recorded.invalid/v1{}", case.expect.endpoint)
-            || !matchers::subset(
-                &serde_json::json!({"$contains":case.prompt}),
-                &serde_json::from_slice(&request.body)?,
-            )
+            || !matchers::subset(&serde_json::json!({"$contains":case.prompt}), &body)
         {
             return Err("provider task request lost its endpoint or prompt".into());
+        }
+        check_request(expected, &body)?;
+        // Fault the recorded production request, leaving fixture assertions intact.
+        // Every declared call/result payload and identity must reject loss/change.
+        for pointer in expected.keys() {
+            let mut dropped = body.clone();
+            let (parent, key) = pointer
+                .rsplit_once('/')
+                .ok_or("request assertion pointer")?;
+            match dropped.pointer_mut(parent) {
+                Some(Value::Object(object)) => {
+                    object.remove(key);
+                }
+                Some(Value::Array(array)) => {
+                    array.remove(key.parse::<usize>()?);
+                }
+                _ => return Err("request assertion parent".into()),
+            }
+            if check_request(expected, &dropped).is_ok() {
+                return Err(format!("request oracle accepted removal at {pointer}").into());
+            }
+            for corruption in [Value::Null, Value::String("CORRUPTED".into())] {
+                let mut broken = body.clone();
+                *broken
+                    .pointer_mut(pointer)
+                    .ok_or("request assertion pointer")? = corruption;
+                if check_request(expected, &broken).is_ok() {
+                    return Err(format!("request oracle accepted corruption at {pointer}").into());
+                }
+            }
         }
     }
     drop(frames);
@@ -213,6 +268,24 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
             (_, actual) => {
                 return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
             }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_request(
+    expected: &std::collections::BTreeMap<String, Value>,
+    body: &Value,
+) -> TestResult {
+    for (pointer, value) in expected {
+        if !body
+            .pointer(pointer)
+            .is_some_and(|actual| matchers::subset(value, actual))
+        {
+            return Err(format!(
+                "provider request differs at {pointer}: expected {value}, got {body}"
+            )
+            .into());
         }
     }
     Ok(())
