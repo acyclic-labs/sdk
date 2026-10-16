@@ -78,8 +78,8 @@ async fn single_record(
         .ok_or_else(|| "missing source record".into())
 }
 
-struct FundedReplay;
-impl AsyncAuthorityStore for FundedReplay {
+struct FundedReplay<'a>(&'a [u8]);
+impl AsyncAuthorityStore for FundedReplay<'_> {
     async fn head(
         &self,
         _: AuthorityId,
@@ -99,7 +99,7 @@ impl AsyncAuthorityStore for FundedReplay {
         _: ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
-        let body = b"funded-head-value!";
+        let body = self.0;
         let bytes = (body.len() + std::mem::size_of::<DurableCommit>()) as u64;
         let original = work
             .original
@@ -130,7 +130,7 @@ async fn default_head_payload_keeps_external_replay_funding_until_payload_drops(
     let baseline = original.live_allocation_bytes();
     // Bind funding first, then destructure the payload: this is also the
     // facade's drop order on all normal, error and unwinding paths.
-    let (value, allocation) = FundedReplay
+    let (value, allocation) = FundedReplay(b"funded-head-value!")
         .head_payload(
             AUTHORITY,
             4096,
@@ -341,6 +341,36 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
 }
 
 proptest::proptest! {
+    // External replay funding survives every payload length, including empty
+    // payloads, and releases completely after the value and guard are dropped.
+    #[test]
+    fn default_payload_keeps_external_funding_for_arbitrary_bodies(
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..2049),
+    ) {
+        crate::initialize_test_native_io();
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(async {
+            let cancellation = CancellationToken::new();
+            let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+                .map_err(|(e, _)| e).unwrap();
+            let baseline = original.live_allocation_bytes();
+            let (value, allocation) = FundedReplay(&body).head_payload(
+                AUTHORITY, 4096, &mut AuthorityWork::native(&original, &cancellation)
+            ).await.unwrap();
+            let (_, payload) = value;
+            let payload = payload.unwrap();
+            proptest::prop_assert_eq!(payload.as_ref(), body.as_slice());
+            proptest::prop_assert!(allocation.is_some());
+            proptest::prop_assert!(original.live_allocation_bytes() >= baseline + body.len() as u64);
+            let receipt = original.receipt();
+            drop(payload);
+            drop(allocation);
+            proptest::prop_assert_eq!(original.live_allocation_bytes(), baseline);
+            proptest::prop_assert_eq!(original.receipt(), receipt);
+            Ok(())
+        })?;
+    }
+
     // Joint authentication preserves the complete fallback value/error for
     // arbitrary payloads and bounds, including genesis and empty payloads.
     #[test]
