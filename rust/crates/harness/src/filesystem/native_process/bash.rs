@@ -54,7 +54,8 @@ pub(crate) fn prepare<T>(
         mount.check(Action::List, &path, now)?;
     }
     invocation.cwd = cwd;
-    invocation.environment = environment(std::env::vars_os(), mounts.environment()?)?;
+    invocation.environment = mounts.environment()?;
+    invocation.inherit_environment = true;
     invocation.timeout_ms = input.timeout_ms()?;
     invocation.argv = vec![
         "--noprofile".into(),
@@ -74,30 +75,5 @@ pub(crate) fn prepare<T>(
     Ok(invocation)
 }
 
-fn environment(
-    host: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
-    mounts: std::collections::BTreeMap<String, String>,
-) -> Result<std::collections::BTreeMap<String, String>> {
-    let mut environment = host
-        .into_iter()
-        .map(|(key, value)| {
-            let key = key
-                .into_string()
-                .map_err(|_| Error::Invalid("host environment key is not UTF-8".into()))?;
-            #[cfg(windows)]
-            let key = key.to_uppercase();
-            let value = value
-                .into_string()
-                .map_err(|_| Error::Invalid("host environment value is not UTF-8".into()))?;
-            Ok((key, value))
-        })
-        .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
-    environment.extend(mounts);
-    Ok(environment)
-}
-
 #[cfg(all(test, unix))]
 mod tests;
-
-#[cfg(test)]
-mod environment_tests;

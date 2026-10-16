@@ -16,6 +16,7 @@ impl CheckoutTools {
             argv: Vec::new(),
             cwd: workspace.path.clone(),
             environment: Default::default(),
+            inherit_environment: false,
             timeout_ms: 300_000,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             cancellation_poll_ms: 25,

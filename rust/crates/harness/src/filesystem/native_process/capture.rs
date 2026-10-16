@@ -74,10 +74,12 @@ pub(crate) async fn capture_with_custody<T: Send + 'static>(
     let (output, custody) = tokio::task::spawn_blocking(move || {
         with_custody(custody, |custody| {
             let mut command = Command::new(&invocation.executable);
+            if !invocation.inherit_environment {
+                command.env_clear();
+            }
             command
                 .args(&invocation.argv)
                 .current_dir(&invocation.cwd)
-                .env_clear()
                 .envs(&invocation.environment)
                 .stdin(
                     if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {

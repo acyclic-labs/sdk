@@ -86,6 +86,7 @@ fn invocation(root: &Path) -> Invocation {
         argv: Vec::new(),
         cwd: root.into(),
         environment: BTreeMap::new(),
+        inherit_environment: false,
         timeout_ms: 300_000,
         control_timeout_ms: 1000,
         cancellation_poll_ms: 25,
@@ -97,7 +98,8 @@ fn invocation(root: &Path) -> Invocation {
 
 #[tokio::test]
 async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use proptest::prelude::*;
+    use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
     let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     if std::env::var_os(CHILD).is_none() {
@@ -106,15 +108,20 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::create_dir(&home).map_err(|error| Error::Storage(error.to_string()))?;
         let tool = bin.join("acyclic-host-path-only");
-        std::fs::write(&tool, b"#!/bin/sh\nprintf 'host tool: %s\\n' \"$HOME\"\n")
+        std::fs::write(&tool, b"#!/bin/sh\nprintf 'host tool: %s\\nnative: %s\\n' \"$HOME\" \"$ACYCLIC_TEST_NATIVE_BYTES\"\n")
             .map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| Error::Storage(error.to_string()))?;
         // Isolate host settings in a child test process; never mutate this
         // process's environment while other tests or native workers run.
-        let result = std::process::Command::new(
-            std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
-        )
+        let executable =
+            std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
+        // Property: every non-NUL native value survives launch byte-for-byte,
+        // while host tools remain reachable and mount hints override the host.
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32)).run(
+            &prop::collection::vec(1u8..=255, 0..32),
+            |value| {
+        let result = std::process::Command::new(&executable)
         .args([
             "filesystem::native_process::bash::tests::host_home_and_path_survive_mount_environment_overrides",
             "--exact",
@@ -125,15 +132,19 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         .env("HOME", &home)
         .env("ACYCLIC_VOLUME_DATA", "stale mount")
         .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+        .env("ACYCLIC_TEST_NATIVE_BYTES", std::ffi::OsString::from_vec(value))
+        .env(std::ffi::OsString::from_vec(b"ACYCLIC_TEST_UNRELATED_\xff".to_vec()), "native key")
         .env_remove("BASH_ENV")
         .output()
-        .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        prop_assert!(
             result.status.success(),
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
+        Ok(())
+        }).map_err(|error| Error::Invalid(error.to_string()))?;
         return Ok(());
     }
     std::fs::create_dir_all(temp.path().join(".volumes/data"))
@@ -158,6 +169,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
     // Negative control: mount-only settings cannot find the host-PATH tool,
     // even after restoring HOME independently.
     let mut broken = prepared;
+    broken.inherit_environment = false;
     broken.environment = mounts.environment()?;
     broken
         .environment
@@ -176,10 +188,15 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        output.stdout,
-        format!("host tool: {}\n", std::env::var("HOME").unwrap()).as_bytes()
+    let mut expected =
+        format!("host tool: {}\nnative: ", std::env::var("HOME").unwrap()).into_bytes();
+    expected.extend(
+        std::env::var_os("ACYCLIC_TEST_NATIVE_BYTES")
+            .unwrap()
+            .into_vec(),
     );
+    expected.push(b'\n');
+    assert_eq!(output.stdout, expected);
     Ok(())
 }
 
