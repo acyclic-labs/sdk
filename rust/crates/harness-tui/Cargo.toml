@@ -10,7 +10,7 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 [features]
 default = []
 model-checking = ["dep:loom"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-terminal-console", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless"]
 
 [dependencies]
 loom = { version = "=0.7.2", optional = true }
@@ -43,7 +43,7 @@ signal-hook = { version = "0.4", optional = true }
 rustix-openpty = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-acyclic-terminal-console = { version = "=0.2.0", path = "../terminal-console", optional = true }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 
 [lints]
 workspace = true

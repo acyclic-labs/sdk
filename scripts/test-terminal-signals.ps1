@@ -62,7 +62,7 @@ public static class TerminalSignalConPty {
             }
             CloseHandle(ir);ir=IntPtr.Zero;CloseHandle(ow);ow=IntPtr.Zero;
             IntPtr outputHandle=orr;
-            drain=new Thread(()=>{ draining.WaitOne();using(var log=File.Create(Path.ChangeExtension(report,"output"))) { byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0) log.Write(bytes,0,(int)count); } });
+            drain=new Thread(()=>{ draining.WaitOne();using(var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Create,FileAccess.Write,FileShare.ReadWrite)) { byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0) { log.Write(bytes,0,(int)count);log.Flush(); } } });
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
             var timer=Stopwatch.StartNew();
@@ -75,12 +75,27 @@ public static class TerminalSignalConPty {
             byte[] fixture=Encoding.ASCII.GetBytes(string.Concat(System.Linq.Enumerable.Repeat("0123456789",10)));
             uint written;
             Require(WriteFile(iw,fixture,(uint)fixture.Length,out written,IntPtr.Zero)&&written==fixture.Length,"native input fixture write");
+            string probeReady=Path.ChangeExtension(report,"probe-ready");
+            while(!File.Exists(probeReady)&&timer.ElapsedMilliseconds<1500) {
+                if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before negotiation");
+                Thread.Sleep(1);
+            }
+            Require(File.Exists(probeReady),"negotiation setup deadline");
+            byte[] replies=Encoding.ASCII.GetBytes("\x1b[?1004;2$y\x1b[?2004;2$y\x1b[?1049;2$y\x1b[?1003;2$y\x1b[?62;1c");
+            Require(WriteFile(iw,replies,(uint)replies.Length,out written,IntPtr.Zero)&&written==replies.Length,"negotiation fixture write");
             string ready=Path.ChangeExtension(report,"ready");
             while(!File.Exists(ready)&&timer.ElapsedMilliseconds<1500) {
                 if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before terminal setup");
                 Thread.Sleep(1);
             }
-            Require(File.Exists(ready),"terminal setup deadline");
+            if(!File.Exists(ready)) {
+                draining.Set();
+                WaitForSingleObject(process.process,500);
+                string logPath=Path.ChangeExtension(report,"output");
+                string log="no output";
+                if(File.Exists(logPath)) using(var read=new StreamReader(new FileStream(logPath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) log=read.ReadToEnd();
+                throw new Exception("terminal setup deadline: "+log.Substring(Math.Max(0,log.Length-1400)));
+            }
             if(scenario=="blocked") {
                 draining.Set();
                 File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");

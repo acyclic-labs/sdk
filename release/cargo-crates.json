@@ -12,7 +12,6 @@
   "acyclic-manifest",
   "acyclic-workers",
   "acyclic-fs",
-  "acyclic-terminal-console",
   "acyclic-harness-tui",
   "acyclic-harness",
   "acyclic-plugin"

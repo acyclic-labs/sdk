@@ -2,7 +2,10 @@
 
 mod capabilities;
 mod decoder;
+#[cfg(any(unix, acyclic_harness_tui_loom))]
 mod lifecycle;
+#[cfg(any(windows, acyclic_harness_tui_loom))]
+mod console_owner;
 mod probe;
 mod restore;
 #[cfg(all(unix, not(acyclic_harness_tui_loom)))]

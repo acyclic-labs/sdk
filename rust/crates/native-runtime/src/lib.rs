@@ -19,6 +19,8 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::terminal;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]

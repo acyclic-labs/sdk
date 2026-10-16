@@ -97,18 +97,6 @@ pub(crate) fn restore<W: Write>(
     dec.and(os)
 }
 
-// Submission is serialized with close, but an OS completion wait must never
-// retain the state lock needed by the synchronous console control callback.
-#[cfg(any(windows, acyclic_harness_tui_loom))]
-pub(crate) fn pending_io<W: Write, P, T>(
-    state: &Mutex<State<W>>,
-    submit: impl FnOnce(&mut W) -> io::Result<P>,
-    complete: impl FnOnce(P) -> io::Result<T>,
-) -> io::Result<T> {
-    let pending = active(state, |guard| submit(guard.writer()))?;
-    complete(pending)
-}
-
 #[cfg(any(unix, acyclic_harness_tui_loom))]
 pub(crate) fn resume<W: Write>(
     state: &Mutex<State<W>>,
@@ -127,44 +115,6 @@ pub(crate) fn resume<W: Write>(
 mod terminal_lifecycle_model {
     use super::*;
     use crate::term::ModeState;
-
-    fn pending_output_model(broken: bool) {
-        loom::model(move || {
-            let state = Arc::new(Mutex::new(State::new(Vec::new())));
-            let complete = |()| {
-                assert!(
-                    state.try_lock().is_ok(),
-                    "completion wait retained terminal state"
-                );
-                let closing = Arc::clone(&state);
-                loom::thread::spawn(move || {
-                    assert!(restore(&closing, true, |_| Ok(())).is_ok());
-                })
-                .join()
-                .unwrap_or_else(|error| std::panic::resume_unwind(error));
-                Ok(())
-            };
-            if broken {
-                // The former synchronous path waits inside the active gate.
-                assert!(active(&state, |_| complete(())).is_ok());
-            } else {
-                assert!(pending_io(&state, |_| Ok(()), complete).is_ok());
-                assert!(
-                    matches!(pending_io(&state, |_| Ok(()), |_| Ok(())), Err(error) if error.kind() == io::ErrorKind::NotConnected)
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn pending_output_wait_releases_state_for_close() {
-        pending_output_model(false);
-    }
-
-    #[test]
-    fn negative_control_detects_wait_under_state_lock() {
-        assert!(std::panic::catch_unwind(|| pending_output_model(true)).is_err());
-    }
 
     // Fake OS state is acquired last, after owner -> state; never in reverse.
     struct Terminal {
