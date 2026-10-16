@@ -10,6 +10,7 @@ impl LocalHarness {
         workspace: &LocalWorkspace,
         names: &[String],
         maximum: u64,
+        publisher: &dyn ContentPublisher,
     ) -> Result<DiscoveredContext> {
         // Bound archive paths before asking the source for instruction bodies.
         if names
@@ -37,7 +38,6 @@ impl LocalHarness {
             work: &work,
             cancellation: &cancellation,
         };
-        let publisher = self.input_publisher()?;
         let mut discovery = DiscoveredContext::default();
         for name in names {
             let bytes = match view

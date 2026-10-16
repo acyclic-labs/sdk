@@ -4,6 +4,8 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
     filesystem::FilesystemContentPublisher,
 };
+mod crash_cuts;
+mod generation;
 
 async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<()> {
     FilesystemContentPublisher::new(
@@ -134,6 +136,17 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
     let (retained, captured) = manifest(&harness, operation).await?;
     assert_eq!(reference, retained);
     assert_eq!(captured.tools, harness.tools().definitions(None)?);
+    assert!(
+        captured
+            .discovery
+            .instructions
+            .iter()
+            .all(|file| file.volume() == harness.project())
+    );
+    assert_eq!(
+        captured.discovery.instructions[0].version(),
+        captured.discovery.instructions[1].version()
+    );
     assert_eq!(
         captured
             .discovery

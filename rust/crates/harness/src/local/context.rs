@@ -46,14 +46,17 @@ impl LocalHarness {
         &self,
         operation: OperationId,
     ) -> Result<FileRef> {
-        self.observe_context_manifest(operation)
+        self.observe_context_manifest(operation, self.input_publisher()?.as_ref())
             .await?
             .ok_or_else(|| Error::Storage("retained local input has no context manifest".into()))
     }
 
-    async fn observe_context_manifest(&self, operation: OperationId) -> Result<Option<FileRef>> {
-        let (reference, _) = self
-            .input_publisher()?
+    async fn observe_context_manifest(
+        &self,
+        operation: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let (reference, _) = publisher
             .observe_staged_once(manifest_operation(operation), self.limits.file_bytes, None)?
             .await?;
         if let Some(reference) = &reference {
@@ -70,8 +73,18 @@ impl LocalHarness {
         Ok(reference)
     }
 
+    #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        if let Some(reference) = self.observe_context_manifest(operation).await? {
+        self.stage_context_manifest_with(operation, self.input_publisher()?.as_ref())
+            .await
+    }
+
+    pub(super) async fn stage_context_manifest_with(
+        &self,
+        operation: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<FileRef> {
+        if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
             return Ok(reference);
         }
         let path = manifest_path(operation);
@@ -84,12 +97,11 @@ impl LocalHarness {
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
         let discovery = self
-            .instructions(&policy.instruction_names, maximum)
+            .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
         let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
         let bytes = manifest.encode(self.limits)?;
-        Ok(self
-            .input_publisher()?
+        Ok(publisher
             .stage_once(
                 manifest_operation(operation),
                 &path,
@@ -102,25 +114,36 @@ impl LocalHarness {
             .0)
     }
 
-    async fn instructions(&self, names: &[String], maximum: u64) -> Result<DiscoveredContext> {
-        #[cfg(feature = "native-execution")]
-        if let Some(workspace) = &self.workspace {
-            return self.checkout_instructions(workspace, names, maximum).await;
-        }
-        self.volume_instructions(names, maximum).await
-    }
-
-    async fn volume_instructions(
+    async fn instructions(
         &self,
         names: &[String],
         maximum: u64,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<DiscoveredContext> {
+        #[cfg(feature = "native-execution")]
+        if self.checkout_context
+            && let Some(workspace) = &self.workspace
+        {
+            return self
+                .checkout_instructions(workspace, names, maximum, publisher)
+                .await;
+        }
+        let _ = publisher;
+        self.volume_instructions(names, maximum, self.context_reader()?.as_ref())
+            .await
+    }
+
+    pub(super) async fn volume_instructions(
+        &self,
+        names: &[String],
+        maximum: u64,
+        reader: &dyn ContentResidencyVerifier,
     ) -> Result<DiscoveredContext> {
         let workspace = crate::filesystem::workspace_ref(
             self.project.provider().clone(),
             &self.project.storage_name(&mut None)?,
         )?;
         let generation = self.files.resolve(&workspace, None).await?.generation;
-        let reader = self.context_reader()?;
         let mut discovery = DiscoveredContext::default();
         for name in names {
             if name.len() > self.limits.path_bytes {

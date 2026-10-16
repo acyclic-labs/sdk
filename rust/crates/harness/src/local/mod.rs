@@ -73,6 +73,8 @@ pub struct LocalHarness {
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
 }
 
 impl LocalHarness {
@@ -266,6 +268,8 @@ impl LocalHarness {
                 model,
                 provider,
                 context_manifest: config.context_manifest,
+                #[cfg(feature = "native-execution")]
+                checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
