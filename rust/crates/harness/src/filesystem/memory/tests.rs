@@ -634,7 +634,7 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let provider = Arc::new(text_model(2));
     let bundle = storage
         .builder()
-        .default_tools(false)
+        .without_default_tools()
         .compaction(crate::context::CompactionPolicy::Disabled)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
