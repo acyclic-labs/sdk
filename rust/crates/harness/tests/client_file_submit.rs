@@ -5,10 +5,14 @@ use acyclic_harness::{
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::*;
-use futures::{FutureExt as _, StreamExt as _};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+use futures::StreamExt as _;
+use std::{
+    future::{Future as _, poll_fn},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    task::Poll,
 };
 
 #[path = "../../harness-fuzz/support/file_client.rs"]
@@ -217,7 +221,19 @@ async fn indeterminate_enqueue_preserves_capacity(
         } else {
             local.defer_commit.store(true, Ordering::SeqCst);
         }
-        assert!(client.enqueue(request(id)).now_or_never().is_none());
+        let publication = client.enqueue(request(id));
+        futures::pin_mut!(publication);
+        // A cooperative yield is not the fault boundary. Keep following the
+        // future's wakeups until commit consumes the requested injection.
+        poll_fn(|cx| {
+            assert!(publication.as_mut().poll(cx).is_pending());
+            if local.pause_ack.load(Ordering::SeqCst) || local.defer_commit.load(Ordering::SeqCst) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
     } else {
         local.lose_ack.store(true, Ordering::SeqCst);
         assert!(client.enqueue(request(id)).await.is_err());
@@ -293,6 +309,7 @@ async fn indeterminate_enqueue_preserves_capacity(
         assert_eq!(outbox.head().await.unwrap(), before);
     }
     assert_eq!(client.flush().await.unwrap(), 1);
+    assert_eq!(target.head().await.unwrap().position, cut.position + 2);
     let mut changes = target.follow(Query::Tasks, cut).await.unwrap();
     for value in [id, later] {
         assert_eq!(
@@ -308,7 +325,6 @@ async fn indeterminate_enqueue_preserves_capacity(
             &[value]
         );
     }
-    assert!(changes.next().now_or_never().is_none());
     drop(client);
     let mut client = FileClient::open(outbox, target, limits).await.unwrap();
     client.enqueue(request(id)).await.unwrap();
