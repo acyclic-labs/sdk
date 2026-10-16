@@ -115,6 +115,8 @@ impl CheckoutTools {
                         let mut workspace = LocalWorkspace {
                             #[cfg(all(test, not(acyclic_harness_loom)))]
                             selection_reads: std::sync::atomic::AtomicUsize::new(0),
+                            #[cfg(all(test, not(acyclic_harness_loom)))]
+                            mount_advances: std::sync::atomic::AtomicUsize::new(0),
                             path: path.clone(),
                             fresh: false,
                             mount_directory: parent.workspace.mount_directory.clone(),
@@ -233,6 +235,8 @@ impl CheckoutTools {
         let workspace = Arc::new(LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            mount_advances: std::sync::atomic::AtomicUsize::new(0),
             identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
             path,
             fresh: false,

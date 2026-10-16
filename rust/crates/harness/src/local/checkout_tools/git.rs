@@ -37,11 +37,15 @@ impl CheckoutTools {
             .recover_workspace(volume, now, acyclic_fs::OperationReconcileLimits::default())
             .await
             .map_err(storage)?;
+        let recovered = recovery.is_some();
         let parent = match recovery {
             Some(outcome) => reconciliation_generation(outcome)?,
             None => before_recovery.clone(),
         };
-        self.publish_reconciliation(workspace, context).await?;
+        // With no recovered window the preparation marker covers no changes.
+        // Acknowledge it without refreshing a mount that is already current.
+        self.publish_reconciliation(workspace, context, recovered)
+            .await?;
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(
@@ -93,17 +97,7 @@ impl CheckoutTools {
         // source workspace's reconciliation over it.
         let publication = match closed {
             Ok(acyclic_fs::WorkspaceOperationFinish::Reconciled(outcome)) => {
-                match reconciliation_generation(outcome) {
-                    Ok(_)
-                        if !result
-                            .as_ref()
-                            .is_ok_and(|output| output.switched.is_some()) =>
-                    {
-                        self.publish_reconciliation(workspace, context).await
-                    }
-                    Ok(_) => Ok(()),
-                    Err(error) => Err(error),
-                }
+                reconciliation_generation(outcome).map(|_| ())
             }
             Ok(_) => Ok(()),
             Err(error) => Err(error),
@@ -115,11 +109,16 @@ impl CheckoutTools {
             if !result
                 .as_ref()
                 .is_ok_and(|output| output.switched.is_some())
-                && let Some(mount) = &workspace.mounted
             {
-                owner.verify_owner(None)?.await?;
-                mount.advance_to_head().await.map_err(storage)?;
-                owner.verify_owner(None)?.await?;
+                if publication.is_ok() {
+                    self.publish_reconciliation(workspace, context, true)
+                        .await?;
+                } else {
+                    reconciliation::advance_mount(workspace, &|| async {
+                        owner.verify_owner(None)?.await
+                    })
+                    .await?;
+                }
             }
             Ok::<(), Error>(())
         }
@@ -201,10 +200,11 @@ impl CheckoutTools {
         &self,
         workspace: &LocalWorkspace,
         context: &ToolContext,
+        refresh_mount: bool,
     ) -> Result<()> {
         let state = workspace.selected_view().await?.0;
         let view = state.as_ref().unwrap_or_else(|| workspace.view());
-        reconciliation::publish(&workspace, view, &|| async {
+        reconciliation::publish(&workspace, view, refresh_mount, &|| async {
             context
                 .task()
                 .owned_mailbox

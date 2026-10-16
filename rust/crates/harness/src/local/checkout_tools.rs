@@ -11,6 +11,8 @@ use acyclic_stream::BoxProviderFuture;
 mod bash;
 mod capture;
 mod git;
+#[cfg(all(test, unix, not(acyclic_harness_loom)))]
+mod git_mount_tests;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
 mod task_views;

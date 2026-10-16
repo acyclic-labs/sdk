@@ -34,6 +34,8 @@ pub struct LocalWorkspace {
     pub(super) identity: acyclic_fs::NativeRootIdentity,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     pub(super) selection_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    pub(super) mount_advances: std::sync::atomic::AtomicUsize,
 }
 
 pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
@@ -194,6 +196,8 @@ pub(super) async fn open(
     Ok(LocalWorkspace {
         #[cfg(all(test, not(acyclic_harness_loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        mount_advances: std::sync::atomic::AtomicUsize::new(0),
         path,
         fresh,
         view,
