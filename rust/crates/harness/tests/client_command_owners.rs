@@ -261,6 +261,9 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
                         .any(|spec| spec.name == "corrected")
                 );
             }
+            // Consume this fold's own catalog publication before the next edit.
+            sources.changed().await?;
+            sources.refresh(&mut client).await?;
         }
         assert_eq!(
             client.catalog().complete("CHOOSE").next().unwrap().name,
