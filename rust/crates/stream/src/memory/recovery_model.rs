@@ -282,7 +282,7 @@ pub fn local_poison_wakes_followers() {
     );
 }
 
-/// Checks the production append/persist wake site, optionally removing only its wake.
+/// Checks a parked accepted follow; the mutant omits its per-path wait registration.
 pub fn local_persist_wakes_parked_followers(omit_wake: bool) {
     crate::local::query_model::persist_wakes_parked_followers(omit_wake);
 }
@@ -337,4 +337,18 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
         });
         recovery.join().unwrap().unwrap();
     });
+}
+
+/// Races the actual local checked-follow registration with its accepted publication.
+pub fn local_path_registration(omit_wake: bool) {
+    crate::local::follow_model::registration(omit_wake);
+}
+/// Races cancellation with publication to a surviving cursor on the same path.
+pub fn local_path_cancellation(retain: bool) {
+    crate::local::follow_model::cancellation(retain);
+}
+
+/// Checks that a failure-watch borrow never crosses local visibility acquisition.
+pub fn local_failure_lock_order(hold_borrow: bool) {
+    crate::local::follow_model::failure_lock_order(hold_borrow);
 }

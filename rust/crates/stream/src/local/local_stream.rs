@@ -126,7 +126,7 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (changed, _) = watch::channel(Some(0_u64));
+        let (failed, _) = watch::channel(false);
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
@@ -134,9 +134,10 @@ impl LocalStream {
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 synced: watch::channel(0_u64).0,
-                changed,
+                failed,
+                revision: watch::channel(0).0,
                 #[cfg(acyclic_loom)]
-                omit_persist_wake: false,
+                omit_follow_wake: false,
                 durable_tails: Mutex::new(Default::default()),
             }),
             work: None,
@@ -144,7 +145,7 @@ impl LocalStream {
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.changed.borrow().is_none() {
+        if *self.inner.failed.borrow() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
@@ -232,10 +233,6 @@ impl LocalStream {
             .and_then(|result| result);
         if result.is_err() {
             return Err(self.inner.poison());
-        }
-        #[cfg(acyclic_loom)]
-        if self.inner.omit_persist_wake {
-            return self.compact_if_due().await;
         }
         self.inner.published();
         self.compact_if_due().await

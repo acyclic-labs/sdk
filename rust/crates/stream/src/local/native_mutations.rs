@@ -33,7 +33,7 @@ impl LocalStream {
             let worker = async move {
                 let _input = input;
                 let result = loop {
-                    let revision = *stream.inner.changed.borrow();
+                    let revision = *stream.inner.revision.borrow();
                     let replay = match provider.has_replay(&request.idempotency_key).await {
                         Ok(replay) => replay,
                         Err(error) => {
@@ -49,7 +49,7 @@ impl LocalStream {
                         drop(stream.inner.visibility.write().await);
                         continue;
                     };
-                    if revision != *stream.inner.changed.borrow() {
+                    if revision != *stream.inner.revision.borrow() {
                         drop(visibility);
                         continue;
                     }
