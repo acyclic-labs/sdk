@@ -212,14 +212,15 @@ pub(super) fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
 
 // Scoped to one family projection. Resolve each filename once, then repeat
 // every check before returning the family; no filesystem result survives it.
+// Keep raw spellings: Path equality aliases file.rs and file.rs/, unlike I/O.
 pub(super) fn cached_source_span(
     repository_root: &Path,
     rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
-    paths: &mut HashMap<PathBuf, String>,
+    paths: &mut HashMap<std::ffi::OsString, String>,
     span: &rustdoc_types::Span,
 ) -> Result<SourceSpan, Error> {
-    let path = match paths.get(&span.filename) {
+    let path = match paths.get(span.filename.as_os_str()) {
         Some(path) => path.clone(),
         None => {
             let resolved = source_span_from_base(
@@ -228,7 +229,7 @@ pub(super) fn cached_source_span(
                 generated_sources,
                 span,
             )?;
-            paths.insert(span.filename.clone(), resolved.path.clone());
+            paths.insert(span.filename.as_os_str().to_owned(), resolved.path.clone());
             resolved.path
         }
     };
@@ -245,11 +246,11 @@ pub(super) fn validate_source_paths(
     repository_root: &Path,
     rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
-    paths: &HashMap<PathBuf, String>,
+    paths: &HashMap<std::ffi::OsString, String>,
 ) -> Result<(), Error> {
     for (filename, expected) in paths {
         let span = rustdoc_types::Span {
-            filename: filename.clone(),
+            filename: PathBuf::from(filename),
             begin: (0, 0),
             end: (0, 0),
         };
@@ -262,7 +263,7 @@ pub(super) fn validate_source_paths(
         if actual.path != *expected {
             return Err(Error::Invalid(format!(
                 "Rustdoc source mapping changed during projection: {}",
-                filename.display()
+                Path::new(filename).display()
             )));
         }
     }
