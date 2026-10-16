@@ -1,5 +1,6 @@
 use super::*;
 use crate::conversation::{FileDescriptor, VolumeOwner, VolumeRef};
+use crate::executor::content::validate_model_content_scope;
 use crate::resources::ProviderRef;
 use proptest::prelude::*;
 
