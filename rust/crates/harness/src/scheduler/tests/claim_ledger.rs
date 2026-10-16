@@ -1,5 +1,4 @@
 use super::*;
-use proptest::prelude::*;
 
 #[derive(Clone, Copy, Debug)]
 struct Claim {
