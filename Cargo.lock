@@ -400,6 +400,7 @@ dependencies = [
  "hex",
  "hyper-util",
  "prost",
+ "prost-types",
  "rcgen",
  "rustix 1.1.5",
  "serde",

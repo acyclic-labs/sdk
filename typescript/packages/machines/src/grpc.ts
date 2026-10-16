@@ -3,8 +3,9 @@ import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
+import { MACHINES_LIMITS } from "./limits.js";
 
-export const MAX_OUTPUT_READ_BYTES = 65_536;
+export const MAX_OUTPUT_READ_BYTES = MACHINES_LIMITS.maxOutputReadBytes;
 const MAX_OFFSET = (1n << 64n) - 1n;
 
 export interface MachinesGrpcOptions {

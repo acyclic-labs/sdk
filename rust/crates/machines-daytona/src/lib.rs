@@ -68,7 +68,7 @@ pub struct DaytonaConfig {
     pub tenant: Option<String>,
     /// Daytona organization to act in when the credential spans several.
     pub organization_id: Option<String>,
-    /// Interval between state polls while waiting for a sandbox or snapshot to settle.
+    /// Maximum interval between state polls; waits start at 10ms and back off to this ceiling.
     pub poll_interval: Duration,
     /// Maximum time to wait for a sandbox or snapshot to settle before reporting indeterminate.
     pub ready_timeout: Duration,
@@ -269,6 +269,11 @@ impl DaytonaProvider {
     /// # Errors
     /// Returns [`ProviderError::Invalid`] when the configuration cannot produce a client.
     pub fn new(config: DaytonaConfig) -> Result<Self, ProviderError> {
+        if config.poll_interval.is_zero() || config.ready_timeout.is_zero() {
+            return Err(ProviderError::Invalid(
+                "Daytona wait budgets must be positive".into(),
+            ));
+        }
         let api = DaytonaApi::new(&config)?;
         Ok(Self {
             config,
@@ -451,8 +456,17 @@ impl DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<Sandbox, ProviderError> {
         let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
+        let mut backoff = INITIAL_POLL_INTERVAL.min(self.config.poll_interval);
         loop {
-            let sandbox = self.api.get(sandbox_id).await?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProviderError::Indeterminate(key));
+            }
+            let sandbox = tokio::time::timeout_at(deadline, self.api.get(sandbox_id))
+                .await
+                .map_err(|_| ProviderError::Indeterminate(key))??;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProviderError::Indeterminate(key));
+            }
             if map::is_settled(sandbox.state.as_deref()) {
                 if map::machine_state(sandbox.state.as_deref()) == MachineState::Failed {
                     tracing::error!(sandbox_id, "Daytona sandbox failed");
@@ -460,10 +474,7 @@ impl DaytonaProvider {
                 }
                 return Ok(sandbox);
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(key));
-            }
-            tokio::time::sleep(self.config.poll_interval).await;
+            self.poll_pause(deadline, &mut backoff).await;
         }
     }
 
@@ -476,8 +487,18 @@ impl DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<Snapshot, ProviderError> {
         let deadline = tokio::time::Instant::now() + self.config.ready_timeout;
+        let mut backoff = INITIAL_POLL_INTERVAL.min(self.config.poll_interval);
         loop {
-            match self.api.get_snapshot(snapshot).await {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProviderError::Indeterminate(key));
+            }
+            let observed = tokio::time::timeout_at(deadline, self.api.get_snapshot(snapshot))
+                .await
+                .map_err(|_| ProviderError::Indeterminate(key))?;
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProviderError::Indeterminate(key));
+            }
+            match observed {
                 Ok(value) if map::snapshot_settled(value.state.as_deref()) => {
                     if value
                         .state
@@ -492,11 +513,16 @@ impl DaytonaProvider {
                 Ok(_) | Err(ProviderError::NotFound(_)) => {}
                 Err(error) => return Err(error),
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(ProviderError::Indeterminate(key));
-            }
-            tokio::time::sleep(self.config.poll_interval).await;
+            self.poll_pause(deadline, &mut backoff).await;
         }
+    }
+
+    async fn poll_pause(&self, deadline: tokio::time::Instant, backoff: &mut Duration) {
+        tokio::time::sleep(
+            (*backoff).min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
+        *backoff = backoff.saturating_mul(2).min(self.config.poll_interval);
     }
 
     /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
@@ -1602,6 +1628,7 @@ async fn run(api: &DaytonaApi, sandbox_id: &str, command: String) -> Result<(), 
 
 /// Longest wait between retries of a fork refused because its source is still forking.
 const MAX_FORK_BACKOFF: Duration = Duration::from_secs(2);
+const INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Attempts [`quiescent_archive_script`] makes before giving up.
 const ARCHIVE_ATTEMPTS: u32 = 5;
 /// Exit status of [`quiescent_archive_script`] when the workspace never held still.
@@ -1935,6 +1962,169 @@ mod tests {
 
     fn gate() -> Arc<tokio::sync::Semaphore> {
         Arc::new(tokio::sync::Semaphore::new(0))
+    }
+
+    #[tokio::test]
+    #[ignore = "manual paired debug-profile fixture create-to-ready measurement"]
+    async fn fixture_create_to_ready_latency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut samples = Vec::new();
+        for sample in 0..3 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let seen = polls.clone();
+            let key = test_key(100 + sample);
+            let mock = mock::Mock::start(move |request| {
+                let seen = seen.clone();
+                async move {
+                    if request.path.starts_with("/snapshots/") {
+                        return (200, r#"{"id":"base","sandboxClass":"linux-vm"}"#.to_owned());
+                    }
+                    let labels = owned_labels(key, None);
+                    if request.is("POST", "/sandbox") {
+                        return (201, sandbox(CHILD, "creating", &labels));
+                    }
+                    if request.is("GET", &format!("/sandbox/{CHILD}")) {
+                        let state = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                            "creating"
+                        } else {
+                            "started"
+                        };
+                        return (200, sandbox(CHILD, state, &labels));
+                    }
+                    (500, "unexpected fixture request".to_owned())
+                }
+            })
+            .await;
+            let mut config = mocked(&mock, None).config.clone();
+            config.poll_interval = Duration::from_millis(500);
+            let provider = DaytonaProvider::new(config).unwrap();
+            let started = std::time::Instant::now();
+            let result = provider.create(request(key)).await.unwrap();
+            samples.push(started.elapsed().as_micros());
+            assert!(matches!(result, MutationOutcome::Created(machine)
+                if machine.id.to_string() == CHILD && machine.state == MachineState::Running));
+            assert_eq!(polls.load(Ordering::SeqCst), 2);
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "daytona_create_to_ready samples_us={samples:?} median_us={}",
+            samples.get(1).expect("three create-to-ready samples")
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_reject_late_success_under_the_same_deadline() {
+        for snapshot in [false, true] {
+            let mock = mock::Mock::start(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                if snapshot {
+                    (200, r#"{"id":"s","state":"active"}"#.to_owned())
+                } else {
+                    (
+                        200,
+                        sandbox(CHILD, "started", &owned_labels(test_key(9), None)),
+                    )
+                }
+            })
+            .await;
+            let mut provider = Arc::into_inner(mocked(&mock, None)).unwrap();
+            provider.config.ready_timeout = Duration::from_millis(20);
+            let key = test_key(80);
+            let result = if snapshot {
+                provider.wait_snapshot("s", key).await.map(|_| ())
+            } else {
+                provider.wait_settled(CHILD, key).await.map(|_| ())
+            };
+            assert_eq!(result, Err(ProviderError::Indeterminate(key)));
+            assert_eq!(mock.requests().len(), 1);
+            assert!(
+                mock.requests()
+                    .iter()
+                    .all(|request| request.method == "GET")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_bound_backoff_by_the_remaining_budget() {
+        for snapshot in [false, true] {
+            let mock = mock::Mock::start(move |_| async move {
+                if snapshot {
+                    (200, r#"{"id":"s","state":"creating"}"#.to_owned())
+                } else {
+                    (
+                        200,
+                        sandbox(CHILD, "creating", &owned_labels(test_key(9), None)),
+                    )
+                }
+            })
+            .await;
+            let mut provider = Arc::into_inner(mocked(&mock, None)).unwrap();
+            provider.config.poll_interval = Duration::from_millis(500);
+            provider.config.ready_timeout = Duration::from_millis(40);
+            let key = test_key(81);
+            let wait = async {
+                if snapshot {
+                    provider.wait_snapshot("s", key).await.map(|_| ())
+                } else {
+                    provider.wait_settled(CHILD, key).await.map(|_| ())
+                }
+            };
+            assert_eq!(
+                tokio::time::timeout(Duration::from_millis(250), wait)
+                    .await
+                    .unwrap(),
+                Err(ProviderError::Indeterminate(key))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_readiness_retries_not_found_and_caps_backoff() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seen = Arc::new(AtomicUsize::new(0));
+        let calls = seen.clone();
+        let mock = mock::Mock::start(move |_| {
+            let calls = calls.clone();
+            async move {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    (404, "not yet published".to_owned())
+                } else {
+                    (200, r#"{"id":"s","state":"active"}"#.to_owned())
+                }
+            }
+        })
+        .await;
+        let mut provider = Arc::into_inner(mocked(&mock, None)).unwrap();
+        provider.config.poll_interval = Duration::from_millis(20);
+        assert_eq!(
+            provider.wait_snapshot("s", test_key(82)).await.unwrap().id,
+            "s"
+        );
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+        let mut backoff = INITIAL_POLL_INTERVAL;
+        for _ in 0..3 {
+            provider
+                .poll_pause(tokio::time::Instant::now(), &mut backoff)
+                .await;
+            assert_eq!(backoff, Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn readiness_wait_budgets_must_be_positive() {
+        for interval in [false, true] {
+            let mut config = DaytonaConfig::new("fixture");
+            if interval {
+                config.poll_interval = Duration::ZERO;
+            } else {
+                config.ready_timeout = Duration::ZERO;
+            }
+            assert!(matches!(
+                DaytonaProvider::new(config),
+                Err(ProviderError::Invalid(_))
+            ));
+        }
     }
 
     #[tokio::test]

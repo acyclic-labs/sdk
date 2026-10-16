@@ -70,4 +70,4 @@ workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "test-util"] }

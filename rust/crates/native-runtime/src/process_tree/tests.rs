@@ -332,9 +332,82 @@ fn process_tree_helper() {
             std::process::exit(0);
         }
         "stdin-stall" | "stdin-handshake" => stdin_helper(&mode, &root),
+        "exit-on-input" => {
+            fs::write(root.join("exit-ready"), b"ready").expect("exit ready");
+            std::io::stdin().read_exact(&mut [0]).expect("exit release");
+            std::process::exit(0);
+        }
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),
     }
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "manual paired debug-profile exit observation measurement"]
+fn process_exit_observation_latency() {
+    let mut samples = Vec::new();
+    for _ in 0..8 {
+        let temporary = tempfile::tempdir().expect("exit fixture");
+        let mut command = command("exit-on-input", temporary.path());
+        command.stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn waiting child");
+        ready(temporary.path(), "exit-ready", || tree_exited(&mut tree));
+        let mut input = tree.take_stdin().expect("release pipe");
+        let started = Instant::now();
+        input.write_all(b"x").expect("release child");
+        drop(input);
+        assert!(
+            tree.wait(Duration::from_secs(1))
+                .expect("observe exit")
+                .success()
+        );
+        samples.push(started.elapsed().as_micros());
+        assert!(
+            super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
+                .expect("child remains waitable")
+                .is_some()
+        );
+        tree.terminate(None).expect("reap owned group");
+    }
+    samples.sort_unstable();
+    eprintln!(
+        "process_exit_latency samples_us={samples:?} median_us={}",
+        samples.get(4).expect("eight latency samples")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_deadline_retains_child_for_later_exit() {
+    let temporary = tempfile::tempdir().expect("exit fixture");
+    let mut command = command("exit-on-input", temporary.path());
+    command.stdin(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command).expect("spawn waiting child");
+    ready(temporary.path(), "exit-ready", || tree_exited(&mut tree));
+    let mut input = tree.take_stdin().expect("release pipe");
+    let started = Instant::now();
+    assert_eq!(
+        tree.wait(Duration::from_millis(20))
+            .expect_err("deadline")
+            .kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(tree.try_wait(None).expect("still owned").is_none());
+    input.write_all(b"x").expect("release child");
+    drop(input);
+    assert!(
+        tree.wait(Duration::from_secs(1))
+            .expect("observe exit")
+            .success()
+    );
+    assert!(
+        super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
+            .expect("child remains waitable")
+            .is_some()
+    );
+    tree.terminate(None).expect("reap owned group");
 }
 
 fn stdin_helper(mode: &str, root: &std::path::Path) {

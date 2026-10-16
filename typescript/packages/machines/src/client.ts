@@ -1,5 +1,5 @@
 import type { CreateMachine, MachineEventPage, MachineId, MachinesProvider } from "./index.js";
-import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
+import { MACHINES_LIMITS } from "./limits.js";
 import { validatePageSize } from "../generated/wasm/acyclic_machines_wasm.js";
 
 export interface MachineListOptions {
@@ -17,12 +17,12 @@ export async function createMachine(provider: MachinesProvider, request: CreateM
   if (outcome.kind !== "created") throw new TypeError(`expected created outcome, received ${outcome.kind}`);
   return outcome.machine.id;
 }
-export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> {
+export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MACHINES_LIMITS.maxEventPageSize): Promise<MachineEventPage> {
   return provider.events(id, afterSequence, limit);
 }
 
 export async function* listMachines(provider: MachinesProvider, options: MachineListOptions = {}): AsyncIterable<MachineId> {
-  const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
+  const pageSize = options.pageSize ?? MACHINES_LIMITS.maxPageSize;
   const maximum = options.maximum ?? 1024;
   try { validatePageSize(pageSize); }
   catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); }

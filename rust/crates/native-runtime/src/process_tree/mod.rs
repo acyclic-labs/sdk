@@ -342,6 +342,15 @@ impl ProcessTree {
                     self.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
                     deadline,
                 );
+                #[cfg(target_os = "linux")]
+                let notification = {
+                    use rustix::process::{Pid, PidfdFlags, pidfd_open};
+                    let pid = i32::try_from(self.owned_child_id()?)
+                        .ok()
+                        .and_then(Pid::from_raw)
+                        .ok_or(io::ErrorKind::InvalidInput)?;
+                    pidfd_open(pid, PidfdFlags::empty())?
+                };
                 #[cfg(unix)]
                 loop {
                     if let Some(status) = self.try_wait(None)? {
@@ -353,6 +362,20 @@ impl ProcessTree {
                             "process exit deadline exceeded; termination may be unresolved",
                         ));
                     }
+                    #[cfg(target_os = "linux")]
+                    {
+                        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        let timeout = Timespec::try_from(remaining)
+                            .map_err(|_| io::ErrorKind::InvalidInput)?;
+                        // Readiness wakes observation without releasing the owned leader.
+                        let mut descriptors = [PollFd::new(&notification, PollFlags::IN)];
+                        match poll(&mut descriptors, Some(&timeout)) {
+                            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
                     std::thread::sleep(Duration::from_millis(1));
                 }
             })())

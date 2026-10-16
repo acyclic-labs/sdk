@@ -13,7 +13,37 @@ mod tls {
 }
 
 #[derive(Clone)]
-struct Fixture(MemoryObjects);
+struct Fixture(MemoryObjects, std::sync::Arc<DeadlineSignals>);
+
+#[derive(Default)]
+struct DeadlineSignals {
+    part_started: tokio::sync::Notify,
+    part_finished: tokio::sync::Notify,
+}
+
+struct FinishedPart(std::sync::Arc<DeadlineSignals>);
+impl Drop for FinishedPart {
+    fn drop(&mut self) {
+        self.0.part_finished.notify_one();
+    }
+}
+
+async fn elapse(duration: std::time::Duration) {
+    // Keep TLS and socket setup on real time; advance only the intended delay.
+    tokio::time::pause();
+    tokio::time::advance(duration).await;
+    tokio::time::resume();
+}
+
+fn incoming(
+    listener: tokio::net::TcpListener,
+) -> impl futures::Stream<Item = std::io::Result<tokio::net::TcpStream>> {
+    TcpListenerStream::new(listener).map(|socket| {
+        let socket = socket?;
+        socket.set_nodelay(true)?;
+        Ok(socket)
+    })
+}
 fn authenticated<T>(request: Request<T>) -> Result<T, Status> {
     if request
         .metadata()
@@ -46,7 +76,7 @@ impl wire::buckets_service_server::BucketsService for Fixture {
     ) -> Result<Response<wire::Bucket>, Status> {
         let query = authenticated(request)?;
         if query.name == "deadline.metadata" {
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            elapse(std::time::Duration::from_millis(120)).await;
         }
         self.0
             .create_bucket(query)
@@ -174,16 +204,10 @@ impl wire::objects_service_server::ObjectsService for Fixture {
         }
         Ok(Response::new(
             stream::iter(frames)
-                .then(move |frame| async move {
-                    if delayed
-                        && matches!(
-                            &frame,
-                            Ok(wire::GetObjectResponse {
-                                frame: Some(wire::get_object_response::Frame::Body(_))
-                            })
-                        )
-                    {
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                .enumerate()
+                .then(move |(index, frame)| async move {
+                    if delayed && index > 1 {
+                        std::future::pending::<()>().await;
                     }
                     frame
                 })
@@ -244,6 +268,13 @@ impl wire::multipart_service_server::MultipartService for Fixture {
         else {
             return Err(Status::invalid_argument("header required"));
         };
+        let _finished = if header.object_key == "multipart-deadlines" && header.part_number == 2 {
+            let signals = self.1.clone();
+            signals.part_started.notify_one();
+            Some(FinishedPart(signals))
+        } else {
+            None
+        };
         let mut body = BytesMut::new();
         let mut framing = super::request::UploadFraming::default();
         while let Some(frame) = frames.message().await? {
@@ -299,53 +330,15 @@ impl wire::multipart_service_server::MultipartService for Fixture {
             .map_err(status)
     }
 }
-#[tokio::test]
-async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semantic_errors()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
-    let pem = certified.cert.pem();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
-    let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .tls_config(ServerTlsConfig::new().identity(identity))?
-            .add_service(wire::buckets_service_server::BucketsServiceServer::new(
-                fixture.clone(),
-            ))
-            .add_service(wire::objects_service_server::ObjectsServiceServer::new(
-                fixture.clone(),
-            ))
-            .add_service(wire::multipart_service_server::MultipartServiceServer::new(
-                fixture,
-            ))
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
-    assert!(
-        GrpcObjects::connect(&endpoint, "exact-token", None, None)
-            .await
-            .is_err()
-    );
-    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
-    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes()), None).await?;
-    let bucket = wire::BucketRef {
-        name: "namespace.inputs".into(),
-    };
-    client
-        .create_bucket(wire::CreateBucketRequest {
-            name: bucket.name.clone(),
-            mutation: None,
-        })
-        .await?;
-    let channel = tonic::transport::Endpoint::from_shared(endpoint.clone())?
+async fn reject_obsolete_bucket_route(
+    endpoint: &str,
+    pem: &str,
+    bucket: &wire::BucketRef,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let channel = tonic::transport::Endpoint::from_shared(endpoint.to_owned())?
         .tls_config(
             tonic::transport::ClientTlsConfig::new()
-                .ca_certificate(tonic::transport::Certificate::from_pem(pem.clone())),
+                .ca_certificate(tonic::transport::Certificate::from_pem(pem.as_bytes())),
         )?
         .connect()
         .await?;
@@ -370,6 +363,57 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
         result.err().map(|error| error.code()),
         Some(tonic::Code::Unimplemented)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semantic_errors()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+    let pem = certified.cert.pem();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+    let signals = std::sync::Arc::new(DeadlineSignals::default());
+    let fixture = Fixture(
+        MemoryObjects::new(MemoryOptions::default())?,
+        signals.clone(),
+    );
+    let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .tls_config(ServerTlsConfig::new().identity(identity))?
+            .add_service(wire::buckets_service_server::BucketsServiceServer::new(
+                fixture.clone(),
+            ))
+            .add_service(wire::objects_service_server::ObjectsServiceServer::new(
+                fixture.clone(),
+            ))
+            .add_service(wire::multipart_service_server::MultipartServiceServer::new(
+                fixture,
+            ))
+            .serve_with_incoming_shutdown(incoming(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    assert!(
+        GrpcObjects::connect(&endpoint, "exact-token", None, None)
+            .await
+            .is_err()
+    );
+    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
+    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes()), None).await?;
+    let bucket = wire::BucketRef {
+        name: "namespace.inputs".into(),
+    };
+    client
+        .create_bucket(wire::CreateBucketRequest {
+            name: bucket.name.clone(),
+            mutation: None,
+        })
+        .await?;
+    reject_obsolete_bucket_route(&endpoint, &pem, &bucket).await?;
     client
         .delete_bucket(wire::DeleteBucketRequest {
             bucket: Some(bucket),
@@ -398,7 +442,7 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
-    exercise_transfer_deadlines(&client).await?;
+    exercise_transfer_deadlines(&client, &signals).await?;
     let _ = shutdown_tx.send(());
     server.await?.map_err(Into::into)
 }
@@ -433,7 +477,10 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
     let pem = std::fs::read_to_string(std::env::var("SSL_CERT_FILE")?)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
+    let fixture = Fixture(
+        MemoryObjects::new(MemoryOptions::default())?,
+        Default::default(),
+    );
     let identity = Identity::from_pem(pem, key);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -442,7 +489,7 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
             .add_service(wire::buckets_service_server::BucketsServiceServer::new(
                 fixture,
             ))
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+            .serve_with_incoming_shutdown(incoming(listener), async {
                 let _ = shutdown_rx.await;
             })
             .await
@@ -473,6 +520,7 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
 
 async fn exercise_transfer_deadlines(
     client: &GrpcObjects,
+    signals: &std::sync::Arc<DeadlineSignals>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
     for timeout in [Duration::ZERO, Duration::from_secs(1801)] {
@@ -499,7 +547,7 @@ async fn exercise_transfer_deadlines(
     };
     let delayed_upload = || {
         stream::once(async {
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            elapse(Duration::from_millis(250)).await;
             Ok(acyclic_stream::OwnedBytes::from_static(b"complete-source"))
         })
         .boxed()
@@ -516,7 +564,7 @@ async fn exercise_transfer_deadlines(
         .put_stream(
             header("beyond-default-budget"),
             stream::once(async {
-                tokio::time::sleep(Duration::from_secs(31)).await;
+                elapse(Duration::from_secs(31)).await;
                 Ok(acyclic_stream::OwnedBytes::from_static(b"complete-source"))
             })
             .boxed()
@@ -524,9 +572,17 @@ async fn exercise_transfer_deadlines(
         )
         .await?;
     assert_eq!(ack.size, 15);
+    // Advancing time readies cancellation; valid EOF must not race it on this poll.
+    let incomplete = stream::iter([Ok(acyclic_stream::OwnedBytes::from_static(b"partial"))])
+        .chain(stream::once(async {
+            elapse(Duration::from_millis(250)).await;
+            std::future::pending().await
+        }))
+        .boxed()
+        .into();
     assert_eq!(
         short
-            .put_stream(header("cancelled-upload"), delayed_upload())
+            .put_stream(header("cancelled-upload"), incomplete)
             .await
             .err()
             .ok_or("short transfer did not refuse delayed upload")?
@@ -545,7 +601,7 @@ async fn exercise_transfer_deadlines(
         .code,
         wire::ErrorCode::NotFound
     );
-    exercise_multipart_deadlines(&short, &extended, &bucket).await?;
+    exercise_multipart_deadlines(&short, &extended, &bucket, signals).await?;
     exercise_download_deadline(client, &long, &bucket).await?;
 
     Ok(())
@@ -555,6 +611,7 @@ async fn exercise_multipart_deadlines(
     short: &GrpcObjects,
     extended: &GrpcObjects,
     bucket: &wire::BucketRef,
+    signals: &std::sync::Arc<DeadlineSignals>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
     let upload = extended
@@ -575,7 +632,7 @@ async fn exercise_multipart_deadlines(
         .upload_part_stream(
             header(1),
             stream::once(async {
-                tokio::time::sleep(Duration::from_secs(31)).await;
+                elapse(Duration::from_secs(31)).await;
                 Ok(acyclic_stream::OwnedBytes::from_static(b"part"))
             })
             .boxed()
@@ -583,10 +640,12 @@ async fn exercise_multipart_deadlines(
         )
         .await?;
     assert_eq!(part.size, 4);
+    let part_signals = signals.clone();
     let incomplete = stream::iter([Ok(acyclic_stream::OwnedBytes::from_static(b"partial"))])
-        .chain(stream::once(async {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            Ok(acyclic_stream::OwnedBytes::from_static(b"tail"))
+        .chain(stream::once(async move {
+            part_signals.part_started.notified().await;
+            elapse(Duration::from_millis(250)).await;
+            std::future::pending().await
         }))
         .boxed()
         .into();
@@ -599,7 +658,7 @@ async fn exercise_multipart_deadlines(
             .code,
         wire::ErrorCode::Unavailable
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::timeout(Duration::from_secs(1), signals.part_finished.notified()).await?;
     let parts = extended
         .list_parts(wire::ListPartsRequest {
             bucket: Some(bucket.clone()),
@@ -642,13 +701,31 @@ async fn exercise_download_deadline(
         object_key: "delayed-body".into(),
         ..Default::default()
     };
-    let complete = long.get(query(), bytes.len() as u64).await?;
+    long.put(
+        wire::PutObjectHeader {
+            bucket: Some(bucket.clone()),
+            object_key: "download-complete".into(),
+            ..Default::default()
+        },
+        bytes.clone().into(),
+    )
+    .await?;
+    let complete = long
+        .get(
+            wire::GetObjectRequest {
+                object_key: "download-complete".into(),
+                ..query()
+            },
+            bytes.len() as u64,
+        )
+        .await?;
     assert_eq!(complete.body().as_ref(), bytes.as_ref());
     let bounded = client
         .clone()
         .with_transfer_timeout(Duration::from_millis(400))?;
     let mut download = bounded.get_stream(query(), info.size).await?;
     assert_eq!(download.header.object.as_ref(), Some(&info));
+    elapse(Duration::from_millis(250)).await;
     assert_eq!(
         download
             .body
@@ -658,6 +735,7 @@ async fn exercise_download_deadline(
             .len(),
         65536
     );
+    elapse(Duration::from_millis(250)).await;
     assert_eq!(
         download
             .body
@@ -721,7 +799,7 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     let expected_leaf = client_cert.der().clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let incoming = TcpListenerStream::new(listener)
+    let incoming = incoming(listener)
         .then(move |socket| {
             let acceptor = acceptor.clone();
             let expected_leaf = expected_leaf.clone();
@@ -741,7 +819,10 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
             }
         })
         .filter_map(|result| async { result.ok().map(Ok::<_, std::io::Error>) });
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
+    let fixture = Fixture(
+        MemoryObjects::new(MemoryOptions::default())?,
+        Default::default(),
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()

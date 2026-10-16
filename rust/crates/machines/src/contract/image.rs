@@ -34,14 +34,8 @@ impl From<ImageDigest> for [u8; 32] {
     }
 }
 
-/// Canonical immutable OCI digest separator.
-pub const MANAGED_OCI_REFERENCE_SEPARATOR: &str = "@sha256:";
-/// Canonical hexadecimal character count for a SHA-256 digest.
-pub const MANAGED_OCI_DIGEST_HEX_LENGTH: usize = 64;
-/// Hexadecimal characters accepted by the canonical OCI parser.
-pub const MANAGED_OCI_HEX_DIGITS: &str = "0123456789abcdefABCDEF";
-/// Character used to identify the all-zero digest rejected by the parser.
-pub const MANAGED_OCI_ZERO_DIGIT: char = '0';
+const OCI_REFERENCE_SEPARATOR: &str = "@sha256:";
+const OCI_DIGEST_HEX_LENGTH: usize = 64;
 
 /// Immutable machine image selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -58,12 +52,12 @@ impl Image {
     /// Creates a managed OCI image reference after checking immutable digest syntax.
     pub fn oci(reference: impl Into<String>) -> Result<Self, ProviderError> {
         let reference = reference.into();
-        let Some((name, digest)) = reference.rsplit_once(MANAGED_OCI_REFERENCE_SEPARATOR) else {
+        let Some((name, digest)) = reference.rsplit_once(OCI_REFERENCE_SEPARATOR) else {
             return Err(ProviderError::Invalid(
                 "OCI image must contain @sha256:<digest>".into(),
             ));
         };
-        if name.is_empty() || digest.len() != MANAGED_OCI_DIGEST_HEX_LENGTH {
+        if name.is_empty() || digest.len() != OCI_DIGEST_HEX_LENGTH {
             return Err(ProviderError::Invalid("OCI image digest is invalid".into()));
         }
         let bytes = hex::decode(digest)
