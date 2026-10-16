@@ -143,9 +143,11 @@ impl Fixture {
     async fn open(&self) -> Result<Harness> {
         // Reconstruct the host and discard all filesystem/runtime caches. Only
         // the two provider states and the external effect receipts survive.
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:begin");
         let fs = Fs::local(LocalOptions::new(self.directory.path().join("filesystem")))
             .await
             .map_err(storage)?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:filesystem");
         let stream = Arc::new(
             LocalStream::open_with_clock(
                 self.directory.path().join("tasks"),
@@ -155,6 +157,7 @@ impl Fixture {
             .await
             .map_err(storage)?,
         );
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:stream");
         let files = FilesystemHost::new(fs, self.volumes[0].provider(), None)?;
         let verifier = self.issuer.verifier(&mut None)?;
         let mut tools = ToolRegistry::default();
@@ -213,6 +216,7 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
             task_files,
@@ -422,15 +426,18 @@ async fn case(
             )
         };
         assert_eq!(output.text, "done");
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:recovered");
         fixture.assert_effects();
         for _ in 0..2 {
             assert_eq!(reopened.resume(root).await?.text, "done");
             fixture.assert_effects();
         }
         drop(reopened);
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:repeated-resume");
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:cold-resume");
         if matches!(scenario, Scenario::Compaction) {
             let admission = reopened.runtime.task_host().observe_admission(root).await?;
             assert!(
@@ -462,7 +469,9 @@ async fn case(
             assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
         }
         let observations = invariants::observe(&reopened, &fixture, root).await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:observed");
         requests::check(&reopened, &fixture).await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:audited");
         observations
             .check(scenario)
             .map_err(|reason| Error::Invalid(reason.into()))?;
