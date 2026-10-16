@@ -358,16 +358,19 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-stream",
+ "blake3",
  "bytes",
+ "diffy",
  "futures",
  "libfuzzer-sys",
  "prost",
  "rmcp",
- "serde_json",
  "serde",
+ "serde-saphyr",
+ "serde_json",
  "tempfile",
- "tokio-util",
  "tokio",
+ "tokio-util",
  "which",
 ]
 
