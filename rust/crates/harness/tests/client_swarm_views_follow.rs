@@ -209,3 +209,129 @@ async fn exercise() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
+    futures::executor::block_on(async {
+        use std::cell::Cell;
+        struct Dropped(Rc<Cell<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let streams = Arc::new(MemoryStream::default());
+        let a = Rc::new(
+            TaskVolume::open(streams.clone(), path("swarm/a/files"))
+                .await
+                .unwrap(),
+        );
+        super::runtime::status(&streams, "swarm/a", false).await;
+        super::runtime::status(&streams, "swarm/b", false).await;
+        let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config"))
+            .await
+            .unwrap();
+        put(
+            &config,
+            "workspace/layout.json",
+            br#"{"in_view":["swarm/a"]}"#,
+        )
+        .await;
+        let client = SwarmClient::new(
+            path("swarm"),
+            SwarmClientLimits {
+                agents: 2,
+                selected: 2,
+                layout_bytes: 1024,
+                config_files: 2,
+                snapshot_files: 8,
+            },
+            SwarmViewLimits {
+                agents: 2,
+                selected: 2,
+                overview_values: 2,
+                overview_bytes: 4096,
+                query: QueryViewLimits {
+                    files: 8,
+                    segments: 8,
+                    bytes: 4096,
+                },
+            },
+        )
+        .unwrap();
+        let views = client.views();
+        let (session, mut runner, mut sent) =
+            super::runtime::open(streams.clone(), Arc::new(|s| s), Arc::new(|s| s));
+        let (notices, mut changed) = mpsc::unbounded();
+        let (started, ready) = oneshot::channel();
+        let mut started = Some(started);
+        let dropped = Rc::new(Cell::new(false));
+        let cancelled = dropped.clone();
+        let consumer = client.follow(&config, &session, |agent, maximum| {
+            let a = a.clone();
+            let started = if agent == path("swarm/b") { started.take() } else { None };
+            let dropped = dropped.clone();
+            async move {
+                if let Some(started) = started {
+                    let _pending = Dropped(dropped);
+                    let _ = started.send(());
+                    futures::future::pending().await
+                } else { a.heads(&Query::Root, None, maximum).await }
+            }
+        }, async |change| {
+            let kind = match change {
+                SwarmChange::Snapshot { .. } => "snapshot",
+                SwarmChange::Data { overview: true, data, .. } if matches!(data.item, Some(wire::session_data::Item::LatestValue(value)) if value.attention) => "attention",
+                _ => "other",
+            };
+            notices.unbounded_send(kind).unwrap();
+            Ok(())
+        });
+        let writer = async {
+            let first = selected(&mut sent, "swarm/a").await;
+            notice(&mut changed, "snapshot").await;
+            put(
+                &config,
+                "workspace/layout.json",
+                br#"{"in_view":["swarm/a","swarm/b"]}"#,
+            )
+            .await;
+            ready.await.unwrap();
+            put(&config, "workspace/layout.json", b"{}").await;
+            let channel = first.channel.unwrap();
+            loop {
+                let frame = sent.next().await.unwrap();
+                if matches!(frame.body, Some(wire::session_frame::Body::Interest(update)) if update.remove.contains(&channel))
+                {
+                    break;
+                }
+            }
+            assert!(cancelled.get(), "obsolete snapshot I/O remained retained");
+            super::runtime::status(&streams, "swarm/b", true).await;
+            notice(&mut changed, "attention").await;
+            views.read(|v| {
+                assert_eq!(v.layout().full_fidelity().count(), 0);
+                assert!(v.cursor(&path("swarm/a")).is_none());
+                assert!(
+                    v.status(&path("swarm/b"))
+                        .unwrap()
+                        .values()
+                        .any(|v| v.attention)
+                );
+            })?;
+            Ok::<_, Error>(())
+        };
+        let scenario = async {
+            futures::pin_mut!(consumer, writer);
+            futures::select! {
+                outcome = consumer.fuse() => panic!("view ended: {outcome:?}"),
+                outcome = writer.fuse() => outcome,
+            }
+        };
+        let mut scenario = Box::pin(scenario);
+        assert!(
+            matches!(runner.until_idle(scenario.as_mut()).await, Some(Ok(()))),
+            "pending snapshot blocked a ready layout or status publication"
+        );
+    });
+}

@@ -12,6 +12,7 @@ use acyclic_stream::{StreamPath, StreamProvider, wire};
 use futures::FutureExt as _;
 use std::future::Future;
 mod follows;
+mod snapshots;
 
 /// Client orchestration, using only the filesystem reader and Stream provider.
 /// Agent children have `status` and `files` streams. Platform session I/O owns
@@ -95,6 +96,7 @@ impl SwarmClient {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let mut follows = follows::Follows::new(session.clone(), discovery);
         let mut demand = ClientInterests::from_layout(self.root.clone(), [], [], 0)?;
+        let mut snapshots = snapshots::Snapshots::new(self.limits.selected);
         let mut files = InterestFiles::observe(
             files,
             self.root,
@@ -109,6 +111,7 @@ impl SwarmClient {
                     let Some(next) = next? else { continue; };
                     let diff = next.changes(&demand)?;
                     for removed in diff.unsubscribe() { follows.remove(removed); }
+                    snapshots.layout(&next)?;
                     let added: Vec<_> = diff.subscribe().cloned().collect();
                     publish(SwarmUpdate::Layout(next.clone())).await?;
                     demand = next;
@@ -116,8 +119,13 @@ impl SwarmClient {
                         if follows.discover(&demand, agent.clone(), self.limits.agents)? {
                             publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
                         }
-                        let snapshot = heads(agent.clone(), self.limits.snapshot_files).await
-                            .map_err(|error| Error::Storage(error.to_string()))?;
+                        let pending = heads(agent.clone(), self.limits.snapshot_files);
+                        snapshots.start(agent, pending)?;
+                    }
+                },
+                completed = snapshots.next().fuse() => {
+                    if let Some((agent, snapshot)) = snapshots.finish(completed) {
+                        let snapshot = snapshot.map_err(|error| Error::Storage(error.to_string()))?;
                         follows.content(agent.clone(), &snapshot.cursor)?;
                         publish(SwarmUpdate::Snapshot { agent, snapshot }).await?;
                     }
