@@ -1,18 +1,14 @@
 //! Refresh protocol only: a reader, the peer's monotone index, and a captured tail.
 use super::{Generation, advanced, complete};
-use crate::sync::Mutex;
+use crate::sync::SyncMutex as Mutex;
 use std::sync::Arc;
 
-const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
-
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
-}
+const _: fn(Mutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
 
 fn observe<const RESUME: bool>(index: &Mutex<Generation>, captured_tail: u64) -> Generation {
-    let mut expected = *block_on(index.lock());
+    let mut expected = *index.lock().unwrap();
     loop {
-        let mut current = block_on(index.lock());
+        let mut current = index.lock().unwrap();
         let peer_advanced = *current != expected;
         if peer_advanced {
             expected = advanced(*current, &expected).unwrap();
@@ -26,7 +22,7 @@ fn observe<const RESUME: bool>(index: &Mutex<Generation>, captured_tail: u64) ->
         if complete::<RESUME>(expected.position, captured_tail, peer_advanced) {
             // Both head and snapshot capture the generation under this lock
             // after refresh. Later peer progress cannot repair this saved value.
-            return *block_on(index.lock());
+            return *index.lock().unwrap();
         }
     }
 }
@@ -37,8 +33,8 @@ fn check<const RESUME: bool>(captured_tail: u64, peer_through: u64) {
     builder.max_permutations = None;
     builder.max_duration = None;
     builder.check(move || {
-        // Lock order: index only; no IO or second lock. Stable volume/epoch,
-        // positions 1 -> 2 -> 3, and stamps that expose torn generations.
+        // Lock order: index only; critical sections contain no await or IO.
+        // Stable volume/epoch, positions 1 -> 2 -> 3, position-derived stamps.
         let index = Arc::new(Mutex::new(Generation {
             volume: [0; 32],
             epoch: uuid::Uuid::nil(),
@@ -49,7 +45,7 @@ fn check<const RESUME: bool>(captured_tail: u64, peer_through: u64) {
             let index = index.clone();
             move || {
                 for next in 2..=peer_through {
-                    let mut current = block_on(index.lock());
+                    let mut current = index.lock().unwrap();
                     if current.position < next {
                         current.position = next;
                         current.commit = [next as u8; 32];
