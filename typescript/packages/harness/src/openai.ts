@@ -66,7 +66,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     return this.#contextCapacity(model);
   }
 
-  countTokens(request: Parameters<ModelProvider["countTokens"]>[0]): ReturnType<ModelProvider["countTokens"]> {
+  async countTokens(request: Parameters<ModelProvider["countTokens"]>[0]): ReturnType<ModelProvider["countTokens"]> {
     if (this.#countTokens === undefined) {
       throw new TypeError("OpenAI-compatible provider requires explicit token accounting");
     }

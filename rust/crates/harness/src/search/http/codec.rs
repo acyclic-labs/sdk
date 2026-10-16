@@ -20,28 +20,32 @@ fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCus
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let decoded: T =
-            io.decode_json(bytes).map_err(|failure| match failure {
-                crate::Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason:
-                        "invalid JSON nesting"
-                        | "incomplete JSON document"
-                        | "JSON nesting limit exceeded",
-                }
-                | crate::Error::NativeJson { .. } => {
-                    crate::search::rejection(Some(work), "invalid search response")
-                }
-                failure => failure,
-            })?;
+        let decoded: T = io.decode_json(bytes).map_err(|failure| match failure {
+            crate::Error::NativeJsonAdmission { .. } | crate::Error::NativeJson { .. } => {
+                crate::search::rejection(Some(work), "invalid search response")
+            }
+            failure => failure,
+        })?;
         let retained = (std::mem::size_of::<T>() as u64)
             .checked_add(decoded.logical_owned_bytes()?)
             .ok_or_else(|| error(Some(work), "search decode ownership overflow"))?;
         return Ok((decoded, Some(io.into_native_custody(retained)?)));
     }
-    serde_json::from_slice(bytes)
-        .map(|value| (value, None))
-        .map_err(|_| error(work, "invalid search response"))
+    crate::executor::json::json_from_slice_bounded(
+        std::marker::PhantomData::<T>,
+        bytes,
+        crate::executor::json::JsonBounds {
+            maximum_bytes: super::MAXIMUM_RESPONSE_BYTES as u64,
+            maximum_items: u64::MAX,
+            maximum_depth: 256,
+        },
+        0,
+        None,
+        Some(&crate::executor::json::JsonValueSchema::None),
+        &mut |_| Ok(()),
+    )
+    .map(|value| (value, None))
+    .map_err(|_| error(work, "invalid search response"))
 }
 
 fn finish(

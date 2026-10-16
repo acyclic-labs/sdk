@@ -51,6 +51,7 @@ impl ModelContentPart {
             Self::File { file, policy } => {
                 add(file.logical_owned_bytes()?, policy.payload_bytes()?)
             }
+            Self::Reasoning { block } => block.payload_bytes(),
             Self::ToolCall(call) => call.payload_bytes(),
             Self::ToolResult {
                 call_id,

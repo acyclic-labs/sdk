@@ -5,7 +5,7 @@ use acyclic_harness::{
     client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{MemoryStream, StreamProvider, wire, wire_codec::session::follow_records};
+use acyclic_stream::{MemoryStream, StreamProvider, wire, wire_codec::session::preceding_follow};
 use futures::{StreamExt as _, channel::mpsc};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -109,12 +109,16 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
                     {
                         if follow.delivery == wire::SessionDelivery::All as i32 {
                             *admitted.borrow_mut() += 1;
-                            let result = follow_records(
-                                provider.as_ref(),
-                                &follow,
-                                subscription.resume.as_ref().unwrap(),
-                            )
-                            .await;
+                            let resume = subscription.resume.as_ref().unwrap();
+                            let result = provider
+                                .follow_checked(
+                                    path(&follow.path),
+                                    resume.next,
+                                    preceding_follow(&follow, resume)
+                                        .unwrap()
+                                        .expect("snapshot anchor"),
+                                )
+                                .await;
                             assert!(matches!(
                                 result,
                                 Err(acyclic_stream::StreamError::PrefixNotRetained)

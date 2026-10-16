@@ -22,3 +22,27 @@ pub(crate) fn retire(dirty: &AtomicBool, release_owner: impl FnOnce()) {
     release_owner();
     publish(dirty);
 }
+
+#[cfg(any(feature = "native-watch", all(test, acyclic_fs_loom)))]
+pub(crate) fn retire_bytes<const RELEASE_FIRST: bool>(
+    dirty: &AtomicBool,
+    retained: &AtomicU64,
+    bytes: u64,
+    floor: u64,
+) -> Result<(), crate::WorkError> {
+    let publish_first = !RELEASE_FIRST && cfg!(all(test, acyclic_fs_loom));
+    if publish_first {
+        publish(dirty);
+    }
+    retained
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current
+                .checked_sub(bytes)
+                .filter(|current| *current >= floor)
+        })
+        .map_err(|_| crate::WorkError::Overflow)?;
+    if !publish_first {
+        publish(dirty);
+    }
+    Ok(())
+}

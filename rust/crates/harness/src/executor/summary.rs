@@ -122,7 +122,9 @@ impl StockExecution<'_> {
                         "summary requested a tool operation",
                     ));
                 }
-                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+                ModelEvent::Reasoning { .. }
+                | ModelEvent::ReasoningBlock { .. }
+                | ModelEvent::Completed { .. } => {}
             }
         }
         if text.is_empty() {

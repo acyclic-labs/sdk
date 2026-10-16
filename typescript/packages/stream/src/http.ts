@@ -49,9 +49,10 @@ export class HttpStreamProvider implements StreamProvider {
   }
 
   async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    await validateWireRequest({ kind: "children", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) });
-    yield* this.#sessions.children(request);
+    const { parent, signal, limit } = request;
+    await validateWireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
+    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");

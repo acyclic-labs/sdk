@@ -538,3 +538,43 @@ fn restoration_rejects_junction_ancestors_before_writing() {
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(external);
 }
+
+#[test]
+fn file_hashes_keep_existing_artifact_and_tool_identities() {
+    use proptest::prelude::*;
+    let root = test_root("sha256-equivalence");
+    let path = root.join("input.bin");
+    // The full branch retains every original byte vector with fewer shrink trees.
+    let full = (
+        proptest::collection::vec(any::<u128>(), 0..4096),
+        proptest::collection::vec(any::<u8>(), 0..16),
+    )
+        .prop_map(|(words, tail)| {
+            words
+                .into_iter()
+                .flat_map(u128::to_le_bytes)
+                .chain(tail)
+                .collect::<Vec<_>>()
+        });
+    let bytes = prop_oneof![
+        15 => proptest::collection::vec(any::<u8>(), 0..512),
+        1 => full,
+    ];
+    let check = |bytes: &[u8]| {
+        fs::write(&path, bytes).unwrap();
+        prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
+        Ok(())
+    };
+    proptest::test_runner::TestRunner::default()
+        .run(&bytes, |bytes| check(&bytes))
+        .unwrap();
+    for length in [
+        0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 65535, 65536, 65537,
+    ] {
+        let bytes = (0..length)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        check(&bytes).unwrap();
+    }
+    fs::remove_dir_all(root).unwrap();
+}

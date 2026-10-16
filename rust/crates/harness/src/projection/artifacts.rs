@@ -75,6 +75,51 @@ pub(crate) async fn read_tool_call(
     Ok(ToolCall::new(call_id, name, arguments).with_metadata(metadata))
 }
 
+pub(super) async fn read_reasoning(
+    resolver: &dyn ContentResidencyVerifier,
+    file: &FileRef,
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<crate::model::ReasoningBlock> {
+    let (value, hold) = read_value(resolver, file, maximum, io).await?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        let (event, hold) = convert::<crate::model::ModelEvent>(
+            (
+                value,
+                hold.ok_or_else(|| {
+                    stock_boundary(Some(io), Invalid, "reasoning lacks source custody")
+                })?,
+            ),
+            maximum,
+            128,
+            io,
+        )?;
+        let crate::model::ModelEvent::ReasoningBlock { block } = event else {
+            return Err(stock_boundary(
+                Some(io),
+                Invalid,
+                "artifact is not canonical reasoning",
+            ));
+        };
+        let mut hold = hold;
+        hold.substitute(block.payload_bytes()?)?;
+        hold.into_retained()?;
+        return Ok(block);
+    }
+    let _ = hold;
+    let event: crate::model::ModelEvent = serde_json::from_value(value)
+        .map_err(|_| stock_boundary(io, Invalid, "invalid reasoning artifact"))?;
+    match event {
+        crate::model::ModelEvent::ReasoningBlock { block } => Ok(block),
+        _ => Err(stock_boundary(
+            io,
+            Invalid,
+            "artifact is not canonical reasoning",
+        )),
+    }
+}
+
 pub(super) async fn read_result(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,

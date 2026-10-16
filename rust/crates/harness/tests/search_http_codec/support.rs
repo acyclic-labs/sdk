@@ -32,11 +32,26 @@ impl SearchProvider for Response {
             )
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
+            let expected = oracle::expected(&self.bytes, self.exa);
+            let ordinary = decode_search_http_response(&self.bytes, 5, self.exa, None);
+            assert!(
+                oracle::agrees(
+                    &expected,
+                    ordinary.as_ref().map(|(response, _)| response),
+                    false,
+                ),
+                "ordinary codec disagrees with independent oracle: {ordinary:?}"
+            );
+            if let Ok((_, custody)) = &ordinary {
+                assert!(custody.is_none());
+            }
+            drop(ordinary);
             let result = decode_search_http_response(&self.bytes, 5, self.exa, Some(&work));
             assert!(
                 oracle::agrees(
-                    &oracle::expected(&self.bytes, self.exa),
-                    result.as_ref().map(|(response, _)| response)
+                    &expected,
+                    result.as_ref().map(|(response, _)| response),
+                    true,
                 ),
                 "codec disagrees with independent oracle: {result:?}"
             );
@@ -77,7 +92,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     let request = FileKey::parse(".tasks/codec/requests/search-codec.json").unwrap();
     let result = FileKey::parse(".tasks/codec/requests/search-codec/result.json").unwrap();
     let initial = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .unwrap();
     let mut client = volume
@@ -135,7 +150,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     });
     assert_eq!(outcome, expected);
     let before = volume
-        .snapshot(&Query::Task(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 4)
         .await
         .unwrap();
     assert_eq!(before.files.len(), 3);
@@ -155,7 +170,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
         .await
         .unwrap();
         let after = volume
-            .snapshot(&Query::Task(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 4)
             .await
             .unwrap();
         assert_eq!(after.files, before.files);

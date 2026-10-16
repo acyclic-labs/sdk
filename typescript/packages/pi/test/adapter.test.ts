@@ -106,27 +106,27 @@ test("Pi projects canonical JSON and ordered tool data envelopes", async () => {
 });
 
 
-test("Pi accounting forwards the exact model and prepared request without dispatch", () => {
+test("Pi accounting forwards the exact model and prepared request without dispatch", async () => {
   const prepared = { ...request, serializedInput: Uint8Array.of(1, 2, 3) };
   const capacity = { contextTokens: 100_000, outputTokens: 16_384 };
-  const count = { requestDigest: new Uint8Array(32), fixedTokens: 3, messageTokens: [5] };
+  const count = { requestDigest: new Uint8Array(32), inputTokens: 8n, fixedTokens: 3, messageTokens: [5] };
   let projected = 0;
   let dispatched = 0;
   const bridge = {
     contextCapacity(model: ModelRequest["model"]) { expect(model).toBe(request.model); return capacity; },
-    countTokens(value: typeof prepared) { expect(value).toBe(prepared); return count; },
+    async countTokens(value: typeof prepared) { expect(value).toBe(prepared); return count; },
     project(value: ModelRequest) { projected++; return value; },
     async *run() { dispatched++; yield { type: "complete" as const, metadata: null }; },
     async reconcile() { return undefined; },
   };
   const provider = piProvider(bridge);
   expect(provider.contextCapacity(request.model)).toBe(capacity);
-  expect(provider.countTokens(prepared)).toBe(count);
+  expect(await provider.countTokens(prepared)).toBe(count);
   expect(projected).toBe(0);
   expect(dispatched).toBe(0);
 });
 
-test("Pi accounting rejects absent capacity and counts without guessing", () => {
+test("Pi accounting rejects absent capacity and counts without guessing", async () => {
   const bridge = {
     project(value: ModelRequest) { return value; },
     async *run() { yield { type: "complete" as const, metadata: null }; },
@@ -134,5 +134,5 @@ test("Pi accounting rejects absent capacity and counts without guessing", () => 
   };
   const provider = piProvider(bridge);
   expect(() => provider.contextCapacity(request.model)).toThrow();
-  expect(() => provider.countTokens({ ...request, serializedInput: new Uint8Array() })).toThrow();
+  await expect(provider.countTokens({ ...request, serializedInput: new Uint8Array() })).rejects.toThrow();
 });

@@ -27,5 +27,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "paths"
+path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
 [lints]
 workspace = true

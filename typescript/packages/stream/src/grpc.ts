@@ -39,12 +39,12 @@ type Children = (request: Parameters<Client<typeof StreamService>["children"]>[0
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
   const follow: Follow = async function* (request, callOptions) {
+    const { signal, timeoutMs } = callOptions ?? {};
     const path = request.path ?? "";
     const from = request.from ?? 0n;
     await validateWireRequest({ kind: "follow", path, from });
-    const timeoutMs = callOptions?.timeoutMs;
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
-    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       for await (const record of sessions.follow(path, { from, signal: controller.signal })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
@@ -54,12 +54,12 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     } finally { controller.abort(); deadline.cleanup(); }
   };
   const children: Children = async function* (request, callOptions) {
+    const { signal, timeoutMs } = callOptions ?? {};
     const parent = request.parent;
     const limit = request.limit ?? wire.StreamLimit.MAX_ITEMS;
     await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const timeoutMs = callOptions?.timeoutMs;
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
-    const controller = createLinkedAbortController(deadline.signal, callOptions?.signal);
+    const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       for await (const child of sessions.children({ limit, ...(parent === undefined ? {} : { parent }), signal: controller.signal })) {
         yield create(wire.ChildrenResponseSchema, { child });
@@ -210,9 +210,10 @@ export class GrpcStreamProvider implements StreamProvider {
     }
   }
   async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
-    await validateWireRequest({ kind: "children", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) });
-    yield* this.#sessions.children(request);
+    const { parent, signal, limit } = request;
+    await validateWireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
+    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,

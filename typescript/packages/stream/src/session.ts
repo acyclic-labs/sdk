@@ -65,9 +65,10 @@ export class StreamSessions {
     return this.#stream({ case: "follow", value: create(wire.SessionFollowSchema, { path, delivery: wire.SessionDelivery.ALL }) }, options) as AsyncGenerator<EncodedRecord>;
   }
   children(request: ChildrenRequest): AsyncGenerator<StreamChild> {
-    return this.#stream({ case: "children", value: { $typeName: "acyclic.stream.v1.ChildrenRequest", limit: request.limit,
-      ...(request.parent === undefined ? {} : { parent: request.parent }) } },
-    { from: 0n, ...(request.signal === undefined ? {} : { signal: request.signal }) }) as AsyncGenerator<StreamChild>;
+    const { parent, signal, limit } = request;
+    return this.#stream({ case: "children", value: { $typeName: "acyclic.stream.v1.ChildrenRequest", limit,
+      ...(parent === undefined ? {} : { parent }) } },
+    { from: 0n, ...(signal === undefined ? {} : { signal }) }) as AsyncGenerator<StreamChild>;
   }
   async *#stream(kind: StreamKind, options: FollowOptions): AsyncGenerator<EncodedRecord | StreamChild> {
     if (options.signal?.aborted) return;

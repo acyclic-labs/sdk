@@ -6,7 +6,7 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolCall {
-    /// Provider-owned call identity, scoped by the executor's dispatch.
+    /// Harness-minted canonical call identity; provider bindings live in metadata.
     #[serde(alias = "callId")]
     pub call_id: String,
     /// Registered tool name.

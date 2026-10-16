@@ -4,6 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 mod admission;
+mod arrays;
 mod identity;
 mod records;
 pub(crate) use identity::{
@@ -27,13 +28,36 @@ mod serialization;
 #[cfg(feature = "filesystem")]
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
 pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
-pub(crate) use records::json_value_logical_owned_bytes;
+pub use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
 };
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
+
+/// Fixed JSON input failures, distinct from exhausted work allowances.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum JsonInputError {
+    /// A closing container has no matching opener.
+    #[error("invalid JSON nesting")]
+    Nesting,
+    /// The source ends inside a string or container.
+    #[error("incomplete JSON document")]
+    Incomplete,
+    /// A value exceeds the fixed nesting limit.
+    #[error("JSON nesting limit exceeded")]
+    Depth,
+}
+
+fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(code) = code {
+        return Error::NativeJsonAdmission { code, kind };
+    }
+    let _ = code;
+    Error::Invalid(kind.to_string())
+}
 
 /// Finite byte, node and nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
@@ -163,7 +187,7 @@ fn boundary(reason: &'static str, code: Option<crate::wire::ErrorCode>) -> Error
     let _ = code;
     Error::Invalid(reason.into())
 }
-fn checked(value: Option<u64>, reason: &'static str) -> Result<u64> {
+fn checked<T>(value: Option<T>, reason: &'static str) -> Result<T> {
     value.ok_or_else(|| boundary(reason, Some(crate::wire::ErrorCode::Invalid)))
 }
 

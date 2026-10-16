@@ -372,6 +372,6 @@ mod registry_tests;
 #[path = "admissions_tests.rs"]
 mod tests;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
 mod loom_tests;

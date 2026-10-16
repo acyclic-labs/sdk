@@ -68,6 +68,22 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
         }
         Err(error) => drop(error),
     }
+    let result = futures::executor::block_on(artifacts::read_reasoning(
+        &resolver,
+        &reference,
+        4096,
+        Some(&io),
+    ));
+    match result {
+        Ok(block) => {
+            let custody = io
+                .take_native_custody(block.payload_bytes().unwrap())
+                .unwrap();
+            drop(block);
+            drop(custody);
+        }
+        Err(error) => drop(error),
+    }
     // Check while the I/O scope is still alive: scope destruction must not hide a leak.
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(io.owned_bytes().unwrap(), 0);
@@ -194,4 +210,25 @@ proptest! {
         }
         check_bytes(serde_json::to_vec(&value).unwrap(), false);
     }
+}
+
+#[test]
+fn canonical_reasoning_keeps_only_its_field_custody() {
+    use crate::model::{
+        ModelEvent, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome,
+    };
+    let event = ModelEvent::ReasoningBlock {
+        block: ReasoningBlock {
+            kind: ReasoningKind::Encrypted,
+            text: Some("summary".into()),
+            origin: ReasoningOrigin {
+                provider: "responses".into(),
+                model: "fixture".into(),
+                credential_scope: Some([7; 32]),
+            },
+            continuity: b"{ \"type\": \"reasoning\", \"encrypted_content\": \"opaque\" }".to_vec(),
+            outcome: ReasoningOutcome::PreservedOpaque,
+        },
+    };
+    check_bytes(serde_json::to_vec(&event).unwrap(), true);
 }

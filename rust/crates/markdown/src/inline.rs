@@ -247,7 +247,7 @@ fn left_context(source: &str) -> String {
     match source.chars().next_back() {
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
-        Some(c) if c.is_alphanumeric() => "x".into(),
+        Some(c) if !c.is_ascii_punctuation() => "x".into(),
         _ => "x.".into(),
     }
 }
@@ -480,6 +480,10 @@ fn boundary(
                 if cut >= range.start && delimiters::safe_boundary(source, cut) {
                     provisional = Some(cut);
                 }
+            }
+            // An escaped character is complete; never split its escape pair.
+            if range.end == quoted_end {
+                provisional = None;
             }
             boundary = range.end;
         }

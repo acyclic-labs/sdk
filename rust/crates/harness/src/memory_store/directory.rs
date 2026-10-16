@@ -3,30 +3,11 @@ use super::*;
 use crate::conversation::MAX_PRIVATE_DIRECTORY_PAGE;
 
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-/// One entry in a bounded directory page.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
-pub(crate) struct MemoryStoreEntry {
-    pub(crate) name: String,
-    pub(crate) kind: MemoryStoreEntryKind,
-}
-
+mod page;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum MemoryStoreEntryKind {
-    File,
-    Directory,
-}
-
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-/// A generation-pinned page produced by the shared content core.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MemoryStorePage {
-    pub(crate) generation: u64,
-    pub(crate) entries: Vec<MemoryStoreEntry>,
-    pub(crate) has_more: bool,
-}
+pub(crate) use page::{DirectoryIndex, MemoryStorePage};
+#[cfg(test)]
+pub(crate) use page::{MemoryStoreEntry, MemoryStoreEntryKind};
 
 impl MemoryStore {
     #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
@@ -58,49 +39,9 @@ impl MemoryStore {
                 "directory cursor must name one entry".into(),
             ));
         }
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{path}/")
-        };
-        let mut found = BTreeMap::<String, MemoryStoreEntryKind>::new();
-        for (name, history) in &self.paths {
-            if history
-                .revisions
-                .first()
-                .is_some_and(|revision| revision.generation > generation)
-                || !name.starts_with(&prefix)
-            {
-                continue;
-            }
-            let Some(remainder) = name.strip_prefix(&prefix) else {
-                continue;
-            };
-            let segment = remainder.split('/').next().unwrap_or_default();
-            if segment.is_empty() || (path.is_empty() && segment == ".system") {
-                continue;
-            }
-            let kind = if remainder.contains('/') {
-                MemoryStoreEntryKind::Directory
-            } else {
-                MemoryStoreEntryKind::File
-            };
-            found.entry(segment.to_owned()).or_insert(kind);
-        }
-        let mut names = found
-            .into_iter()
-            .filter(|(name, _)| after.is_none_or(|cursor| name.as_str() > cursor));
-        let entries = names
-            .by_ref()
-            .take(maximum)
-            .map(|(name, kind)| MemoryStoreEntry { name, kind })
-            .collect();
-        let has_more = names.next().is_some();
-        Ok(MemoryStorePage {
-            generation,
-            entries,
-            has_more,
-        })
+        Ok(self
+            .directory_index
+            .page(path, generation, after, maximum, |_| {}))
     }
 
     pub(crate) fn read_path(&self, path: &str, generation: Option<u64>) -> Result<FileRef> {
@@ -219,6 +160,8 @@ impl MemoryStore {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 _custody: custody,
             });
+            #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+            self.directory_index.publish(path, generation);
         }
         Ok(())
     }

@@ -27,6 +27,7 @@ async fn execution_and_worker_futures_stay_bounded() -> Result<()> {
             model.clone(),
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?;
@@ -83,6 +84,7 @@ async fn execution_and_worker_futures_stay_bounded() -> Result<()> {
             model,
             provider,
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?;
@@ -113,6 +115,7 @@ async fn reconciliation_has_only_its_progress_allocation() -> Result<()> {
                 model.clone(),
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None,
             )
             .await?;

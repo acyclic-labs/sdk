@@ -21,7 +21,7 @@ pub use definition::{ToolDefinition, json_projection_schema};
 mod invocation;
 pub use invocation::{ToolInvocation, ToolResult};
 mod recorded_invocation;
-pub(crate) use recorded_invocation::RecordedInvocation;
+pub(crate) use recorded_invocation::{RecordedInvocation, validate_model_call_recorded};
 mod executor;
 pub use executor::ToolExecutor;
 mod projection;
