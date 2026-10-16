@@ -7,6 +7,7 @@ use acyclic_stream::{
 };
 use std::cell::Cell;
 use std::future::Future;
+use std::sync::atomic::AtomicBool as Observation;
 
 const ID: AuthorityId = AuthorityId::from_bytes([61; 16]);
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
@@ -52,8 +53,10 @@ struct ModelStream {
     inner: MemoryStream,
     change: Change,
     completed: AtomicBool,
-    retired_at_record_read: AtomicBool,
-    cancelled_at_record_read: AtomicBool,
+    // Written only by the reader and inspected after its Loom join. These
+    // observations do not participate in the protocol or schedule.
+    retired_at_record_read: Observation,
+    cancelled_at_record_read: Observation,
     cancellation: CancellationToken,
 }
 
@@ -68,18 +71,22 @@ impl StreamProvider for ModelStream {
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str().ends_with("/records") {
-            self.retired_at_record_read.fetch_or(
-                matches!(self.change, Change::Retire) && self.completed.load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
-            self.cancelled_at_record_read
-                .fetch_or(self.cancellation.is_cancelled(), Ordering::SeqCst);
+            if matches!(self.change, Change::Retire) {
+                self.retired_at_record_read
+                    .fetch_or(self.completed.load(Ordering::SeqCst), Ordering::Relaxed);
+            }
+            if matches!(self.change, Change::Cancel) {
+                self.cancelled_at_record_read
+                    .fetch_or(self.cancellation.is_cancelled(), Ordering::Relaxed);
+            }
         }
         self.inner.read(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let result = self.inner.commit(request).await;
-        if matches!(result, Ok(CommitOutcome::Committed(_))) {
+        if matches!(self.change, Change::Fence | Change::Retire)
+            && matches!(result, Ok(CommitOutcome::Committed(_)))
+        {
             self.completed.store(true, Ordering::SeqCst);
         }
         result
@@ -213,14 +220,15 @@ fn model(change: Change, broken: bool) {
             inner,
             change,
             completed: AtomicBool::new(false),
-            retired_at_record_read: AtomicBool::new(false),
-            cancelled_at_record_read: AtomicBool::new(false),
+            retired_at_record_read: Observation::new(false),
+            cancelled_at_record_read: Observation::new(false),
             cancellation: cancellation.clone(),
         });
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let reader = loom::thread::spawn(move || {
-            let completed_at_entry = reader_provider.completed.load(Ordering::SeqCst);
+            let completed_at_entry = matches!(change, Change::Fence)
+                && reader_provider.completed.load(Ordering::SeqCst);
             let store = StreamAuthorityStore::new(reader_provider);
             FAULT.with(|fault| {
                 fault.set(if broken {
@@ -267,11 +275,11 @@ fn model(change: Change, broken: bool) {
         match result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
-                    !provider.retired_at_record_read.load(Ordering::SeqCst),
+                    !provider.retired_at_record_read.load(Ordering::Relaxed),
                     "retired payload escaped the second retirement check"
                 );
                 assert!(
-                    !provider.cancelled_at_record_read.load(Ordering::SeqCst),
+                    !provider.cancelled_at_record_read.load(Ordering::Relaxed),
                     "cancelled payload escaped admission"
                 );
                 let expected = if head.sequence == first.sequence {
