@@ -119,6 +119,16 @@ fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::
     Ok((decoded, custody))
 }
 
+/// Exercises the production request admission boundary without a record-size cap.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub fn admit_request_for_test(
+    bytes: &[u8],
+    work: NativeWork<'_>,
+) -> Result<(SearchRequest, crate::NativeCustody)> {
+    request(bytes, work)
+}
+
 async fn condition<P: StreamProvider>(
     owner: &TaskJournalOwner<P>,
     work: NativeWork<'_>,
@@ -345,7 +355,9 @@ where
         match dispatch {
             Ok(encoded) => {
                 match publish(volume, result.clone(), encoded, authorize, work).await {
-                    Err(Error::ToolRejected(_) | Error::Invalid(_)) => break SearchOutcome::Rejected,
+                    Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+                        break SearchOutcome::Rejected;
+                    }
                     other => other?,
                 }
                 return Ok(());
@@ -437,5 +449,7 @@ pub async fn drive_for_test<P: StreamProvider>(
     Ok(())
 }
 
+#[cfg(all(test, acyclic_loom))]
+mod model;
 #[cfg(test)]
 mod tests;

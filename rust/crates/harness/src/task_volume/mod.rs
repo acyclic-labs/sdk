@@ -13,7 +13,7 @@ pub use schema::{
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::NativeWork;
-use acyclic_stream::query_sync::Mutex;
+use crate::sync::Mutex;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, OwnedBytes, ReadRequest, StreamError, StreamPath, StreamProvider,

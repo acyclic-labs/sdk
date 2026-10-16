@@ -43,6 +43,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "search_request"
+path = "fuzz_targets/search_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "protocol_identity"
 path = "fuzz_targets/protocol_identity.rs"
 test = false

@@ -105,6 +105,11 @@ name = "search-http-codec"
 path = "tests/search_http_codec.rs"
 required-features = ["filesystem", "search-http", "test-support"]
 
+[[test]]
+name = "search-request"
+path = "tests/search_request.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
 
