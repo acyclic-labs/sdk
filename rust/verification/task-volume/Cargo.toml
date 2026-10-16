@@ -35,4 +35,4 @@ opt-level = 3
 opt-level = 3
 
 [lints.rust]
-unexpected_cfgs = { level = 'warn', check-cfg = ['cfg(acyclic_loom)'] }
+unexpected_cfgs = { level = 'warn', check-cfg = ['cfg(acyclic_loom)', 'cfg(acyclic_harness_loom)'] }

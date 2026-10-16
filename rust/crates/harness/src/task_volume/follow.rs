@@ -234,7 +234,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Rebuild outside the shared lock. The reconstructed index is still a
         // fenced immutable cut; a second loss returns ResetRequired to the caller.
         let fresh = Self::open(self.provider.clone(), self.path.clone()).await?;
-        *self.index.lock().await = fresh.index.into_inner();
+        #[cfg(acyclic_harness_loom)]
+        let replace =
+            !super::model_checking::enabled(super::model_checking::Fault::RetainObsoleteIndex);
+        #[cfg(not(acyclic_harness_loom))]
+        let replace = true;
+        if replace {
+            *self.index.lock().await = fresh.index.into_inner();
+        }
         self.snapshot_follow(query, maximum_files, true).await
     }
 
@@ -245,7 +252,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         reset: bool,
     ) -> Result<Observation> {
         let snapshot = self.snapshot(&query, maximum_files).await?;
-        let changes = self.follow(query, snapshot.cursor.clone()).await?;
+        let cursor = snapshot.cursor.clone();
+        #[cfg(acyclic_harness_loom)]
+        let cursor = if super::model_checking::enabled(super::model_checking::Fault::ResampleFollow)
+        {
+            self.snapshot(&query, maximum_files).await?.cursor
+        } else {
+            cursor
+        };
+        let changes = self.follow(query, cursor).await?;
         Ok(Observation {
             snapshot: Some(snapshot),
             reset,
