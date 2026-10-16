@@ -253,3 +253,32 @@ async fn markdown_oracles_reject_coalescing_reordering_and_reasoning_leaks() -> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn composer_byte_boundary_oracles_reject_character_counts_and_expansion_overflow()
+-> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for (name, maximum) in [
+        ("ascii-exact", 4),
+        ("ascii-over", 5),
+        ("unicode-exact", 2),
+        ("unicode-over", 6),
+        ("builtin-exact", 4),
+        ("builtin-over", 5),
+        ("templates/appended-arguments-exact", 14),
+        ("templates/appended-arguments-over", 15),
+        ("templates/unicode-body-exact", 15),
+        ("templates/unicode-body-over", 16),
+    ] {
+        let baseline =
+            crate::scenario::load_value(&root, &root.join(format!("composer/limits/{name}.json")))?;
+        run(baseline.clone()).await?;
+        let mut changed = baseline;
+        changed["maximum_bytes"] = json!(maximum);
+        assert!(
+            run(changed).await.is_err(),
+            "accepted wrong bound for {name}"
+        );
+    }
+    Ok(())
+}

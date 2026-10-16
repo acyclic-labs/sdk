@@ -1,6 +1,10 @@
 //! Native `GraphCoder` presentation over the public Harness runtime and wire API.
 
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "graphcoder/markdown.rs"]
+pub mod markdown;
+
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/commands/mod.rs"]
 mod commands;
 #[cfg(not(target_arch = "wasm32"))]
