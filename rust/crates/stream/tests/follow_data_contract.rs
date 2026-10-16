@@ -194,3 +194,80 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
         assert_eq!(check(delivery, next, &data, Fault::None), Ok(()));
     }
 }
+
+#[test]
+fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
+    use acyclic_stream::{CommitId, wire_codec::session::confirm_follow};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/session");
+    for (name, delivery, after, accepted, durable, length, expected) in [
+        ("latest-jump", 2, 9, 10, 8, 1, Ok(8)),
+        (
+            "latest-empty-key",
+            2,
+            9,
+            10,
+            8,
+            0,
+            Err(StreamError::Unavailable),
+        ),
+        (
+            "latest-impossible-durable",
+            2,
+            9,
+            10,
+            11,
+            1,
+            Err(StreamError::Unavailable),
+        ),
+        ("all-held-flush", 1, 1, 4, 0, 32, Ok(0)),
+        (
+            "all-short-commit",
+            1,
+            1,
+            4,
+            0,
+            31,
+            Err(StreamError::Unavailable),
+        ),
+    ] {
+        let seed = std::fs::read(root.join(format!("browser-{name}"))).unwrap();
+        let frame = wire::SessionFrame::decode(seed.as_slice()).unwrap();
+        let Some(wire::session_frame::Body::Data(data)) = frame.body else {
+            panic!("{name} is not data")
+        };
+        assert_eq!(
+            data.after.as_ref().map(|cut| cut.next),
+            Some(after),
+            "{name}"
+        );
+        assert_eq!((data.accepted, data.durable), (accepted, durable), "{name}");
+        match &data.item {
+            Some(Item::LatestValue(value)) if delivery == 2 => {
+                assert_eq!(value.key.len(), length, "{name}")
+            }
+            Some(Item::Record(record)) if delivery == 1 => {
+                assert_eq!(record.commit_id.len(), length, "{name}")
+            }
+            _ => panic!("{name} has the wrong item"),
+        }
+        assert_eq!(follow_sequence(delivery, 0, &data), expected, "{name}");
+        assert_eq!(check(delivery, 0, &data, Fault::None), Ok(()));
+    }
+    for (name, confirmation, expected) in [
+        ("opened-empty", vec![], Err(StreamError::Unsupported)),
+        ("opened-foreign", vec![9; 32], Err(StreamError::Unsupported)),
+        ("opened-matching", vec![7; 32], Ok(())),
+    ] {
+        let seed = std::fs::read(root.join(format!("browser-{name}"))).unwrap();
+        let frame = wire::SessionFrame::decode(seed.as_slice()).unwrap();
+        let Some(wire::session_frame::Body::Opened(opened)) = frame.body else {
+            panic!("{name} is not opened")
+        };
+        assert_eq!(opened.preceding_commit_id.as_ref(), confirmation, "{name}");
+        assert_eq!(
+            confirm_follow(Some(CommitId::from_bytes([7; 32])), &opened),
+            expected,
+            "{name}"
+        );
+    }
+}

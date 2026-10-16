@@ -5,7 +5,7 @@ pub(super) fn build_family(
     rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     json_path: &Path,
-    raw_json: &[u8],
+    raw_json: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Family, Error> {
     let root_item = krate.index.get(&krate.root).ok_or_else(|| {

@@ -279,7 +279,7 @@ pub(super) async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: Async
     }
 }
 
-pub(super) fn journal_absent(error: &Error) -> bool {
+pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
     match error {
         Error::NotFound(_) => true,
         #[cfg(not(target_arch = "wasm32"))]

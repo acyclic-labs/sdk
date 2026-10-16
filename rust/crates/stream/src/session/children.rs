@@ -24,19 +24,11 @@ pub(super) fn source<P: StreamProvider>(
     request: crate::ChildrenRequest,
     resume: wire::SessionCursor,
     identity: wire::SessionChannel,
-    cancelled: oneshot::Receiver<()>,
-    enabled: Arc<gate::Gate>,
 ) -> Source {
-    let state = (
-        provider,
-        request,
-        resume,
-        None::<crate::ChildStream>,
-        enabled,
-    );
+    let state = (provider, request, resume, None::<crate::ChildStream>);
     stream::try_unfold(
         state,
-        |(provider, request, mut resume, mut children, enabled)| async move {
+        |(provider, request, mut resume, mut children)| async move {
             if children.is_none() {
                 let mut opened = provider.children(request.clone()).await?;
                 if resume.next > 0 {
@@ -57,22 +49,23 @@ pub(super) fn source<P: StreamProvider>(
                 children = Some(opened);
                 return Ok(Some((
                     Event::Opened(None),
-                    (provider, request, resume, children, enabled),
+                    (provider, request, resume, children),
                 )));
             }
-            let child = enabled
-                .next(children.as_mut().ok_or(StreamError::Unavailable)?)
-                .await?
+            let child = children
+                .as_mut()
+                .ok_or(StreamError::Unavailable)?
+                .next()
+                .await
                 .ok_or(StreamError::Unavailable)??;
             resume.next = resume.next.checked_add(1).ok_or(StreamError::OutOfRange)?;
             resume.opaque = Bytes::copy_from_slice(child.path.as_str().as_bytes());
             Ok(Some((
                 Event::Child(child, resume.clone()),
-                (provider, request, resume, children, enabled),
+                (provider, request, resume, children),
             )))
         },
     )
-    .take_until(cancelled)
     .map(move |event| (identity, event))
     .boxed()
 }

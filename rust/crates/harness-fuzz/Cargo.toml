@@ -229,7 +229,7 @@ doc = false
 bench = false
 
 [dev-dependencies]
-allocation-counter = "0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

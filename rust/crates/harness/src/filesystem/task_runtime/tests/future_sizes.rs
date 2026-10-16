@@ -129,7 +129,7 @@ async fn reconciliation_has_only_its_progress_allocation() -> Result<()> {
             selected_context: None,
             max_steps: 1,
         };
-        let allocations = allocation_counter::measure(|| {
+        let allocations = acyclic_test_support::measure(|| {
             let future = execution.reconcile(input, allowance);
             if valid && allowance != 0 {
                 // Valid construction owns exactly one funded progress future.

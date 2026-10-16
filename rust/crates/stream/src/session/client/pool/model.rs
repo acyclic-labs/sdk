@@ -3,6 +3,8 @@ use super::*;
 
 mod follow_data;
 pub use follow_data::verify_follow_data;
+mod cancellation;
+pub use cancellation::verify_cancel_before_open;
 
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {
@@ -179,8 +181,12 @@ pub fn verify_pool_lifetime(fault: u8) {
             match loom::future::block_on(events.next()).unwrap() {
                 Some(command) => pool.command(command).unwrap(),
                 None => {
-                    let id = loom::future::block_on(pool.removed.next()).unwrap();
-                    pool.remove(id).unwrap();
+                    if let Some(id) = pool.removed.try_next().unwrap() {
+                        pool.remove(id).unwrap();
+                    } else {
+                        // Open may already have drained this cancellation.
+                        assert!(!pool.routes.contains_key(&1));
+                    }
                     if fault == 1 {
                         pool.dials.clear();
                     }

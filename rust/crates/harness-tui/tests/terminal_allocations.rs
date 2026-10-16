@@ -5,7 +5,7 @@ use acyclic_harness_tui::term::Decoder;
 
 fn count(decoder: &mut Decoder, input: &[u8], broken: bool) -> u64 {
     let mut events = Vec::new();
-    let allocations = allocation_counter::measure(|| {
+    let allocations = acyclic_test_support::measure(|| {
         assert!(decoder.feed(input).is_ok());
         if broken {
             for byte in input {

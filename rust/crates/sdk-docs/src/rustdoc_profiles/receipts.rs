@@ -2,7 +2,7 @@ use super::{package_by_name, ApiOwner, ProfileError, ProfileId, ProjectionKey};
 use crate::public_api;
 use cargo_metadata::Metadata;
 use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::BTreeSet, path::Path};
 
 pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
     let (_, receipt) = read_public_receipt(path.as_ref())?;
@@ -94,11 +94,13 @@ pub fn extract_owned_api(
     Ok(items)
 }
 
-fn read_public_receipt(path: impl AsRef<Path>) -> Result<(Vec<u8>, RustdocCrate), ProfileError> {
+fn read_public_receipt(
+    path: impl AsRef<Path>,
+) -> Result<(std::rc::Rc<[u8]>, std::rc::Rc<RustdocCrate>), ProfileError> {
     let path = path.as_ref();
-    let bytes = fs::read(path)
+    let bytes = crate::read_rustdoc(path)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("{}: {error}", path.display())))?;
-    let receipt = public_api::decode::from_slice(&bytes)
+    let receipt = crate::render_cache::decode(std::rc::Rc::clone(&bytes))
         .map_err(|error| ProfileError::InvalidRustdoc(format!("{}: {error}", path.display())))?;
     if receipt.format_version != FORMAT_VERSION || receipt.includes_private {
         return Err(ProfileError::InvalidRustdoc(
@@ -120,13 +122,14 @@ pub struct RustdocObservation {
 
 pub fn observe_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, ProfileError> {
     let (_, receipt) = read_public_receipt(path)?;
-    observe_receipt(receipt)
+    observe_receipt(&receipt)
 }
 
 /// Read a native binary receipt without exposing its private implementation as API.
 pub fn observe_binary_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, ProfileError> {
-    let receipt: RustdocCrate = serde_json::from_slice(
-        &fs::read(path).map_err(|e| ProfileError::InvalidRustdoc(e.to_string()))?,
+    let receipt = crate::render_cache::decode(
+        crate::read_rustdoc(path.as_ref())
+            .map_err(|e| ProfileError::InvalidRustdoc(e.to_string()))?,
     )
     .map_err(|e| ProfileError::InvalidRustdoc(e.to_string()))?;
     if receipt.format_version != FORMAT_VERSION {
@@ -134,10 +137,10 @@ pub fn observe_binary_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservati
             "binary Rustdoc requires format 60".into(),
         ));
     }
-    observe_receipt(receipt)
+    observe_receipt(&receipt)
 }
 
-fn observe_receipt(receipt: RustdocCrate) -> Result<RustdocObservation, ProfileError> {
+fn observe_receipt(receipt: &RustdocCrate) -> Result<RustdocObservation, ProfileError> {
     let root = receipt.index.get(&receipt.root).ok_or_else(|| {
         ProfileError::InvalidRustdoc(format!("root item {} is absent from index", receipt.root.0))
     })?;
@@ -148,8 +151,8 @@ fn observe_receipt(receipt: RustdocCrate) -> Result<RustdocObservation, ProfileE
     Ok(RustdocObservation {
         format_version: receipt.format_version,
         crate_name,
-        crate_version: receipt.crate_version,
-        target: receipt.target.triple,
+        crate_version: receipt.crate_version.clone(),
+        target: receipt.target.triple.clone(),
         includes_private: receipt.includes_private,
         item_count: receipt.index.len(),
     })

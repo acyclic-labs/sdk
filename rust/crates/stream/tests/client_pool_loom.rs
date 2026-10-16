@@ -2,6 +2,26 @@
 #![cfg(all(acyclic_stream_loom, feature = "grpc"))]
 
 #[test]
+fn provider_source_publication_cannot_lose_its_wake() {
+    acyclic_stream::session::verify_source_wakes(false);
+}
+#[test]
+#[should_panic(expected = "provider source lost its publication wake")]
+fn negative_control_omits_the_source_wake() {
+    acyclic_stream::session::verify_source_wakes(true);
+}
+
+#[test]
+fn cancelled_follow_is_removed_before_replacement_admission() {
+    acyclic_stream::session::verify_cancel_before_open(false);
+}
+#[test]
+#[should_panic(expected = "cancelled follow survived replacement admission")]
+fn negative_control_new_open_overtakes_cancellation() {
+    acyclic_stream::session::verify_cancel_before_open(true);
+}
+
+#[test]
 fn latest_cursor_fencing_and_conflated_watermarks_use_the_real_pool() {
     acyclic_stream::session::verify_follow_data(0);
 }
@@ -139,4 +159,30 @@ fn latest_consumption_and_move_fence_share_one_application_cut() {
 #[should_panic(expected = "a stale delivery cannot advance the fenced resume cut")]
 fn negative_control_checks_latest_generation_outside_the_cursor_lock() {
     acyclic_stream::session::verify_latest_progress(true);
+}
+
+#[test]
+fn source_deduplication_survives_pending_rechecks_during_drain() {
+    acyclic_stream::session::verify_source_recheck(0);
+}
+#[test]
+#[should_panic(expected = "provider recheck lost its wakeup")]
+fn negative_control_clears_the_source_hint_after_rechecking() {
+    acyclic_stream::session::verify_source_recheck(1);
+}
+
+#[test]
+#[should_panic(expected = "coalesced wake lost its publication")]
+fn negative_control_resets_the_source_hint_without_acquiring_coalesced_wakes() {
+    acyclic_stream::session::verify_source_recheck(2);
+}
+
+#[test]
+fn initial_eof_retry_yields_to_deadline_and_cancellation() {
+    acyclic_stream::session::verify_initial_retry_yield(false);
+}
+#[test]
+#[should_panic(expected = "initial retry must yield before another physical RPC")]
+fn negative_control_initial_eof_retry_monopolizes_the_executor() {
+    acyclic_stream::session::verify_initial_retry_yield(true);
 }

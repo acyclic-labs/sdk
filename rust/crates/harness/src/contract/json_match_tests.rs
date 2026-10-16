@@ -107,7 +107,7 @@ fn no_encoded_storage(value: &Value) -> Result<()> {
     let expected = canonical_json_bytes(value)?;
     assert!(expected.len() > 8 * 4096);
     let mut converted = Ok(Value::Null);
-    let conversion = allocation_counter::measure(|| {
+    let conversion = acyclic_test_support::measure(|| {
         converted = serde_json::to_value(value);
         if let Ok(value) = &mut converted {
             value.sort_all_objects();
@@ -124,7 +124,7 @@ fn no_encoded_storage(value: &Value) -> Result<()> {
     ] {
         let mut result = Ok(false);
         let matching =
-            allocation_counter::measure(|| result = canonical_json_matches(value, candidate));
+            acyclic_test_support::measure(|| result = canonical_json_matches(value, candidate));
         assert_eq!(result?, candidate == expected.as_slice());
         eprintln!(
             "storage encoded={} candidate={} conversion={}/{}/{} matching={}/{}/{}",
@@ -198,7 +198,7 @@ fn comparison_cost(observing: bool) -> Result<()> {
             for _ in 0..32 {
                 let mut result = Ok(false);
                 let started = std::time::Instant::now();
-                let allocation = allocation_counter::measure(|| {
+                let allocation = acyclic_test_support::measure(|| {
                     result = canonical_json_matches(std::hint::black_box(&value), candidate);
                 });
                 times.push(started.elapsed());

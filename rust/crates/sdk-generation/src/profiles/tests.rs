@@ -1,4 +1,17 @@
 use super::*;
+
+proptest::proptest! {
+    #[test]
+    fn owner_receipts_are_disjoint_only_for_distinct_canonical_target_names(
+        names in proptest::collection::vec("[a-zA-Z_-]{1,8}", 0..8),
+    ) {
+        let canonical = names.iter().map(|name| name.replace('-', "_").to_ascii_lowercase()).collect::<BTreeSet<_>>();
+        proptest::prop_assert_eq!(distinct_receipt_names(names.iter().map(String::as_str)), canonical.len() == names.len());
+        for aliases in [["demo", "DEMO"], ["demo-lib", "demo_lib"], ["demo", "demo"]] {
+            proptest::prop_assert!(!distinct_receipt_names(aliases));
+        }
+    }
+}
 use proptest::prelude::*;
 
 proptest! {

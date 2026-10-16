@@ -560,11 +560,20 @@ dependencies = [
  "ring",
  "rustdoc-types 0.60.0",
  "schemars",
+ "sdk-file-identity",
  "semver",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "sdk-file-identity"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -576,10 +585,12 @@ dependencies = [
  "proptest",
  "ring",
  "sdk-docs",
+ "sdk-file-identity",
  "serde",
  "serde_json",
  "sha2",
  "tar",
+ "tempfile",
  "toml",
 ]
 

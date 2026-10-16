@@ -19,7 +19,7 @@ fuzz_target!(|input: &[u8]| {
         .unwrap();
         let baseline = work.live_allocation_bytes();
         let mut decoded = Ok(());
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             decoded = acyclic_harness::filesystem::fuzz_native_preparation_journal(input, &work);
         });
         assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);

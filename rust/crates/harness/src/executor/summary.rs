@@ -87,7 +87,15 @@ impl StockExecution<'_> {
         let source_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
         })?;
-        stage_bytes(journal, operation_id, &source_key, &source_bytes, self.io).await?;
+        stage_bytes(
+            journal,
+            operation_id,
+            &source_key,
+            &source_bytes,
+            true,
+            self.io,
+        )
+        .await?;
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
             .await?;
@@ -165,10 +173,36 @@ impl StockExecution<'_> {
             source_digest,
             output,
         };
-        let provenance_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:provenance"), work)
-        })?;
-        stage_json(journal, operation_id, &provenance_key, &summary, self.io).await?;
+        stage_summary_provenance(journal, &summary, self.io).await?;
         Ok((summary, text))
     }
+}
+
+pub(super) async fn stage_summary_provenance(
+    journal: &dyn ExecutionJournal,
+    summary: &crate::context::ContextSummary,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let key = with_history_io(io, |work| summary.output.read_capability(work))?;
+    #[cfg(feature = "filesystem")]
+    let key_hold = io
+        .map(|io| io.guard_owned(key.capacity() as u64))
+        .transpose()?;
+    let bytes: acyclic_stream::OwnedBytes = match io {
+        #[cfg(feature = "filesystem")]
+        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        _ => crate::contract::canonical_json_bytes(summary)?.into(),
+    };
+    #[cfg(feature = "filesystem")]
+    let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    // The exact output identity is already the immutable retry key. Appending
+    // the provenance payload's digest would make this file unqueryable by ref.
+    stage_bytes(journal, summary.operation_id, &key, &bytes, false, io).await?;
+    drop(bytes);
+    #[cfg(feature = "filesystem")]
+    drop(bytes_hold);
+    drop(key);
+    #[cfg(feature = "filesystem")]
+    drop(key_hold);
+    Ok(())
 }

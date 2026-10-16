@@ -1,7 +1,7 @@
 use super::*;
 use crate::{CommitId, ReadRequest};
 
-async fn anchor(
+pub(super) async fn anchor(
     provider: &MemoryStream,
     path: &str,
     sequence: u64,

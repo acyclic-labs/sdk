@@ -124,7 +124,11 @@ pub(super) async fn drive<F: Future>(
                 hit += 1;
                 {
                     let mut state = schedule.state.lock().unwrap();
-                    if event.name == "task:submitted" && event.detail.contains("append harness/v3/coordinator/events ") {
+                    if event.name == "task:submitted"
+                        && (event.detail.contains("append harness/v3/coordinator/events ")
+                            || (event.detail.starts_with("commit ")
+                                && event.detail.contains("\"harness/v3/coordinator/events\"")))
+                    {
                         state.admission_submission.get_or_insert(hit);
                     }
                     state.points.push(event.name);

@@ -1,4 +1,5 @@
 mod properties;
+mod queue_scaling;
 
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};

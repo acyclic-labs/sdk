@@ -5,7 +5,7 @@ use crate::StreamProvider;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
-use futures::stream::{BoxStream, SelectAll};
+use futures::stream::BoxStream;
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,7 +17,9 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 #[cfg(not(target_arch = "wasm32"))]
-mod admission;
+mod sources;
+#[cfg(acyclic_stream_loom)]
+pub use sources::model::{verify_source_recheck, verify_source_wakes};
 #[cfg(not(target_arch = "wasm32"))]
 mod children;
 mod client;
@@ -43,9 +45,10 @@ pub use client::Client;
 pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
-    verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_follow_data,
-    verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
-    verify_registration_deadline, verify_terminal_cursor_dial,
+    verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_cancel_before_open,
+    verify_follow_data, verify_initial_retry_yield, verify_interest_accounting,
+    verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_terminal_cursor_dial,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
@@ -87,13 +90,12 @@ struct Channel {
     generation: u64,
     latest: bool,
     children: bool,
-    pending: usize,
-    enabled: Arc<gate::Gate>,
+    pending: VecDeque<Pending>,
+    indexed: Option<usize>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
     ending: Option<StreamError>,
-    cancel: Option<oneshot::Sender<()>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct Pending {
@@ -107,7 +109,9 @@ enum Event {
     Child(crate::Child, wire::SessionCursor),
 }
 #[cfg(not(target_arch = "wasm32"))]
-type Source = BoxStream<'static, (wire::SessionChannel, Result<Event, StreamError>)>;
+type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
+#[cfg(not(target_arch = "wasm32"))]
+type Source = BoxStream<'static, SourceItem>;
 
 #[cfg(not(target_arch = "wasm32"))]
 struct Session<P> {
@@ -118,13 +122,16 @@ struct Session<P> {
     prefer_control: bool,
     revision: u64,
     channels: BTreeMap<u64, Channel>,
-    sources: SelectAll<Source>,
+    sources: sources::Sources,
     incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
-    pending: VecDeque<Pending>,
+    pending_frames: usize,
     pending_bytes: usize,
-    readiness: (bool, bool, bool),
+    runnable: BTreeSet<(usize, u64)>,
+    ready_after: Option<(usize, u64)>,
+    #[cfg(test)]
+    head_visits: usize,
 }
 
 /// Opens one bidirectional node session over the canonical provider.
@@ -151,13 +158,16 @@ pub fn serve<P: StreamProvider>(
         prefer_control: true,
         revision: 0,
         channels: BTreeMap::new(),
-        sources: SelectAll::new(),
+        sources: sources::Sources::new(),
         incoming,
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
-        pending: VecDeque::new(),
+        pending_frames: 0,
         pending_bytes: 0,
-        readiness: (false, false, false),
+        runnable: BTreeSet::new(),
+        ready_after: None,
+        #[cfg(test)]
+        head_visits: 0,
     };
     Ok(stream::try_unfold(session, |mut session| async move {
         loop {
@@ -177,7 +187,15 @@ pub fn serve<P: StreamProvider>(
             // Alternate deterministic priority. This bounds ready-side work
             // and lets the model explore the actual wakeup path without RNG.
             let input = session.incoming.next();
-            let source = session.sources.next();
+            let room = policy::room(
+                session.limits.pending_frames,
+                session.limits.pending_bytes,
+                session.pending_frames,
+                session.pending_bytes,
+                DATA_FRAME_BYTES,
+                session.credit.frames > 0 && session.credit.bytes > 0,
+            );
+            let source = session.sources.next(room);
             let event = if session.prefer_control {
                 match future::select(input, source).await {
                     future::Either::Left((input, _)) => future::Either::Left(input),
@@ -193,8 +211,11 @@ pub fn serve<P: StreamProvider>(
             match event {
                 future::Either::Left(Some(frame)) => session.receive(frame?)?,
                 future::Either::Left(None) => return Ok(None),
-                future::Either::Right(Some((channel, event))) => session.record(channel, event)?,
-                future::Either::Right(None) => {}
+                future::Either::Right(source) => {
+                    if let Some((channel, event)) = source? {
+                        session.record(channel, event)?;
+                    }
+                }
             }
         }
     })
@@ -251,7 +272,6 @@ impl<P: StreamProvider> Session<P> {
                         .map_err(|_| StreamError::Capacity)?,
                 }),
             ));
-            self.refresh(None)?;
             return Ok(());
         }
         if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
@@ -270,13 +290,12 @@ impl<P: StreamProvider> Session<P> {
             }
             Body::Window(grant) if input.channel_id == 0 && input.generation == 0 => {
                 wire_codec::session::grant_credit(&mut self.credit, &grant)?;
-                self.refresh(None)?;
                 Ok(())
             }
             Body::Window(grant) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 wire_codec::session::grant_credit(&mut channel.credit, &grant)?;
-                self.refresh(Some(input.channel_id))?;
+                self.refresh_source(input.channel_id);
                 Ok(())
             }
             Body::Ack(ack) => {

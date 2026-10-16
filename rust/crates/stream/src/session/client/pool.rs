@@ -4,6 +4,10 @@ use super::*;
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
+#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod ordering;
+#[cfg(acyclic_stream_loom)]
+pub(super) mod retry_model;
 
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
@@ -148,6 +152,15 @@ impl Pool {
         self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
+        // Cursor drops happen before their owner's replacement Open. Removal
+        // uses a separate wake queue, so dispatch must preserve that ordering
+        // even when select chooses the command first.
+        while let Some(id) = self.removed.try_next()? {
+            self.remove(id)?;
+        }
+        self.apply_command(command)
+    }
+    fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
             Command::Open {
@@ -275,6 +288,14 @@ impl Pool {
         };
         if matches!(input.body, Some(Body::Data(_))) {
             wire_codec::session::consume_credit(&mut route.credit, &input)?;
+        }
+        if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
+            && let Some(link) = self.links.get(node)
+        {
+            link.channel.cancel_channel(wire::SessionChannel {
+                channel_id: id,
+                generation: input.generation,
+            });
         }
         match input.body {
             Some(Body::Opened(opened)) => {
