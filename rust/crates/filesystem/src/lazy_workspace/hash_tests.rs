@@ -34,6 +34,9 @@ fn measured<T: MemoryLazyNode>(
     if cancel == 2 {
         explicit_cancellation.cancel();
     }
+    if cancel == 3 {
+        work.cancellation().cancel();
+    }
     let mut accounting = KernelAccounting::native(&work, &explicit_cancellation);
     let result = if legacy {
         hash_with_charge(value, |delta| accounting.charge(delta))
@@ -69,7 +72,7 @@ proptest! {
         context in 0_u8..3,
         limit in prop_oneof![0_u64..1024, Just(u64::MAX)],
         recheck in any::<bool>(),
-        cancel in 0_u8..3,
+        cancel in 0_u8..4,
     ) {
         let node = LazyOverlay::Node {
             path: path.into_iter().collect(),

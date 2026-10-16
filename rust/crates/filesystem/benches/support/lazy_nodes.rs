@@ -8,6 +8,17 @@ use divan::Bencher;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
+fn fail<T>(error: impl std::fmt::Debug) -> T {
+    eprintln!("lazy-node benchmark failed: {error:?}");
+    std::process::exit(1);
+}
+
+fn benchmark_marker(name: &str, native: bool, begin: bool) {
+    if std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some() {
+        eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} native={native} begin={begin}");
+    }
+}
+
 const BUDGET: WorkBudget = acyclic_fs::performance::BOUNDARY_BUDGET;
 
 fn complete<T>(future: impl Future<Output = T>) -> T {
@@ -17,7 +28,7 @@ fn complete<T>(future: impl Future<Output = T>) -> T {
         .poll(&mut Context::from_waker(Waker::noop()))
     {
         Poll::Ready(result) => result,
-        Poll::Pending => panic!("the synchronous memory store unexpectedly suspended"),
+        Poll::Pending => fail("the synchronous memory store unexpectedly suspended"),
     }
 }
 
@@ -25,11 +36,11 @@ fn work(context: u8, cancellation: &CancellationToken) -> Option<NativeMateriali
     if context == 0 {
         return None;
     }
-    let original = NativeMaterializationWork::new(BUDGET, cancellation).unwrap();
+    let original = NativeMaterializationWork::new(BUDGET, cancellation).unwrap_or_else(fail);
     Some(match context {
         1 => original,
-        2 => original.native_volume_work(BUDGET).unwrap(),
-        _ => original.invocation_view().unwrap().0,
+        2 => original.native_volume_work(BUDGET).unwrap_or_else(fail),
+        _ => original.invocation_view().unwrap_or_else(fail).0,
     })
 }
 
@@ -51,17 +62,17 @@ fn input<'a, T: Clone>(
 ) -> (T, KernelOwnedAllocation, KernelAccounting<'a>) {
     let mut allocation = accounting
         .claim_owned(bytes, u64::from(bytes != 0))
-        .unwrap();
+        .unwrap_or_else(fail);
     let copied = WorkCounters {
         bytes_copied: bytes,
         ..WorkCounters::UNCHARGED
     };
-    accounting.admit(copied).unwrap();
+    accounting.admit(copied).unwrap_or_else(fail);
     let value = value.clone();
-    accounting.record_completed(copied).unwrap();
+    accounting.record_completed(copied).unwrap_or_else(fail);
     accounting
         .reconcile_owned(&mut allocation, bytes, actual(&value))
-        .unwrap();
+        .unwrap_or_else(fail);
     (value, allocation, accounting)
 }
 
@@ -84,9 +95,9 @@ fn overlay_bytes(node: &LazyOverlay) -> u64 {
 
 fn shadow(size: usize) -> LazyShadow {
     let empty: LazyShadowId = serde_json::from_slice(
-        &serde_json::to_vec(blake3::hash(br#""Empty""#).as_bytes()).unwrap(),
+        &serde_json::to_vec(blake3::hash(br#""Empty""#).as_bytes()).unwrap_or_else(fail),
     )
-    .unwrap();
+    .unwrap_or_else(fail);
     LazyShadow::Node {
         file_id: acyclic_fs::FileId::from_bytes([7; 16]),
         priority: 1,
@@ -124,23 +135,23 @@ macro_rules! bench_node {
             let work = work(context, &cancellation);
             let store = MemoryLazyWorkspaceStore::default();
             let node = $node(size);
-            let encoded = serde_json::to_vec(&node).unwrap();
+            let encoded = serde_json::to_vec(&node).unwrap_or_else(fail);
             let digest = *blake3::hash(&encoded).as_bytes();
-            let id: $id = serde_json::from_slice(&serde_json::to_vec(&digest).unwrap()).unwrap();
+            let id: $id = serde_json::from_slice(&serde_json::to_vec(&digest).unwrap_or_else(fail)).unwrap_or_else(fail);
             let make_input = || input(&node, $bytes(&node), $bytes, accounting(&work, &cancellation));
             // Measure the repeated immutable-node admission, including validation
             // and retirement of the incoming argument. Fund setup copies first.
             let (value, allocation, mut ctx) = make_input();
-            complete(store.$put(id, (value, allocation), &mut ctx)).unwrap();
+            complete(store.$put(id, (value, allocation), &mut ctx)).unwrap_or_else(fail);
             if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
                 eprintln!("{} size={size} context={context} json_bytes={} before={:?}",
                     stringify!($name), encoded.len(), work.as_ref().map(NativeMaterializationWork::receipt));
             }
-            super::benchmark_marker(stringify!($name), context != 0, true);
+            benchmark_marker(stringify!($name), context != 0, true);
             bencher.with_inputs(make_input).bench_values(|(value, allocation, mut ctx)| {
-                complete(store.$put(id, (value, allocation), &mut ctx)).unwrap();
+                complete(store.$put(id, (value, allocation), &mut ctx)).unwrap_or_else(fail);
             });
-            super::benchmark_marker(stringify!($name), context != 0, false);
+            benchmark_marker(stringify!($name), context != 0, false);
             if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
                 eprintln!("{} size={size} context={context} after={:?}", stringify!($name),
                     work.as_ref().map(NativeMaterializationWork::receipt));

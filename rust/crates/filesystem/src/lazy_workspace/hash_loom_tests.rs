@@ -1,7 +1,7 @@
 use super::*;
 use crate::{CancellationToken, NativeMaterializationWork};
 
-fn exercise(reentrant: bool, context: u8, shadow: bool) {
+fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
     crate::initialize_test_native_io();
     loom::model(move || {
         let cancellation = CancellationToken::new();
@@ -14,7 +14,17 @@ fn exercise(reentrant: bool, context: u8, shadow: bool) {
             1 => original
                 .native_volume_work(crate::performance::BOUNDARY_BUDGET)
                 .unwrap(),
-            _ => original.invocation_view().unwrap().0,
+            _ => {
+                // Exercise the production invocation binder with independent
+                // cancellation. Linked-child registration is outside hashing.
+                let mut view = original.clone();
+                view.bind_invocation(
+                    CancellationToken::new(),
+                    crate::materializer::NativeResourceCredit::ReadBytes,
+                )
+                .unwrap();
+                view
+            }
         };
         let before = original.receipt();
         if reentrant {
@@ -23,15 +33,22 @@ fn exercise(reentrant: bool, context: u8, shadow: bool) {
                 .unwrap();
             return;
         }
-        let hash_work = work.clone();
+        let scope_cancellation = work.cancellation().clone();
+        let mut hash_work = work.clone();
+        if omit_invocation {
+            hash_work.invocation = None;
+        }
+        let hash_scope_cancellation = scope_cancellation.clone();
         let hash_cancellation = cancellation.clone();
         let hash = loom::thread::spawn(move || {
             let mut accounting = KernelAccounting::native(&hash_work, &hash_cancellation);
-            if shadow {
+            let cancelled_before = hash_scope_cancellation.is_cancelled();
+            let result = if shadow {
                 hash_lazy_value(&LazyShadow::Empty, &mut accounting)
             } else {
                 hash_lazy_value(&LazyOverlay::Empty, &mut accounting)
-            }
+            };
+            (cancelled_before, result)
         });
         let other_work = work.clone();
         let other = loom::thread::spawn(move || {
@@ -40,10 +57,20 @@ fn exercise(reentrant: bool, context: u8, shadow: bool) {
                 ..WorkCounters::UNCHARGED
             })
         });
-        let cancel = loom::thread::spawn(move || cancellation.cancel());
-        let result = hash.join().unwrap();
+        let cancel = loom::thread::spawn(move || scope_cancellation.cancel());
+        let (cancelled_before, result) = hash.join().unwrap();
         let other_result = other.join().unwrap();
         cancel.join().unwrap();
+        assert!(
+            !cancelled_before || result.is_err(),
+            "cancelled node hash was admitted"
+        );
+        if context == 2 {
+            assert!(
+                !cancellation.is_cancelled(),
+                "invocation cancellation reached the original"
+            );
+        }
         let receipt = original.receipt();
         let hashed = receipt.bytes_hashed - before.bytes_hashed;
         if let Ok(digest) = result {
@@ -82,19 +109,30 @@ fn exercise(reentrant: bool, context: u8, shadow: bool) {
 fn node_hash_preserves_prefix_and_other_charge_during_cancellation() {
     for context in 0..3 {
         for shadow in [false, true] {
-            exercise(false, context, shadow);
+            exercise(false, false, context, shadow);
         }
     }
 }
 
-#[test]
-fn charging_through_the_outer_meter_is_rejected_before_relocking() {
-    let error = std::panic::catch_unwind(|| exercise(true, 0, false))
-        .expect_err("reentrant meter must fail");
+fn counterexample(action: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
+    let error = std::panic::catch_unwind(action).expect_err("broken hash must fail");
     let message = error
         .downcast_ref::<String>()
         .map(String::as_str)
         .or_else(|| error.downcast_ref::<&str>().copied())
         .unwrap_or("");
-    assert!(message.contains("lock order:"), "{message}");
+    assert!(message.contains(expected), "{message}");
+}
+
+#[test]
+fn charging_through_the_outer_meter_is_rejected_before_relocking() {
+    counterexample(|| exercise(true, false, 0, false), "lock order:");
+}
+
+#[test]
+fn omitting_invocation_binding_loses_cancellation() {
+    counterexample(
+        || exercise(false, true, 2, false),
+        "cancelled node hash was admitted",
+    );
 }

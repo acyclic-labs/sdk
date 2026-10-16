@@ -435,6 +435,3 @@ fn benchmark_marker(name: &str, native: bool, begin: bool) {
         eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} native={native} begin={begin}");
     }
 }
-
-#[path = "lazy_nodes.rs"]
-mod lazy_nodes;
