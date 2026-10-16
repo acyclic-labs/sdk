@@ -145,7 +145,7 @@ pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Res
             if event.EventType == KEY_EVENT as u16
                 && key.bKeyDown != 0
                 && (key.uChar.UnicodeChar != 0
-                    || matches!(vk, 0x20 | 0x1b | 0x21..=0x2e | 0x70..=0x87))
+                    || matches!(vk, 0x20 | 0x1b | 0x21..=0x28 | 0x2d | 0x2e | 0x70..=0x87))
             {
                 if ReadFile(
                     input as HANDLE,
