@@ -31,8 +31,8 @@ pub fn wire(data: &[u8]) {
             );
         }
     }
-    // Every input also exercises a valid message, including arbitrary UTF-8
-    // escaping and the full u64 range, rather than only rejected random bytes.
+    // Every input also exercises valid messages, arbitrary UTF-8 escaping,
+    // unknown enum values and the full u64 range.
     let text = String::from_utf8_lossy(data).into_owned();
     let mut number = [0; 8];
     let copied = data.len().min(number.len());
@@ -74,6 +74,30 @@ pub fn journal(data: &[u8]) {
             // Repair of an incomplete trailing record is idempotent.
             assert_eq!(store.load().unwrap(), records);
         }
+    }
+    // Valid outer checksums force arbitrary bytes through the nested protobuf
+    // decoder. A random fuzzer cannot ordinarily guess both BLAKE3 checksums.
+    let mut framed = (data.len() as u32).to_le_bytes().to_vec();
+    framed.extend_from_slice(blake3::hash(data).as_bytes());
+    let checksum = blake3::hash(&framed);
+    framed.extend_from_slice(checksum.as_bytes());
+    framed.extend_from_slice(data);
+    std::fs::write(&path, &framed).unwrap();
+    {
+        let mut store = FileClientState::open(&path).unwrap();
+        match SessionRecord::decode(data) {
+            Ok(record) => assert_eq!(store.load().unwrap(), [record]),
+            Err(_) => assert!(store.load().is_err()),
+        }
+    }
+    framed[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let checksum = blake3::hash(&framed[..36]);
+    framed[36..68].copy_from_slice(checksum.as_bytes());
+    std::fs::write(&path, &framed).unwrap();
+    {
+        let mut store = FileClientState::open(&path).unwrap();
+        assert!(store.load().unwrap().is_empty());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
     }
     std::fs::write(&path, []).unwrap();
     let records = [
