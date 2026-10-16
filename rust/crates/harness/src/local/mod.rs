@@ -32,6 +32,8 @@ mod command_machine;
 mod commands;
 mod compaction;
 mod config;
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+mod mcp;
 mod owner;
 mod owner_record;
 mod runtime;
@@ -66,6 +68,8 @@ pub struct LocalHarness {
     context: ContextPipeline,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     // Outermost lock: admission -> filesystem/provider locks. Never held during
     // model/tool execution, and provider callbacks never acquire admission.
@@ -98,6 +102,11 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation =
+                mcp::install(&config.project, config.settings, tools, config.mcp_limits).await?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let tools = installation.tools;
             let compaction = compaction::select(
                 config.compaction,
                 &model,
@@ -221,6 +230,8 @@ impl LocalHarness {
                 scratch: &scratch,
                 journal: &journal,
                 tools: &tools,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                capabilities: &installation.capabilities,
                 limits: config.limits,
                 run_limits: config.run_limits,
                 session_limits: config.session_limits,
@@ -242,6 +253,8 @@ impl LocalHarness {
                 context: config.context,
                 limits: config.limits,
                 compaction,
+                #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+                mcp_diagnostics: installation.diagnostics,
                 goal_continuations: config.goal_continuations,
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
@@ -279,6 +292,13 @@ impl LocalHarness {
     #[must_use]
     pub fn tools(&self) -> &ToolRegistry {
         self.runtime.tool_registry()
+    }
+
+    /// Optional configured servers that failed startup; required failures reject opening.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn mcp_diagnostics(&self) -> &[crate::mcp::McpServerFailure] {
+        &self.mcp_diagnostics
     }
 
     /// Canonical checkout path, absent for a configured volume.

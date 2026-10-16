@@ -12,7 +12,7 @@ pub(super) struct Runtime {
     pub(super) creating_name: RwLock<(MountPath, Option<(FileId, ReadBasis)>)>,
     pub(super) writable: bool,
     pub(super) metadata_baselines: Mutex<HashMap<u128, OpenMetadataState>>,
-    pub(super) projection: Mutex<HashMap<MountPath, ReadOnlyBinding>>,
+    pub(super) projection: crate::sync::Mutex<HashMap<MountPath, ReadOnlyBinding>>,
     pub(super) projector: Arc<Projector>,
     pub(super) metadata_probes: Mutex<HashMap<MountPath, usize>>,
     pub(super) metadata_edits: FileLocks,

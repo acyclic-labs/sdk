@@ -1,0 +1,2 @@
+{"writes":[{"path":"../GOAL.md","text":"escape"},{"path":"plans/main.md","text":"safe"}],"expect":{"files":{
+  "plans/main.md":"safe"},"changes":[{"path":"plans/main.md","text":"safe"}],"errors":["invalid_path"]},"folder":""}

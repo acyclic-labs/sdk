@@ -109,6 +109,8 @@ impl LocalHarness {
             context: config.context,
             limits: config.limits,
             compaction,
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            mcp_diagnostics: Vec::new(),
             goal_continuations: config.goal_continuations,
             admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             #[cfg(feature = "native-execution")]
