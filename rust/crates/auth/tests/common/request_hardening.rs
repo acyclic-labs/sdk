@@ -1,5 +1,9 @@
 use super::common::{limits, root};
-use acyclic_auth::{authority::*, contract::*, valid_resource};
+use acyclic_auth::{
+    authority::{attenuate, Deny, PolicyDecision, Request, Target},
+    contract::{Block, Limits, RecordAttributes},
+    valid_resource,
+};
 use proptest::prelude::*;
 
 pub fn invalid_name() -> impl Strategy<Value = String> {
