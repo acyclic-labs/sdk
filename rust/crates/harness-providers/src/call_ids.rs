@@ -35,12 +35,7 @@ fn ids(request: &ModelRequest, adapter: Adapter) -> impl Iterator<Item = (&str, 
 }
 
 fn unchanged(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 40
-        && !id.starts_with(PREFIX)
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    !id.starts_with(PREFIX) && crate::protocol::name::CALL_ID.accepts(id)
 }
 
 impl<'a> CallIds<'a> {

@@ -27,3 +27,6 @@ include!("wasm_stream.rs");
 include!("follow_state.rs");
 
 include!("wasm_follow.rs");
+
+mod socket;
+mod remote;

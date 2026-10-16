@@ -24,3 +24,10 @@ pub mod session;
 
 mod watermarks;
 pub use watermarks::watermarks_from_wire;
+
+#[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
+mod status;
+#[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
+pub(crate) use status::status;
+
+include!("read_at.rs");

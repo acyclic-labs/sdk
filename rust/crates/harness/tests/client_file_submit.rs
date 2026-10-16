@@ -15,6 +15,8 @@ use std::{
     task::Poll,
 };
 
+#[path = "client_file_admission.rs"]
+mod admission;
 #[path = "../../harness-fuzz/support/file_client.rs"]
 mod parser;
 
@@ -738,6 +740,16 @@ async fn negative_control_acknowledging_before_target_publication_is_detected() 
 }
 
 proptest::proptest! {
+    #[test]
+    fn quota_error_projection_preserves_kind_and_exact_limit(commands in proptest::num::usize::ANY, bytes in proptest::num::u64::ANY) {
+        for (error, kind, limit) in [
+            (FileClientError::CommandQuota { limit: commands }, "CommandQuota", commands as u64),
+            (FileClientError::ByteQuota { limit: bytes }, "ByteQuota", bytes),
+        ] {
+            assert_eq!(serde_json::to_value(error).unwrap(), serde_json::json!({ "kind": kind, "detail": { "limit": limit } }));
+        }
+    }
+
     #[test]
     fn indeterminate_publication_never_bypasses_reconciled_quotas(
         id in proptest::num::u8::ANY, mode in 0u8..3, byte_quota in proptest::bool::ANY,

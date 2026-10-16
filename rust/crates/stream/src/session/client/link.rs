@@ -12,18 +12,18 @@ impl Pool {
         self.next_link = self.next_link.checked_add(1).ok_or(StreamError::Capacity)?;
         self.links.insert(node.clone(), link);
         self.read(node.clone(), response);
+        self.connections.advance()?;
         Ok(node)
     }
-    pub(super) fn dial(&mut self, node: wire::SessionNode, channel: Option<TransportChannel>) {
+    pub(super) fn dial(&mut self, node: wire::SessionNode, channel: Option<Endpoint>) {
         let name = node.node_id.clone();
         if self.links.contains_key(&name) || self.dials.contains_key(&name) {
             return;
         }
         let connect = self.connect.clone();
         let identity = self.identity.clone();
-        let authorization = self.authorization.clone();
-        let credential = self.credential.clone();
         let epoch = self.dial_epoch;
+        let executor = self.executor.clone();
         // Capture only the subscriber. Neither a dial nor a shared Link owns
         // an interest's span; physical spans are roots with causal links.
         let Some(owner) = self.dial_owner(&name) else {
@@ -32,20 +32,29 @@ impl Pool {
         let Some(route) = self.routes.get(&owner) else {
             return;
         };
+        let recovering = route.generation > 1;
         let context = route
             .observation
-            .in_scope(|| crate::obs::OperationSpan::new_root(tracing::Span::none()));
+            .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
-                let outcome = async {
-                    let channel = match channel {
-                        Some(channel) => channel,
-                        None => connect(node).await?,
-                    };
-                    open_link(channel, &name, identity, authorization, credential).await
-                }
-                .await;
+                let outcome = loop {
+                    let result = async {
+                        let channel = match &channel {
+                            Some(channel) => channel.clone(),
+                            None => connect(node.clone()).await?,
+                        };
+                        open_link(channel, &name, identity.clone(), executor.clone()).await
+                    }
+                    .await;
+                    match result {
+                        // Existing interests own recovery until cancellation.
+                        // Initial admission and credential rejection stay bounded.
+                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        result => break result,
+                    }
+                };
                 (name, epoch, outcome)
             })),
         );
@@ -114,6 +123,7 @@ impl Pool {
             tracing::debug!(event = "subscribe", generation = route.generation);
         });
         route.opened = false;
+        route.watermark = None;
         route.credit = wire::SessionWindow::default();
         let link = self
             .links
@@ -180,8 +190,9 @@ impl Pool {
         let Some(route) = self.routes.get_mut(&id).filter(|route| route.opened) else {
             return Ok(());
         };
-        let capacity =
-            u32::try_from(route.records.capacity()).map_err(|_| StreamError::Capacity)?;
+        let capacity = u32::try_from(route.records.capacity())
+            .map_err(|_| StreamError::Capacity)?
+            .saturating_sub(u32::from(route.raw));
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
             bytes: (u64::from(capacity)
@@ -260,26 +271,19 @@ impl Pool {
 }
 
 async fn open_link(
-    channel: TransportChannel,
+    channel: Endpoint,
     destination: &str,
     identity: Bytes,
-    authorization: Option<MetadataValue<Ascii>>,
-    credential: Option<grpc::CredentialProvider>,
+    executor: std::sync::Arc<dyn super::super::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
         let mut observation = Observation::session(attempt);
         let result = observation
             .operation
             .clone()
-            .scope(tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                handshake(
-                    channel.clone(),
-                    destination,
-                    identity.clone(),
-                    authorization.clone(),
-                    credential.clone(),
-                ),
+            .scope(deadline::until(
+                handshake(channel.clone(), destination, identity.clone()),
+                executor.sleep(1_000),
             ))
             .await
             .unwrap_or(Err(StreamError::Unavailable));
@@ -294,9 +298,7 @@ async fn open_link(
             }
         };
         match result {
-            Err(StreamError::Unavailable) if attempt < 2 => {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+            Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,
             result => return result,
         }
     }
@@ -304,16 +306,10 @@ async fn open_link(
 }
 
 async fn handshake(
-    channel: TransportChannel,
+    channel: Endpoint,
     destination: &str,
     identity: Bytes,
-    authorization: Option<MetadataValue<Ascii>>,
-    credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
-    // Resolve inside each bounded handshake, including retries and moved-node RPCs.
-    let authorization = grpc::request_authorization(authorization.as_ref(), credential.as_ref())
-        .await
-        .map_err(|error| grpc::status(&error))?;
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -332,8 +328,7 @@ async fn handshake(
     );
     let bytes = hello.encoded_len();
     sender.push(hello, bytes)?;
-    // Install ownership before either handshake await. Cancelling a handshake
-    // closes its request stream just as dropping an installed node link does.
+    // Ownership is installed before either credential or connection I/O await.
     let link = Link {
         observation: None,
         channel,
@@ -344,23 +339,15 @@ async fn handshake(
         epoch: 0,
         credit,
     };
-    let input = stream::unfold(Arc::clone(&link.sender), |sender| async move {
-        sender.next().await.ok().map(|frame| (frame, sender))
-    });
-    let mut request = Request::new(input);
-    request
-        .metadata_mut()
-        .insert("authorization", authorization);
-    let mut response =
-        wire::stream_session_service_client::StreamSessionServiceClient::new(link.channel.clone())
-            .session(request)
-            .await
-            .map_err(|error| grpc::status(&error))?
-            .into_inner();
+    let input: transport::Requests = Box::pin(stream::unfold(
+        Arc::clone(&link.sender),
+        |sender| async move { sender.next().await.ok().map(|frame| (frame, sender)) },
+    ));
+    let mut response = link.channel.session(input).await?;
     let welcome = response
-        .message()
+        .next()
         .await
-        .map_err(|error| grpc::status(&error))?
+        .transpose()?
         .ok_or(StreamError::Unavailable)?;
     if welcome.channel_id != 0 || welcome.generation != 0 {
         return Err(StreamError::Unavailable);
