@@ -53,7 +53,7 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
         let timer = timer.clone();
         move || {
             if broken {
-                block_on(fire(&UnkeyedRetry(&provider), &timer, inbox, 2))
+                block_on(fire(&UnkeyedRetry(provider), &timer, inbox, 2))
             } else {
                 block_on(fire(&provider, &timer, inbox, 2))
             }
@@ -101,12 +101,12 @@ fn timer_fire_survives_lost_ack_restart_and_concurrent_append() {
     });
 }
 
-struct UnkeyedRetry<'a>(&'a MemoryStream);
+struct UnkeyedRetry(MemoryStream);
 
 macro_rules! delegate {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
-        impl StreamProvider for UnkeyedRetry<'_> {
+        impl StreamProvider for UnkeyedRetry {
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
                 self.0.$name($arg).await
             })*
