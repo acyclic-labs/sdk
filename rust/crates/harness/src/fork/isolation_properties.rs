@@ -93,6 +93,18 @@ fn valid_seed(child: u8, readers: u16, revision: u8, result: bool) -> ForkSeed {
         seed.child_result_volume = Some(volume);
         seed.child_result_generation = Some(generation);
     }
+    let artifact = ResourceRevision::Artifact(
+        ArtifactRef::new(
+            seed.child_private_volume.provider().clone(),
+            vec![revision],
+            Some("1".into()),
+        )
+        .unwrap(),
+    );
+    seed.resources.push(CapturedResource {
+        source: artifact.clone(),
+        revision: artifact,
+    });
     seed
 }
 
@@ -131,7 +143,8 @@ fn violate(seed: &mut ForkSeed, violation: Violation) {
         Violation::MissingHistory => {
             seed.resources.remove(0);
         }
-        Violation::DuplicateSelection => seed.resources.push(seed.resources[0].clone()),
+        // Artifacts do not affect the required singleton counts.
+        Violation::DuplicateSelection => seed.resources.push(seed.resources[3].clone()),
         Violation::AliasedResult => {
             seed.child_result_volume = Some(seed.child_private_volume.clone());
             seed.child_result_generation = Some(seed.child_private_generation.clone());
