@@ -130,7 +130,11 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
-            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+            let state = match &config.state_directory {
+                Some(directory) => directory.clone(),
+                None => owner::state_directory(&config.project)?,
+            };
+            let directory = owner::directory(&state)?;
             let owner = owner::Owner::open(&directory, &config.project)?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {

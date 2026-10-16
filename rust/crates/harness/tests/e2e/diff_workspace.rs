@@ -12,6 +12,15 @@ use std::{path::Path, sync::Arc};
 pub(super) type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 pub(super) type Reader = FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>;
 
+pub(super) fn temporary() -> std::io::Result<tempfile::TempDir> {
+    // Real native files, including journal syncs and cold reopen, without
+    // competing with the build box's persistent disk journal.
+    #[cfg(target_os = "linux")]
+    return tempfile::tempdir_in("/dev/shm");
+    #[cfg(not(target_os = "linux"))]
+    tempfile::tempdir()
+}
+
 pub(super) async fn seed(
     directory: &Path,
     case: &DiffCase,

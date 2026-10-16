@@ -18,6 +18,7 @@ pub struct LocalHarnessConfig {
     /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
     pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
+    pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context: ContextPipeline,
     pub(super) tools: Vec<Tool>,
@@ -41,6 +42,7 @@ impl LocalHarnessConfig {
         Self {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
+            state_directory: None,
             model,
             context: ContextPipeline::default(),
             tools: Vec::new(),
@@ -70,6 +72,12 @@ impl LocalHarnessConfig {
             LocalProject::Volume { directory, .. } => directory,
         };
         self.project = LocalProject::Volume { directory, volume };
+        self
+    }
+    /// Selects the caller-owned durable state directory, outside the checkout.
+    #[must_use]
+    pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(directory.into());
         self
     }
     /// Selects the stock model's context pipeline.

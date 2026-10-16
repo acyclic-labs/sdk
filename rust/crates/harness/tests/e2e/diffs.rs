@@ -19,8 +19,11 @@ pub(super) async fn run(case: DiffCase) -> TestResult {
 }
 
 pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) -> TestResult {
-    let directory = tempfile::tempdir()?;
-    let (host, volume, workspace, reader) = diff_workspace::seed(directory.path(), &case).await?;
+    let temporary = diff_workspace::temporary()?;
+    let directory = temporary.path().join("filesystem");
+    std::fs::create_dir(&directory)?;
+    let state = temporary.path().join("state");
+    let (host, volume, workspace, reader) = diff_workspace::seed(&directory, &case).await?;
     let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
@@ -28,11 +31,15 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     let mut view = DiffView::new(volume.clone(), base.clone())?;
     let model = Model::new("scripted".into(), "diff".into(), "1".into(), Value::Null)?;
     let provider = Arc::new(ScriptedModelProvider::new(case.turns));
-    let mut config = local_harness_config(directory.path(), (model, provider.clone()))?
+    let mut config = local_harness_config(&directory, (model, provider.clone()))?
+        .state_directory(&state)
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled);
     config.goal_continuations = None;
     let harness = LocalHarness::open(config).await?;
+    if !state.join("owner.json").is_file() {
+        return Err("harness did not use the fixture-owned state directory".into());
+    }
     let stream = local_task_stream(&harness);
     let operation = OperationId::new();
     let acyclic_harness::Admission::Accepted(acyclic_harness::runtime::RuntimeTask::Durable {
@@ -132,7 +139,8 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
             );
         }
     }
-    if !drop_publication {
+    let broken = drop_publication.then(|| view.clone());
+    {
         let changes = paths
             .into_iter()
             .map(|path| DiffPath {
@@ -174,11 +182,15 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
         )
         .await?;
     }
-    let rendered: std::collections::BTreeMap<_, _> = view
-        .files()
-        .iter()
-        .map(|(path, diff)| Ok((path.clone(), serde_json::to_value(diff)?)))
-        .collect::<TestResult<_>>()?;
+    let mut rendered = rendered_files(&view)?;
+    if let Some(broken) = broken {
+        if rendered != case.expect.diffs {
+            return Err("baseline consumer differs before fault injection".into());
+        }
+        // The second consumer misses this same publication. Both see identical
+        // model execution, wire frames, persisted files and fixture expectations.
+        rendered = rendered_files(&broken)?;
+    }
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(frames);
     drop(stream);
@@ -189,7 +201,7 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     drop(host);
     drop(initial);
     drop(target);
-    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
+    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
     let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
     for (path, expected) in &case.expect.files {
         let read = cold
@@ -202,13 +214,6 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
                 return Err(format!("persisted file differs: {path}: {actual:?}").into());
             }
         }
-    }
-    if rendered != case.expect.diffs {
-        return Err(format!(
-            "rendered diffs differ: expected {:?}, got {rendered:?}",
-            case.expect.diffs
-        )
-        .into());
     }
     let requests = provider.requests();
     if requests.len() != 2
@@ -226,5 +231,19 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     {
         return Err("diff scenario prompt was lost before model dispatch".into());
     }
+    if rendered != case.expect.diffs {
+        return Err(format!(
+            "rendered diffs differ: expected {:?}, got {rendered:?}",
+            case.expect.diffs
+        )
+        .into());
+    }
     Ok(())
+}
+
+fn rendered_files(view: &DiffView) -> TestResult<std::collections::BTreeMap<String, Value>> {
+    view.files()
+        .iter()
+        .map(|(path, diff)| Ok((path.clone(), serde_json::to_value(diff)?)))
+        .collect()
 }
