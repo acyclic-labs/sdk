@@ -200,12 +200,11 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        let context = crate::obs::OperationSpan::new(tracing::Span::current());
-        tokio::spawn(context.scope(async move {
+        tokio::spawn(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        }));
+        });
         Self {
             commands,
             removed,

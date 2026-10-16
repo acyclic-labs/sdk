@@ -24,17 +24,27 @@ impl Pool {
         let authorization = self.authorization.clone();
         let credential = self.credential.clone();
         let epoch = self.dial_epoch;
-        self.dials.push(Box::pin(async move {
-            let outcome = async {
-                let channel = match channel {
-                    Some(channel) => channel,
-                    None => connect(node).await?,
-                };
-                open_link(channel, &name, identity, authorization, credential).await
-            }
-            .await;
-            (name, epoch, outcome)
-        }));
+        // The cached pool has no caller context. Each physical attempt
+        // borrows a live interest's origin, including after reconnect or move.
+        let context = self
+            .routes
+            .values()
+            .find(|route| route.node == name)
+            .map(|route| route.observation.clone());
+        self.dials.push(Box::pin(crate::obs::Scoped::with_context(
+            async move {
+                let outcome = async {
+                    let channel = match channel {
+                        Some(channel) => channel,
+                        None => connect(node).await?,
+                    };
+                    open_link(channel, &name, identity, authorization, credential).await
+                }
+                .await;
+                (name, epoch, outcome)
+            },
+            context,
+        )));
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
         let Some(link) = self.links.get(&node) else {
