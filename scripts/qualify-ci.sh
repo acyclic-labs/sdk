@@ -181,6 +181,7 @@ pinned_pi() {
 case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --timer
     nextest --workspace --all-features --locked
     ;;
   docs)

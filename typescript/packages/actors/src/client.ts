@@ -1,5 +1,5 @@
 import { isExpectedNativeAbsence } from "./generated/native-absence.js";
-import { TIMER_STREAM_PREFIX, type TimerRecord } from "./generated/timers.js";
+import type { TimerRecord } from "./generated/timers.js";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 import {
@@ -248,7 +248,6 @@ function wasmBinding(): ActorsRustBinding {
 
 interface WasmActorsModule extends ActorsNominalBinding {
   readonly timerRecord: (task: string, operation: string, deadline: bigint) => Uint8Array;
-  readonly timerRetentionKey: (task: string, operation: string) => Uint8Array;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
 }
@@ -274,16 +273,15 @@ async function loadWasmModule(): Promise<WasmActorsModule> {
   return wasmModulePromise;
 }
 
-/** Retain a timer through the caller's existing scoped Stream append capability. */
+/** Retain through the host's scoped publisher, which owns fencing and retry rules. */
 export async function schedule<Result>(
-  append: (path: string, records: readonly Uint8Array[], key: Uint8Array) => Promise<Result>,
+  retain: (timer: Readonly<TimerRecord<string, string>>, encoded: Uint8Array) => Promise<Result>,
   timer: TimerRecord<string, string>,
 ): Promise<Result> {
   const { task_id, operation_id, deadline_unix_ms } = timer;
   const wasm = await loadWasmModule();
   const body = wasm.timerRecord(task_id, operation_id, deadline_unix_ms);
-  const key = wasm.timerRetentionKey(task_id, operation_id);
-  return append(`${TIMER_STREAM_PREFIX}/${task_id}`, [body], key);
+  return retain({ task_id, operation_id, deadline_unix_ms }, body);
 }
 
 /** Absolute-deadline alarm; a replacement uses a fresh stable operation ID. */

@@ -70,23 +70,51 @@ impl TimerRecord {
     /// Encode the exact existing harness JSON layout without a second source record.
     pub fn encode(&self) -> Result<Vec<u8>, TimerError> {
         self.validate()?;
-        let mut value = serde_json::to_value(self).map_err(|_| TimerError::Record)?;
-        value.sort_all_objects();
-        serde_json::to_vec(&value).map_err(|_| TimerError::Record)
+        self.encode_validated()
+    }
+
+    fn encode_validated(&self) -> Result<Vec<u8>, TimerError> {
+        #[derive(Serialize)]
+        struct Sorted<'a> {
+            deadline_unix_ms: u64,
+            operation_id: &'a str,
+            task_id: &'a str,
+        }
+        let mut bytes = Vec::with_capacity(MAX_TIMER_RECORD_BYTES);
+        serde_json::to_writer(
+            &mut bytes,
+            &Sorted {
+                deadline_unix_ms: self.deadline_unix_ms,
+                operation_id: &self.operation_id,
+                task_id: &self.task_id,
+            },
+        )
+        .map_err(|_| TimerError::Record)?;
+        Ok(bytes)
     }
 
     /// Validate the public string projection before retaining a scheduling effect.
     pub fn validate(&self) -> Result<(), TimerError> {
-        for identity in [&self.task_id, &self.operation_id] {
-            let parsed = uuid::Uuid::parse_str(identity).map_err(|_| TimerError::Identity)?;
-            if parsed.hyphenated().to_string() != *identity {
+        self.validated_ids().map(|_| ())
+    }
+
+    fn validated_ids(&self) -> Result<(uuid::Uuid, uuid::Uuid), TimerError> {
+        let parse = |identity: &str| {
+            if identity.len() != 36 {
                 return Err(TimerError::Identity);
             }
-        }
+            let parsed = uuid::Uuid::parse_str(identity).map_err(|_| TimerError::Identity)?;
+            let mut canonical = [0; 36];
+            if parsed.hyphenated().encode_lower(&mut canonical) != identity {
+                return Err(TimerError::Identity);
+            }
+            Ok(parsed)
+        };
+        let ids = (parse(&self.task_id)?, parse(&self.operation_id)?);
         if self.deadline_unix_ms == 0 {
             return Err(TimerError::Deadline);
         }
-        Ok(())
+        Ok(ids)
     }
 
     /// Locate the original retained task timer stream, not a scheduler-owned copy.
@@ -111,34 +139,29 @@ impl TimerRecord {
     /// Reusing a timer for another payload/target must fail the provider's exact
     /// request check instead of silently treating retention as a completed fire.
     pub fn fire_key(&self) -> Result<acyclic_stream::IdempotencyKey, TimerError> {
-        Ok(acyclic_stream::IdempotencyKey::new(
-            format!("timer-fire:{}", self.timer_id()?).into_bytes(),
-        )?)
+        self.validate()?;
+        self.fire_key_validated()
     }
 
-    /// Same retention identity as the harness's event_key("timers", task, operation).
-    pub fn retention_key(&self) -> Result<acyclic_stream::IdempotencyKey, TimerError> {
+    fn fire_key_validated(&self) -> Result<acyclic_stream::IdempotencyKey, TimerError> {
         Ok(acyclic_stream::IdempotencyKey::new(
-            blake3::hash(self.timer_id()?.as_bytes())
-                .as_bytes()
-                .to_vec(),
+            format!(
+                "timer-fire:{TIMER_STREAM_PREFIX}/{}/{}",
+                self.task_id, self.operation_id
+            )
+            .into_bytes(),
         )?)
     }
 }
 
-/// Retain a scheduling request in the existing timer source stream.
-pub async fn schedule<P: acyclic_stream::StreamProvider>(
-    provider: &P,
+/// Retain through the host's scoped publisher, preserving its fence and retry rules.
+/// The SDK never appends a competing source record or invents a publication key.
+pub async fn schedule<T, E: From<TimerError>>(
+    retain: impl AsyncFnOnce(uuid::Uuid, uuid::Uuid, u64) -> Result<T, E>,
     timer: &TimerRecord,
-) -> Result<acyclic_stream::AppendOutcome, TimerError> {
-    Ok(provider
-        .append(acyclic_stream::AppendRequest {
-            path: timer.stream_path()?,
-            records: vec![timer.encode()?.into()],
-            if_tail: None,
-            idempotency_key: Some(timer.retention_key()?),
-        })
-        .await?)
+) -> Result<T, E> {
+    let (task, operation) = timer.validated_ids()?;
+    retain(task, operation, timer.deadline_unix_ms).await
 }
 
 /// Absolute-deadline alarm spelling of schedule; replacement uses a fresh operation ID.
@@ -160,9 +183,9 @@ pub async fn fire<P: acyclic_stream::StreamProvider>(
         provider
             .append(acyclic_stream::AppendRequest {
                 path: inbox,
-                records: vec![timer.encode()?.into()],
+                records: vec![timer.encode_validated()?.into()],
                 if_tail: None,
-                idempotency_key: Some(timer.fire_key()?),
+                idempotency_key: Some(timer.fire_key_validated()?),
             })
             .await?,
     ))

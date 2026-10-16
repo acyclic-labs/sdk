@@ -12,9 +12,6 @@ fuzz_target!(|bytes: &[u8]| {
             Ok(record.clone())
         );
         assert!(record.stream_path().is_ok());
-        assert_ne!(
-            record.retention_key().expect("retain"),
-            record.fire_key().expect("fire")
-        );
+        assert!(record.fire_key().expect("fire").as_bytes().len() > 32);
     }
 });

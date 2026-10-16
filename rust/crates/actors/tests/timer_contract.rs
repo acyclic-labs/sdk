@@ -22,7 +22,14 @@ proptest! {
     fn timer_codec_round_trips(task in any::<[u8;16]>(), operation in any::<[u8;16]>(), deadline in 1u64..=u64::MAX) {
         let record = timer(task, operation, deadline)?;
         oracle::check(&record);
-        let bytes = record.encode()?;
+        let mut checked = None;
+        let allocation = allocation_counter::measure(|| checked = Some(record.validate()));
+        prop_assert_eq!(allocation.count_total, 0, "UUID validation uses stack buffers");
+        checked.ok_or_else(|| TestCaseError::fail("validation ran"))??;
+        let mut encoded = None;
+        let allocation = allocation_counter::measure(|| encoded = Some(record.encode()));
+        prop_assert_eq!((allocation.count_total, allocation.bytes_total), (1, MAX_TIMER_RECORD_BYTES as u64));
+        let bytes = encoded.ok_or_else(|| TestCaseError::fail("encoding ran"))??;
         prop_assert!(bytes.len() <= MAX_TIMER_RECORD_BYTES);
         prop_assert_eq!(TimerRecord::decode(&bytes)?, record);
     }
@@ -33,13 +40,11 @@ proptest! {
         let original = timer(task, operation, deadline)?;
         let changed_deadline = timer(task, operation, 1)?;
         prop_assert_eq!(original.fire_key()?, changed_deadline.fire_key()?);
-        prop_assert_ne!(original.fire_key()?, original.retention_key()?);
         let neighbor = timer(task, other, deadline)?;
         prop_assert_eq!(original.timer_id()? == neighbor.timer_id()?, operation == other);
         prop_assert_eq!(original.fire_key()? == neighbor.fire_key()?, operation == other);
-        let key = original.retention_key()?;
-        let digest = blake3::hash(original.timer_id()?.as_bytes());
-        prop_assert_eq!(key.as_bytes(), digest.as_bytes());
+        prop_assert!(original.fire_key()?.as_bytes().starts_with(b"timer-fire:harness/v2/timers/"));
+        prop_assert!(original.fire_key()?.as_bytes().len() > 32, "cannot alias native 32-byte publication keys");
     }
 
     /// Every admitted untrusted byte string re-encodes to the same semantic record.
@@ -60,13 +65,40 @@ fn oracle_detects_bypassed_deadline_admission() {
 }
 
 #[tokio::test]
+async fn scheduling_delegates_validated_ids_to_the_scoped_publisher()
+-> Result<(), Box<dyn std::error::Error>> {
+    let record = timer([1; 16], [2; 16], 20)?;
+    let result = schedule(
+        async |task, operation, deadline| {
+            Ok::<_, TimerError>((task.into_bytes(), operation.into_bytes(), deadline))
+        },
+        &record,
+    )
+    .await?;
+    assert_eq!(result, ([1; 16], [2; 16], 20));
+    let invalid = TimerRecord {
+        deadline_unix_ms: 0,
+        ..record
+    };
+    let mut called = false;
+    let result = schedule(
+        async |_, _, _| {
+            called = true;
+            Ok::<_, TimerError>(())
+        },
+        &invalid,
+    )
+    .await;
+    assert_eq!(result, Err(TimerError::Deadline));
+    assert!(!called);
+    Ok(())
+}
+
+#[tokio::test]
 async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = MemoryStream::default();
     let record = timer([1; 16], [2; 16], 20)?;
-    schedule(&provider, &record).await?;
-    schedule(&provider, &record).await?;
-    assert_eq!(provider.tail(record.stream_path()?).await?, 1);
     let inbox = StreamPath::new("actors/agent/inbox")?;
     provider
         .append(acyclic_stream::AppendRequest {
@@ -95,10 +127,6 @@ async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
         deadline_unix_ms: 21,
         ..record.clone()
     };
-    assert_eq!(
-        schedule(&provider, &changed).await,
-        Err(TimerError::Stream(StreamError::IdempotencyMismatch))
-    );
     assert_eq!(
         fire(&provider, &changed, inbox.clone(), 21).await,
         Err(TimerError::Stream(StreamError::IdempotencyMismatch))
@@ -138,7 +166,16 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
     for entry in std::fs::read_dir(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/timer_record"),
     )? {
-        match TimerRecord::decode(&std::fs::read(entry?.path())?) {
+        let entry = entry?;
+        let name = entry.file_name();
+        let expected = match name.to_str() {
+            Some("valid.json") => true,
+            Some("zero.json" | "unknown.json" | "duplicate.json") => false,
+            _ => return Err("unclassified timer corpus seed".into()),
+        };
+        let decoded = TimerRecord::decode(&std::fs::read(entry.path())?);
+        assert_eq!(decoded.is_ok(), expected, "{}", name.to_string_lossy());
+        match decoded {
             Ok(record) => {
                 assert_eq!(TimerRecord::decode(&record.encode()?)?, record);
                 valid += 1;
@@ -146,7 +183,7 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
             Err(_) => invalid += 1,
         }
     }
-    assert!(valid > 0 && invalid > 0);
+    assert_eq!((valid, invalid), (1, 3));
     Ok(())
 }
 

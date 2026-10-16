@@ -9,6 +9,36 @@ impl crate::filesystem::UploadRecord for TimerEvent {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Guest scheduling uses the same fenced publication as native timer commands.
+    #[cfg(feature = "filesystem")]
+    pub async fn schedule_timer(
+        self: &Arc<Self>,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        timer: &acyclic_actors::timers::TimerRecord,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        acyclic_actors::timers::schedule(
+            async |target, operation, deadline| {
+                if target.into_bytes() != task.into_bytes() {
+                    return Err(Error::Unauthorized(
+                        "timer target differs from scoped task".into(),
+                    ));
+                }
+                self.poll_timer(
+                    task,
+                    fence,
+                    OperationId::from_bytes(operation.into_bytes()),
+                    deadline,
+                    io,
+                )
+                .await
+            },
+            timer,
+        )
+        .await
+    }
+
     /// Retains the exact timer identity under the current task fence.
     #[cfg(feature = "filesystem")]
     pub async fn poll_timer(

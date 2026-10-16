@@ -63,7 +63,7 @@ const MAX_MAIL_LOCATION_BYTES: usize = 1024;
 type TimerEvent = acyclic_actors::timers::TimerRecord<TaskId, OperationId>;
 
 #[test]
-fn timer_record_preserves_harness_bytes_and_retry_identity() -> Result<()> {
+fn sdk_and_native_timer_bytes_match() -> Result<()> {
     let record = acyclic_actors::timers::TimerRecord::new(
         "01010101-0101-0101-0101-010101010101".into(),
         "02020202-0202-0202-0202-020202020202".into(),
@@ -76,19 +76,6 @@ fn timer_record_preserves_harness_bytes_and_retry_identity() -> Result<()> {
     let event: TimerEvent = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(crate::contract::canonical_json_bytes(&event)?, bytes);
-    let expected = CoordinatorTaskHost::<acyclic_stream::MemoryStream>::event_key(
-        "timers",
-        event.task_id,
-        event.operation_id,
-        &mut None,
-    )?
-    .0;
-    assert_eq!(
-        expected,
-        record
-            .retention_key()
-            .map_err(|error| Error::Invalid(error.to_string()))?
-    );
     Ok(())
 }
 
