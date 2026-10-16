@@ -8,7 +8,7 @@ impl LocalHarness {
     /// Stock command bindings using the command context's authenticated lineage.
     pub(super) async fn stock_commands(
         &self,
-        mut lineage: Vec<TaskId>,
+        lineage: Vec<TaskId>,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
             '_,
@@ -17,6 +17,13 @@ impl LocalHarness {
             LocalObjectBackend,
         >,
     > {
+        let model = self.command_model(lineage).await?;
+        self.runtime
+            .commands()
+            .with_model(&model, self.provider.clone(), &self.compaction, None)
+    }
+
+    pub(super) async fn command_model(&self, mut lineage: Vec<TaskId>) -> Result<Model> {
         let mut model = self.model.clone();
         lineage.reverse();
         for directory in std::iter::once("config".to_owned())
@@ -50,9 +57,7 @@ impl LocalHarness {
             }
         }
         model.validate()?;
-        self.runtime
-            .commands()
-            .with_model(&model, self.provider.clone(), &self.compaction, None)
+        Ok(model)
     }
     /// Owner-gated stock commands for this same runtime.
     pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
@@ -74,6 +79,16 @@ impl LocalHarness {
         }
         let prompt = self.prompt_context(Some(parent), prompt).await?;
         let (receive, model) = self.stage_turn(operation, &prompt).await?;
+        self.admit_turn(operation, parent, receive, model).await
+    }
+
+    pub(super) async fn admit_turn(
+        &self,
+        operation: OperationId,
+        parent: TaskId,
+        receive: WorkflowCommand,
+        model: WorkflowCommand,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
         let definition = self
             .runtime
             .harness()
@@ -123,6 +138,7 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
+            summary_source: None,
             context_manifest: match &self.context_manifest {
                 Some(reference) => reference.clone(),
                 None => {
@@ -187,7 +203,7 @@ impl LocalHarness {
             .map(Some)
     }
 
-    async fn finish_turn_inputs(
+    pub(super) async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,

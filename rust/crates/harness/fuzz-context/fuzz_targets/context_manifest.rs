@@ -1,7 +1,7 @@
 #![no_main]
 
 use acyclic_harness::{
-    context::{ContextDiscoveryLimits, ContextManifest},
+    context::{Context, ContextDiscoveryLimits, ContextManifest},
     conversation::Limits,
     filesystem::ModelTaskCommand,
 };
@@ -43,6 +43,10 @@ fuzz_target!(|input: &[u8]| {
                 command
             );
         }
+    }
+    if let Ok(source) = serde_json::from_slice::<Context>(input) {
+        let encoded = serde_json::to_vec(&source).unwrap();
+        assert_eq!(serde_json::from_slice::<Context>(&encoded).unwrap(), source);
     }
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {

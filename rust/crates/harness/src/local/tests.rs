@@ -18,6 +18,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
 mod context;
+mod compact;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;

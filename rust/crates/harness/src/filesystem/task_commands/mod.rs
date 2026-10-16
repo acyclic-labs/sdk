@@ -141,6 +141,9 @@ pub struct ModelTaskCommand {
     pub input: ModelContent,
     /// Exact immutable manifest file retained with this admitted command.
     pub context_manifest: FileRef,
+    /// Pinned context JSON to summarize through the tool-free stock summary engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_source: Option<Box<FileRef>>,
     /// An exact recorded history selection, when available.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,

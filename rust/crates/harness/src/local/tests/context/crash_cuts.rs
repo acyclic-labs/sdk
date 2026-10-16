@@ -2,11 +2,26 @@ use super::*;
 use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct Interrupted<'a> {
+pub(in crate::local::tests) struct Interrupted<'a> {
     publisher: &'a dyn ContentPublisher,
     cut: usize,
     after: bool,
     calls: AtomicUsize,
+}
+
+impl<'a> Interrupted<'a> {
+    pub(in crate::local::tests) fn new(
+        publisher: &'a dyn ContentPublisher,
+        cut: usize,
+        after: bool,
+    ) -> Self {
+        Self {
+            publisher,
+            cut,
+            after,
+            calls: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl ContentPublisher for Interrupted<'_> {
