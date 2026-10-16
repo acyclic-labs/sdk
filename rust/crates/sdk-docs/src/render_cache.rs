@@ -23,6 +23,16 @@ struct Cache {
     normalized: RefCell<BTreeMap<PathBuf, BTreeMap<Rc<[u8]>, Rc<[u8]>>>>,
 }
 
+// The file reader preserves a buffer handle for unchanged inputs. Prefer that
+// identity before the content fallback, so repeated cache hits do not scan whole
+// receipts. Distinct handles with identical bytes still share derived values.
+fn lookup<T: Clone>(values: &BTreeMap<Rc<[u8]>, T>, raw: &Rc<[u8]>) -> Option<T> {
+    values
+        .iter()
+        .find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| value.clone()))
+        .or_else(|| values.get(raw).cloned())
+}
+
 // public-api accepts a path only. Reuse one private adapter per operation,
 // in the effective child temporary directory, truncating before every rendering.
 pub(crate) fn with_adapter<T>(
@@ -225,7 +235,7 @@ pub(crate) fn json(raw: &Rc<[u8]>) -> Result<Rc<serde_json::Value>, serde_json::
     if let Some(value) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| cache.json.borrow().get(raw.as_ref()).cloned())
+            .and_then(|cache| lookup(&cache.json.borrow(), raw))
     }) {
         return Ok(value);
     }
@@ -252,8 +262,7 @@ pub(crate) fn normalized(
                 .normalized
                 .borrow()
                 .get(root)
-                .and_then(|values| values.get(raw.as_ref()))
-                .cloned()
+                .and_then(|values| lookup(values, raw))
         })
     }) {
         return Ok(value);
@@ -276,7 +285,7 @@ pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_js
     if let Some(parsed) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| cache.parsed.borrow().get(&raw).cloned())
+            .and_then(|cache| lookup(&cache.parsed.borrow(), &raw))
     }) {
         return Ok(parsed);
     }
@@ -296,7 +305,7 @@ pub(crate) fn extract(
     if let Some(items) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| cache.rendered.borrow().get(bytes.as_ref()).cloned())
+            .and_then(|cache| lookup(&cache.rendered.borrow(), bytes))
     }) {
         return Ok(items);
     }
@@ -327,6 +336,23 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn lookup_preserves_content_identity_across_shared_and_distinct_buffers(
+            inputs in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..16),
+            query in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let values = inputs.iter().map(|bytes| {
+                (Rc::<[u8]>::from(bytes.as_slice()), bytes.len())
+            }).collect::<BTreeMap<_, _>>();
+            for raw in values.keys() {
+                prop_assert_eq!(lookup(&values, &Rc::clone(raw)), values.get(raw).copied());
+                let copy = Rc::from(raw.as_ref());
+                prop_assert!(!Rc::ptr_eq(raw, &copy));
+                prop_assert_eq!(lookup(&values, &copy), values.get(raw).copied());
+            }
+            let raw = Rc::from(query.as_slice());
+            prop_assert_eq!(lookup(&values, &raw), values.get(&raw).copied());
+        }
         #[test]
         fn normalized_reuse_binds_every_byte_and_repository_root(leaf in "[a-z]{1,12}", version in ".{0,16}") {
             let raw: Rc<[u8]> = serde_json::to_vec(&serde_json::json!({
