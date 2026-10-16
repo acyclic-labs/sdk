@@ -1,5 +1,5 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::{Binding, KEYMAP};
+use crate::{Binding, KEYMAP, named_action};
 use std::{collections::BTreeMap, io, path::Path};
 
 /// User remapping data. JSON maps canonical source chords to default action
@@ -28,9 +28,16 @@ impl InputKeymap {
             let target = if target.is_empty() {
                 target
             } else {
-                canonical_chord(&target).ok_or_else(invalid)?
+                if named_action(&target).is_some() {
+                    target
+                } else {
+                    canonical_chord(&target).ok_or_else(invalid)?
+                }
             };
-            if !target.is_empty() && !KEYMAP.iter().any(|b| b.chord == target) {
+            if !target.is_empty()
+                && named_action(&target).is_none()
+                && !KEYMAP.iter().any(|b| b.chord == target)
+            {
                 return Err(invalid());
             }
             if overrides
@@ -63,11 +70,22 @@ impl InputKeymap {
 
     /// Resolve an already canonical event chord using the generated help data.
     /// Override files are canonicalized once by `from_json`.
-    pub fn resolve(&self, chord: &str) -> Option<Binding> {
-        let target = self.overrides.get(chord).map_or(chord, String::as_str);
+    pub fn resolve(&self, chord: &str) -> Option<Binding<'_>> {
+        if let Some((source, target)) = self.overrides.get_key_value(chord) {
+            if let Some(binding) = named_action(target) {
+                return Some(Binding {
+                    chord: source,
+                    ..binding
+                });
+            }
+            return KEYMAP
+                .iter()
+                .find(|binding| binding.chord == target)
+                .copied();
+        }
         KEYMAP
             .iter()
-            .find(|binding| binding.chord == target)
+            .find(|binding| binding.chord == chord)
             .copied()
     }
 
@@ -103,7 +121,7 @@ impl InputKeymap {
     }
 }
 
-fn canonical_chord(chord: &str) -> Option<String> {
+pub(crate) fn canonical_chord(chord: &str) -> Option<String> {
     let keys: Vec<_> = chord.split(' ').collect();
     if keys.is_empty() || keys.len() > 2 {
         return None;
@@ -131,6 +149,15 @@ fn canonical_chord(chord: &str) -> Option<String> {
                 "End" => KeyCode::End,
                 "Backspace" => KeyCode::Backspace,
                 "Delete" => KeyCode::Delete,
+                "Insert" => KeyCode::Insert,
+                "Space" => KeyCode::Char(' '),
+                key if key.starts_with('F') => {
+                    let number = key[1..].parse::<u8>().ok()?;
+                    if !(1..=24).contains(&number) {
+                        return None;
+                    }
+                    KeyCode::F(number)
+                }
                 "Enter" => KeyCode::Enter,
                 "Tab" => KeyCode::Tab,
                 "Esc" => KeyCode::Esc,

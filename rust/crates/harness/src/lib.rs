@@ -78,6 +78,8 @@ pub mod test_support;
 pub mod tool;
 pub mod tools;
 #[cfg(feature = "tui")]
+pub mod tui_config;
+#[cfg(feature = "tui")]
 pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

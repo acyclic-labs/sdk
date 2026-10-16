@@ -56,6 +56,8 @@ struct MessageEdit {
 pub struct PromptInput {
     /// Editable prompt state.
     pub editor: Editor,
+    /// Semantic UI roles resolved against the detected terminal profile.
+    pub theme: crate::config::ThemeStyles,
     /// Shared input-history file projection; load/save with the history codecs.
     /// Message edits and search previews never own or replace these entries.
     history: PromptHistory,
@@ -88,6 +90,21 @@ pub struct PromptInput {
 }
 
 impl PromptInput {
+    /// Apply preferences to active and suspended drafts so cancelling an edit or
+    /// search cannot resurrect preferences from an older file snapshot.
+    pub fn set_settings(&mut self, settings: crate::UiSettings) -> bool {
+        if !self.editor.set_settings(settings) {
+            return false;
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.original.set_settings(settings);
+        }
+        if let Some(edit) = self.editing.as_mut() {
+            edit.draft.set_settings(settings);
+        }
+        true
+    }
+
     /// Current history-file projection, shared by every editor context.
     pub fn history(&self) -> &PromptHistory {
         &self.history
@@ -125,7 +142,9 @@ impl PromptInput {
             draft: self.editor.clone(),
         });
         self.history.reset();
+        let settings = *self.editor.settings();
         self.editor = Editor::new(text);
+        self.editor.set_settings(settings);
         effects
     }
 
@@ -157,16 +176,19 @@ impl PromptInput {
             return 0;
         }
         let elapsed = now_ms.saturating_sub(self.last_activity);
-        if elapsed < 500 {
+        let idle = self.editor.settings().cursor_idle_ms as u64;
+        let cycle = self.editor.settings().cursor_cycle_ms as u64;
+        let half = cycle / 2;
+        if elapsed < idle {
             return 255;
         }
-        let phase = (elapsed - 500) % 1000;
-        ((if phase < 500 {
-            500 - phase
+        let phase = (elapsed - idle) % cycle;
+        ((if phase < half {
+            half - phase
         } else {
-            phase - 500
+            phase - half
         }) * 255
-            / 500) as u8
+            / half) as u8
     }
 
     /// Current reverse-search query and whether a history entry matched it.
@@ -206,11 +228,9 @@ impl PromptInput {
 
     /// Flush a timed-out Ctrl+X prefix, preserving ordinary cut semantics.
     pub(crate) fn chord_timeout(&mut self, now_ms: u64) -> Vec<InputEffect> {
-        if self
-            .pending_chord
-            .as_ref()
-            .is_some_and(|(_, at, _)| now_ms.saturating_sub(*at) >= 750)
-        {
+        if self.pending_chord.as_ref().is_some_and(|(_, at, _)| {
+            now_ms.saturating_sub(*at) >= self.editor.settings().chord_timeout_ms as u64
+        }) {
             self.flush_chord()
         } else {
             vec![]
@@ -373,6 +393,7 @@ impl PromptInput {
         match decoded {
             DecodedKey::Text(text) => self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms),
             DecodedKey::Action { action, select } => match action {
+                Action::Select(motion) => self.editor.move_cursor(motion, true, width),
                 Action::Move(motion) => {
                     if self.dock_items
                         && self.editor.text().is_empty()
@@ -432,7 +453,8 @@ impl PromptInput {
                         .layout(usize::MAX)
                         .position(self.editor.cursor())
                         .1;
-                    self.editor.insert(&" ".repeat(4 - column % 4), now_ms);
+                    let tab = self.editor.settings().tab_width;
+                    self.editor.insert(&" ".repeat(tab - column % tab), now_ms);
                 }
                 Action::CopyOrInterrupt => {
                     if !self.editor.selection().is_empty() {
@@ -447,10 +469,10 @@ impl PromptInput {
                         self.last_interrupt = None;
                         self.editor.break_group();
                         effects.push(InputEffect::Copy(markdown.clone()));
-                    } else if self
-                        .last_interrupt
-                        .is_some_and(|at| now_ms >= at && now_ms - at <= 500)
-                    {
+                    } else if self.last_interrupt.is_some_and(|at| {
+                        now_ms >= at
+                            && now_ms - at <= self.editor.settings().double_interrupt_ms as u64
+                    }) {
                         effects.push(InputEffect::Quit);
                     } else {
                         self.last_interrupt = Some(now_ms);
@@ -516,7 +538,9 @@ impl PromptInput {
     fn search_previous(&mut self) {
         if let Some(search) = self.search.as_mut() {
             if let Some(text) = self.history.reverse_search(&search.query) {
+                let settings = *self.editor.settings();
                 self.editor = Editor::new(&text);
+                self.editor.set_settings(settings);
                 search.matched = true;
             } else {
                 search.matched = false;
@@ -569,14 +593,22 @@ impl PromptInput {
         }
         let row =
             usize::from(event.row.saturating_sub(area.y).min(area.height - 1)) + viewport.scroll;
-        let column = usize::from(event.column.saturating_sub(area.x).min(area.width));
+        let column = usize::from(event.column.saturating_sub(area.x).min(area.width))
+            + if self.editor.settings().wrap {
+                0
+            } else {
+                viewport.horizontal
+            };
         let offset = layout.hit_test(row, column);
         self.last_activity = now_ms;
         if down {
             let count = self
                 .click
                 .filter(|(x, y, at, _)| {
-                    *x == event.column && *y == event.row && now_ms.saturating_sub(*at) <= 400
+                    *x == event.column
+                        && *y == event.row
+                        && now_ms.saturating_sub(*at)
+                            <= self.editor.settings().multi_click_ms as u64
                 })
                 .map_or(1, |(_, _, _, count)| count % 3 + 1);
             self.click = Some((event.column, event.row, now_ms, count));

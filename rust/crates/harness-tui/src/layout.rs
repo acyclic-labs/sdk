@@ -88,7 +88,10 @@ impl Layout {
                 column = 0;
             } else {
                 let symbol = if symbol == "\t" {
-                    " ".repeat((4 - column % 4).min(width))
+                    " ".repeat(
+                        (editor.settings().tab_width - column % editor.settings().tab_width)
+                            .min(width),
+                    )
                 } else if symbol.chars().any(char::is_control) {
                     "�".to_owned()
                 } else {

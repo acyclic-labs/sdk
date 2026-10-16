@@ -13,6 +13,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "tui-config"
+path = "tests/tui_config.rs"
+required-features = ["tui"]
+
+[[test]]
 name = "tui-completion"
 path = "tests/tui_completion.rs"
 required-features = ["tui"]
