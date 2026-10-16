@@ -3,28 +3,16 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(acyclic_stream_loom)");
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    let include = protoc_bin_vendored::include_path()?;
-    let mut prost = tonic_prost_build::Config::new();
-    prost.protoc_executable(protoc);
-    let output = std::path::PathBuf::from(
-        std::env::var_os("OUT_DIR").ok_or("Cargo did not provide OUT_DIR")?,
-    );
-    prost.file_descriptor_set_path(output.join("acyclic-stream-v1.bin"));
+    let mut prost = acyclic_proto_build::config()?;
     prost.bytes([".acyclic.stream.v1"]);
     let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
-    tonic_prost_build::configure()
-        .build_server(grpc)
-        .build_client(grpc)
-        .compile_with_config(
-            prost,
-            &[
-                std::path::Path::new("proto/stream/v1/stream.proto"),
-                std::path::Path::new("proto/stream/v1/session.proto"),
-            ],
-            &[std::path::Path::new("proto"), include.as_path()],
-        )?;
-    println!("cargo:rerun-if-changed=proto/stream/v1/stream.proto");
-    println!("cargo:rerun-if-changed=proto/stream/v1/session.proto");
-    Ok(())
+    acyclic_proto_build::compile(
+        prost,
+        acyclic_proto_build::services(grpc),
+        &[
+            "proto/stream/v1/stream.proto",
+            "proto/stream/v1/session.proto",
+        ],
+        "acyclic-stream-v1.bin",
+    )
 }

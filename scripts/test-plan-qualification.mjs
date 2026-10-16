@@ -31,9 +31,9 @@ test("packaged conformance copies cover the complete vector inventory", () => {
 });
 
 test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
-  const source = readFileSync("scripts/check-generated.mjs", "utf8");
-  const start = source.indexOf("  for (const [source, packaged] of packagedSourceCopies) {");
-  const end = source.indexOf("  const harnessSuite", start);
+  const source = readFileSync("scripts/check-baselines.mjs", "utf8");
+  const start = source.indexOf("for (const [source, packaged] of packagedSourceCopies) {");
+  const end = source.indexOf("const harnessSuite", start);
   assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
   const guard = source.slice(start, end);
   const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
@@ -76,7 +76,7 @@ test("release generator staging runs every registered backend without affected-f
     const root = `tools/sdk-generator/backends/${name}/tests`;
     return readdirSync(root).filter(file => file.endsWith(".test.mjs")).sort().map(file => `${root}/${file}`);
   });
-  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", ...expected]);
+  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", "tools/sdk-generator/shared/tests/authority.test.mjs", ...expected]);
 });
 
 test("registered backend targets match the maintained transport contracts", () => {
@@ -114,7 +114,7 @@ test("release lanes cover the Rust workspace, docs crate, and TypeScript workspa
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
   const testCommand = linux.search(/^ +bun run test$/m);
-  const generatedCommand = linux.search(/^ +bun run check:generated \|\| generated_status=\$\?$/m);
+  const generatedCommand = linux.search(/^ +bun run check:baselines \|\| generated_status=\$\?$/m);
   assert.ok(testCommand >= 0, "Linux package lane must run tests");
   assert.ok(generatedCommand > testCommand, "Linux package generated check must follow tests");
 });
@@ -359,6 +359,8 @@ exec 3<&0
 fixture='${fixture}'
 export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
+installed_graphcoder() { :; }
+pinned_pi() { :; }
 native_binding() { [[ "$CARGO_BUILD_JOBS" == 2 ]]; touch "$fixture/napi.done"; return ${napi}; }
 nextest() { printf 'fixture-workspace-started\\n'; [[ "$CARGO_BUILD_JOBS" == 8 ]]; return ${workspace}; }
 cargo() {
@@ -574,7 +576,7 @@ mutated='${earlyExit ? 1 : 0}'
 parent_pid="$BASHPID"
 on_exit() {
   if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
-  for child in fs mcp client; do
+  for child in fs compaction mcp client; do
     if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
   done
   touch "$fixture/all-launched" "$fixture/release-cleanup"
@@ -583,6 +585,7 @@ trap on_exit EXIT
 bun() {
   case "$*" in
     *"@acyclic-labs/fs"*) id=fs ;;
+    *"browser-compaction.html"*) id=compaction ;;
     *"test:browser:mcp"*) id=mcp ;;
     *"test:client:browser"*) id=client ;;
     *) return 98 ;;
@@ -604,9 +607,9 @@ printf 'joined\\n'
       assert.equal(result.status, failure === "none" ? 0 : 1, result.stderr);
       const events = result.stdout.trim().split("\n");
       assert.deepEqual(events.filter(event => event.startsWith("started:")).sort(),
-        ["started:client", "started:fs", "started:mcp"]);
+        ["started:client", "started:compaction", "started:fs", "started:mcp"]);
       assert.deepEqual(events.filter(event => event.startsWith("completed:")).sort(),
-        ["completed:client", "completed:fs", "completed:mcp"]);
+        ["completed:client", "completed:compaction", "completed:fs", "completed:mcp"]);
       assert.equal(events.includes("joined"), failure === "none");
       if (earlyExit) {
         assert.match(result.stdout, /unfinished-at-exit:/, "mutation must expose unfinished cleanup");
@@ -617,7 +620,7 @@ printf 'joined\\n'
         });
         assert.equal(summary.status, 0, summary.stderr);
         assert.ok(summary.stdout.includes("### Parallel browser checks"));
-        for (const browser of [{ id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
+        for (const browser of [{ id: "compaction", command: "bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html" }, { id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
           { id: "mcp", command: "bun run --filter @acyclic-labs/harness test:browser:mcp" },
           { id: "client", command: "bun run --filter @acyclic-labs/harness test:client:browser" }]) {
           const row = summary.stdout.split("\n").find(line => line.includes(browser.command)) ?? assert.fail("missing browser timing");

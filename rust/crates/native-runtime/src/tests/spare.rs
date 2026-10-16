@@ -26,6 +26,76 @@ fn open_source(path: &Path) -> io::Result<File> {
 }
 
 #[test]
+fn owned_read_matches_source_prefix_and_retires_custody() -> Result<(), Box<dyn std::error::Error>>
+{
+    initialize_native_io_services()?;
+    let _inline = InlineBlocking::enter();
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owned-prefix");
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 128,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    });
+    // Property: the owned API publishes exactly the available bounded prefix,
+    // or preserves actual read charges and retires all custody on failure.
+    runner.run(
+        &(
+            prop::collection::vec(any::<u8>(), 0..96),
+            0_usize..128,
+            0_usize..128,
+            any::<bool>(),
+            any::<bool>(),
+        ),
+        |(body, offset, maximum, exact, post_cancel)| {
+            std::fs::write(&path, &body).unwrap();
+            let file = NativeFile::from_file(open_source(&path).unwrap(), None)
+                .map_err(|(error, _)| error)
+                .unwrap();
+            let mut policy = ReadBudgetMeter::new(256, 256);
+            policy.cancel_after_read = post_cancel;
+            let meter = Arc::new(policy);
+            let available = body.len().saturating_sub(offset).min(maximum);
+            let result = complete(
+                file.read_bounded_async(offset as u64, maximum, meter.clone(), exact)
+                    .unwrap(),
+            );
+            let charged = meter.read.load(Ordering::Acquire) as usize;
+            if post_cancel && available != 0 {
+                prop_assert!((1..=available).contains(&charged));
+            } else {
+                prop_assert_eq!(charged, available);
+            }
+            match result {
+                Ok(chunk) => {
+                    prop_assert!(!post_cancel || available == 0);
+                    prop_assert!(!exact || available == maximum);
+                    let expected = body.get(offset..offset + available).unwrap_or_default();
+                    prefix_matches(&chunk.0, expected, true)?;
+                    // Deliberately broken publication includes an unwritten tail.
+                    let mut broken = chunk.0.to_vec();
+                    broken.push(0x55);
+                    prop_assert!(prefix_matches(&broken, expected, true).is_err());
+                    drop(chunk);
+                }
+                Err(error) => prop_assert_eq!(
+                    error.kind(),
+                    if post_cancel && available != 0 {
+                        io::ErrorKind::Interrupted
+                    } else {
+                        prop_assert!(exact && available != maximum);
+                        io::ErrorKind::UnexpectedEof
+                    }
+                ),
+            }
+            prop_assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
 fn spare_read_prefix_matches_source_and_rejects_overpublication()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
