@@ -15,6 +15,7 @@ pub struct CommandSources {
     limits: ContextDiscoveryLimits,
     maximum_bytes: u64,
     pending: bool,
+    published: Option<[u8; 32]>,
     maximum_files: usize,
     files: BTreeMap<crate::task_volume::FileKey, acyclic_stream::OwnedBytes>,
 }
@@ -56,9 +57,19 @@ impl CommandSources {
             limits,
             maximum_bytes,
             pending: true,
+            published: None,
             maximum_files,
             files,
         };
+        let installed = client.state(CommandFileRoot::Config, "commands.json")?;
+        if installed
+            != Some(
+                serde_json::from_slice(DEFAULT_COMMANDS_JSON)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+        {
+            sources.rebase(client.catalog())?;
+        }
         let selected: BTreeSet<_> = sources
             .files
             .keys()
@@ -68,6 +79,26 @@ impl CommandSources {
         sources.files.retain(|key, _| selected.contains(key));
         sources.refresh(client).await?;
         Ok(sources)
+    }
+    fn generated(&self, spec: &CommandSpec) -> bool {
+        match &spec.action {
+            CommandAction::Template { file, .. } => self.source(&file.path()).is_some(),
+            CommandAction::Prompt { source, .. } => {
+                self.roots.iter().any(|root| root.root == source.root)
+            }
+            CommandAction::Skill { skill } => self.skills.contains(&skill.source.root),
+            _ => false,
+        }
+    }
+    fn rebase(&mut self, catalog: &CommandCatalog) -> Result<()> {
+        self.base = serde_json::to_vec(
+            &catalog
+                .commands()
+                .filter(|spec| !self.generated(spec))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(())
     }
     fn source(&self, path: &str) -> Option<(String, bool)> {
         for root in &self.skills {
@@ -105,6 +136,14 @@ impl CommandSources {
                 .await
                 .ok_or_else(|| Error::Storage("command source query ended; reobserve".into()))?
                 .map_err(|error| Error::Storage(error.to_string()))?;
+            if let Some(file) = &change.file
+                && file.key.path() == "commands/catalog.json"
+                && self.published != Some(*blake3::hash(&file.bytes).as_bytes())
+            {
+                let catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
+                self.rebase(&catalog)?;
+                self.pending = true;
+            }
             if let Some(file) = change.file
                 && self.source(&file.key.path()).is_some()
             {
@@ -120,6 +159,16 @@ impl CommandSources {
 
     /// Publish the complete next catalog after a selected source change.
     pub async fn refresh<P: StreamProvider + ?Sized>(
+        &mut self,
+        client: &mut CommandSession<P>,
+    ) -> Result<()> {
+        let result = self.publish(client).await;
+        if matches!(result, Err(Error::Invalid(_))) {
+            self.pending = false;
+        }
+        result
+    }
+    async fn publish<P: StreamProvider + ?Sized>(
         &mut self,
         client: &mut CommandSession<P>,
     ) -> Result<()> {
@@ -156,12 +205,12 @@ impl CommandSources {
                 if bytes.len() as u64 > self.maximum_bytes {
                     return Err(Error::Invalid("source exceeds catalog byte bound".into()));
                 }
-                if bytes.is_empty() {
-                    continue;
-                }
                 let (description, name, body) = if has_frontmatter(bytes) {
                     let metadata: PromptMetadata = parse_frontmatter(bytes)?;
                     let (_, _, body) = frontmatter_end(bytes)?;
+                    if body > self.limits.header_bytes as usize {
+                        return Err(Error::Invalid("source header exceeds bound".into()));
+                    }
                     let name = if skill {
                         metadata
                             ._fields
@@ -226,7 +275,9 @@ impl CommandSources {
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 )
             {
+                let digest = *blake3::hash(&bytes).as_bytes();
                 client.install_catalog(bytes).await?;
+                self.published = Some(digest);
             }
             self.pending = false;
         }

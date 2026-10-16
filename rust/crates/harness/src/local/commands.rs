@@ -28,6 +28,42 @@ impl LocalHarness {
                     .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
                 self.queue_prompt(operation, target, prompt).await
             }
+            CommandResolution::Tool {
+                tool: tool @ (CommandTool::WebSearch | CommandTool::UrlFetch),
+                input,
+            } => {
+                let mut settings = json!({});
+                for directory in std::iter::once("config".to_owned())
+                    .chain(target.map(|task| format!("task-{task}")))
+                {
+                    let key = FileKey::Ui {
+                        directory: Component::new(directory)?,
+                        name: Component::new("settings.json")?,
+                    };
+                    let snapshot = self.task_files.snapshot(&Query::File(key), 1).await?;
+                    if let Some(file) = snapshot.files.first() {
+                        let value: Value = serde_json::from_slice(&file.bytes).map_err(storage)?;
+                        settings
+                            .as_object_mut()
+                            .ok_or_else(|| Error::Invalid("settings must be an object".into()))?
+                            .extend(
+                                value
+                                    .as_object()
+                                    .ok_or_else(|| {
+                                        Error::Invalid("settings must be an object".into())
+                                    })?
+                                    .clone(),
+                            );
+                    }
+                }
+                crate::client::execute_host_command(
+                    tool,
+                    &input,
+                    &settings,
+                    self.limits.render_bytes as usize,
+                )
+                .await
+            }
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
@@ -63,8 +99,7 @@ impl LocalHarness {
                         },
                         Some(false),
                     ),
-                    CommandRequest::Delete => (Some(required(target)?), Some(true)),
-                    CommandRequest::ClearAll => (None, Some(true)),
+
                     _ => {
                         return Err(Error::Invalid(
                             "presentation changes are applied before owner dispatch".into(),
