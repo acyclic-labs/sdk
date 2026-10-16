@@ -42,11 +42,11 @@ async fn opening_requires_the_exact_private_owner_and_both_volume_grants() {
 }
 
 fn files() -> Vec<(FileKey, bool)> {
-    use crate::task_volume::{Channel, Component, InputPath, TaskFile, ToolFile};
+    use crate::task_volume::{Channel, Component, InputPath, PlanName, TaskFile, ToolFile};
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
-        (FileKey::Plan(id.clone()), true),
+        (FileKey::Plan(PlanName::new("id").unwrap()), true),
         (
             FileKey::Input(InputPath::try_from("workspace/note.txt".to_owned()).unwrap()),
             true,
