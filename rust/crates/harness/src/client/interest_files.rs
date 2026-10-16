@@ -52,9 +52,9 @@ impl InterestFiles {
         maximum_selected: usize,
         maximum_bytes: usize,
     ) -> Result<ClientInterests> {
-        let mut documents = Vec::with_capacity(2);
+        let mut documents = [InterestDocument::default(), InterestDocument::default()];
         let mut remaining = maximum_bytes as u64;
-        for name in ["layout.json", "open-views.json"] {
+        for (name, document) in ["layout.json", "open-views.json"].into_iter().zip(&mut documents) {
             let path = if self.root.directory.is_empty() {
                 name.into()
             } else {
@@ -68,18 +68,17 @@ impl InterestFiles {
             match source.read_remaining(reader, remaining).await {
                 Ok((_, bytes)) => {
                     remaining -= bytes.len() as u64;
-                    documents.push(InterestDocument::decode(&bytes, maximum_bytes)?);
+                    *document = InterestDocument::decode(&bytes, maximum_bytes)?;
                 }
-                Err(Error::NotFound(_)) => documents.push(InterestDocument::default()),
+                Err(Error::NotFound(_)) => {}
                 Err(error) => return Err(error),
             }
         }
+        let [layout, views] = documents;
         ClientInterests::from_layout(
             swarm,
-            documents.iter().flat_map(|doc| doc.in_view.iter().cloned()),
-            documents
-                .iter()
-                .flat_map(|doc| doc.prefetch.iter().cloned()),
+            layout.in_view.into_iter().chain(views.in_view),
+            layout.prefetch.into_iter().chain(views.prefetch),
             maximum_selected,
         )
     }
