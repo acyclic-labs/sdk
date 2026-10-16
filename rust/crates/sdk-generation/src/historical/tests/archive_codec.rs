@@ -85,13 +85,15 @@ fn path_shape_oracle_detects_a_missing_root_guard() {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
     };
-    let result = TestRunner::default().run(
-        &proptest::strategy::Just("/absolute".to_owned()),
-        |path| {
-            proptest::prop_assert!(!broken_accepts(&path), "accepted hostile member: {:?}", path);
+    let result =
+        TestRunner::default().run(&proptest::strategy::Just("/absolute".to_owned()), |path| {
+            proptest::prop_assert!(
+                !broken_accepts(&path),
+                "accepted hostile member: {:?}",
+                path
+            );
             Ok(())
-        },
-    );
+        });
     assert!(matches!(result, Err(TestError::Fail(_, _))));
     let bytes = encode_path("fixture-0.1.0//absolute");
     assert!(decode_archive_members(&bytes, "fixture", "0.1.0").is_err());

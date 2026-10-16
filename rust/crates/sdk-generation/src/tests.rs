@@ -558,7 +558,9 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
     for length in [
         0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 65535, 65536, 65537,
     ] {
-        let bytes = (0..length).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+        let bytes = (0..length)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
         check(&bytes).unwrap();
     }
     fs::remove_dir_all(root).unwrap();

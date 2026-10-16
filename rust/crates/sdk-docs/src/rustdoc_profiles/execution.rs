@@ -368,7 +368,9 @@ fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
             let unavailable = "sdk-docs-unavailable-target";
             proptest::prop_assert_eq!(
                 nightly_rustdoc_command(unavailable).unwrap_err(),
-                ProfileError::UnsupportedTarget { target: unavailable.into() },
+                ProfileError::UnsupportedTarget {
+                    target: unavailable.into()
+                },
             );
             proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
             Ok(())
