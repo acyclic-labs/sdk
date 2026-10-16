@@ -192,7 +192,10 @@ pub fn verify(
     }
     let proof = match envelope.proof {
         wire::Proof::Secret(secret) => {
-            let seed: &[u8; 32] = secret.as_slice().try_into().map_err(|_| VerifyError::Malformed)?;
+            let seed: &[u8; 32] = secret
+                .as_slice()
+                .try_into()
+                .map_err(|_| VerifyError::Malformed)?;
             let key = SigningKey::from_bytes(seed);
             if key.verifying_key() != signer {
                 return Err(VerifyError::Signature);

@@ -1,6 +1,9 @@
 use super::VerifyError;
 use crate::contract::SignedBlockProto;
-use prost::{Message, encoding::{decode_varint, encode_varint, encoded_len_varint}};
+use prost::{
+    Message,
+    encoding::{decode_varint, encode_varint, encoded_len_varint},
+};
 use zeroize::Zeroizing;
 
 pub(super) enum Proof {
@@ -41,8 +44,9 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
     let mut version = 0;
     while !input.is_empty() {
         match varint(&mut input)? {
-            10 => blocks.push(SignedBlockProto::decode(bytes(&mut input)?)
-                .map_err(|_| VerifyError::Malformed)?),
+            10 => blocks.push(
+                SignedBlockProto::decode(bytes(&mut input)?).map_err(|_| VerifyError::Malformed)?,
+            ),
             tag @ (18 | 26) => {
                 // Reject before decoding or replacing either oneof variant.
                 if proof.is_some() {
@@ -61,8 +65,9 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
                     Proof::Sealed(value.try_into().map_err(|_| VerifyError::Malformed)?)
                 });
             }
-            32 => version = u32::try_from(varint(&mut input)?)
-                .map_err(|_| VerifyError::Malformed)?,
+            32 => {
+                version = u32::try_from(varint(&mut input)?).map_err(|_| VerifyError::Malformed)?
+            }
             _ => return Err(VerifyError::Malformed),
         }
     }
@@ -71,7 +76,11 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
     if encode(&blocks, tag, value, version).as_slice() != original {
         return Err(VerifyError::Malformed);
     }
-    Ok(Envelope { blocks, proof, version })
+    Ok(Envelope {
+        blocks,
+        proof,
+        version,
+    })
 }
 
 pub(super) fn encode(
@@ -80,11 +89,21 @@ pub(super) fn encode(
     proof: &[u8],
     version: u32,
 ) -> Zeroizing<Vec<u8>> {
-    let len = blocks.iter().map(|block| {
-        let len = block.encoded_len();
-        1 + encoded_len_varint(len as u64) + len
-    }).sum::<usize>() + 1 + encoded_len_varint(proof.len() as u64) + proof.len()
-        + if version == 0 { 0 } else { 1 + encoded_len_varint(u64::from(version)) };
+    let len = blocks
+        .iter()
+        .map(|block| {
+            let len = block.encoded_len();
+            1 + encoded_len_varint(len as u64) + len
+        })
+        .sum::<usize>()
+        + 1
+        + encoded_len_varint(proof.len() as u64)
+        + proof.len()
+        + if version == 0 {
+            0
+        } else {
+            1 + encoded_len_varint(u64::from(version))
+        };
     let mut output = Zeroizing::new(Vec::with_capacity(len));
     for block in blocks {
         encode_varint(10, &mut *output);
