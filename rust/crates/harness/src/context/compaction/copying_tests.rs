@@ -20,7 +20,13 @@ fn original(
 }
 
 fn allocation_bound(count: u64, len: usize) -> proptest::test_runner::TestCaseResult {
-    prop_assert_eq!(count, u64::from(len != 0));
+    // Each distinct, nonempty text payload necessarily allocates once.
+    prop_assert_eq!(count, len as u64 + u64::from(len != 0));
+    Ok(())
+}
+
+fn capacity_bound(capacity: usize, len: usize) -> proptest::test_runner::TestCaseResult {
+    prop_assert_eq!(capacity, len);
     Ok(())
 }
 
@@ -32,13 +38,15 @@ proptest! {
         second in 0usize..1025,
         insert in any::<bool>(),
     ) {
-        let content = ModelContent::Text(String::new());
-        let message = ModelMessage { role: ModelRole::Assistant, content: content.clone() };
-        // Empty payloads isolate vector allocations. Always include the empty
-        // result and a growing baseline, even after shrinking the random sizes.
-        for (first, second, insert) in [(0, 0, false), (first, second, insert), (1, 1, true)] {
-            let first = vec![message.clone(); first];
-            let second = vec![message.clone(); second];
+        let content = ModelContent::Text("inserted user".into());
+        // Keep empty and order-sensitive growing cases even after shrinking.
+        for (first, second, insert) in [(0, 0, false), (first, second, insert), (2, 2, true)] {
+            let messages = |prefix, count| (0..count).map(|i| ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(format!("{prefix}-{i}")),
+            }).collect::<Vec<_>>();
+            let first = messages("first", first);
+            let second = messages("second", second);
             let user = insert.then_some(&content);
             let len = first.len() + second.len() + usize::from(insert);
             let mut actual = None;
@@ -47,8 +55,13 @@ proptest! {
             });
             allocation_bound(measured.count_total, len)?;
             let (actual, claim) = actual.expect("copy was invoked")?;
+            capacity_bound(actual.capacity(), len)?;
             prop_assert_eq!(&actual, &original(&first, user, &second));
             prop_assert_eq!(claim, 0);
+            if len != 0 {
+                let oversized = Vec::<ModelMessage>::with_capacity(2 * len);
+                prop_assert!(capacity_bound(oversized.capacity(), len).is_err());
+            }
             if !first.is_empty() && (insert || !second.is_empty()) {
                 let old = allocation_counter::measure(|| {
                     std::hint::black_box(original(&first, user, &second));
