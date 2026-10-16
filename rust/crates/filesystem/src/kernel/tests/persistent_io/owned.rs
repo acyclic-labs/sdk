@@ -158,29 +158,45 @@ fn exact_ownership_oracle_rejects_the_old_shared_owner_path() {
 }
 
 #[test]
-fn cancelled_uncached_admission_releases_standalone_storage() {
-    let cancellation = CancellationToken::new();
-    let mut allocations = AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let mut accounting = KernelAccounting::borrowed_standalone(
-        &mut allocations,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    );
-    let input = page(2, &mut accounting);
-    cancellation.cancel();
-    assert!(
-        admit_decoded_with_accounting(
-            &MemoryObjectStore::default(),
-            key(),
-            input,
-            &mut accounting,
-            None
-        )
-        .is_err()
-    );
-    assert_eq!(allocations.live_bytes(), 0);
+fn standalone_handoff_keeps_the_existing_cancellation_checkpoints() {
+    // This internal transfer performs no new work. The read/decoder owns the
+    // cancellation checkpoints; the original shared-owner handoff has none.
+    for legacy in [false, true] {
+        let cancellation = CancellationToken::new();
+        let mut allocations = AllocationLedger::default();
+        let mut work = WorkCounters::UNCHARGED;
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut allocations,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let input = page(2, &mut accounting);
+        cancellation.cancel();
+        let (page, allocation) = if legacy {
+            admit_decoded_with_accounting(
+                &OwnedReadObjectStore::default(),
+                key(),
+                input,
+                &mut accounting,
+                None,
+            )
+        } else {
+            admit_decoded_with_accounting(
+                &MemoryObjectStore::default(),
+                key(),
+                input,
+                &mut accounting,
+                None,
+            )
+        }
+        .unwrap();
+        let bytes = page.logical_bytes;
+        Owned::new(page, allocation, bytes)
+            .retire(&mut accounting)
+            .unwrap();
+        assert_eq!(allocations.live_bytes(), 0);
+    }
 }
 
 #[test]
