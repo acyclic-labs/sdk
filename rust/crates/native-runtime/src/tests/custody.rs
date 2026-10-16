@@ -192,7 +192,13 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
             let _blocking = InlineBlocking::enter();
             if ranged {
                 let mut range = AsyncRangeReader::new(Arc::clone(&file), offset, length as u64);
-                let result = complete(range.read_prepared(storage, length, meter.clone(), false))?;
+                let result = complete(range.read_prepared(
+                    storage,
+                    length,
+                    meter.clone(),
+                    false,
+                    std::convert::identity,
+                ))?;
                 assert_eq!(range.remaining(), (length - expected) as u64);
                 Ok(result)
             } else {
@@ -250,8 +256,14 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
                     .unwrap_err()
             } else if prepared == 2 {
                 let mut range = AsyncRangeReader::new(Arc::clone(&file), 0, 8);
-                let error =
-                    complete(range.read_prepared([0x55; 8], 8, meter.clone(), true)).unwrap_err();
+                let error = complete(range.read_prepared(
+                    [0x55; 8],
+                    8,
+                    meter.clone(),
+                    true,
+                    std::convert::identity,
+                ))
+                .unwrap_err();
                 assert_eq!(range.remaining(), 8);
                 error
             } else {

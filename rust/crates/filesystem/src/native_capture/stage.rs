@@ -1,4 +1,6 @@
 use super::*;
+use crate::kernel::allocation::KernelOwnedAllocation;
+use acyclic_stream::PreparedOwnedBytes;
 
 pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &Checkout<A, O>,
@@ -141,43 +143,11 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
                 0,
             )));
         }
-        original
-            .admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(maximum as u64))?;
-        let mut accounting = crate::kernel::KernelAccounting::native(original, cancellation);
-        let mut storage = crate::kernel::Owned::<Vec<u8>>::allocate(maximum, &mut accounting)?;
-        let capacity = storage.value.capacity();
-        let zeroed = crate::materializer::NativeResourceCredit::Copy.delta(capacity as u64);
-        let copying = original.reserve_work(zeroed)?;
-        storage.value.resize(capacity, 0);
-        copying.record_completed(zeroed)?;
-        let runtime = original.runtime_meter();
-        let storage =
-            acyclic_stream::PreparedOwnedBytes::new(storage.value, storage.allocation, &runtime)
-                .map_err(|failure| match failure.into_error() {
-                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                        crate::FsError::from(original.runtime_error(error))
-                    }
-                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                        crate::NativeTreeMaterializationError::InvalidLayout.into()
-                    }
-                })?;
-        let (storage, filled) = self
-            .read_prepared(storage, maximum, runtime, true)
-            .await
-            .map_err(|error| native_source_read_error(error, original))?;
-        if filled != maximum {
-            return Err(crate::FsError::SourceSnapshotStale);
-        }
-        let bytes = storage.freeze(filled).map_err(|failed| {
-            drop(failed);
-            crate::FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
-        })?;
-        cancellation.check()?;
-        original.admit(WorkCounters::UNCHARGED)?;
-        Ok(Some(crate::kernel::OwnedSourceChunk::intrinsic(
-            bytes,
-            capacity as u64,
-        )))
+        let storage = native_source_storage(maximum, original, cancellation)?;
+        self.read_prepared(storage, maximum, original.runtime_meter(), true, |result| {
+            accept_native_source_chunk(result, maximum, original, cancellation)
+        })
+        .await
     }
 
     async fn read<'a>(
@@ -233,6 +203,57 @@ impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader
         original.admit(WorkCounters::UNCHARGED)?;
         Ok(maximum)
     }
+}
+
+pub(super) fn native_source_storage(
+    maximum: usize,
+    original: &NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<PreparedOwnedBytes<KernelOwnedAllocation>, crate::FsError> {
+    original.admit(crate::materializer::NativeResourceCredit::ReadBytes.delta(maximum as u64))?;
+    let mut accounting = crate::kernel::KernelAccounting::native(original, cancellation);
+    let mut storage = crate::kernel::Owned::<Vec<u8>>::allocate(maximum, &mut accounting)?;
+    let zeroed =
+        crate::materializer::NativeResourceCredit::Copy.delta(storage.value.capacity() as u64);
+    let copying = original.reserve_work(zeroed)?;
+    storage.value.resize(storage.value.capacity(), 0);
+    copying.record_completed(zeroed)?;
+    acyclic_stream::PreparedOwnedBytes::new(
+        storage.value,
+        storage.allocation,
+        &original.runtime_meter(),
+    )
+    .map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            original.runtime_error(error).into()
+        }
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+            crate::NativeTreeMaterializationError::InvalidLayout.into()
+        }
+    })
+}
+
+pub(super) fn accept_native_source_chunk(
+    result: std::io::Result<(PreparedOwnedBytes<KernelOwnedAllocation>, usize)>,
+    maximum: usize,
+    original: &NativeMaterializationWork,
+    cancellation: &CancellationToken,
+) -> Result<Option<crate::kernel::OwnedSourceChunk>, crate::FsError> {
+    let (storage, filled) = result.map_err(|error| native_source_read_error(error, original))?;
+    if filled != maximum {
+        return Err(crate::FsError::SourceSnapshotStale);
+    }
+    let capacity = storage.maximum_len();
+    let bytes = storage.freeze(filled).map_err(|failed| {
+        drop(failed);
+        crate::FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
+    })?;
+    cancellation.check()?;
+    original.admit(WorkCounters::UNCHARGED)?;
+    Ok(Some(crate::kernel::OwnedSourceChunk::intrinsic(
+        bytes,
+        capacity as u64,
+    )))
 }
 
 fn native_source_read_error(
