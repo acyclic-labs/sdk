@@ -1,71 +1,27 @@
 //! Checked native checkout staging and cleanup paths.
 use acyclic_fs::OperationId;
 use base64::Engine as _;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-fn display(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
+use std::path::{Path, PathBuf};
 /// A physical directory used for checked cleanup and checkout publication staging.
 #[derive(Clone, Copy)]
-pub struct NativeDirectory<'a>(pub &'a Path);
+pub(crate) struct NativeDirectory<'a>(pub &'a Path);
 
 impl NativeDirectory<'_> {
-    /// Removes a direct child after verifying its canonical parent.
-    pub fn remove(&self, target: &Path) -> Result<(), String> {
-        let root = self.0.canonicalize().map_err(display)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| "discard target has no parent".to_owned())?
-            .canonicalize()
-            .map_err(display)?;
-        if parent != root {
-            return Err("refusing to discard a path outside the managed workspace root".to_owned());
-        }
-        if !target.exists() {
-            return Ok(());
-        }
-        let target = match target.canonicalize() {
-            Ok(target) => target,
-            #[cfg(target_os = "windows")]
-            Err(error) if error.raw_os_error() == Some(369) => return Ok(()),
-            Err(error) => return Err(display(error)),
-        };
-        if target.parent() != Some(root.as_path()) {
-            return Err("refusing to discard a path outside the plugin workspace root".to_owned());
-        }
-        match fs::remove_dir_all(target) {
-            Ok(()) => Ok(()),
-            #[cfg(target_os = "windows")]
-            Err(error) if error.raw_os_error() == Some(369) => Ok(()),
-            Err(error) => Err(display(error)),
-        }
-    }
-
-    /// Returns the same-filesystem staging root for a checkout.
-    pub fn publication_root(&self) -> Result<PathBuf, String> {
-        let root = self.0;
-        let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
-        Ok(root
-            .parent()
-            .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?
-            .join(".acyclic-m")
-            .join(
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest.as_bytes()[..16]),
-            ))
-    }
-
     /// Returns the per-operation staging directory.
-    pub fn publication_directory(&self, operation_id: OperationId) -> Result<PathBuf, String> {
+    pub fn publication_directory(&self, operation_id: OperationId) -> crate::Result<PathBuf> {
         let root = self.0;
-        let parent = root
-            .parent()
-            .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?;
+        let parent = root.parent().ok_or_else(|| {
+            crate::Error::Invalid("root checkout has no same-filesystem staging parent".to_owned())
+        })?;
         let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
-        let leaf = root_materialization_leaf(&digest, operation_id).map_err(display)?;
-        let leaf = std::str::from_utf8(&leaf).map_err(display)?;
+        let leaf = root_materialization_leaf(&digest, operation_id).map_err(|_| {
+            crate::Error::Invalid(
+                "root staging identifier encoding exceeded its fixed width".into(),
+            )
+        })?;
+        let leaf = std::str::from_utf8(&leaf).map_err(|_| {
+            crate::Error::Invalid("root staging identifier encoding is not UTF-8".into())
+        })?;
         Ok(parent.join(leaf))
     }
     /// Constructs the staging path on the caller's original native work ledger.
@@ -139,4 +95,25 @@ fn root_materialization_leaf(
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(operation_id.into_bytes(), &mut leaf[34..])?;
     Ok(leaf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn staging_stays_inside_the_same_filesystem_parent() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("root");
+        let directory = NativeDirectory(&root).publication_directory(OperationId::new())?;
+        assert!(directory.starts_with(temp.path().join(".acyclic-m")));
+        assert_eq!(
+            directory.components().count(),
+            temp.path().components().count() + 3
+        );
+        assert!(matches!(
+            NativeDirectory(Path::new("/")).publication_directory(OperationId::new()),
+            Err(crate::Error::Invalid(_))
+        ));
+        Ok(())
+    }
 }

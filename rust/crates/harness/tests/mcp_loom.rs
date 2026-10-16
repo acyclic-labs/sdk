@@ -1,5 +1,5 @@
-//! `cargo rustc --test mcp-loom ... -- --cfg acyclic_harness_loom` instruments only this target,
-//! leaving dependencies' runtimes unchanged. Both modules are production source.
+//! The dedicated model command sets RUSTFLAGS="--cfg acyclic_harness_loom".
+//! Both instrumented modules below are production source.
 #![cfg(acyclic_harness_loom)]
 
 pub use acyclic_harness::{Error, Result};

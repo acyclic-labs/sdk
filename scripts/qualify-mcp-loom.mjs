@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", features, run, { targetCfg: ["--", "--cfg", "acyclic_harness_loom"] });
+  return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
 }
 
 export function qualifyTimerLoom(run = spawnSync) {
@@ -23,7 +25,6 @@ function qualifyLoom(crate, target, features, run, options = {}) {
     "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
     ...features, ...(options.targetCfg ?? ["--", "--cfg", "loom"]),
   ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
-
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
   const binaries = [];

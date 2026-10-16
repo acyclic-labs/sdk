@@ -4,14 +4,18 @@ mod follow;
 mod heads;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
+mod plan_name;
 mod schema;
 mod segment;
+mod source;
 mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
+pub use plan_name::PlanName;
 pub use schema::{
     Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
 };
+pub use source::FileQuerySource;
 
 use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
@@ -26,6 +30,10 @@ use uuid::Uuid;
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Authorization, work or storage failure reading ordinary volume files.
+    #[cfg(feature = "filesystem")]
+    #[error(transparent)]
+    FileRead(#[from] crate::Error),
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),
@@ -314,25 +322,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let segment = segment::encode(write)?;
         // Decode before durable action, so the accepted event is locally applicable.
         let files = segment::decode(&segment)?;
-        #[cfg(acyclic_harness_loom)]
-        if model_checking::enabled(model_checking::Fault::OmitAuthorityConditions) {
-            conditions.clear();
-        }
-        let fence = CommitCondition::Head {
+        conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,
             commit_id: CommitId::from_bytes(expected.commit),
-        };
-        #[cfg(acyclic_harness_loom)]
-        let fence = if model_checking::enabled(model_checking::Fault::ResamplePublicationFence) {
-            CommitCondition::Tail {
-                path: self.path.clone(),
-                expected: self.provider.watermarks(self.path.clone()).await?.accepted,
-            }
-        } else {
-            fence
-        };
-        conditions.push(fence);
+        });
         let request = CommitRequest {
             conditions,
             mutations: vec![CommitMutation::Append {
@@ -344,13 +338,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // Readers must be able to project accepted records while the provider's
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
-        #[cfg(acyclic_harness_loom)]
-        let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
-        {
-            None
-        } else {
-            deadline_unix_millis
-        };
         let outcome = if let Some(deadline) = deadline_unix_millis {
             self.provider.commit_before(request, deadline).await?
         } else {
@@ -359,11 +346,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         let mut index = self.index.lock().await;
         match outcome {
             CommitOutcome::Committed(envelope) => {
-                let unchanged = self.generation(&index) == expected;
-                #[cfg(acyclic_harness_loom)]
-                let unchanged = unchanged
-                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
-                if unchanged {
+                if self.generation(&index) == expected {
                     apply(&mut index, files);
                     index.next = expected.position + 1;
                     index.commit = envelope.commit_id;

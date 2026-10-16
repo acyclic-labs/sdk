@@ -59,7 +59,7 @@ pub enum BuiltinCommand {
     Model,
     /// Query captured workspace changes.
     Diff,
-    /// Query the task's plan.md.
+    /// Query Markdown files in the private plans/ directory.
     Plan,
     /// Query the private GOAL.md.
     Goal,
@@ -128,7 +128,7 @@ pub enum CommandQuery {
     Model,
     /// Captured workspace changes against each volume's base.
     Diff,
-    /// Task plan.md.
+    /// Markdown files in the private plans/ directory.
     Plan,
     /// Private GOAL.md.
     Goal,

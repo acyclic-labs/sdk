@@ -285,6 +285,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             let follow = wire::SessionFollow {
                 path: path.as_str().into(),
                 delivery: wire::SessionDelivery::All as i32,
+                ..Default::default()
             };
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {

@@ -1,9 +1,10 @@
 //! Canonical typed wire conversions.
+#[cfg(test)]
+use crate::contract::canonical_json_bytes;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use crate::core::ApplyResult;
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, NativeCustody, OperationId, Result,
-    contract::canonical_json_bytes,
     core::{
         Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference,
         RecordedScope, Scope,
@@ -41,6 +42,8 @@ use authority::{decode_reference, encode_reference, parse_scope_agent};
 mod admission_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod command_tests;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod event_decode_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod protocol_tests;
 #[cfg(test)]

@@ -57,24 +57,53 @@ pub(super) async fn read_range<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    offset: u64,
-    length: u64,
+    range: crate::ByteRange,
+    unchanged_since: Option<GenerationId>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     let mut accounting = work.accounting(cancellation);
+    let unchanged_since =
+        unchanged_since.filter(|original| selector != GenerationSelector::Exact(*original));
     let result = async {
         let (mut checkout, path) = workspace
             .open_read_path(selector, path, &mut accounting, cancellation)
             .await?;
+        if range.length > checkout.value.volume_config().limits.maximum_read_bytes {
+            return Err(FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into());
+        }
+        let record = checkout
+            .value
+            .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
+            .await?
+            .0
+            .record
+            .ok_or(WorkspaceError::NotFound)?;
+        if let Some(original) = unchanged_since {
+            let mut original = workspace
+                .open_checkout(
+                    GenerationSelector::Exact(original),
+                    CheckoutMode::read_only_pinned(),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            let expected = original
+                .value
+                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, false)
+                .await?
+                .0
+                .record
+                .ok_or(WorkspaceError::NotFound)?;
+            let matches = expected.kind == record.kind && expected.payload == record.payload;
+            original.retire(&mut accounting)?;
+            if !matches {
+                return Err(WorkspaceError::StaleIdentity);
+            }
+        }
         let read = checkout
             .value
-            .read_file_range_with_accounting(
-                &path.value,
-                crate::ByteRange { offset, length },
-                &mut accounting,
-                cancellation,
-            )
+            .read_record_range_with_accounting(record, range, range, &mut accounting, cancellation)
             .await?;
         let bytes = read.logical_owned_bytes();
         Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(read.bytes, bytes))
@@ -249,3 +278,6 @@ pub(super) async fn plan<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     };
     Ok(WorkspaceExtentPlan { spans })
 }
+
+#[cfg(test)]
+mod tests;

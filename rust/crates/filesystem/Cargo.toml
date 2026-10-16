@@ -91,6 +91,7 @@ path = "tests/native_source_watch_custody.rs"
 required-features = ["local", "native-mount"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true

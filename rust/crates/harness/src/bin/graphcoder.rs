@@ -9,6 +9,13 @@ mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/options.rs"]
 mod options;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "tui"
+))]
+#[path = "graphcoder/plans.rs"]
+mod plans;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/terminal.rs"]
 mod terminal;
@@ -127,8 +134,7 @@ fn input_lines()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness::{Error, wire, wire_api::current_protocol};
-    use std::io::{IsTerminal as _, Write as _};
+    use acyclic_harness::Error;
     let Some((selection, headless)) = options::parse()? else {
         return Ok(());
     };
@@ -180,6 +186,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
+    run_backend(backend, headless).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn run_backend(backend: Backend, headless: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness::{Error, wire, wire_api::current_protocol};
+    #[cfg(feature = "filesystem-local")]
+    use futures::future::Either;
+    use futures::{StreamExt as _, stream};
+    use std::io::{IsTerminal as _, Write as _};
     let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
         protocol: Some(current_protocol()),
         required: None,
@@ -192,9 +208,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let stdin = std::io::stdin();
     let stdin_is_terminal = stdin.is_terminal();
     let interactive = !headless && stdin_is_terminal;
-    let mut input = input_lines()?;
+    let mut input = Box::pin(
+        stream::unfold(input_lines()?, |mut input| async {
+            input.recv().await.map(|line| (line, input))
+        })
+        .map(Some)
+        .chain(stream::iter([None])),
+    );
+    #[cfg(feature = "filesystem-local")]
+    let mut documents: acyclic_stream::BoxProviderStream<
+        'static,
+        acyclic_harness::Result<acyclic_harness::client::ViewUpdate>,
+    > = Box::pin(stream::pending());
     let mut output = std::io::stdout().lock();
     let mut scrollback = terminal::Scrollback::default();
+    #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+    let mut plans: Option<plans::Plans> = None;
     #[cfg(feature = "filesystem-local")]
     let mut parent = None;
     #[cfg(feature = "filesystem-local")]
@@ -228,8 +257,37 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         output.flush()?;
         #[cfg(feature = "filesystem-local")]
         let line = loop {
+            let mut events = stream::select(
+                input.by_ref().map(Either::Left),
+                documents.by_ref().map(Either::Right),
+            );
             tokio::select! {
-                line = input.recv() => break line,
+                event = events.next() => {
+                    drop(events);
+                    match event {
+                        Some(Either::Left(line)) => break line,
+                        None => break None,
+                        Some(Either::Right(update)) => {
+                            #[cfg(feature = "tui")]
+                            {
+                                let result = (|| {
+                                    let plans = plans.as_mut().ok_or_else(|| Error::Conflict("plan selection missing".into()))?;
+                                    if plans.update(update?)? {
+                                        plans.render(&mut output)?;
+                                    }
+                                    Ok::<_, Error>(())
+                                })();
+                                if let Err(error) = result {
+                                    documents = Box::pin(stream::pending());
+                                    plans = None;
+                                    writeln!(output, "plans: {}", terminal::text(&error.to_string()))?;
+                                }
+                            }
+                            #[cfg(not(feature = "tui"))]
+                            let _ = update;
+                        }
+                    }
+                },
                 outcome = workers.join_next(), if !workers.is_empty() => {
                     let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?
                         .map_err(|error| Error::Storage(format!("frontend worker ended without a receipt; retain its original lease: {error}")))??;
@@ -241,7 +299,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         #[cfg(not(feature = "filesystem-local"))]
-        let line = input.recv().await;
+        let line = input.next().await.flatten();
         let Some(line) = line else {
             #[cfg(feature = "filesystem-local")]
             if !workers.is_empty() {
@@ -285,6 +343,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
             continue;
+        }
+        #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+        if command == "/plan" {
+            let native = backend
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("session is closed".into()))?
+                .native()?
+                .clone();
+            plans = None;
+            documents = Box::pin(stream::pending());
+            match plans::Plans::open(native).await {
+                Ok((view, updates)) => {
+                    view.render(&mut output)?;
+                    documents = updates;
+                    plans = Some(view);
+                }
+                Err(error) => writeln!(output, "plans: {}", terminal::text(&error.to_string()))?,
+            }
+            continue;
+        }
+        #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+        if command == "/reopen" {
+            documents = Box::pin(stream::pending());
+            plans = None;
         }
         let result = commands::execute(
             command,
