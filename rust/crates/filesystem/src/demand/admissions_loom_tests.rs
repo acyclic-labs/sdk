@@ -1,13 +1,9 @@
-use loom::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use super::accounting::{self, NativeProofAccounting};
+use crate::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-// Compile production publication, drains and the final-owner fence with Loom.
-// Loom's
-// Arc::strong_count synchronizes more strongly than std's relaxed load, so model
-// std Arc's release decrement and relaxed count explicitly below.
-#[path = "admissions_accounting.rs"]
-mod accounting;
-use accounting::NativeProofAccounting;
+// Loom's Arc::strong_count is stronger than std's relaxed load. Model the
+// reference count explicitly while using the actual production accounting.
 
 fn reclamation_model(acquire_final_owner: fn(usize) -> bool) {
     loom::model(move || {

@@ -41,10 +41,6 @@ path = "tests/cloud_contract.rs"
 required-features = ["memory"]
 
 [[test]]
-name = "native_custody_accounting"
-path = "tests/native_custody_accounting.rs"
-
-[[test]]
 name = "native_owner_registry"
 path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]

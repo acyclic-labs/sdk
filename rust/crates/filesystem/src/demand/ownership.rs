@@ -6,6 +6,10 @@ use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
 pub(super) mod accounting;
 
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "ownership_loom_tests.rs"]
+mod loom_tests;
+
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
 pub(crate) enum SourcePayloadOwnership {

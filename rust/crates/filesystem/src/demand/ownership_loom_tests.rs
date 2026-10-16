@@ -1,9 +1,5 @@
-//! Exhaustive retirement notification and registry gauge accounting.
-#![cfg(not(target_arch = "wasm32"))]
-
-use loom::sync::atomic as custody_atomics;
-#[path = "../src/demand/ownership_accounting.rs"]
-mod accounting;
+use super::accounting;
+use crate::sync::atomic as custody_atomics;
 
 fn gauge_publication(publish_before_release: bool, final_owner: bool) {
     use custody_atomics::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -49,7 +45,11 @@ fn gauge_publication(publish_before_release: bool, final_owner: bool) {
         consume();
         publisher.join().unwrap();
         consume();
-        assert_eq!(paid, [if final_owner { 0 } else { 3 }, 0]);
+        assert_eq!(
+            paid,
+            [if final_owner { 0 } else { 3 }, 0],
+            "retirement accounting was stranded"
+        );
     });
 }
 #[test]
@@ -61,7 +61,7 @@ fn publishers_cannot_strand_partial_retirement() {
     gauge_publication(false, false);
 }
 #[test]
-#[should_panic(expected = "assertion")]
+#[should_panic(expected = "retirement accounting was stranded")]
 fn publishing_cleanup_before_releasing_the_owner_loses_retirement() {
     gauge_publication(true, true);
 }
