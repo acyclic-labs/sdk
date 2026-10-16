@@ -103,7 +103,12 @@ proptest! {
 fn escaped(text: &str) -> String {
     let mut result = String::new();
     for character in text.chars() {
-        if character.is_ascii_punctuation() {
+        // Entities preserve descriptions' whitespace across CommonMark's
+        // indentation, line-ending and hard-break normalization.
+        if character.is_whitespace() {
+            result.push_str(&format!("&#{};", u32::from(character)));
+            continue;
+        } else if character.is_ascii_punctuation() {
             result.push('\\');
         }
         result.push(character);
