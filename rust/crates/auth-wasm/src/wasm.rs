@@ -135,24 +135,14 @@ impl Capability {
             .collect()
     }
 
-    #[wasm_bindgen(js_name = filterCount)]
-    pub fn filter_count(&self) -> usize {
-        self.0.effective().filters().count()
-    }
-
-    pub fn filter(&self, index: usize) -> Result<FilterClause, JsValue> {
-        let clause = self
-            .0
-            .effective()
-            .filters()
-            .nth(index)
-            .ok_or_else(|| error(VerifyError::Malformed))?;
-        Ok(FilterClause {
+    /// Preserve the declaring identity of each conjunctive filter.
+    pub fn filters(&self) -> Array {
+        self.0.effective().filters().map(|clause| JsValue::from(FilterClause {
             declaring_block: clause.declaring_block(),
             subject_id: clause.subject_id().to_owned(),
             lineage: clause.lineage().map(str::to_owned).collect(),
             filter: FilterProto::from(clause.filter().clone()).encode_to_vec(),
-        })
+        })).collect()
     }
 
     pub fn limits(&self) -> Uint8Array {
@@ -174,8 +164,12 @@ impl Capability {
 /// Owned display projection. Editing it never changes holder authority.
 #[wasm_bindgen(getter_with_clone)]
 pub struct FilterClause {
+    /// Zero-based block index where references became fixed.
     pub declaring_block: usize,
+    /// Acting identity at that block.
     pub subject_id: String,
+    /// Ancestor-or-self identities through that block.
     pub lineage: Vec<String>,
+    /// Canonical protobuf Filter.
     pub filter: Vec<u8>,
 }

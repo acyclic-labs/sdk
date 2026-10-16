@@ -1,3 +1,4 @@
+//! Holder trust adapters preserve the shared verifier's scope and revocations.
 #[path = "../../auth/tests/common/signed.rs"]
 mod signed;
 use acyclic_auth::{crypto::BlockId, verify::*};

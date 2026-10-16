@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 import { CaveatSchema, FilterSchema, GrantSetSchema, LimitsSchema, PrincipalSchema } from "../generated/proto/auth/v1/auth_pb.js";
-import initialize, { Capability as RustCapability, TrustSnapshot as RustTrustSnapshot } from "../generated/wasm/acyclic_auth_wasm.js";
+import initialize, { Capability as RustCapability, TrustSnapshot as RustTrustSnapshot, type FilterClause } from "../generated/wasm/acyclic_auth_wasm.js";
 
 const wasm = new URL("../generated/wasm/acyclic_auth_wasm_bg.wasm", import.meta.url);
 if (wasm.protocol === "file:") {
@@ -72,8 +72,7 @@ export class Capability {
   limits() { return fromBinary(LimitsSchema, this.#borrow().limits()); }
   filters() {
     const holder = this.#borrow();
-    return Array.from({ length: holder.filterCount() }, (_, index) => {
-      const clause = holder.filter(index);
+    return (holder.filters() as FilterClause[]).map(clause => {
       try {
         return { declaringBlock: clause.declaring_block, subjectId: clause.subject_id,
           lineage: clause.lineage, filter: fromBinary(FilterSchema, clause.filter) };

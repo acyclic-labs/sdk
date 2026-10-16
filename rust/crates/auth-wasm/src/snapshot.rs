@@ -3,12 +3,19 @@ use std::collections::HashSet;
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
 pub struct Snapshot {
+    /// Environment whose public issuer keys were authenticated by the owner.
     pub environment: String,
+    /// Current and historical environment issuers.
     pub environment_keys: Vec<BlockId>,
+    /// Account whose keyring supplied the remaining fields.
     pub account: String,
+    /// Trusted account root issuers, never online leaves.
     pub issuer_keys: Vec<BlockId>,
+    /// Monotone floor from the current keyring.
     pub minimum_key_epoch: u64,
+    /// Cumulative revoked online key identities.
     pub revoked_key_ids: HashSet<String>,
+    /// Cumulative unexpired ancestor block revocations.
     pub revoked_block_ids: HashSet<BlockId>,
 }
 
