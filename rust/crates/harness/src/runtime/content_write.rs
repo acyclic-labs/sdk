@@ -213,7 +213,12 @@ pub(super) fn bound_content_writer<'a>(
         )
     })?;
     if !crate::executor::with_history_io(io, |work| {
-        contains_content_grant_with_work(&scope.grants, writer.volume(), "volume:write:", work)
+        contains_content_grant_with_work(
+            &scope.grants,
+            writer.volume(),
+            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
+            work,
+        )
     })? {
         return Err(content_error(
             io,

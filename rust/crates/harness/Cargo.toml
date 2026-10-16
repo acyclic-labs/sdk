@@ -50,6 +50,10 @@ path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "filesystem_access"
+path = "tests/filesystem_access.rs"
+
+[[test]]
 name = "client_journal_model"
 path = "tests/client_journal_model.rs"
 required-features = ["model-checking"]
@@ -126,7 +130,7 @@ browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 terminal = ["dep:hex"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
@@ -144,7 +148,7 @@ grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }

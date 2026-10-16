@@ -100,14 +100,7 @@ fn volume_granted(
     io: Option<&PreparationIo>,
 ) -> Result<bool> {
     match io {
-        Some(io) => io.contains_capability(
-            grants,
-            volume,
-            match operation {
-                VolumeOperation::Read => "volume:read:",
-                VolumeOperation::Write => "volume:write:",
-            },
-        ),
+        Some(io) => io.contains_capability(grants, volume, operation.capability_prefix()),
         None => Ok(grants.contains(&volume.capability(operation, &mut None)?)),
     }
 }
