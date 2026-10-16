@@ -196,7 +196,17 @@ pub(super) async fn run(
             .await?;
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "inputs:end");
         harness
-            .publish_turn(ADMISSION, inputs, ADMISSION, 0, None)
+            .publish_turn(
+                super::super::Turn {
+                    operation: ADMISSION,
+                    root: ADMISSION,
+                    automatic_turns: 0,
+                    goal_revision: None,
+                    receive: inputs.0,
+                    model: inputs.1,
+                },
+                None,
+            )
             .await
     })
     .await?;
