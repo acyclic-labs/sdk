@@ -64,6 +64,9 @@ printf '%s\n' "$*" >>"$FAKE_SHA256_LOG"
 if [[ "$*" != '--check --status' ]]; then
   # Signature fixtures use a stub archive, not downloaded tool bytes.
   printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$1"
+else
+  # The real check consumes stdin; exiting early races the checksum producer.
+  cat >/dev/null
 fi
 EOF
 
