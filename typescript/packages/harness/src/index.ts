@@ -53,8 +53,7 @@ export * from "./projection.js";
 export * from "./memory-conversation.js";
 export * from "./browser-history.js";
 
-declare const brand: unique symbol;
-type Id<Name extends string> = string & { readonly [brand]: Name };
+type Id<Name extends string> = import("../generated/wasm/acyclic_harness_wasm.js").WasmId<Name>;
 
 export type AgentId = Id<"AgentId">;
 export type ConversationId = Id<"ConversationId">;

@@ -623,22 +623,25 @@ export class AgentHarness {
           ...(wire.max_output_tokens == null ? {} : { maxOutputTokens: wire.max_output_tokens }),
           signal: context.signal,
         };
-        for await (const event of model.provider.generate(admittedRequest, { operationId: id, step })) {
-          const admitted = this.contracts.admitModelEvent(event, this.components.limits, admission);
-          admission = admitted.state;
-          const admittedEvent = admitted.event;
-          if (admittedEvent.kind === "content") {
-            text += admittedEvent.delta;
-          }
-          else if (admittedEvent.kind === "tool_call") {
-            calls.push(admittedEvent);
-            assistantParts.push(admittedEvent);
-          }
-          else if (admittedEvent.kind === "reasoning_block") {
-            assistantParts.push({ kind: "reasoning", block: admittedEvent.block });
-          }
-          else if (admittedEvent.kind === "completed") {
-            receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
+        {
+          using prepared = await model.provider.prepare(admittedRequest);
+          for await (const event of prepared.generate({ operationId: id, step })) {
+            const admitted = this.contracts.admitModelEvent(event, this.components.limits, admission);
+            admission = admitted.state;
+            const admittedEvent = admitted.event;
+            if (admittedEvent.kind === "content") {
+              text += admittedEvent.delta;
+            }
+            else if (admittedEvent.kind === "tool_call") {
+              calls.push(admittedEvent);
+              assistantParts.push(admittedEvent);
+            }
+            else if (admittedEvent.kind === "reasoning_block") {
+              assistantParts.push({ kind: "reasoning", block: admittedEvent.block });
+            }
+            else if (admittedEvent.kind === "completed") {
+              receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
+            }
           }
         }
         if (!admission.completed) throw new Error("model attempt ended without completion");

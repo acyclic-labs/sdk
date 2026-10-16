@@ -48,6 +48,11 @@ export function modelContentFixture(data) {
   };
   return state;
 }
+export function watchModelInput(state, request) {
+  const bytes = request.serializedInput;
+  state.inputReads = 0;
+  Object.defineProperty(request, 'serializedInput', {get() { state.inputReads++; return bytes; }});
+}
 export async function cancelCount(promise, controller, ready) {
   await ready;
   controller.abort();
@@ -80,6 +85,8 @@ extern "C" {
     fn model_fixture(data: &str, mode: &str) -> JsValue;
     #[wasm_bindgen(js_name = modelContentFixture)]
     fn content_fixture(data: &Uint8Array) -> JsValue;
+    #[wasm_bindgen(js_name = watchModelInput)]
+    fn watch_input(state: &JsValue, request: &JsValue);
     #[wasm_bindgen(js_name = collectModel)]
     fn collect_model(iterator: JsValue) -> Promise;
     #[wasm_bindgen(js_name = cancelModel)]
@@ -159,7 +166,8 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         let request = request(&provider, None)?;
         let capacity: Value = from_js(provider.context_capacity(provider.model()?)?)?;
         assert_eq!(capacity, json!({"contextTokens":4096,"outputTokens":512}));
-        let count = provider.count_tokens(request.clone()).await?;
+        let prepared = provider.prepare(request).await?;
+        let count = prepared.count_tokens().await?;
         assert_eq!(
             field(&count, "requestDigest")?
                 .dyn_into::<Uint8Array>()?
@@ -170,7 +178,7 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         assert_eq!(tokens.len(), 1);
         assert!(tokens[0] >= 5);
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
-        let iterator = provider.generate(request, dispatch()?)?;
+        let iterator = prepared.generate(dispatch()?)?;
         let events: Vec<Value> = from_js(JsFuture::from(collect_model(iterator)).await?)?;
         assert_eq!(events.first().unwrap()["kind"], "content");
         assert_eq!(events.first().unwrap()["delta"], "hé");
@@ -212,8 +220,10 @@ async fn abort_and_iterator_return_cancel_pending_fetch_headers() -> Result<(), 
         let fixture = model_fixture("", "pending");
         let provider = provider(Adapter::Chat, &fixture)?;
         let controller = web_sys::AbortController::new()?;
-        let iterator =
-            provider.generate(request(&provider, Some(&controller.signal()))?, dispatch()?)?;
+        let iterator = provider
+            .prepare(request(&provider, Some(&controller.signal()))?)
+            .await?
+            .generate(dispatch()?)?;
         JsFuture::from(cancel_model(
             iterator,
             &controller,
@@ -232,9 +242,12 @@ async fn already_aborted_requests_never_dispatch() -> Result<(), JsValue> {
     let provider = provider(Adapter::Chat, &fixture)?;
     let controller = web_sys::AbortController::new()?;
     controller.abort();
-    let iterator =
-        provider.generate(request(&provider, Some(&controller.signal()))?, dispatch()?)?;
-    assert!(JsFuture::from(collect_model(iterator)).await.is_err());
+    assert!(
+        provider
+            .prepare(request(&provider, Some(&controller.signal()))?)
+            .await
+            .is_err()
+    );
     assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
     Ok(())
 }
@@ -249,8 +262,7 @@ async fn accounting_and_dispatch_reject_tampered_requests_without_effects() -> R
         &"serializedInput".into(),
         &Uint8Array::from(b"invalid".as_slice()),
     )?;
-    assert!(provider.count_tokens(request.clone()).await.is_err());
-    assert!(provider.generate(request, dispatch()?).is_err());
+    assert!(provider.prepare(request).await.is_err());
     assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
     Ok(())
 }
@@ -306,17 +318,29 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
         &"serializedInput".into(),
         &Uint8Array::from(prepared.bytes().as_ref()),
     )?;
-    provider.count_tokens(request.clone().into()).await?;
+    watch_input(&fixture, &request);
+    let request: JsValue = request.into();
+    let prepared = provider.prepare(request.clone()).await?;
+    prepared.count_tokens().await?;
     assert_eq!(field(&fixture, "reads")?.as_f64(), Some(1.0));
-    JsFuture::from(collect_model(
-        provider.generate(request.into(), dispatch()?)?,
-    ))
-    .await?;
+    JsFuture::from(collect_model(prepared.generate(dispatch()?)?)).await?;
     let body: Value = from_js(field(&fixture, "body")?)?;
     assert_eq!(body["messages"][0]["content"], "hé\nfile");
     assert_eq!(body["temperature"], 0.1);
-    assert_eq!(field(&fixture, "reads")?.as_f64(), Some(2.0));
+    assert_eq!(field(&fixture, "reads")?.as_f64(), Some(1.0));
     assert_eq!(field(&fixture, "calls")?.as_f64(), Some(1.0));
+    assert_eq!(field(&fixture, "inputReads")?.as_f64(), Some(1.0));
+    // Old independent preparation is the negative control: both canonical
+    // copying/decoding and verified file reads occur twice for count + generate.
+    provider
+        .prepare(request.clone())
+        .await?
+        .count_tokens()
+        .await?;
+    let independent = provider.prepare(request).await?;
+    JsFuture::from(collect_model(independent.generate(dispatch()?)?)).await?;
+    assert_eq!(field(&fixture, "reads")?.as_f64(), Some(3.0));
+    assert_eq!(field(&fixture, "inputReads")?.as_f64(), Some(3.0));
     Ok(())
 }
 
@@ -326,8 +350,9 @@ async fn counting_aborts_pending_headers_and_releases_the_fetch() -> Result<(), 
     let provider = provider(Adapter::Chat, &fixture)?;
     let controller = web_sys::AbortController::new()?;
     let input = request(&provider, Some(&controller.signal()))?;
-    let promise =
-        wasm_bindgen_futures::future_to_promise(async move { provider.count_tokens(input).await });
+    let promise = wasm_bindgen_futures::future_to_promise(async move {
+        provider.prepare(input).await?.count_tokens().await
+    });
     JsFuture::from(cancel_count(
         promise,
         &controller,
@@ -353,7 +378,10 @@ async fn model_arguments_keep_the_exact_portable_boundary_and_reject_larger_valu
         let fixture = model_fixture(&data, "complete");
         let provider = provider(Adapter::Chat, &fixture)?;
         let result = JsFuture::from(collect_model(
-            provider.generate(request(&provider, None)?, dispatch()?)?,
+            provider
+                .prepare(request(&provider, None)?)
+                .await?
+                .generate(dispatch()?)?,
         ))
         .await;
         if value > maximum {

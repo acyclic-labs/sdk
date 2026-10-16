@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {
@@ -128,10 +128,10 @@ test("declared context binding pins metadata and preserves the prior binding on 
     .context({ async build() { return [{ role: "user", content: "custom context" }]; } })
     .declaredContext(snapshot)
     .model({ provider: "mock", name: "discovery", revision: "pinned", options: {} }, {
-      ...syntheticAccounting(contracts), async *generate(request) {
+      ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
         admitted.push(request.serializedInput.slice());
         yield { kind: "completed" as const, metadata: {} };
-      }, async reconcile() { return undefined; },
+      }), async reconcile() { return undefined; },
     });
   expect(() => builder.declaredContext({ ...snapshot,
     skills: [{ ...skill, name: "Invalid" }] })).toThrow();
@@ -173,7 +173,7 @@ test("the actual task provider receives the admitted serialized input", async ()
   const prompt = "é\0🦀\r\n";
   let calls = 0;
   const runtime = await Harness.builder(contracts).model({ provider: "mock", name: "exact", revision: "pinned", options: {} }, {
-    ...syntheticAccounting(contracts), async *generate(request) {
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
       calls += 1;
       expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
         model: { provider: "mock", name: "exact", revision: "pinned", options: {} }, messages: [{ role: "user", content: prompt }],
@@ -181,7 +181,7 @@ test("the actual task provider receives the admitted serialized input", async ()
       });
       expect(request.messages).toEqual([{ role: "user", content: prompt }]);
       yield { kind: "completed" as const, metadata: {} };
-    },
+    }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.run(prompt);
@@ -222,14 +222,14 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
         const prompt = `notification ${depth}; task ${child}; identity ${child}; workspace ${child}; fresh scratch ${child} é\0🦀\r\n`;
         let calls = 0;
         const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
-          .model(root.model, { ...syntheticAccounting(contracts), async *generate(request) {
+          .model(root.model, { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
             calls++;
             const expected = prepareModelRequest({ model: root.model, tools,
               messages: [...parentWire.messages, { role: "user", content: prompt }] }, DEFAULT_LIMITS);
             expect(request.serializedInput).toEqual(expected);
             if (child === "primary") primary = request.serializedInput.slice();
             yield { kind: "completed" as const, metadata: {} };
-          }, async reconcile() { return undefined; } })
+          }), async reconcile() { return undefined; } })
           .tool({ ...tools[0]!, inputSchema: { type: "string" }, outputSchema: { type: "string" },
             parseInput: value => value, projection: await jsonToolProjection({ type: "string" }), parseOutput: value => value }, {
             async execute(invocation) { return { value: invocation.arguments }; }, async reconcile() { return undefined; },
@@ -294,14 +294,14 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     };
     const context = { async build() { return prefixOnly ? []
       : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
-    const provider = { ...syntheticAccounting(contracts), async *generate(request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
+    const provider = { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
       calls++;
       expect(request.maxOutputTokens).toBeUndefined();
       expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [],
         messages: [{ role: "user", content: "parent" }, ...(prefixOnly ? []
           : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }])] }, DEFAULT_LIMITS));
       yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; } };
+    }), async reconcile() { return undefined; } };
     const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     for (const version of ["first", "later"]) {
@@ -420,7 +420,7 @@ test("local model dispatch rejects claimed native options before invoking a cust
   const runtime = await Harness.builder(contracts).model(
     { provider: "mock", name: "native-options", revision: "pinned", options: {} }, {
       ...syntheticAccounting(contracts),
-      async *generate() { calls += 1; yield { kind: "completed" as const, metadata: {} }; },
+      prepare: scriptedPreparation(contracts, async function* () { calls += 1; yield { kind: "completed" as const, metadata: {} }; }),
       async reconcile() { return undefined; },
     }).build();
   await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(

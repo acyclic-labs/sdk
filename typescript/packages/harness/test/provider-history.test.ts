@@ -4,7 +4,7 @@ import {
   Harness, MemoryConversation, NativeContracts, jsonToolProjection,
   type AgentId, type ModelContentPart, type ModelEvent,
 } from "../src/index.js";
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 
 const contracts = await NativeContracts.create();
 const model = { provider: "fixture", name: "history", revision: "1", options: {} };
@@ -34,7 +34,7 @@ test("ordered reasoning survives tool batches, final answers and the next conver
       parseInput: value => value, parseOutput: value => value, handler: async (_, value) => value,
     }).grant("tool:call:echo").model(model, {
       ...syntheticAccounting(contracts),
-      async *generate(request) {
+      prepare: scriptedPreparation(contracts, async function* (request) {
         if (step++ === 0) {
           for (const [index, item] of blocks.entries()) {
             yield { kind: "reasoning_block" as const, block: item };
@@ -48,7 +48,7 @@ test("ordered reasoning survives tool batches, final answers and the next conver
           yield { kind: "content" as const, delta: "done" };
         }
         yield { kind: "completed" as const, metadata: {} };
-      }, async reconcile() { return undefined; },
+      }), async reconcile() { return undefined; },
     }).build();
     try {
       expect((await host.runPrompt(runtime, "first")).text).toBe("done");
@@ -77,11 +77,11 @@ async function boundedHandler(stripMetadata: boolean, metadata: Record<string, s
     parseInput: value => value, parseOutput: value => value, handler: async () => { executions++; return null; },
   }).grant("tool:call:echo").model(model, {
     ...syntheticAccounting(contracts),
-    async *generate() {
+    prepare: scriptedPreparation(contracts, async function* () {
       if (step++ === 0) yield { kind: "tool_call" as const, callId: "call", name: "echo", arguments: {},
         metadata: stripMetadata ? null : metadata };
       yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; },
+    }), async reconcile() { return undefined; },
   }).build();
   try { await runtime.run("go"); } catch { /* Admission rejection is expected. */ }
   return executions;

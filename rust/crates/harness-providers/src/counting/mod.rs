@@ -138,7 +138,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, mut count) = prepared?;
+    let (url, headers, bytes, count) = prepared?;
     drop(auth);
     #[cfg(not(target_arch = "wasm32"))]
     drop(auth_custody);
@@ -174,6 +174,16 @@ pub(crate) async fn count(
         _custody: admission,
     });
     let exchange = HttpRequest { url, headers, body };
+    send_count(provider, exchange, count, count_custody, work).await
+}
+
+pub(crate) async fn send_count(
+    provider: &ResolvedModel,
+    exchange: HttpRequest,
+    mut count: ModelTokenCount,
+    count_custody: NativeCustody,
+    work: NativeWork<'_>,
+) -> Result<(ModelTokenCount, NativeCustody)> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut response = match work {
         Some(work) => {
@@ -194,6 +204,11 @@ pub(crate) async fn count(
         }
         return Err(crate::http_error(response.status));
     }
+    let spec = provider
+        .config
+        .token_counter
+        .as_ref()
+        .ok_or_else(|| crate::invalid("missing token counter"))?;
     let maximum = provider.config.max_event_bytes;
     #[cfg(not(target_arch = "wasm32"))]
     let mut response_custody = work

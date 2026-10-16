@@ -36,6 +36,8 @@ mod input;
 pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
+mod prepared;
 mod projection;
 mod protocol;
 mod reasoning;

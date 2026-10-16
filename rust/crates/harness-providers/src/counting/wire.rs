@@ -76,7 +76,22 @@ pub(crate) fn body<'a>(
     model: &str,
     adapter: Adapter,
 ) -> CountBody<'a> {
-    let fields: &[&str] = match adapter {
+    if adapter == Adapter::Gemini {
+        generation
+            .fields
+            .insert("model".into(), json!(format!("models/{model}")));
+        return CountBody::Gemini {
+            request: generation,
+        };
+    }
+    generation
+        .fields
+        .retain(|field, _| fields(adapter).contains(&field.as_str()));
+    CountBody::Direct(generation)
+}
+
+pub(crate) fn fields(adapter: Adapter) -> &'static [&'static str] {
+    match adapter {
         // OpenAI's count endpoint accepts the same input items, tools and text schema.
         Adapter::Responses => &[
             "model",
@@ -109,20 +124,8 @@ pub(crate) fn body<'a>(
             "tool_choice",
             "add_generation_prompt",
         ],
-        Adapter::Gemini => {
-            // Full GenerateContentRequest includes system instructions, tools and schemas.
-            generation
-                .fields
-                .insert("model".into(), json!(format!("models/{model}")));
-            return CountBody::Gemini {
-                request: generation,
-            };
-        }
-    };
-    generation
-        .fields
-        .retain(|field, _| fields.contains(&field.as_str()));
-    CountBody::Direct(generation)
+        Adapter::Gemini => &[],
+    }
 }
 
 pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {

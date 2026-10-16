@@ -3,7 +3,7 @@ import fc from "fast-check";
 import {
   Harness, MemoryConversation, NativeContracts, defineTool, jsonToolProjection, type AgentId,
 } from "../src/index.js";
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 
 const contracts = await NativeContracts.create();
 const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
@@ -26,7 +26,7 @@ test("saved parallel calls preserve invocation authority and provider metadata i
     }, async (_context, value) => value);
     const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:echo_saved").model(model, {
       ...syntheticAccounting(contracts),
-      async *generate(request) {
+      prepare: scriptedPreparation(contracts, async function* (request) {
         if (modelStep++ === 0) {
           for (const [index, value] of metadata.entries()) {
             yield { kind: "tool_call" as const, callId: `call_${index}`, name: "echo_saved", arguments: { value: index }, metadata: value };
@@ -42,7 +42,7 @@ test("saved parallel calls preserve invocation authority and provider metadata i
           yield { kind: "content" as const, delta: "done" };
         }
         yield { kind: "completed" as const, metadata: {} };
-      },
+      }),
       async reconcile() { return undefined; },
     }).build();
     try {

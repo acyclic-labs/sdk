@@ -21,6 +21,21 @@ pub(crate) fn generate(
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let body = bytes::Bytes::from(encode(provider,&request,&names,None,&origin).await?);
+        let mut events = generate_encoded(provider, &request, dispatch, body, auth, names);
+        while let Some(event) = events.next().await { yield event?; }
+    })
+}
+
+/// Caller has admitted model identity and bound dispatch to the immutable request.
+pub(crate) fn generate_encoded<'a>(
+    provider: &'a ResolvedModel,
+    request: &'a PreparedModelRequest,
+    dispatch: ModelDispatch,
+    body: bytes::Bytes,
+    auth: (Option<Cow<'a, str>>, Option<String>),
+    names: crate::tool_names::Names<'a>,
+) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    Box::pin(async_stream::try_stream! {
         let input_bytes = body.len();
         #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
@@ -41,7 +56,7 @@ pub(crate) fn generate(
                             #[cfg(not(target_arch = "wasm32"))]
                             { recovery.output = true; }
                             if let ModelEvent::Completed { metadata } = &event {
-                                provider.observe(&request, input_bytes, metadata)?;
+                                provider.observe(request, input_bytes, metadata)?;
                             }
                             yield event;
                         }

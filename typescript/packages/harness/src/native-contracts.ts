@@ -361,7 +361,7 @@ export class NativeContracts {
   ): Promise<NativeSelectedModelContext> {
     return wasm.selectModelContext(
       // Rust reads only FileRefs from the admitted conversation/attachment manifests.
-      conversation, selection, (file, maximumBytes) => read(file as FileRef, maximumBytes),
+      conversation, selection, read,
       maximumMessages, maximumAttachments, maximumRenderBytes,
       maximumProjectedAttachments,
     ).then(value => normalizeNativeValue(value) as NativeSelectedModelContext);

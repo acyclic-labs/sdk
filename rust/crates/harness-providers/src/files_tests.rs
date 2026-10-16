@@ -118,6 +118,38 @@ fn with_parts(
     )
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn shared_preparation_matches_independent_requests_without_repeated_reads(chars in prop::collection::vec(any::<char>(), 0..96)) {
+        futures::executor::block_on(async {
+            let data: String = chars.into_iter().collect();
+            for (adapter, _) in fixtures() {
+                let (mut provider, _) = provider(adapter, 200);
+                let reader = Arc::new(Reader {data:data.as_bytes().to_vec(), reads:AtomicUsize::new(0)});
+                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
+                let request = with_parts(&provider, vec![ModelContentPart::File {
+                    file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
+                }]).unwrap();
+                let prepared = crate::prepared::PreparedInput::new(&provider, request.clone()).await.unwrap();
+                let count = prepared.count(&provider).await.unwrap();
+                // Reusing the retained HTTP bytes for generation performs no file I/O.
+                let auth = crate::dispatch::authenticate(&provider, None).await.unwrap();
+                let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
+                let names = crate::tool_names::Names::new(request.request());
+                crate::dispatch::generate_encoded(&provider, &request, dispatch, prepared.generation.clone(), auth, names).try_collect::<Vec<_>>().await.unwrap();
+                assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+                let baseline_count = provider.count_tokens(&request).await.unwrap();
+                let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();
+                assert_eq!(baseline_count, count);
+                assert_eq!(baseline_generation.as_slice(), prepared.generation.as_ref());
+                // Negative control: the independent old paths require two additional reads.
+                assert_eq!(reader.reads.load(Ordering::SeqCst), 3);
+            }
+        });
+    }
+}
+
 #[tokio::test]
 async fn bounded_text_and_reference_files_project_in_order_with_verified_counting() -> Result<()> {
     for (adapter, _) in fixtures() {

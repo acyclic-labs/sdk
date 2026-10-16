@@ -1,9 +1,14 @@
+#[cfg(test)]
+mod alloy_tests;
 mod cancel;
 mod stream;
 #[cfg(test)]
 mod tests;
 
-use crate::{BrowserTransport, Credentials, ProviderSpec, Registry, ResolvedModel};
+use crate::{
+    AlloySpec, AlloyTurn, BrowserTransport, Credentials, ModelFeatures, ProviderSpec, Registry,
+    ResolvedAlloy, ResolvedModel,
+};
 use acyclic_harness::{
     conversation::Limits,
     model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
@@ -61,27 +66,7 @@ fn to_js_json(value: &impl Serialize) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen(typescript_custom_section)]
 const TYPES: &str = r#"
-export type ProviderModel = Readonly<Omit<Model, 'options'> & { options: unknown }>;
-export interface ProviderRequest {
-  readonly model: ProviderModel;
-  readonly serializedInput: Uint8Array;
-  readonly signal?: AbortSignal;
-}
-export interface ProviderDispatch { readonly operationId: string; readonly step: number }
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-export interface ProviderCapacity { readonly contextTokens: number; readonly outputTokens: number }
-export interface ProviderTokenCount {
-  readonly requestDigest: Uint8Array;
-  readonly inputTokens: bigint;
-  readonly fixedTokens: number;
-  readonly messageTokens: readonly number[];
-}
-type PublicProviderEvent<Event> =
-  Event extends Readonly<{kind: 'tool_call'}>
-    ? Readonly<Omit<Event, 'call_id' | 'arguments'> & {callId: string; arguments: unknown}>
-    : Event extends Readonly<{kind: 'completed'}>
-      ? Readonly<Omit<Event, 'metadata'> & {metadata: unknown}> : Readonly<Event>;
-export type ProviderEvent = PublicProviderEvent<ModelEvent>;
 "#;
 
 /// Shared adapters using explicit browser credentials and an injectable fetch.
@@ -145,11 +130,69 @@ impl WasmProviderRegistry {
             .map_err(error)?,
         };
         Ok(WasmModelProvider {
-            provider: Rc::new(
+            provider: Arc::new(
                 self.registry
                     .resolve_with_options(selection, options)
                     .map_err(error)?,
             ),
+            limits: self.limits,
+        })
+    }
+
+    /// Resolves the same declarative policy and capabilities as native execution.
+    #[wasm_bindgen(js_name = resolveAlloy)]
+    pub fn resolve_alloy(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "AlloySpec")] spec: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ModelFeatures")] required: JsValue,
+    ) -> Result<WasmModelAlloy, JsValue> {
+        Ok(WasmModelAlloy {
+            alloy: self
+                .registry
+                .resolve_alloy(
+                    from_js::<AlloySpec>(spec)?,
+                    from_js::<ModelFeatures>(required)?,
+                )
+                .map_err(error)?,
+            limits: self.limits,
+        })
+    }
+}
+
+/// Immutable alloy policy; selection uses the durable turn key, never a local counter.
+#[wasm_bindgen]
+pub struct WasmModelAlloy {
+    alloy: ResolvedAlloy,
+    limits: Limits,
+}
+
+#[wasm_bindgen]
+impl WasmModelAlloy {
+    #[wasm_bindgen(getter, unchecked_return_type = "PublicModelCapacity")]
+    pub fn capacity(&self) -> Result<JsValue, JsValue> {
+        let capacity = self.alloy.capacity();
+        to_js(
+            &serde_json::json!({"contextTokens":capacity.context_tokens,"outputTokens":capacity.output_tokens}),
+        )
+    }
+
+    /// Reuse all three fields on resume and on tool follow-ups.
+    pub fn select(
+        &self,
+        operation_id: &str,
+        ordinal: u64,
+        role: &str,
+    ) -> Result<WasmModelProvider, JsValue> {
+        let operation_id = acyclic_harness::OperationId::parse(operation_id).map_err(error)?;
+        Ok(WasmModelProvider {
+            provider: self
+                .alloy
+                .select(AlloyTurn {
+                    operation_id,
+                    ordinal,
+                    role,
+                })
+                .clone(),
             limits: self.limits,
         })
     }
@@ -158,7 +201,7 @@ impl WasmProviderRegistry {
 /// Immutable selection implementing the public TypeScript model provider contract.
 #[wasm_bindgen]
 pub struct WasmModelProvider {
-    provider: Rc<ResolvedModel>,
+    provider: Arc<ResolvedModel>,
     limits: Limits,
 }
 
@@ -171,15 +214,15 @@ struct Dispatch {
 
 #[wasm_bindgen]
 impl WasmModelProvider {
-    #[wasm_bindgen(getter, unchecked_return_type = "ProviderModel")]
+    #[wasm_bindgen(getter, unchecked_return_type = "PublicModel")]
     pub fn model(&self) -> Result<JsValue, JsValue> {
         to_js_json(self.provider.model())
     }
 
-    #[wasm_bindgen(js_name = contextCapacity, unchecked_return_type = "ProviderCapacity")]
+    #[wasm_bindgen(js_name = contextCapacity, unchecked_return_type = "PublicModelCapacity")]
     pub fn context_capacity(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "ProviderModel")] model: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "PublicModel")] model: JsValue,
     ) -> Result<JsValue, JsValue> {
         let capacity = self
             .provider
@@ -190,16 +233,67 @@ impl WasmModelProvider {
         }))
     }
 
-    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "ProviderTokenCount")]
-    pub async fn count_tokens(
+    /// Canonical admission, verified file reads and projection are request-scoped.
+    pub async fn prepare(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "ProviderRequest")] request: JsValue,
-    ) -> Result<JsValue, JsValue> {
-        let prepared = self.prepare(&request)?;
+        #[wasm_bindgen(unchecked_param_type = "PublicProviderRequest")] request: JsValue,
+    ) -> Result<WasmPreparedModelRequest, JsValue> {
+        let admitted = self.decode(&request)?;
         let signal = Reflect::get(&request, &"signal".into())?;
-        let count = cancel::run(
-            async { self.provider.count_tokens(&prepared).await.map_err(error) },
+        let prepared = cancel::run(
+            async {
+                crate::prepared::PreparedInput::new(&self.provider, admitted)
+                    .await
+                    .map_err(error)
+            },
+            signal.clone(),
+        )
+        .await?;
+        Ok(WasmPreparedModelRequest {
+            provider: self.provider.clone(),
+            prepared: Rc::new(prepared),
             signal,
+        })
+    }
+
+    /// Streaming APIs cannot recover an interrupted attempt without durable provider storage.
+    #[wasm_bindgen(unchecked_return_type = "Promise<readonly PublicModelEvent[] | undefined>")]
+    pub fn reconcile(&self, _attempt: JsValue) -> js_sys::Promise {
+        js_sys::Promise::resolve(&JsValue::UNDEFINED)
+    }
+}
+
+impl WasmModelProvider {
+    fn decode(&self, request: &JsValue) -> Result<PreparedModelRequest, JsValue> {
+        let model: Model = from_js(Reflect::get(request, &"model".into())?)?;
+        self.provider.validate(&model).map_err(error)?;
+        let bytes = Reflect::get(request, &"serializedInput".into())?
+            .dyn_into::<Uint8Array>()
+            .map_err(|_| error("serializedInput must be a Uint8Array"))?
+            .to_vec();
+        let prepared = PreparedModelRequest::decode(&bytes, self.limits, None).map_err(error)?;
+        self.provider
+            .validate(&prepared.request().model)
+            .map_err(error)?;
+        Ok(prepared)
+    }
+}
+
+/// Immutable preparation owned by one request; no registry/global cache.
+#[wasm_bindgen]
+pub struct WasmPreparedModelRequest {
+    provider: Arc<ResolvedModel>,
+    prepared: Rc<crate::prepared::PreparedInput>,
+    signal: JsValue,
+}
+
+#[wasm_bindgen]
+impl WasmPreparedModelRequest {
+    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "PublicModelTokenCount")]
+    pub async fn count_tokens(&self) -> Result<JsValue, JsValue> {
+        let count = cancel::run(
+            async { self.prepared.count(&self.provider).await.map_err(error) },
+            self.signal.clone(),
         )
         .await?;
         let result = js_sys::Object::new();
@@ -222,47 +316,22 @@ impl WasmModelProvider {
         Ok(result.into())
     }
 
-    #[wasm_bindgen(unchecked_return_type = "AsyncIterable<ProviderEvent>")]
+    #[wasm_bindgen(unchecked_return_type = "AsyncIterable<PublicModelEvent>")]
     pub fn generate(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "ProviderRequest")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "ProviderDispatch")] dispatch: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "PublicModelGeneration")] dispatch: JsValue,
     ) -> Result<JsValue, JsValue> {
-        let prepared = self.prepare(&request)?;
         let dispatch: Dispatch = from_js(dispatch)?;
         let dispatch = ModelDispatch {
             operation_id: dispatch.operation_id,
             step: dispatch.step,
-            request_digest: prepared.request_digest(),
+            request_digest: self.prepared.request.request_digest(),
         };
-        let signal = Reflect::get(&request, &"signal".into())?;
         Ok(stream::iterator(
             self.provider.clone(),
-            prepared,
+            self.prepared.clone(),
             dispatch,
-            signal,
+            self.signal.clone(),
         ))
-    }
-
-    /// Streaming APIs cannot recover an interrupted attempt without durable provider storage.
-    #[wasm_bindgen(unchecked_return_type = "Promise<readonly ProviderEvent[] | undefined>")]
-    pub fn reconcile(&self, _attempt: JsValue) -> js_sys::Promise {
-        js_sys::Promise::resolve(&JsValue::UNDEFINED)
-    }
-}
-
-impl WasmModelProvider {
-    fn prepare(&self, request: &JsValue) -> Result<PreparedModelRequest, JsValue> {
-        let model: Model = from_js(Reflect::get(request, &"model".into())?)?;
-        self.provider.validate(&model).map_err(error)?;
-        let bytes = Reflect::get(request, &"serializedInput".into())?
-            .dyn_into::<Uint8Array>()
-            .map_err(|_| error("serializedInput must be a Uint8Array"))?
-            .to_vec();
-        let prepared = PreparedModelRequest::decode(&bytes, self.limits, None).map_err(error)?;
-        self.provider
-            .validate(&prepared.request().model)
-            .map_err(error)?;
-        Ok(prepared)
     }
 }

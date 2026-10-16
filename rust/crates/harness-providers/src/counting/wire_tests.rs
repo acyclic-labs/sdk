@@ -55,6 +55,22 @@ fn gemini_counts_the_full_generate_request_with_system_tools_and_schema() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
+    fn borrowed_count_serialization_matches_the_native_envelope(text in ".{0,64}", output in any::<u32>()) {
+        for adapter in [Adapter::Chat, Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
+            let field = match adapter { Adapter::Responses => "input", Adapter::Gemini => "contents", _ => "messages" };
+            let mut original = json!({"model":"model", "stream":true, "max_output_tokens":output,
+                "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
+            original[field] = json!([{"role":"user","content":text}]);
+            let mut generation = crate::projection::wire::Body::fixture(original.clone(), field);
+            if adapter == Adapter::Gemini { generation.fields.insert("model".into(), json!("models/model")); }
+            let borrowed = serde_json::to_vec(&crate::projection::wire::BorrowedCountBody {generation:&generation,adapter}).unwrap();
+            let native = serde_json::to_vec(&super::body(crate::projection::wire::Body::fixture(original, field), "model", adapter)).unwrap();
+            prop_assert_eq!(&borrowed, &native);
+            // The same oracle rejects omitting the counter's field filter/envelope.
+            prop_assert_ne!(serde_json::to_vec(&generation).unwrap(), native);
+        }
+    }
+    #[test]
     fn admitted_counts_include_the_configured_framing_bound(count in 0u64..=9_007_199_254_740_991, overhead in any::<u32>()) {
         let mut policy = spec(Adapter::Responses);policy.framing_tokens = overhead;
         let bytes = serde_json::to_vec(&json!({"input_tokens":count})).unwrap();

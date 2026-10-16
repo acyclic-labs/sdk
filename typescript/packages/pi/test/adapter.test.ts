@@ -8,12 +8,12 @@ test("Pi bridge receives the typed request and preserves terminal metadata", asy
     { type: "text_delta", text: "ok" }, { type: "complete", metadata: { session: "s" } },
   ];
   const provider = piProvider({
-    project: value => { expect(value).toEqual(request); return value; },
+    project: value => { expect(value).toMatchObject(request); return value; },
     run: async function* () { yield* events; },
     async reconcile() { return events; },
   });
   const values = [];
-  for await (const event of provider.generate(request)) values.push(event);
+  for await (const event of (await provider.prepare({ ...request, serializedInput: new Uint8Array() })).generate({operationId:"test",step:0})) values.push(event);
   expect(values.at(-1)).toEqual({ kind: "completed", metadata: { session: "s" } });
   expect(await provider.reconcile({ operationId: "o", step: 1, requestDigest: new Uint8Array(), observed: [] })).toEqual(values);
 });
@@ -63,7 +63,7 @@ test("Pi default projection resolves bounded text and leaves image and document 
     async reconcile() { return undefined; },
   });
   const events = [];
-  for await (const event of provider.generate(input)) events.push(event);
+  for await (const event of (await provider.prepare({ ...input, serializedInput: new Uint8Array() })).generate({operationId:"test",step:0})) events.push(event);
   expect(seen).toBe(true);
   expect(events.at(-1)).toEqual({ kind: "completed", metadata: null });
 });
@@ -121,8 +121,8 @@ test("Pi accounting forwards the exact model and prepared request without dispat
   };
   const provider = piProvider(bridge);
   expect(provider.contextCapacity(request.model)).toBe(capacity);
-  expect(await provider.countTokens(prepared)).toBe(count);
-  expect(projected).toBe(0);
+  expect(await (await provider.prepare(prepared)).countTokens()).toBe(count);
+  expect(projected).toBe(1);
   expect(dispatched).toBe(0);
 });
 
@@ -134,5 +134,5 @@ test("Pi accounting rejects absent capacity and counts without guessing", async 
   };
   const provider = piProvider(bridge);
   expect(() => provider.contextCapacity(request.model)).toThrow();
-  await expect(provider.countTokens({ ...request, serializedInput: new Uint8Array() })).rejects.toThrow();
+  await expect((await provider.prepare({ ...request, serializedInput: new Uint8Array() })).countTokens()).rejects.toThrow();
 });
