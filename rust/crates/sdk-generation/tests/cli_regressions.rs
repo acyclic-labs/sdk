@@ -71,6 +71,15 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
+fn init_git(root: &Path, message: &str) {
+    git(root, &["init", "--quiet"]);
+    use std::io::Write;
+    fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap()
+        .write_all(b"\n[user]\nname = sdk-generation-test\nemail = sdk-generation-test@example.invalid\n[core]\nautocrlf = false\nexcludesFile =\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "--quiet", "-m", message]);
+}
+
 fn fixture(include_plugin: bool) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "sdk-generation-cli-regression-{}-{}-{}",
@@ -115,18 +124,7 @@ fn fixture(include_plugin: bool) -> Fixture {
         fs::create_dir_all(root.join("plugin/src")).unwrap();
         fs::write(root.join("plugin/src/main.rs"), "fn main() {}\n").unwrap();
     }
-    git(&root, &["init", "--quiet"]);
-    git(
-        &root,
-        &[
-            "config",
-            "user.email",
-            "sdk-generation-test@example.invalid",
-        ],
-    );
-    git(&root, &["config", "user.name", "sdk-generation-test"]);
-    git(&root, &["add", "."]);
-    git(&root, &["commit", "--quiet", "-m", "fixture"]);
+    init_git(&root, "fixture");
 
     let rustdoc = root.join("rustdoc");
     fs::create_dir_all(&rustdoc).unwrap();
@@ -151,6 +149,12 @@ fn fixture(include_plugin: bool) -> Fixture {
 /// source and receipt identities; silently dropping it would make the sidecar
 /// claim coverage for an item that no catalog row can represent.
 fn feature_profile_fixture() -> Fixture {
+    let fixture = feature_profile_source();
+    init_git(&fixture.root, "feature profile fixture");
+    fixture
+}
+
+fn feature_profile_source() -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "sdk-generation-feature-profile-{}-{}",
         std::process::id(),
@@ -187,21 +191,6 @@ fn feature_profile_fixture() -> Fixture {
         "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    git(&root, &["init", "--quiet"]);
-    git(
-        &root,
-        &[
-            "config",
-            "user.email",
-            "sdk-generation-test@example.invalid",
-        ],
-    );
-    git(&root, &["config", "user.name", "sdk-generation-test"]);
-    git(&root, &["add", "."]);
-    git(
-        &root,
-        &["commit", "--quiet", "-m", "feature profile fixture"],
-    );
     let output = std::env::temp_dir().join(format!(
         "sdk-generation-feature-profile-output-{}-{}",
         std::process::id(),
@@ -610,8 +599,8 @@ fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, us
     assert_eq!(counts, expected.iter().copied().collect::<BTreeMap<_, _>>());
 }
 
-fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
-    let fixture = feature_profile_fixture();
+fn historical_source_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
+    let fixture = feature_profile_source();
     let package = fixture.root.join("rust/crates/demo");
     fs::create_dir_all(package.join("examples")).unwrap();
     fs::write(package.join("README.md"), "# Historical source guide\n").unwrap();
@@ -630,12 +619,15 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
         format!("fn main() {{ {body} println!(\"executed-historical-example\"); }}\n"),
     )
     .unwrap();
-    git(&fixture.root, &["add", "."]);
-    git(
-        &fixture.root,
-        &["commit", "--quiet", "-m", "historical docs fixture"],
-    );
     let support = fixture.output.join("test-support");
+    fs::create_dir_all(support.join("registry")).unwrap();
+    (fixture, support)
+}
+
+fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
+    let (fixture, support) = historical_source_fixture(mutation);
+    init_git(&fixture.root, "historical docs fixture");
+    let package = fixture.root.join("rust/crates/demo");
     let archives = support.join("registry");
     let archive_source = support.join("archive-source/demo-1.0.0");
     fs::create_dir_all(&archives).unwrap();
@@ -668,19 +660,7 @@ fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
     .unwrap();
     fs::write(archive_source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":false},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
     let archive = archives.join("demo-1.0.0.crate");
-    let packed = Command::new("tar")
-        .args(["-cf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(support.join("archive-source"))
-        .arg("demo-1.0.0")
-        .output()
-        .unwrap();
-    assert!(
-        packed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&packed.stderr)
-    );
+    archives::pack(&archive_source, &archive);
     write_registry_transport(&support);
     (fixture, support)
 }
@@ -834,7 +814,7 @@ fn registry_archive_fixture_configured(
     setup: Option<fn(&Path)>,
     prepared: Option<(Fixture, PathBuf)>,
 ) -> (Fixture, PathBuf) {
-    let (fixture, support) = prepared.unwrap_or_else(|| historical_fixture(None));
+    let (fixture, support) = prepared.unwrap_or_else(|| historical_source_fixture(None));
     let package = fixture.root.join("rust/crates/demo");
     let manifest = fs::read_to_string(package.join("Cargo.toml"))
         .unwrap()
@@ -853,24 +833,28 @@ fn registry_archive_fixture_configured(
         lock.replace("name = \"demo\"", &format!("name = {package_name:?}")),
     )
     .unwrap();
-    git(
-        &fixture.root,
-        &[
-            "add",
-            "rust/crates/demo/Cargo.toml",
-            "release/cargo-crates.json",
-            "Cargo.lock",
-        ],
-    );
-    git(
-        &fixture.root,
-        &[
-            "commit",
-            "--quiet",
-            "-m",
-            "original registry owner authority",
-        ],
-    );
+    if fixture.root.join(".git").is_dir() {
+        git(
+            &fixture.root,
+            &[
+                "add",
+                "rust/crates/demo/Cargo.toml",
+                "release/cargo-crates.json",
+                "Cargo.lock",
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                "commit",
+                "--quiet",
+                "-m",
+                "original registry owner authority",
+            ],
+        );
+    } else {
+        init_git(&fixture.root, "original registry owner authority");
+    }
     let original = fs::read_to_string(package.join("src/lib.rs")).unwrap();
     fs::write(
         package.join("src/lib.rs"),
@@ -889,7 +873,7 @@ fn registry_archive_fixture_configured(
         setup(&package);
     }
     // Cargo itself creates the normalized manifest and published package lock.
-    let packaged = Command::new("cargo")
+    let packaged = Command::new(env!("CARGO"))
         .env("CARGO_HOME", fixture_cargo_home(&fixture))
         .current_dir(&fixture.root)
         .args(["package", "--allow-dirty", "--no-verify", "--manifest-path"])
@@ -901,15 +885,19 @@ fn registry_archive_fixture_configured(
     assert!(packaged.status.success(), "{}", output_message(&packaged));
     let unpack = support.join("cargo-packaged-source");
     fs::create_dir_all(&unpack).unwrap();
-    let extracted = Command::new("tar")
-        .arg("-xf")
-        .arg(support.join(format!("package-target/package/{package_name}-1.0.0.crate")))
-        .arg("-C")
-        .arg(&unpack)
-        .output()
-        .unwrap();
-    assert!(extracted.status.success(), "{}", output_message(&extracted));
     let source = unpack.join(format!("{package_name}-1.0.0"));
+    let members = sdk_generation::historical::decode_archive_members(
+        &fs::read(support.join(format!("package-target/package/{package_name}-1.0.0.crate")))
+            .unwrap(),
+        package_name,
+        "1.0.0",
+    )
+    .unwrap();
+    for (name, bytes) in members {
+        let file = source.join(name);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, bytes).unwrap();
+    }
     fs::write(source.join(".cargo_vcs_info.json"), serde_json::to_vec(&json!({"git":{"sha1":git_revision(&fixture.root),"dirty":dirty},"path_in_vcs":"rust/crates/demo"})).unwrap()).unwrap();
     if !publisher_vcs {
         fs::remove_file(source.join(".cargo_vcs_info.json")).unwrap();
@@ -918,16 +906,8 @@ fn registry_archive_fixture_configured(
         fs::remove_file(source.join("Cargo.lock")).unwrap();
     }
     let archive = support.join(format!("registry/{package_name}-1.0.0.crate"));
-    let packed = Command::new("tar")
-        .args(["-cf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&unpack)
-        .arg(format!("{package_name}-1.0.0"))
-        .output()
-        .unwrap();
-    assert!(packed.status.success(), "{}", output_message(&packed));
-    if package_name != "demo" {
+    archives::pack(&source, &archive);
+    if package_name != "demo" && support.join("registry/demo-1.0.0.crate").exists() {
         fs::remove_file(support.join("registry/demo-1.0.0.crate")).unwrap();
     }
     write_registry_transport(&support);
@@ -941,3 +921,6 @@ mod registry;
 
 #[path = "cli_regressions/replay.rs"]
 mod replay;
+
+#[path = "cli_regressions/archives.rs"]
+mod archives;

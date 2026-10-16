@@ -52,7 +52,7 @@ fn main() {
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
-fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_plugin: bool) {
+fn source_edit_baseline(include_plugin: bool) -> Fixture {
     let fixture = fixture(include_plugin);
     let first = run_generate(
         &fixture.root,
@@ -69,6 +69,10 @@ fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_
         String::from_utf8_lossy(&first.stderr)
     );
 
+    fixture
+}
+
+fn assert_source_edit_invalidates_output(fixture: &Fixture, relative: &str, changed: &str) {
     let source = fixture.root.join(relative);
     let original = fs::read(&source).unwrap();
     let original_hash = hash_bytes(&original);
@@ -92,7 +96,10 @@ fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_
     );
     assert!(drift_message.contains(relative), "{drift_message}");
 
-    let stale_output = fixture.root.join("stale-after-source-edit");
+    let suffix = relative.replace(['/', '.'], "-");
+    let stale_output = fixture
+        .root
+        .join(format!("stale-after-source-edit-{suffix}"));
     let stale = run_generate(
         &fixture.root,
         &fixture.rustdoc,
@@ -118,7 +125,9 @@ fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_
     let drift = run_drift(&fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
 
-    let refreshed_output = fixture.root.join("refreshed-after-source-restore");
+    let refreshed_output = fixture
+        .root
+        .join(format!("refreshed-after-source-restore-{suffix}"));
     let refreshed = run_generate(
         &fixture.root,
         &fixture.rustdoc,
@@ -142,29 +151,31 @@ fn assert_source_edit_invalidates_output(relative: &str, changed: &str, include_
 
 #[test]
 fn crate_rust_comment_and_markdown_guide_edits_invalidate_output() {
+    let fixture = source_edit_baseline(false);
     assert_source_edit_invalidates_output(
+        &fixture,
         "rust/crates/demo/src/lib.rs",
         "pub fn demo() -> u64 { 7 }\n// changed crate comment\n",
-        false,
     );
     assert_source_edit_invalidates_output(
+        &fixture,
         "rust/crates/demo/README.md",
         "# Demo crate\n\nChanged crate guide.\n",
-        false,
     );
     assert_source_edit_invalidates_output(
+        &fixture,
         "docs/guide.md",
         "# Fixture guide\n\nChanged workspace guide.\n",
-        false,
     );
 }
 
 #[test]
 fn plugin_rust_edits_invalidate_output() {
+    let fixture = source_edit_baseline(true);
     assert_source_edit_invalidates_output(
+        &fixture,
         "plugin/src/main.rs",
         "fn main() {}\n// changed plugin source\n",
-        true,
     );
 }
 
@@ -331,23 +342,14 @@ fn versioned_release_manifest_binds_source_and_scenario_artifacts() {
 #[test]
 fn stale_source_attestation_is_rejected_before_generate() {
     let fixture = fixture(false);
-    let first = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
-        .args([
-            "generate",
-            "--root",
-            fixture.root.to_str().unwrap(),
-            "--output",
-            fixture.output.to_str().unwrap(),
-            "--rustdoc-dir",
-            fixture.rustdoc.to_str().unwrap(),
-            "--version",
-            "stale-attestation",
-            "--channel",
-            "preview",
-            "--skip-scenarios",
-        ])
-        .output()
-        .unwrap();
+    let first = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "stale-attestation",
+        "preview",
+        true,
+    );
     assert!(
         first.status.success(),
         "{}{}",
@@ -361,23 +363,14 @@ fn stale_source_attestation_is_rejected_before_generate() {
     )
     .unwrap();
     let second_output = fixture.root.join("stale-output");
-    let second = Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
-        .args([
-            "generate",
-            "--root",
-            fixture.root.to_str().unwrap(),
-            "--output",
-            second_output.to_str().unwrap(),
-            "--rustdoc-dir",
-            fixture.rustdoc.to_str().unwrap(),
-            "--version",
-            "stale-attestation",
-            "--channel",
-            "preview",
-            "--skip-scenarios",
-        ])
-        .output()
-        .unwrap();
+    let second = run_generate(
+        &fixture.root,
+        &fixture.rustdoc,
+        &second_output,
+        "stale-attestation",
+        "preview",
+        true,
+    );
     assert!(!second.status.success());
     let message = format!(
         "{}{}",
@@ -768,13 +761,20 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let mut contents = fs::read_to_string(&manifest).unwrap();
     contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
     fs::write(manifest, contents).unwrap();
-    assert!(Command::new("cargo")
-        .env("CARGO_HOME", fixture_cargo_home(&fixture))
-        .args(["generate-lockfile", "--offline"])
-        .current_dir(&fixture.root)
-        .status()
-        .unwrap()
-        .success());
+    // Cargo may infer in-root path dependencies as workspace members. Declare
+    // both inventories explicitly so membership discovery cannot change coverage.
+    fs::write(
+        fixture.root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"rust/crates/demo\", \"rust/crates/helper\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("release/cargo-crates.json"),
+        "[\"demo\", \"relocation-helper\"]\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("Cargo.lock"),
+        "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\ndependencies = [\"relocation-helper\"]\n\n[[package]]\nname = \"relocation-helper\"\nversion = \"1.0.0\"\n").unwrap();
     fs::write(fixture.root.join("rust/crates/demo/build.rs"),
         "fn main() { std::fs::write(std::path::PathBuf::from(std::env::var(\"OUT_DIR\").unwrap()).join(\"wire.rs\"), \"pub struct GeneratedWire;\\n\").unwrap(); }\n").unwrap();
     fs::write(
@@ -813,6 +813,36 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert!(!relocated.output.exists());
     let result = run_generate_execute_profiles(&fixture);
     assert!(result.status.success(), "{}", output_message(&result));
+    assert_executed_profiles(
+        &fixture.output,
+        &fixture.rustdoc,
+        &[("demo", 5), ("relocation-helper", 1)],
+    );
+    let metadata = super::replay::metadata(&fixture);
+    let members = metadata
+        .workspace_members
+        .iter()
+        .map(|id| {
+            metadata
+                .packages
+                .iter()
+                .find(|package| package.id == *id)
+                .unwrap()
+                .name
+                .to_string()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        members,
+        std::collections::BTreeSet::from(["demo".to_owned(), "relocation-helper".to_owned()])
+    );
+    assert_eq!(
+        serde_json::from_slice::<Vec<String>>(
+            &fs::read(fixture.root.join("release/cargo-crates.json")).unwrap()
+        )
+        .unwrap(),
+        vec!["demo", "relocation-helper"]
+    );
     super::replay::copy_tree(&fixture.output, &relocated.output);
     super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
     std::thread::scope(|scope| {
@@ -824,7 +854,6 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         }
     });
     super::replay::relocate_receipts(&fixture, &relocated);
-    let metadata = super::replay::metadata(&fixture);
     let (data, availability) = super::replay::project(&relocated, &metadata);
     sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
     assert_eq!(
