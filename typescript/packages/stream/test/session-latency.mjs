@@ -12,14 +12,15 @@ import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js"
 
 const WARM = 16;
 const SAMPLES = 128;
-async function measure(provider, name, follow = (path, options) => provider.follow(path, options)) {
-  const path = `latency/${name}`;
-  await provider.append(path, [new Uint8Array([0])], { ifTail: 0n });
+export async function measure(provider, name, follow = (path, options) => provider.follow(path, options),
+  { runtime = process.versions.bun ? "bun" : "node", warm = WARM, samples = SAMPLES } = {}) {
+  const path = `latency/${runtime}/${name}`;
+  assert.equal((await provider.append(path, [new Uint8Array([0])], { ifTail: 0n })).ok, true, `initial latency append failed for ${path}`);
   const controller = new AbortController();
   const records = follow(path, { from: 1n, signal: controller.signal })[Symbol.asyncIterator]();
-  const samples = [];
+  const elapsedSamples = [];
   try {
-    for (let index = 0; index < WARM + SAMPLES; index++) {
+    for (let index = 0; index < warm + samples; index++) {
       const next = records.next();
       const began = performance.now();
       // Measure request-to-yield, including append validation, transport and
@@ -29,11 +30,11 @@ async function measure(provider, name, follow = (path, options) => provider.foll
       const elapsed = (performance.now() - began) * 1_000;
       assert.equal(item.value.sequence, BigInt(index + 1));
       assert.equal((await append).ok, true);
-      if (index >= WARM) samples.push(elapsed);
+      if (index >= warm) elapsedSamples.push(elapsed);
     }
   } finally { controller.abort(); await records.return?.(); }
-  samples.sort((a, b) => a - b);
-  return { samples: SAMPLES, p50_us: samples[Math.ceil(SAMPLES * .5) - 1], p99_us: samples[Math.ceil(SAMPLES * .99) - 1] };
+  elapsedSamples.sort((a, b) => a - b);
+  return { samples, p50_us: elapsedSamples[Math.ceil(samples * .5) - 1], p99_us: elapsedSamples[Math.ceil(samples * .99) - 1] };
 }
 
 export async function measureLatency(options) {

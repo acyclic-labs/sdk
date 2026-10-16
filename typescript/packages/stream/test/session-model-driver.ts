@@ -97,8 +97,33 @@ function receive(): void {
   void records.next().then(result => { settled = true; if (!result.done) seen.push("sequence" in result.value ? Number(result.value.sequence) : result.value.path === "agents/m" ? 0 : result.value.path === "agents/a" ? 1 : 2); }, error => { settled = true; rejected = error; });
 }
 if (scenario !== "decode") receive();
-async function command(action: string, hex?: string, path?: string): Promise<unknown> {
+async function command(action: string, hex?: string, path?: string,
+  work?: { warm: number; samples: number; reverse: boolean; shared: boolean }): Promise<unknown> {
   switch (action) {
+    case "latency": {
+      if (work === undefined || path === undefined) throw new Error("latency work missing");
+      const { measure } = await import("./session-latency.mjs");
+      const { MemoryStreamProvider } = await import("../src/memory.js");
+      const memory = new MemoryStreamProvider();
+      const accepted = new Map<string, number>();
+      const provider = {
+        async append(path: string, values: readonly Uint8Array[], options: import("../src/types.js").AppendOptions) {
+          const result = await memory.append(path, values, options);
+          if (result.ok) accepted.set(path, (accepted.get(path) ?? 0) + values.length);
+          return result;
+        },
+        follow: memory.follow.bind(memory),
+      };
+      let rejection: string | null = null;
+      try {
+        for (const runtime of work.reverse ? ["bun", "node"] : ["node", "bun"]) {
+          await measure(provider, path, undefined, { warm: work.warm, samples: work.samples, runtime: work.shared ? "shared" : runtime });
+        }
+      } catch (error) { rejection = String(error); }
+      const tails = [];
+      for (const path of accepted.keys()) tails.push(Number(await memory.tail(path)));
+      return { isolated: rejection === null, rejection, accepted: [...accepted.values()].reduce((sum, count) => sum + count, 0), tails };
+    }
     case "child": {
       const value = create(wire.SessionFrameSchema, { channelId: 1n, generation: 1n, body: { case: "data", value: {
         after: { next: 1n, opaque: new TextEncoder().encode(path) }, accepted: 1n, item: { case: "child", value: { path: path ?? "" } },
@@ -162,7 +187,7 @@ async function command(action: string, hex?: string, path?: string): Promise<unk
     active: peer.active, outstanding: peer.outstandingFrames, returned: peer.returned };
 }
 for await (const line of createInterface({ input: process.stdin })) {
-  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action, input.hex, input.path))}\n`); }
+  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action, input.hex, input.path, input.work))}\n`); }
   catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
 }
 controller.abort();
