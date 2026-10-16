@@ -100,6 +100,32 @@ proptest! {
         let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
         prop_assert!(matches!(cap.attenuate(vec![], &[seed;32]), Err(VerifyError::RepeatedKey)));
     }
+    #[test]
+    fn cached_admission_allocates_nothing_per_caveat(repetitions in 0..32usize) {
+        let trust = Snapshot::default();
+        let clauses = vec![
+            CaveatKind::Grants(GrantSet { grants: vec![Grant { kind: GrantKind::Resource(ResourceGrant { resource: ResourcePattern { name: "fs:/public".into(), prefix: true }, actions: vec!["fs/read".into()] }) }] }),
+            CaveatKind::ExpiresAtUnixSeconds(900), CaveatKind::NotBeforeUnixSeconds(1),
+            CaveatKind::Audience(ResourcePattern { name: "workers:/test".into(), prefix: false }),
+            CaveatKind::Holder(Holder { account: Some("account".into()) }),
+            CaveatKind::Filter(Filter { keys: vec![], attributes: vec![AttributeMatch { name: "author".into(), any_of: vec![b"issuer".to_vec()], subjects: vec![] }] }),
+            CaveatKind::Pin(Pin { name: "author".into(), value: PinValue::Literal(b"issuer".to_vec()) }),
+            CaveatKind::Limits(limits(None)), CaveatKind::MaxDepth(1),
+            CaveatKind::Label("test".into()), CaveatKind::LineageAppend(LineageAppend { ids: vec!["child".into()] }),
+        ];
+        let caveats = (0..repetitions).flat_map(|_| clauses.iter().cloned().map(|kind| Caveat { kind })).collect();
+        let capability = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(caveats, &[5;32]).unwrap();
+        let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
+        let usage = limits(None); let request = request("fs:/public", &attributes, &usage);
+        let mut admitted = false;
+        let measured = allocation_counter::measure(|| { admitted = capability.authorize(&trust, &request, PolicyDecision::Allow).is_ok(); });
+        prop_assert!(admitted);
+        prop_assert_eq!(measured.count_total, 0);
+        // Negative control for the measurement itself: the former resource
+        // decoder allocates a discarded component buffer during validation.
+        let broken = allocation_counter::measure(|| { std::hint::black_box(acyclic_auth::decode_component("public").unwrap()); });
+        prop_assert!(broken.count_total > 0);
+    }
 }
 
 #[test]
