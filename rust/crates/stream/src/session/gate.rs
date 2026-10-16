@@ -1,5 +1,6 @@
 use super::sync::Mutex;
 use crate::StreamError;
+#[cfg(not(target_arch = "wasm32"))]
 use futures::{Stream, StreamExt, future};
 use std::{
     future::poll_fn,
@@ -17,6 +18,7 @@ impl Gate {
             state: Mutex::new((false, None)),
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn current(&self) -> Result<bool, StreamError> {
         Ok(self.state.lock().map_err(|_| StreamError::Unavailable)?.0)
     }
@@ -51,6 +53,7 @@ impl Gate {
     pub(super) async fn changed(&self, expected: bool) -> Result<(), StreamError> {
         poll_fn(|cx| self.poll_changed(expected, cx)).await
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn next<S: Stream + Unpin>(
         &self,
         records: &mut S,
