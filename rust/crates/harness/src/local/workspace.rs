@@ -88,8 +88,17 @@ impl LocalWorkspace {
             self.mounts
                 .mounts()
                 .filter(|(relative, _)| !relative.is_empty())
-                .map(|(_, mount)| (mount.view.name.clone(), mount.view.volume.clone(), None)),
+                .map(|(_, mount)| {
+                    (
+                        mount.view.name.clone(),
+                        mount.view.volume.clone(),
+                        mount.view.source.clone(),
+                    )
+                }),
         )?;
+        #[cfg(target_os = "linux")]
+        volumes::link(path, &mut mounts)?;
+        #[cfg(not(target_os = "linux"))]
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }

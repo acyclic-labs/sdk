@@ -9,6 +9,93 @@ use acyclic_harness::{
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
+#[cfg(all(feature = "native-execution", target_os = "linux"))]
+#[tokio::test]
+async fn descendant_named_volume_survives_branch_switch_and_routes_bash_cwd() -> Result<()> {
+    use acyclic_harness::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use acyclic_harness::test_support::ScriptedEvent;
+    let directory = tempfile::tempdir().unwrap();
+    let calls = [
+        (
+            "bash",
+            json!({"command":"printf private > .volumes/scratch/child-private"}),
+        ),
+        (
+            "bash",
+            json!({"command":"cat child-private", "cwd":".volumes/scratch"}),
+        ),
+        ("fs", json!({"command":"git --volume scratch status"})),
+        ("fs", json!({"command":"git switch -c selected-child"})),
+        (
+            "bash",
+            json!({"command":"cat child-private; test ! -f ../../child-private", "cwd":".volumes/scratch"}),
+        ),
+    ];
+    let provider = provider(
+        calls
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, arguments))| {
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                        format!("scratch-{index}"),
+                        name.into(),
+                        arguments,
+                    ))),
+                    ScriptedEvent::Event(ModelEvent::Completed {
+                        metadata: json!({}),
+                    }),
+                ])
+            })
+            .chain([ScriptedTurn::Text("scratch retained".into())]),
+    );
+    let local = local(directory.path(), provider.clone()).await?;
+    let Admission::Accepted(RuntimeTask::Durable {
+        task_id: parent, ..
+    }) = local.submit(OperationId::new(), "parent").await?
+    else {
+        panic!("parent admission")
+    };
+    let mut client = selected(&local, parent).await?;
+    let child = send(&local, &mut client, "/delegate child").await?;
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    assert_eq!(local.resume(child).await?.text, "scratch retained");
+    let requests = provider.requests();
+    let output = |id: &str| {
+        requests
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    call_id,
+                    content: ToolResultContent::Json { value },
+                    ..
+                } if call_id == id => Some(value),
+                _ => None,
+            })
+            .expect("model did not receive the tool result")
+    };
+    for id in ["scratch-0", "scratch-1", "scratch-4"] {
+        assert_eq!(output(id)["success"], true, "{id}: {}", output(id));
+    }
+    assert_eq!(output("scratch-1")["stdout"], "private");
+    assert_eq!(output("scratch-4")["stdout"], "private");
+    for id in ["scratch-2", "scratch-3"] {
+        assert!(output(id).get("result").is_some(), "{id}: {}", output(id));
+    }
+    assert!(
+        !local
+            .workspace_path()
+            .unwrap()
+            .join("child-private")
+            .exists()
+    );
+    Ok(())
+}
+
 #[cfg(all(feature = "native-execution", unix))]
 #[tokio::test]
 async fn child_restore_is_visible_to_the_next_model_bash_without_a_branch_switch() -> Result<()> {
