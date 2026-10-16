@@ -78,6 +78,76 @@ async fn single_record(
         .ok_or_else(|| "missing source record".into())
 }
 
+struct FundedReplay;
+impl AsyncAuthorityStore for FundedReplay {
+    async fn head(
+        &self,
+        _: AuthorityId,
+        _: &mut AuthorityWork<'_>,
+    ) -> Result<Head, AuthorityStoreError> {
+        Ok(Head {
+            epoch: Epoch::GENESIS,
+            sequence: Sequence::new(1),
+            digest: Digest::ZERO,
+        })
+    }
+
+    async fn replay(
+        &self,
+        _: AuthorityId,
+        _: Sequence,
+        _: ReplayLimit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
+        let body = b"funded-head-value!";
+        let bytes = (body.len() + std::mem::size_of::<DurableCommit>()) as u64;
+        let original = work
+            .original
+            .ok_or(AuthorityStoreError::NativeOriginalUnsupported)?;
+        let allocation = original.claim(bytes, 2, WorkCounters::UNCHARGED)?;
+        Ok((
+            vec![DurableCommit {
+                epoch: Epoch::GENESIS,
+                sequence: Sequence::new(1),
+                digest: Digest::ZERO,
+                previous_digest: Digest::ZERO,
+                operation_id: OperationId::from_bytes([0; 16]),
+                fingerprint: Digest::ZERO,
+                payload: Bytes::copy_from_slice(body),
+                settled_at_micros: None,
+            }],
+            Some(allocation),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn default_head_payload_keeps_external_replay_funding_until_payload_drops() -> TestResult {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let baseline = original.live_allocation_bytes();
+    // Bind funding first, then destructure the payload: this is also the
+    // facade's drop order on all normal, error and unwinding paths.
+    let (value, allocation) = FundedReplay
+        .head_payload(
+            AUTHORITY,
+            4096,
+            &mut AuthorityWork::native(&original, &cancellation),
+        )
+        .await?;
+    let (_, payload) = value;
+    let payload = payload.ok_or("missing funded payload")?;
+    assert_eq!(payload.as_ref(), b"funded-head-value!");
+    assert!(original.live_allocation_bytes() >= baseline + payload.len() as u64);
+    assert!(allocation.is_some());
+    drop(payload);
+    drop(allocation);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 #[tokio::test]
 async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalence() -> TestResult {
     let store = created().await?;
@@ -86,11 +156,11 @@ async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalen
         crate::streams_record::StreamsDurableRecord::encode(&fixture, STREAM_RECORD_LIMIT)?;
     let cancel = CancellationToken::new();
     let mut old = AuthorityWork::new(BUDGET, &cancel);
-    let expected = Fallback(&store)
+    let (expected, _expected_allocation) = Fallback(&store)
         .head_payload(AUTHORITY, 4096, &mut old)
         .await?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
-    let actual = Arc::new(store)
+    let (actual, _actual_allocation) = Arc::new(store)
         .head_payload(AUTHORITY, 4096, &mut work)
         .await?;
     assert_eq!(actual, expected);
@@ -120,7 +190,7 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
             .await;
         let actual = store.head_payload(AUTHORITY, maximum, &mut work).await;
         match (actual, expected) {
-            (Ok(actual), Ok(expected)) => assert_eq!(actual, expected),
+            (Ok((actual, _)), Ok((expected, _))) => assert_eq!(actual, expected),
             (Err(actual), Err(expected)) => assert_eq!(actual.to_string(), expected.to_string()),
             _ => return Err("payload limit behavior changed".into()),
         }
@@ -131,7 +201,7 @@ async fn bounded_head_record_preserves_genesis_payload_limits_and_cancellation()
         .create_authority(genesis, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await?;
     assert_eq!(
-        store.head_payload(genesis, 0, &mut work).await?,
+        store.head_payload(genesis, 0, &mut work).await?.0,
         (Head::genesis(Epoch::GENESIS), None)
     );
     for native in [false, true] {
@@ -180,7 +250,8 @@ async fn native_head_record_retains_exact_payload_custody_and_resource_charges()
     let resource = original.native_volume_work(BUDGET)?;
     let baseline = original.live_allocation_bytes();
     let mut work = AuthorityWork::native(&resource, &cancel);
-    let (_, record) = store.head_payload(AUTHORITY, 4096, &mut work).await?;
+    let (value, _allocation) = store.head_payload(AUTHORITY, 4096, &mut work).await?;
+    let (_, record) = value;
     let record = record.ok_or("missing native record")?;
     assert_eq!(record.as_ref(), b"generation-payload");
     assert_eq!(original.receipt().authority_records_read, 2);
@@ -287,7 +358,7 @@ proptest::proptest! {
             let mut work = AuthorityWork::new(BUDGET, &cancellation);
             let actual = store.head_payload(AUTHORITY, u64::from(maximum), &mut work).await;
             match (actual, expected) {
-                (Ok(actual), Ok(expected)) => proptest::prop_assert_eq!(actual, expected),
+                (Ok((actual, _)), Ok((expected, _))) => proptest::prop_assert_eq!(actual, expected),
                 (Err(actual), Err(expected)) => proptest::prop_assert_eq!(actual.to_string(), expected.to_string()),
                 (actual, expected) => proptest::prop_assert!(false, "actual={actual:?}, expected={expected:?}"),
             }

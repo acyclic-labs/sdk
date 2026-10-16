@@ -203,7 +203,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .head_payload(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
             .await;
         record_authority_work(accounting, &authority)?;
-        let (head, latest) = result?;
+        // Introduce the payload after its funding, so every exit drops the
+        // payload first, including decoding failures and unwinding.
+        let (value, _allocation) = result?;
+        let (head, latest) = value;
         if head.sequence == Sequence::GENESIS {
             return Err(FsError::EmptyAuthority);
         }
