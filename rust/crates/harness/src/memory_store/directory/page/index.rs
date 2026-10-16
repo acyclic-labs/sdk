@@ -3,6 +3,12 @@ use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Probe {
+    RootSeek,
+    Read,
+}
+
 const NONE: usize = usize::MAX;
 // An AVL tree containing addressable nodes has height < 2 * usize::BITS.
 const HEIGHT: usize = 2 * usize::BITS as usize;
@@ -375,7 +381,7 @@ impl DirectoryIndex {
         generation: u64,
         after: Option<&str>,
         maximum: usize,
-        mut work: impl FnMut(),
+        mut work: impl FnMut(Probe),
     ) -> MemoryStorePage {
         let empty = || MemoryStorePage {
             generation,
@@ -393,7 +399,7 @@ impl DirectoryIndex {
             return empty();
         };
         let end = versions.partition_point(|version| {
-            work();
+            work(Probe::Read);
             version.generation <= generation
         });
         let Some(version) = end.checked_sub(1).map(|index| &versions[index]) else {
@@ -405,7 +411,75 @@ impl DirectoryIndex {
             stack: [NONE; HEIGHT],
             depth: 0,
         };
-        iterator.seek(version.root, after, &mut work);
+        iterator.seek_root(version.root, after, &mut work);
+        // Stack entries are distinct remaining children. Starting with this lower
+        // bound avoids allocating for children discarded by a cursor. Grow only
+        // as entries are emitted; historical subtree counts would update every
+        // ancestor on publication and lose the index's linear storage bound.
+        let capacity = maximum.min(if after.is_none() {
+            version.count
+        } else {
+            iterator.depth
+        });
+        let mut entries = Vec::with_capacity(capacity);
+        while entries.len() < maximum {
+            let Some((name, kind)) = iterator.next(&mut work) else {
+                break;
+            };
+            if entries.len() == entries.capacity() {
+                entries.reserve_exact(entries.capacity().max(1).min(maximum - entries.len()));
+            }
+            entries.push(MemoryStoreEntry {
+                name: name.to_owned(),
+                kind,
+            });
+        }
+        let has_more = iterator.depth != 0;
+        MemoryStorePage {
+            generation,
+            entries,
+            has_more,
+        }
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(super) fn counted_page(
+        &self,
+        path: &str,
+        generation: u64,
+        after: Option<&str>,
+        maximum: usize,
+        mut work: impl FnMut(Probe),
+    ) -> MemoryStorePage {
+        let empty = || MemoryStorePage {
+            generation,
+            entries: Vec::new(),
+            has_more: false,
+        };
+        let directory = if path.is_empty() {
+            0
+        } else if let Some(id) = self.directories.get(path) {
+            *id
+        } else {
+            return empty();
+        };
+        let Some(versions) = self.versions.get(directory) else {
+            return empty();
+        };
+        let end = versions.partition_point(|version| {
+            work(Probe::Read);
+            version.generation <= generation
+        });
+        let Some(version) = end.checked_sub(1).map(|index| &versions[index]) else {
+            return empty();
+        };
+        let mut iterator = Cursor {
+            index: self,
+            generation,
+            stack: [NONE; HEIGHT],
+            depth: 0,
+        };
+        iterator.seek_root(version.root, after, &mut work);
         let (count, has_more) = if after.is_none() {
             let count = maximum.min(version.count);
             (count, version.count > count)
@@ -433,7 +507,7 @@ impl DirectoryIndex {
     }
 }
 
-#[derive(Clone)]
+#[cfg_attr(all(test, not(target_arch = "wasm32")), derive(Clone))]
 struct Cursor<'a> {
     index: &'a DirectoryIndex,
     generation: u64,
@@ -445,9 +519,13 @@ impl<'a> Cursor<'a> {
         self.stack[self.depth] = root;
         self.depth += 1;
     }
-    fn seek(&mut self, mut root: usize, after: Option<&str>, work: &mut impl FnMut()) {
+    fn seek_root(&mut self, root: usize, after: Option<&str>, work: &mut impl FnMut(Probe)) {
+        work(Probe::RootSeek);
+        self.descend(root, after, work);
+    }
+    fn descend(&mut self, mut root: usize, after: Option<&str>, work: &mut impl FnMut(Probe)) {
         while root != NONE {
-            work();
+            work(Probe::Read);
             let node = &self.index.nodes[root];
             let links = node.links(self.generation);
             if after.is_none_or(|after| self.index.names[node.name].as_ref() > after) {
@@ -458,15 +536,44 @@ impl<'a> Cursor<'a> {
             }
         }
     }
-    fn next(&mut self, work: &mut impl FnMut()) -> Option<(&'a str, MemoryStoreEntryKind)> {
+    fn next(&mut self, work: &mut impl FnMut(Probe)) -> Option<(&'a str, MemoryStoreEntryKind)> {
         if self.depth == 0 {
             return None;
         }
         self.depth -= 1;
         let node = &self.index.nodes[self.stack[self.depth]];
-        work();
+        work(Probe::Read);
         let links = node.links(self.generation);
-        self.seek(links.right, None, work);
+        self.descend(links.right, None, work);
         Some((&self.index.names[node.name], links.kind))
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn repeated_root_seek_negative_control() {
+    let mut index = DirectoryIndex::default();
+    for child in 0..4096 {
+        index.publish(&format!("files/{child:08}"), 1);
+    }
+    let root = index.versions[*index.directories.get("files").unwrap()][0].root;
+    let mut cursor = Cursor {
+        index: &index,
+        generation: 1,
+        stack: [NONE; HEIGHT],
+        depth: 0,
+    };
+    let mut seeks = 0;
+    let mut work = |probe| {
+        if probe == Probe::RootSeek {
+            seeks += 1;
+        }
+    };
+    cursor.seek_root(root, Some("00002047"), &mut work);
+    // Repeat the real root seek, discarding its previous stack, as a broken page
+    // selector would. It must fail the same one-seek contract as production.
+    cursor.depth = 0;
+    cursor.seek_root(root, Some("00002047"), &mut work);
+    assert_eq!(seeks, 2);
+    assert!(std::panic::catch_unwind(|| super::tests::assert_one_root_seek(seeks)).is_err());
 }

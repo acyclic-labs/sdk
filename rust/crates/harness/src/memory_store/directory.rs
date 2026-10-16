@@ -41,7 +41,7 @@ impl MemoryStore {
         }
         Ok(self
             .directory_index
-            .page(path, generation, after, maximum, || {}))
+            .page(path, generation, after, maximum, |_| {}))
     }
 
     pub(crate) fn read_path(&self, path: &str, generation: Option<u64>) -> Result<FileRef> {

@@ -38,7 +38,7 @@ fuzz_target!(|data: &[u8]| {
         case.generation,
         case.after.as_deref(),
         maximum,
-        || {},
+        |_| {},
     );
     let encoded = serde_json::to_vec(&actual).expect("serialize generated page");
     let decoded: page::MemoryStorePage =
