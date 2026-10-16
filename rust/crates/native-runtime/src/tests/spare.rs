@@ -135,8 +135,9 @@ proptest! {
     // discard a previously admitted allocation's completed custody.
     #[test]
     fn reserved_header_requires_exact_footprint(
-        reserved in 1_usize..257, actual in 1_usize..257, cancelled in any::<bool>(),
+        reserved in 1_usize..257, additional in 1_usize..257, cancelled in any::<bool>(),
     ) {
+      for actual in [reserved, reserved + additional] {
         let meter = Arc::new(ReadBudgetMeter::new(0, 0));
         let observer: Arc<dyn NativeReadMeter> = meter.clone();
         let reservation = ReadAllocationReservation::new(&observer, reserved as u64).unwrap();
@@ -149,5 +150,7 @@ proptest! {
             drop(allocation);
         }
         prop_assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        prop_assert_eq!(meter.used_allocations.load(Ordering::Acquire), u64::from(reserved == actual));
+      }
     }
 }
