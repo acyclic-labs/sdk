@@ -78,6 +78,7 @@ function createStreamGrpcTransport(options: StreamGrpcOptions) {
 }
 
 function streamGrpc(options: StreamGrpcOptions) {
+    options = { ...options, credential: credentialProvider(options) };
     const home = createStreamGrpcTransport(options);
     const transports = new Map([[new URL(options.endpoint).href, home]]);
     const client = createClient(StreamService, home);

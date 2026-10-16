@@ -36,3 +36,11 @@ path = "fuzz_targets/verifier.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "credential"
+path = "fuzz_targets/credential.rs"
+
+test = false
+doc = false
+bench = false
