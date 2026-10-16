@@ -155,7 +155,9 @@ pub(super) unsafe fn notification(
             notification,
             PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
         )
-        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path)
+        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path, |active, path| {
+            matches!(projfs_path_suffix(active, path), Some([]))
+        })
     {
         return HR_OK;
     }
