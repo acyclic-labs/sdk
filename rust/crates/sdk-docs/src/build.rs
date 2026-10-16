@@ -116,7 +116,7 @@ pub(super) fn build_data_inner(
         }
         input_digest.update(&[0]);
         input_digest.update(&digest_bytes);
-        let krate: Crate = serde_json::from_slice(&bytes).map_err(|e| {
+        let krate = public_api::decode::from_slice(&bytes).map_err(|e| {
             Error::Invalid(format!(
                 "{} is not valid typed rustdoc JSON: {e}",
                 path.display()

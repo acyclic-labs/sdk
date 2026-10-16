@@ -26,7 +26,7 @@ pub(super) fn build_family(
         .ok_or_else(|| Error::Invalid(format!("{} has no crate name", json_path.display())))?;
     let slug = slugify(&crate_name);
     let title = titleize(&crate_name);
-    let mut public_items = public_api::extract(json_path, raw_json)?;
+    let mut public_items = public_api::extract(json_path, raw_json, krate)?;
     deduplicate_public_items(&mut public_items);
     let public_occurrence_paths = public_occurrence_paths(&public_items, &crate_name);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;

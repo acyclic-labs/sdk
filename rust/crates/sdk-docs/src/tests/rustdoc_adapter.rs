@@ -1,10 +1,9 @@
 use super::*;
 use proptest::prelude::*;
-use serde::Deserialize;
 
 proptest! {
     #[test]
-    fn borrowed_rustdoc_decoding_matches_owned_decoding_and_round_trips(
+    fn shared_rustdoc_decoding_matches_owned_decoding_and_round_trips(
         suffix in "[a-z0-9_]{0,16}",
         docs in prop::option::of(".{0,96}"),
         version in any::<u16>(),
@@ -22,13 +21,14 @@ proptest! {
         value["includes_private"] = serde_json::json!(private);
         value["format_version"] = serde_json::json!(if legacy { 59 } else { 60 });
         let owned: Crate = serde_json::from_value(value.clone()).unwrap();
-        let borrowed = Crate::deserialize(&value).unwrap();
-        prop_assert_eq!(serde_json::to_value(&owned).unwrap(), serde_json::to_value(&borrowed).unwrap());
-        let bytes = serde_json::to_vec(&borrowed).unwrap();
+        let original_bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let decoded = crate::public_api::decode::from_slice(&original_bytes).unwrap();
+        prop_assert_eq!(serde_json::to_value(&owned).unwrap(), serde_json::to_value(&decoded).unwrap());
+        let bytes = serde_json::to_vec(&decoded).unwrap();
         let round_trip: Crate = serde_json::from_slice(&bytes).unwrap();
         prop_assert_eq!(serde_json::to_value(&round_trip).unwrap(), serde_json::to_value(&owned).unwrap());
-        let original = crate::public_api::extract(Path::new("fixture.json"), &serde_json::to_vec_pretty(&value).unwrap());
-        let replay = crate::public_api::extract(Path::new("fixture.json"), &bytes);
+        let original = crate::public_api::extract(Path::new("fixture.json"), &original_bytes, &decoded);
+        let replay = crate::public_api::extract(Path::new("fixture.json"), &bytes, &round_trip);
         if private || legacy {
             prop_assert!(original.is_err());
             prop_assert!(replay.is_err());

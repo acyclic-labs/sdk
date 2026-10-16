@@ -11,7 +11,7 @@ use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
 use std::path::Path;
 
-mod decode;
+pub(crate) mod decode;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicItemSignature {
@@ -22,13 +22,11 @@ pub struct PublicItemSignature {
     pub path: Vec<String>,
 }
 
-pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
-    crate::render_cache::extract(raw, || extract_uncached(json_path, raw))
-}
-
-fn extract_uncached(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
-    let value: Value = serde_json::from_slice(raw)?;
-    let krate = decode::from_value(&value)?;
+pub fn extract(
+    json_path: &Path,
+    raw: &[u8],
+    krate: &Crate,
+) -> Result<Vec<PublicItemSignature>, Error> {
     if krate.format_version != FORMAT_VERSION {
         return Err(Error::Invalid(format!(
             "{} uses unsupported rustdoc format {}; expected {}",
@@ -43,7 +41,16 @@ fn extract_uncached(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignat
             json_path.display()
         )));
     }
-    let adapted = adapt(value, &krate)?;
+    crate::render_cache::extract(raw, || extract_uncached(json_path, raw, krate))
+}
+
+fn extract_uncached(
+    json_path: &Path,
+    raw: &[u8],
+    krate: &Crate,
+) -> Result<Vec<PublicItemSignature>, Error> {
+    let value: Value = serde_json::from_slice(raw)?;
+    let adapted = adapt(value, krate)?;
     let mut temp = tempfile::NamedTempFile::new()?;
     serde_json::to_writer(temp.as_file_mut(), &adapted)?;
     let api = public_api::Builder::from_rustdoc_json(temp.path())
