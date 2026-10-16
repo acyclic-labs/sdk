@@ -6,7 +6,7 @@ use acyclic_harness::{
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{MemoryStream, StreamProvider, wire, wire_codec::session::follow_records};
-use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
+use futures::{StreamExt as _, channel::mpsc};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[path = "support/client_resume.rs"]

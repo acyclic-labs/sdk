@@ -5,7 +5,7 @@ use acyclic_harness::{
     client::{InterestTier, SwarmClient, SwarmClientLimits, SwarmUpdate},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{MemoryStream, StreamProvider, wire};
+use acyclic_stream::{MemoryStream, wire};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, channel::mpsc};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
