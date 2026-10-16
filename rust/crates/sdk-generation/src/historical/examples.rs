@@ -182,7 +182,7 @@ pub fn execute_examples(
         command
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
-        let output = command.output().map_err(|e| e.to_string())?;
+        let output = command.run_output().map_err(|e| e.to_string())?;
         if !output.status.success() {
             return Err(format!(
                 "historical example {}::{} failed: {}",

@@ -345,17 +345,16 @@ fn invoke(command: &mut Command) -> std::process::Output {
     {
         command.env("PATH", runtime::path());
     }
-    if command.get_current_dir().is_some() {
-        return command.output().unwrap();
-    }
     let mut stdout = Vec::new();
-    let result = sdk_docs::with_command_environment(command, || {
-        sdk_generation::run(
-            command
-                .get_args()
-                .map(|arg| arg.to_str().unwrap().to_owned()),
-            &mut stdout,
-        )
+    let result = commands::execute(|| {
+        sdk_docs::with_command_environment(command, || {
+            sdk_generation::run(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_str().unwrap().to_owned()),
+                &mut stdout,
+            )
+        })
     });
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
@@ -980,3 +979,6 @@ mod packaging;
 
 #[path = "cli_regressions/runtime.rs"]
 mod runtime;
+
+#[path = "cli_regressions/commands.rs"]
+mod commands;

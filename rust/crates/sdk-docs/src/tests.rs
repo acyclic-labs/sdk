@@ -758,7 +758,10 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
         generated_sources: Vec::new(),
         mark_latest: false,
     };
+    source::SOURCE_PATH_CHECKS.set(0);
     let data = build_data(&input, &[]).expect("inherited local trait fixture should build");
+    assert_eq!(source::SOURCE_PATH_CHECKS.get(), 2,
+        "one shared source file is validated at both ends, regardless of aliases");
     let family = &data.families[0];
     let inherited = family
         .items

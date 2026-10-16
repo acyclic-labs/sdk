@@ -33,7 +33,7 @@ impl LocalStream {
             let worker = async move {
                 let _input = input;
                 let result = loop {
-                    let revision = *stream.inner.changed.borrow();
+                    let revision = *stream.inner.revision.borrow();
                     let replay = match provider.has_replay(&request.idempotency_key).await {
                         Ok(replay) => replay,
                         Err(error) => {
@@ -49,11 +49,12 @@ impl LocalStream {
                         drop(stream.inner.visibility.write().await);
                         continue;
                     };
-                    if revision != *stream.inner.changed.borrow() {
+                    if revision != *stream.inner.revision.borrow() {
                         drop(visibility);
                         continue;
                     }
-                    let result = async {
+                    let publication = stream.inner.publication.write().await;
+                    let mut result = async {
                         stream.check_available()?;
                         let command = Command::Commit(request);
                         let frame = if replay {
@@ -73,6 +74,12 @@ impl LocalStream {
                     }
                     .await;
                     stream.inner.commit_clock.unpin();
+                    let _retained = stream.release_publication(publication);
+                    if result.is_ok()
+                        && let Err(error) = stream.compact_if_due().await
+                    {
+                        result = Err(error);
+                    }
                     let required = stream.inner.required();
                     drop(visibility);
                     let result = match required {

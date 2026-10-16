@@ -4,6 +4,7 @@ use sdk_docs::historical::{
     ArchiveSource, CapturedSource, OriginalLock, ProducerDependencyArchive, ProducerResolution,
     PublisherVcs, ReleasedPackage, ResolutionLock,
 };
+use sdk_docs::CommandOutput;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -50,7 +51,6 @@ impl Scope {
 }
 
 /// Verified archive inputs for one immutable historical source/version.
-#[derive(Clone)]
 pub struct Plan {
     pub released_packages: Vec<ReleasedPackage>,
     pub source_files: BTreeMap<String, String>,
@@ -154,7 +154,7 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 fn command_output(command: &mut Command) -> Result<Vec<u8>, String> {
-    let output = command.output().map_err(|e| e.to_string())?;
+    let output = command.run_output().map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }

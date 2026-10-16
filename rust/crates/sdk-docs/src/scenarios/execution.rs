@@ -1,4 +1,5 @@
 use super::*;
+use crate::CommandOutput;
 /// Compile every registered scenario with Cargo without treating compiler output as
 /// documentation data. This keeps Rust examples as the source of truth for the
 /// registry, including examples that require an external endpoint to execute.
@@ -31,7 +32,7 @@ pub fn compile_all(
         }
         sanitize_compiler_environment(&mut command);
         let output = command
-            .output()
+            .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         if !output.status.success() {
             return Err(Error::Invalid(format!(
@@ -79,7 +80,7 @@ pub fn execute_local(
         }
         sanitize_compiler_environment(&mut command);
         let output = command
-            .output()
+            .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         if !output.status.success() {
             return Err(Error::Invalid(format!(
@@ -150,7 +151,7 @@ pub fn execute_all(
         let mut command = crate::command(bun);
         command.current_dir(root).arg(&fixture);
         let output = command
-            .output()
+            .run_output()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
         if !output.status.success() {
             return Err(Error::Invalid(format!(

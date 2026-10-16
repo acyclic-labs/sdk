@@ -16,21 +16,47 @@ struct Cache {
             Rc<crate::rustdoc_profiles::RustdocProducer>,
         >,
     >,
-    rendered: RefCell<BTreeMap<Rc<[u8]>, Vec<PublicItemSignature>>>,
+    rendered: RefCell<Derived<Vec<PublicItemSignature>>>,
     files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
-    parsed: RefCell<BTreeMap<Rc<[u8]>, Rc<rustdoc_types::Crate>>>,
-    json: RefCell<BTreeMap<Rc<[u8]>, Rc<serde_json::Value>>>,
-    normalized: RefCell<BTreeMap<PathBuf, BTreeMap<Rc<[u8]>, Rc<[u8]>>>>,
+    parsed: RefCell<Derived<rustdoc_types::Crate>>,
+    json: RefCell<Derived<serde_json::Value>>,
+    normalized: RefCell<BTreeMap<PathBuf, Derived<[u8]>>>,
 }
 
-// The file reader preserves a buffer handle for unchanged inputs. Prefer that
-// identity before the content fallback, so repeated cache hits do not scan whole
-// receipts. Distinct handles with identical bytes still share derived values.
-fn lookup<T: Clone>(values: &BTreeMap<Rc<[u8]>, T>, raw: &Rc<[u8]>) -> Option<T> {
-    values
-        .iter()
-        .find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| value.clone()))
-        .or_else(|| values.get(raw).cloned())
+// Handle entries own their input Rc: an allocator cannot recycle the indexed
+// address while it remains in the map. Equal buffers share one derived value.
+struct Derived<T: ?Sized> {
+    content: BTreeMap<Rc<[u8]>, Rc<T>>,
+    handles: BTreeMap<*const u8, (Rc<[u8]>, Rc<T>)>,
+}
+
+impl<T: ?Sized> Default for Derived<T> {
+    fn default() -> Self {
+        Self { content: BTreeMap::new(), handles: BTreeMap::new() }
+    }
+}
+
+impl<T: ?Sized> Derived<T> {
+    fn get(&mut self, raw: &Rc<[u8]>) -> Option<Rc<T>> {
+        let identity = Rc::as_ptr(raw) as *const u8;
+        if let Some((_, value)) = self.handles.get(&identity) {
+            return Some(Rc::clone(value));
+        }
+        let value = Rc::clone(self.content.get(raw)?);
+        self.handles.insert(identity, (Rc::clone(raw), Rc::clone(&value)));
+        Some(value)
+    }
+
+    fn insert(&mut self, raw: Rc<[u8]>, value: Rc<T>) {
+        let value = Rc::clone(self.content.entry(Rc::clone(&raw)).or_insert(value));
+        self.handles.insert(Rc::as_ptr(&raw) as *const u8, (raw, value));
+    }
+
+    fn retain(&mut self, observed: &BTreeSet<*const u8>) {
+        self.handles.retain(|identity, _| observed.contains(identity));
+        let live = self.handles.values().map(|(raw, _)| Rc::clone(raw)).collect::<BTreeSet<_>>();
+        self.content.retain(|raw, _| live.contains(raw));
+    }
 }
 
 // public-api accepts a path only. Reuse one private adapter per operation,
@@ -81,13 +107,12 @@ impl Cache {
             .values()
             .map(|(_, bytes)| Rc::as_ptr(bytes) as *const u8)
             .collect::<BTreeSet<_>>();
-        let retained = |raw: &Rc<[u8]>| bytes.contains(&(Rc::as_ptr(raw) as *const u8));
-        self.parsed.borrow_mut().retain(|raw, _| retained(raw));
-        self.json.borrow_mut().retain(|raw, _| retained(raw));
-        self.rendered.borrow_mut().retain(|raw, _| retained(raw));
+        self.parsed.borrow_mut().retain(&bytes);
+        self.json.borrow_mut().retain(&bytes);
+        self.rendered.borrow_mut().retain(&bytes);
         self.normalized.borrow_mut().retain(|_, values| {
-            values.retain(|raw, _| retained(raw));
-            !values.is_empty()
+            values.retain(&bytes);
+            !values.handles.is_empty()
         });
     }
 }
@@ -235,7 +260,7 @@ pub(crate) fn json(raw: &Rc<[u8]>) -> Result<Rc<serde_json::Value>, serde_json::
     if let Some(value) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| lookup(&cache.json.borrow(), raw))
+            .and_then(|cache| cache.json.borrow_mut().get(raw))
     }) {
         return Ok(value);
     }
@@ -260,9 +285,9 @@ pub(crate) fn normalized(
         cache.as_ref().and_then(|cache| {
             cache
                 .normalized
-                .borrow()
-                .get(root)
-                .and_then(|values| lookup(values, raw))
+                .borrow_mut()
+                .get_mut(root)
+                .and_then(|values| values.get(raw))
         })
     }) {
         return Ok(value);
@@ -285,7 +310,7 @@ pub(crate) fn decode(raw: Rc<[u8]>) -> Result<Rc<rustdoc_types::Crate>, serde_js
     if let Some(parsed) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| lookup(&cache.parsed.borrow(), &raw))
+            .and_then(|cache| cache.parsed.borrow_mut().get(&raw))
     }) {
         return Ok(parsed);
     }
@@ -305,9 +330,9 @@ pub(crate) fn extract(
     if let Some(items) = CACHE.with_borrow(|cache| {
         cache
             .as_ref()
-            .and_then(|cache| lookup(&cache.rendered.borrow(), bytes))
+            .and_then(|cache| cache.rendered.borrow_mut().get(bytes))
     }) {
-        return Ok(items);
+        return Ok((*items).clone());
     }
     let items = render()?;
     CACHE.with_borrow(|cache| {
@@ -315,7 +340,7 @@ pub(crate) fn extract(
             cache
                 .rendered
                 .borrow_mut()
-                .insert(Rc::clone(bytes), items.clone());
+                .insert(Rc::clone(bytes), Rc::new(items.clone()));
         }
     });
     Ok(items)
@@ -341,17 +366,33 @@ mod tests {
             inputs in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..256), 0..16),
             query in prop::collection::vec(any::<u8>(), 0..256),
         ) {
-            let values = inputs.iter().map(|bytes| {
-                (Rc::<[u8]>::from(bytes.as_slice()), bytes.len())
-            }).collect::<BTreeMap<_, _>>();
-            for raw in values.keys() {
-                prop_assert_eq!(lookup(&values, &Rc::clone(raw)), values.get(raw).copied());
+            let mut values = Derived::default();
+            let mut reference = BTreeMap::new();
+            let mut handles = Vec::new();
+            for bytes in &inputs {
+                let raw = Rc::<[u8]>::from(bytes.as_slice());
+                values.insert(Rc::clone(&raw), Rc::new(bytes.len()));
+                reference.insert(Rc::clone(&raw), bytes.len());
+                handles.push(raw);
+            }
+            for raw in &handles {
+                prop_assert_eq!(values.get(raw).map(|value| *value), reference.get(raw).copied());
                 let copy = Rc::from(raw.as_ref());
                 prop_assert!(!Rc::ptr_eq(raw, &copy));
-                prop_assert_eq!(lookup(&values, &copy), values.get(raw).copied());
+                prop_assert_eq!(values.get(&copy).map(|value| *value), reference.get(raw).copied());
             }
             let raw = Rc::from(query.as_slice());
-            prop_assert_eq!(lookup(&values, &raw), values.get(&raw).copied());
+            prop_assert_eq!(values.get(&raw).map(|value| *value), reference.get(&raw).copied());
+            let observed = handles.iter().skip(handles.len()/2).map(|raw| Rc::as_ptr(raw) as *const u8).collect();
+            values.retain(&observed);
+            prop_assert_eq!(values.handles.keys().copied().collect::<BTreeSet<_>>(), observed);
+            for raw in handles.iter().skip(handles.len()/2) {
+                prop_assert_eq!(values.get(raw).map(|value| *value), reference.get(raw).copied());
+                let equal = Rc::from(raw.as_ref());
+                prop_assert!(Rc::ptr_eq(&values.get(raw).unwrap(), &values.get(&equal).unwrap()));
+            }
+            values.retain(&BTreeSet::new());
+            prop_assert!(values.content.is_empty() && values.handles.is_empty());
         }
         #[test]
         fn normalized_reuse_binds_every_byte_and_repository_root(leaf in "[a-z]{1,12}", version in ".{0,16}") {
@@ -380,8 +421,8 @@ mod tests {
                 let _ = crate::normalized_rustdoc_digest_bytes(&bytes, Path::new("/checkout")).unwrap();
                 CACHE.with_borrow(|cache| {
                     let cache = cache.as_ref().unwrap();
-                    assert!(Rc::ptr_eq(cache.json.borrow().first_key_value().unwrap().0, &bytes));
-                    assert!(Rc::ptr_eq(cache.normalized.borrow()[Path::new("/checkout")].first_key_value().unwrap().0, &bytes));
+                    assert!(Rc::ptr_eq(cache.json.borrow().content.first_key_value().unwrap().0, &bytes));
+                    assert!(Rc::ptr_eq(cache.normalized.borrow()[Path::new("/checkout")].content.first_key_value().unwrap().0, &bytes));
                 });
                 prop_assert!(Rc::ptr_eq(&first, &json(&bytes).unwrap()));
                 prop_assert_eq!(&*first, &serde_json::to_value(&values).unwrap());
@@ -522,6 +563,36 @@ mod tests {
     }
 
     #[test]
+    fn paired_buffer_identity_lookup_measurement() {
+        use std::{hint::black_box, time::Instant};
+        let inputs = (0u32..1024).map(|id| {
+            let mut bytes = vec![b'x'; 1024];
+            bytes.extend_from_slice(&id.to_le_bytes());
+            Rc::<[u8]>::from(bytes)
+        }).collect::<Vec<_>>();
+        let mut indexed = Derived::default();
+        let mut linear = BTreeMap::new();
+        for (id, bytes) in inputs.iter().enumerate() {
+            indexed.insert(Rc::clone(bytes), Rc::new(id));
+            linear.insert(Rc::clone(bytes), Rc::new(id));
+        }
+        let started = Instant::now();
+        for raw in inputs.iter().cycle().take(inputs.len()*4) {
+            let value = linear.iter().find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| Rc::clone(value)))
+                .or_else(|| linear.get(raw).cloned());
+            black_box(value.unwrap());
+        }
+        let linear_ns = started.elapsed().as_nanos();
+        let started = Instant::now();
+        for raw in inputs.iter().cycle().take(inputs.len()*4) {
+            black_box(indexed.get(black_box(raw)).unwrap());
+        }
+        eprintln!("PAIRED buffer_lookup entries={} lookups={} linear_ns={} indexed_ns={}",
+            inputs.len(), inputs.len()*4, linear_ns, started.elapsed().as_nanos());
+        assert_eq!(indexed.handles.len(), inputs.len());
+    }
+
+    #[test]
     fn nested_and_unwinding_operations_restore_the_outer_cache() {
         with_rustdoc_cache(|| {
             extract(&Rc::from(&b"outer"[..]), || Ok(item(b"outer"))).unwrap();
@@ -535,7 +606,7 @@ mod tests {
                 item(b"outer")
             );
             assert_eq!(
-                CACHE.with_borrow(|cache| cache.as_ref().unwrap().rendered.borrow().len()),
+                CACHE.with_borrow(|cache| cache.as_ref().unwrap().rendered.borrow().content.len()),
                 1
             );
         });

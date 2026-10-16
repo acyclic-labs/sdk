@@ -7,6 +7,8 @@ use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 mod codec;
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+mod codec_properties;
 mod history;
 mod quota;
 mod records;
@@ -249,6 +251,7 @@ impl PreparationIo {
                 .bytes()),
         }
     }
+    #[inline]
     fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,

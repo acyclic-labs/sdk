@@ -153,7 +153,7 @@ where
     }
     let parent_count =
         usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    observe(ReadAllocationStep::BeforeCopy(
+    observe(ReadAllocationStep::CheckCopy(
         (parent_count * std::mem::size_of::<GenerationId>()) as u64,
     ))?;
     let mut parents = Vec::new();
