@@ -35,6 +35,16 @@ futures = { version = "0.3", optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 which = { version = "=8.0.6", optional = true }
 
+[dev-dependencies]
+allocation-counter = "0.8.1"
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
+
+[[bench]]
+name = "memory_directory_page"
+path = "benches/memory_directory_page.rs"
+
 [[bin]]
 name = "protocol_identity"
 path = "fuzz_targets/protocol_identity.rs"

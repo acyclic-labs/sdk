@@ -171,4 +171,5 @@ fn select<'a, K: Borrow<str> + Ord, V>(
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "page/tests.rs"]
 mod tests;
