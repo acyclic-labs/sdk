@@ -117,19 +117,7 @@ impl AdmittedCaller {
         actor_id: String,
         expires_at_ms: u64,
     ) -> Result<Self, GuestMetadataError> {
-        for (value, field) in [
-            (&account_id, "accountId"),
-            (&org_id, "orgId"),
-            (&principal, "principal"),
-            (&credential_id, "credentialId"),
-            (&actor_id, "actorId"),
-        ] {
-            identity(value, field)?;
-        }
-        if expires_at_ms == 0 {
-            return Err(GuestMetadataError("expiresAtMs"));
-        }
-        Ok(Self {
+        Self::try_from(RawCaller {
             account_id,
             org_id,
             principal,
@@ -222,26 +210,36 @@ struct RawCaller {
 impl TryFrom<RawCaller> for AdmittedCaller {
     type Error = GuestMetadataError;
     fn try_from(raw: RawCaller) -> Result<Self, Self::Error> {
+        for (value, field) in [
+            (&raw.account_id, "accountId"),
+            (&raw.org_id, "orgId"),
+            (&raw.principal, "principal"),
+            (&raw.credential_id, "credentialId"),
+            (&raw.actor_id, "actorId"),
+        ] {
+            identity(value, field)?;
+        }
         let expiry = raw
             .expires_at_ms
             .parse::<u64>()
             .map_err(|_| GuestMetadataError("expiresAtMs"))?;
-        if raw.expires_at_ms != expiry.to_string() {
+        if expiry == 0 || !canonical_expiry(&raw.expires_at_ms) {
             return Err(GuestMetadataError("expiresAtMs"));
         }
-        let caller = Self::new(
-            raw.account_id,
-            raw.org_id,
-            raw.principal,
-            raw.credential_id,
-            raw.actor_id,
-            expiry,
-        )?;
-        match raw.capability {
-            Some(capability) => caller.with_capability(capability),
-            None => Ok(caller),
-        }
+        Ok(Self {
+            account_id: raw.account_id,
+            org_id: raw.org_id,
+            principal: raw.principal,
+            credential_id: raw.credential_id,
+            actor_id: raw.actor_id,
+            expires_at_ms: raw.expires_at_ms,
+            capability: raw.capability,
+        })
     }
+}
+
+fn canonical_expiry(value: &str) -> bool {
+    !value.starts_with('0') && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn metadata_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {

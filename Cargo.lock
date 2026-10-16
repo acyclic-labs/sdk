@@ -21,6 +21,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-tonic-web-wasm-client",
+ "allocation-counter",
  "bytes",
  "futures",
  "http",

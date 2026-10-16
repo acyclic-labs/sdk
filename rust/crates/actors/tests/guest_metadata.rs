@@ -20,6 +20,36 @@ fn caller(value: &str, field: usize, expiry: u64) -> Result<AdmittedCaller, Gues
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    /// Owned metadata decoding allocates nothing and retains the original expiry.
+    #[test]
+    fn caller_admission_reuses_wire_strings(expiry in 1u64..=u64::MAX, principal in "[a-z]{1,64}", positional in any::<bool>(), capability in any::<bool>()) {
+        let cap = if capability { json!([1, "cap"]) } else { serde_json::Value::Null };
+        let raw = if positional {
+            json!(["a", "o", principal, "c", "i", expiry.to_string(), cap])
+        } else {
+            json!({"accountId":"a","orgId":"o","principal":principal,"credentialId":"c","actorId":"i","expiresAtMs":expiry.to_string(),"capability":cap})
+        };
+        let key = if positional { &raw[5] } else { &raw["expiresAtMs"] };
+        let original = key.as_str().ok_or("expiry string")?.as_ptr();
+        let mut decoded = None;
+        let allocation = allocation_counter::measure(|| {
+            decoded = Some(serde_json::from_value::<AdmittedCaller>(raw));
+        });
+        prop_assert_eq!((allocation.count_total, allocation.bytes_total), (0, 0));
+        let decoded = decoded.ok_or("decode ran")??;
+        prop_assert_eq!(decoded.expires_at_ms().as_ptr(), original);
+        prop_assert_eq!(decoded.expires_at_ms(), expiry.to_string());
+
+        let fields = ["a".into(), "o".into(), principal, "c".into(), "i".into()];
+        let [account, org, principal, credential, actor] = fields;
+        let mut constructed = None;
+        let allocation = allocation_counter::measure(|| {
+            constructed = Some(AdmittedCaller::new(account, org, principal, credential, actor, expiry));
+        });
+        prop_assert_eq!(allocation.count_total, 1, "only the canonical expiry string is allocated");
+        prop_assert_eq!(constructed.ok_or("construction ran")??.expires_at_ms(), expiry.to_string());
+    }
+
     /// UTF-8 bytes, not character count, bound every constructor and serde route.
     #[test]
     fn metadata_boundaries_apply_to_native_and_wire(count in 0usize..=1100, multibyte in any::<bool>(), version in any::<u32>(), field in 0usize..5) {

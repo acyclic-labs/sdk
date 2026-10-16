@@ -11,7 +11,7 @@ cases = [
      "handle-zero-version.json", "metadata deserialization admission"),
     ("constructor byte bound", "if value.len() > MAX_GUEST_METADATA_BYTES {", "if false {",
      "handle-overlong.json", "metadata constructor admission"),
-    ("expiry canonicalization", "if raw.expires_at_ms != expiry.to_string() {", "if false {",
+    ("expiry canonicalization", "if expiry == 0 || !canonical_expiry(&raw.expires_at_ms) {", "if false {",
      "caller-expiry-alias.json", "metadata deserialization admission"),
 ]
 for name, check, mutation, seed, failure in cases:
