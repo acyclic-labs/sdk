@@ -231,6 +231,7 @@ bench = false
 [[bin]]
 name = "bounded_json"
 path = "fuzz_targets/bounded_json.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
