@@ -393,3 +393,6 @@ pub(super) fn put_group_sizes(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, objects_loom))]
+mod model;

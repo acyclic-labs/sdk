@@ -79,3 +79,6 @@ tokio = { version = "1.48.0", default-features = false, features = ["macros", "r
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+
+[target.'cfg(objects_loom)'.dependencies]
+loom = "0.7.2"
