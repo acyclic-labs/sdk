@@ -41,10 +41,6 @@ path = "tests/cloud_contract.rs"
 required-features = ["memory"]
 
 [[test]]
-name = "native_custody_accounting"
-path = "tests/native_custody_accounting.rs"
-
-[[test]]
 name = "native_owner_registry"
 path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]
@@ -93,6 +89,11 @@ required-features = ["local", "memory", "native-watch"]
 name = "filesystem_alloc"
 harness = false
 required-features = ["local", "memory", "native-watch"]
+
+[[bench]]
+name = "native_capture"
+harness = false
+required-features = ["memory", "native-watch", "native-mount"]
 
 [[test]]
 name = "native_source_watch_custody"

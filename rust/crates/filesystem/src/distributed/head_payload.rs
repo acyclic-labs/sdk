@@ -34,6 +34,20 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     &child,
                 ));
             }
+            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+            let replacement = if super::head_payload_loom_tests::resample_payload() {
+                Some(
+                    Box::pin(super::head_payload_loom_tests::resampled_payload(
+                        self, authority, &mut child,
+                    ))
+                    .await?,
+                )
+            } else {
+                None
+            };
+            #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+            let payload = replacement.as_deref().unwrap_or(&record.value[offset..]);
+            #[cfg(not(all(test, acyclic_fs_loom, acyclic_loom)))]
             let payload = &record.value[offset..];
             if payload.len() as u64 > maximum_payload_bytes {
                 return Err(AuthorityStoreError::ReplayRecordTooLarge {

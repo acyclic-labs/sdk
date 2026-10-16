@@ -145,7 +145,7 @@ pub async fn check(bytes: &[u8]) {
         .await
         .unwrap();
         let before = volume
-            .snapshot(&Query::Task(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 4)
             .await
             .unwrap();
         assert_eq!(before.files.len(), 3);
@@ -179,7 +179,7 @@ pub async fn check(bytes: &[u8]) {
             .await
             .unwrap();
             let after = volume
-                .snapshot(&Query::Task(task.clone()), 3)
+                .snapshot(&Query::Task(task.clone()), 4)
                 .await
                 .unwrap();
             assert_eq!(after.generation, before.generation);

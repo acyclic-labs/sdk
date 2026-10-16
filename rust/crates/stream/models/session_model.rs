@@ -1,3 +1,8 @@
+#[cfg(not(acyclic_stream_loom))]
+compile_error!(
+    "stream models require Loom synchronization: run RUSTFLAGS='--cfg acyclic_stream_loom' cargo test --manifest-path rust/crates/stream/models/Cargo.toml --test session_model"
+);
+
 mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");

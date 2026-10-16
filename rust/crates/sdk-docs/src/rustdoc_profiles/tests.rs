@@ -278,8 +278,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         "#[cfg(feature=\"native\")] pub struct Witness;\n",
     )
     .unwrap();
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let cargo = PathBuf::from(cargo);
+    let cargo = PathBuf::from(env!("CARGO"));
     assert!(Command::new(&cargo)
         .args(["generate-lockfile", "--offline", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
@@ -334,7 +333,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         ..profile.clone()
     };
     let browser_receipt = root.join("browser.json");
-    let observed = execute_profile(
+    let browser_result = execute_profile(
         root.join("Cargo.toml"),
         &metadata,
         &browser,
@@ -346,12 +345,22 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             lock_selection: None,
         },
         &RustdocTarget::Library,
-    )
-    .unwrap();
-    assert_eq!(observed.target, browser.target);
-    assert!(local_item_names(&browser_receipt)
-        .unwrap()
-        .contains("Witness"));
+    );
+    match browser_result {
+        Ok(observed) => {
+            assert_eq!(observed.target, browser.target);
+            assert!(local_item_names(&browser_receipt)
+                .unwrap()
+                .contains("Witness"));
+        }
+        Err(ProfileError::UnsupportedTarget { target }) => {
+            assert_eq!(target, browser.target);
+            assert!(!rustdoc_targets(&[]).unwrap().contains(&target));
+            assert!(!browser_receipt.exists());
+            eprintln!("SKIP browser Rustdoc: target `{target}` unavailable for pinned nightly");
+        }
+        Err(error) => panic!("browser Rustdoc qualification failed: {error}"),
+    }
 
     let plain = ProfileSpec {
         features: BTreeSet::new(),

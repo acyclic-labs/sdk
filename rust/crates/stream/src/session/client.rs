@@ -11,7 +11,10 @@ use tonic::{
 
 mod cache;
 mod credit;
+mod deadline;
+mod observation;
 pub(crate) use cache::Cache;
+use observation::Observation;
 mod outbound;
 use credit::{Credit, Released};
 use outbound::Outbound;
@@ -23,7 +26,7 @@ pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime,
+    verify_pool_lifetime, verify_registration_deadline,
 };
 mod progress;
 use progress::Progress;
@@ -79,6 +82,7 @@ enum Command {
         progress: Arc<Progress>,
         records: mpsc::Sender<Result<Delivery, StreamError>>,
         ready: oneshot::Sender<Result<u64, StreamError>>,
+        observation: crate::obs::OperationSpan,
     },
 }
 struct Route {
@@ -96,8 +100,10 @@ struct Route {
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
     ready: Option<oneshot::Sender<Result<u64, StreamError>>>,
+    observation: crate::obs::OperationSpan,
 }
 struct Link {
+    observation: Option<Observation>,
     epoch: u64,
     credit: wire::SessionWindow,
     channel: TransportChannel,
@@ -132,6 +138,9 @@ struct Pool {
 impl Drop for Link {
     fn drop(&mut self) {
         let _ = self.sender.close();
+        if let Some(observation) = &mut self.observation {
+            observation.finish(None);
+        }
     }
 }
 impl Client {
@@ -191,11 +200,12 @@ impl Client {
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        tokio::spawn(async move {
+        let context = crate::obs::OperationSpan::new(tracing::Span::current());
+        tokio::spawn(context.scope(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
-        });
+        }));
         Self {
             commands,
             removed,
@@ -301,51 +311,77 @@ impl Client {
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
-        let cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
-        self.commands
-            .send(Command::Open {
-                id,
-                attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
-                acknowledge,
-                kind,
-                progress,
-                records,
-                ready,
-            })
-            .await
-            .map_err(|_| StreamError::Unavailable)?;
-        let opened_id = opened.await.map_err(|_| StreamError::Unavailable)??;
-        if opened_id != id {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(stream::try_unfold(cursor, |mut cursor| async move {
-            loop {
-                let delivery = cursor
-                    .receiver
-                    .recv()
-                    .await
-                    .ok_or(StreamError::Unavailable)??;
-                // Delivery disposal returns capacity on every exit, including
-                // stale-generation suppression and cancellation of the cursor.
-                let fresh = match &delivery.item {
-                    Received::Record(record) => cursor.progress.consume_record(
-                        delivery.generation,
-                        delivery.sequence,
-                        *record.commit_id.as_bytes(),
-                    )?,
-                    Received::Child(_) => cursor.progress.consume_opaque(
-                        delivery.generation,
-                        delivery.sequence,
-                        &delivery.opaque,
-                    )?,
-                };
-                drop(delivery.credit);
-                if fresh {
-                    return Ok(Some((delivery.item, cursor)));
-                }
+        let mut cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
+        let operation = cursor.observation.operation.clone();
+        let registration = async {
+            self.commands
+                .send(Command::Open {
+                    id,
+                    attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
+                    acknowledge,
+                    kind,
+                    progress,
+                    records,
+                    ready,
+                    observation: operation.clone(),
+                })
+                .await
+                .map_err(|_| StreamError::Unavailable)?;
+            let opened_id = opened.await.map_err(|_| StreamError::Unavailable)??;
+            if opened_id != id {
+                return Err(StreamError::Unavailable);
             }
-        })
-        .boxed())
+            Ok(())
+        };
+        let registered = operation
+            .clone()
+            .scope(deadline::until(
+                registration,
+                tokio::time::sleep(std::time::Duration::from_secs(10)),
+            ))
+            .await
+            .unwrap_or(Err(StreamError::DeadlineElapsed));
+        if let Err(error) = registered {
+            cursor.observation.finish(Some(&error));
+            return Err(error);
+        }
+        operation.record("registration", "opened");
+        Ok(operation
+            .scope(stream::try_unfold(cursor, |mut cursor| async move {
+                loop {
+                    let delivery = match cursor
+                        .receiver
+                        .recv()
+                        .await
+                        .unwrap_or(Err(StreamError::Unavailable))
+                    {
+                        Ok(delivery) => delivery,
+                        Err(error) => {
+                            cursor.observation.finish(Some(&error));
+                            return Err(error);
+                        }
+                    };
+                    // Delivery disposal returns capacity on every exit, including
+                    // stale-generation suppression and cancellation of the cursor.
+                    let fresh = match &delivery.item {
+                        Received::Record(record) => cursor.progress.consume_record(
+                            delivery.generation,
+                            delivery.sequence,
+                            *record.commit_id.as_bytes(),
+                        )?,
+                        Received::Child(_) => cursor.progress.consume_opaque(
+                            delivery.generation,
+                            delivery.sequence,
+                            &delivery.opaque,
+                        )?,
+                    };
+                    drop(delivery.credit);
+                    if fresh {
+                        return Ok(Some((delivery.item, cursor)));
+                    }
+                }
+            }))
+            .boxed())
     }
     fn cursor(
         &self,
@@ -361,6 +397,7 @@ impl Client {
             })
             .map_err(|_| StreamError::Capacity)?;
         Ok(Cursor {
+            observation: Observation::channel(id),
             id,
             client: self.clone(),
             progress,
@@ -369,6 +406,7 @@ impl Client {
     }
 }
 struct Cursor {
+    observation: Observation,
     id: u64,
     client: Client,
     progress: Arc<Progress>,

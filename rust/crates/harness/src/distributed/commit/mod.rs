@@ -4,6 +4,8 @@ mod observation;
 mod request;
 mod sdk;
 pub(super) use observation::observe_commit;
+#[cfg(feature = "filesystem")]
+pub(crate) use request::journal_request;
 pub(crate) use request::{add_condition, add_record, commit_request};
 use sdk::inspect_idempotency;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
