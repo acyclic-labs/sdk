@@ -7,7 +7,7 @@ use acyclic_harness::{
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
 use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider, wire};
-use futures::{SinkExt as _, channel::mpsc};
+use futures::{FutureExt as _, SinkExt as _, channel::mpsc};
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc, sync::Arc};
 
 fn limits(agents: usize) -> SwarmClientLimits {
@@ -219,7 +219,9 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
             )
             .await
             .unwrap();
-        for channel_id in [0, 1, 2, 3] {
+        // Client channels are odd: control, discovery, status, then full content.
+        // Channel 2 is deliberately inactive and must leave the follow pending.
+        for channel_id in [0, 1, 3, 5, 2] {
             let (frames, incoming) = mpsc::unbounded();
             let snapshots = RefCell::new(0);
             let client = SwarmClient::new(path("swarm"), limits(1)).unwrap();
@@ -256,10 +258,14 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
                         futures::future::ready(Ok(()))
                     },
                 )
-                .await;
+                .now_or_never();
             assert_eq!(*snapshots.borrow(), 1);
-            let Err(Error::Storage(message)) = result else {
-                panic!("closed channel {channel_id} must fail")
+            if channel_id == 2 {
+                assert!(result.is_none(), "inactive channel must not end the follow");
+                continue;
+            }
+            let Some(Err(Error::Storage(message))) = result else {
+                panic!("closed channel {channel_id} must fail immediately")
             };
             assert!(message.contains(&format!(
                 "subscription {channel_id} closed: permission_revoked"

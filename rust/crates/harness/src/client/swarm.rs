@@ -107,7 +107,7 @@ impl Interests {
         let channel = self.next_channel;
         self.next_channel = self
             .next_channel
-            .checked_add(1)
+            .checked_add(2)
             .ok_or_else(|| Error::Invalid("session channel identity exhausted".into()))?;
         Ok(channel)
     }
@@ -148,8 +148,9 @@ fn follow(
     agent: &StreamPath,
     suffix: &str,
     delivery: wire::SessionDelivery,
-    resume: wire::SessionCursor,
+    mut resume: wire::SessionCursor,
 ) -> wire::SessionSubscription {
+    let preceding_commit_id = std::mem::take(&mut resume.opaque);
     wire::SessionSubscription {
         channel: Some(wire::SessionChannel {
             channel_id,
@@ -160,7 +161,7 @@ fn follow(
             wire::SessionFollow {
                 path: format!("{}/{suffix}", agent.as_str()),
                 delivery: delivery as i32,
-                ..Default::default()
+                preceding_commit_id,
             },
         )),
     }
@@ -214,7 +215,7 @@ impl SwarmClient {
     {
         let mut state = Interests {
             revision: 0,
-            next_channel: 2,
+            next_channel: 3,
             agents: BTreeMap::new(),
             routes: BTreeMap::new(),
             demand: ClientInterests::from_layout(self.root.clone(), [], [], 0)?,
@@ -225,6 +226,7 @@ impl SwarmClient {
                 channel_id: 1,
                 generation: 1,
             }),
+            resume: Some(wire::SessionCursor::default()),
             kind: Some(wire::session_subscription::Kind::Children(
                 wire::ChildrenRequest {
                     parent: Some(self.root.as_str().into()),
