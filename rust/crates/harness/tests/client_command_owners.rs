@@ -170,20 +170,27 @@ proptest! {
     #[test]
     fn followed_file_templates_round_trip(suffix in "[a-z]{1,8}", body in prop::collection::vec(any::<char>(), 0..32), arguments in "[A-Za-z0-9]{0,12}") {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let name = format!("custom-{suffix}");
+        let body: String = body.into_iter().map(|ch| if ch == '\0' { '\u{fffd}' } else { ch }).collect();
+        let body = format!("prefix {body} $ARGUMENTS");
         runtime.block_on(async {
+            for skill in [false, true] {
             let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("source-property").unwrap()).await.unwrap());
             let mut client = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 64).await.unwrap();
-            let name = format!("custom-{suffix}");
-            let body: String = body.into_iter().map(|ch| if ch == '\0' { '\u{fffd}' } else { ch }).collect();
-            let body = format!("prefix {body} $ARGUMENTS");
+            let (path, source) = if skill {
+                (format!("skills/{name}/SKILL.md"), format!("---\nname: {name}\ndescription: Generated skill\n---\n{body}"))
+            } else {
+                (format!(".codex/prompts/{name}.md"), body.clone())
+            };
             let cut = volume.snapshot(&Query::Inputs, 64).await.unwrap();
-            volume.append(cut.generation, &FileValue::new(FileKey::parse(&format!(".codex/prompts/{name}.md")).unwrap(), body.clone().into_bytes())).await.unwrap();
+            volume.append(cut.generation, &FileValue::new(FileKey::parse(&path).unwrap(), source.into_bytes())).await.unwrap();
             let _sources = CommandSources::observe(&mut client, &volume, acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(), vec![], vec![], Arc::new(NoReads), Default::default(), 32_768, 64).await.unwrap();
             let encoded = serde_json::to_vec(&client.catalog().commands().collect::<Vec<_>>()).unwrap();
             let decoded = CommandCatalog::from_bytes(&encoded, 32_768).unwrap();
             let result = decoded.resolve(&format!("/{name} {arguments}"), &NoReads, 32_768).await.unwrap();
             let CommandResolution::Prompt { text, .. } = result else { panic!("template did not resolve") };
             prop_assert_eq!(text, body.replace("$ARGUMENTS", &arguments));
+            }
             Ok(())
         })?;
     }
