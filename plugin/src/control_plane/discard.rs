@@ -233,7 +233,8 @@ impl ControlPlane {
                     .mount_detached = true;
                 self.persist()?;
             }
-            remove_tree_checked(&self.workspace_mount_root(), &agent.path)
+            NativeDirectory(&self.workspace_mount_root())
+                .remove(&agent.path)
                 .map_err(|error| format!("cannot remove discarded mount path: {error}"))?;
             for repository_id in agent.repository_workspace_ids {
                 let repository_id = acyclic_fs::WorkspaceId::from_bytes(repository_id);

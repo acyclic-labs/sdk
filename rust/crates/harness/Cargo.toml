@@ -17,6 +17,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "git_executor"
+path = "tests/git_executor.rs"
+required-features = ["filesystem-local", "native-execution"]
+
+[[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
 
@@ -43,6 +48,24 @@ required-features = ["filesystem-local"]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client_journal_model"
+path = "tests/client_journal_model.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "client_session"
+path = "tests/client_session.rs"
+
+[[test]]
+name = "client_history"
+path = "tests/client_history.rs"
+
+[[test]]
+name = "client_terminal"
+path = "tests/client_terminal.rs"
+required-features = ["terminal"]
 
 [[test]]
 name = "mcp-durable"
@@ -132,6 +155,7 @@ rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.2"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }

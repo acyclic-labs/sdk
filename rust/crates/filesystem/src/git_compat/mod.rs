@@ -52,7 +52,7 @@ use transition::*;
 mod bisect;
 use bisect::*;
 mod argv;
-use argv::*;
+pub use argv::parse_git_argv;
 mod ignore;
 pub use ignore::*;
 mod capture;

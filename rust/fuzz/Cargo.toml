@@ -1,0 +1,31 @@
+[package]
+name = "acyclic-sdk-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-fs = { path = "../crates/filesystem", default-features = false }
+acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution"] }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "git_argv"
+path = "fuzz_targets/git_argv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_path"
+path = "fuzz_targets/git_path.rs"
+test = false
+doc = false
+bench = false

@@ -1,7 +1,7 @@
 use super::*;
 
-impl GitFilesystemExecutor for PluginGitExecutor<'_> {
-    type Error = PluginGitError;
+impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
+    type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
         let Some(lease) = &self.lease else {

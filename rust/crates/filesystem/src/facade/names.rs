@@ -629,3 +629,52 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 }
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    pub(crate) async fn directory_binding_with_accounting(
+        &self,
+        id: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<String>, FsError> {
+        let before = readonly_standalone_live(accounting);
+        let result = async {
+            let (search, allocation) =
+                crate::workspace::namespace_records_to_file_root_with_accounting(
+                    &self.volume,
+                    &self.root,
+                    self.generation_root,
+                    &[id],
+                    // Bindings can outnumber file records through hard links.
+                    // The original work budget bounds this cold traversal.
+                    u32::MAX,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let bytes = crate::workspace::namespace_records_bytes(&search.records);
+            let search = Owned::new(search, allocation, bytes);
+            let result = (|| {
+                let [(found, records)] = search.value.records.as_slice() else {
+                    return Err(FsError::FileIdentityCollision);
+                };
+                let [(path, record)] = records.as_slice() else {
+                    return Err(FsError::FileIdentityCollision);
+                };
+                if !search.value.complete || *found != id || record.kind != FileKind::Directory {
+                    return Err(FsError::FileIdentityCollision);
+                }
+                let (path, allocation) =
+                    path.unicode_text_with_accounting(accounting, cancellation)?;
+                let bytes = path.capacity() as u64;
+                Ok(Owned::new(path, allocation, bytes))
+            })();
+            search.retire(accounting)?;
+            result
+        }
+        .await;
+        let retained = result.as_ref().map_or(0, |path| path.bytes);
+        readonly_cleanup_standalone(accounting, before, retained)?;
+        result
+    }
+}

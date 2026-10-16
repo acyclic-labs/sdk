@@ -8,7 +8,7 @@ pub use config::{AuthorityBinding, Config, ForkSourceConfig};
 pub(super) use tasks::stock_turn_commands;
 pub use tasks::{lease_hex, render_attempt};
 
-use crate::terminal::{MAX_FRAME_BYTES, MAX_PAGE_EVENTS};
+use crate::terminal::MAX_FRAME_BYTES;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,

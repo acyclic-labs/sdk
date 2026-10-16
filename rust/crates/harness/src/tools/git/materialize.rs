@@ -1,22 +1,27 @@
 use super::*;
 
+/// Publishes git facade mutations into the ordinary checkout.
 pub(crate) struct RootMaterializingGitExecutor<'a> {
-    pub(crate) inner: PluginGitExecutor<'a>,
-    pub(crate) root: &'a Path,
-    pub(crate) source_root_identity: acyclic_fs::NativeRootIdentity,
+    /// Managed workspace executor.
+    pub inner: WorkspaceGitExecutor<'a>,
+    /// Ordinary checkout path.
+    pub root: &'a Path,
+    /// Pinned physical checkout identity.
+    pub source_root_identity: acyclic_fs::NativeRootIdentity,
 }
 
 impl RootMaterializingGitExecutor<'_> {
+    /// Publishes a generation transition into the checkout.
     pub(crate) async fn materialize(
         &self,
         operation_id: OperationId,
         from: LocalGeneration,
-    ) -> Result<(), PluginGitError> {
+    ) -> Result<(), Error> {
         let target = self
             .inner
             .switched
             .lock()
-            .map_err(|_| PluginGitExecutor::error("Git workspace switch lock is unavailable"))?
+            .map_err(|_| WorkspaceGitExecutor::error("Git workspace switch lock is unavailable"))?
             .as_ref()
             .map_or_else(
                 || self.inner.current.clone(),
@@ -32,8 +37,9 @@ impl RootMaterializingGitExecutor<'_> {
         if from.id() == to {
             return Ok(());
         }
-        let operation_directory =
-            root_materialization_directory(self.root, operation_id).map_err(PluginGitError)?;
+        let operation_directory = NativeDirectory(self.root)
+            .publication_directory(operation_id)
+            .map_err(Error::Storage)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
             expected_root_identity: None,
@@ -69,17 +75,23 @@ impl RootMaterializingGitExecutor<'_> {
             .remove_materialization_async(operation_id)
             .await
             .map_err(display)?;
-        remove_tree_checked(
-            &root_materialization_root(self.root).map_err(PluginGitError)?,
-            &operation_directory,
+        NativeDirectory(
+            &NativeDirectory(self.root)
+                .publication_root()
+                .map_err(Error::Storage)?,
         )
+        .remove(&operation_directory)
         .map_err(display)?;
         Ok(())
     }
 }
 
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
-    type Error = PluginGitError;
+    type Error = Error;
+
+    async fn validate(&self) -> Result<(), Self::Error> {
+        self.inner.validate().await
+    }
 
     async fn execute(
         &self,

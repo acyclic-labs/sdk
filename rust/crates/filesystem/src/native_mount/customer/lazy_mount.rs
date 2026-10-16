@@ -9,6 +9,15 @@ pub struct LazyMount<A, O, D, S> {
 }
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
+    /// Takes the first original fatal callback cause and its completed work.
+    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()?
+            .take_callback_failure()
+    }
+
     /// Exact mounted host path.
     #[must_use]
     pub fn path(&self) -> &Path {
