@@ -13,7 +13,81 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     ) -> Result<(), LazyWorkspaceError> {
         let mut mutations = Some(Owned::allocate(2, ctx)?);
         let result = async {
-            let namespace = self.namespace_path(path, ctx)?;
+            let mut namespace = self.namespace_path(path, ctx)?;
+            if node.kind == SourceNodeKind::Directory {
+                let staged = async {
+                    let entries = transaction
+                        .checkout
+                        .stage_empty_tree_with_accounting(ctx, cancellation(ctx))
+                        .await?;
+                    let metadata = transaction
+                        .checkout
+                        .stage_metadata_with_accounting(
+                            source_file_metadata(node.metadata),
+                            ctx,
+                            cancellation(ctx),
+                        )
+                        .await?;
+                    Ok::<_, LazyWorkspaceError>(FileRecord {
+                        file_id: self.source_file_id(&node.file_identity, ctx)?,
+                        kind: FileKind::Directory,
+                        link_count: 1,
+                        metadata,
+                        payload: FilePayload::Directory { entries },
+                    })
+                }
+                .await;
+                let record = match staged {
+                    Ok(record) => record,
+                    Err(error) => {
+                        namespace.retire(ctx)?;
+                        return Err(error);
+                    }
+                };
+                let mut directories = match Owned::allocate(1, ctx) {
+                    Ok(directories) => directories,
+                    Err(error) => {
+                        namespace.retire(ctx)?;
+                        return Err(error.into());
+                    }
+                };
+                // The batch owns the path even if the copy admission fails.
+                let retained = (|| {
+                    let bytes = directories
+                        .bytes
+                        .checked_add(namespace.bytes)
+                        .ok_or(crate::WorkError::Overflow)?;
+                    directories.allocation.absorb(&mut namespace.allocation)?;
+                    directories.bytes = bytes;
+                    Ok::<_, crate::FsError>(())
+                })();
+                if let Err(error) = retained {
+                    namespace.retire(ctx)?;
+                    directories.retire(ctx)?;
+                    return Err(error.into());
+                }
+                let copied = crate::Transaction::<A, O>::push_mutation(
+                    &mut directories,
+                    Owned::new(
+                        crate::kernel::Mutation::Create {
+                            path: namespace.value,
+                            record,
+                        },
+                        namespace.allocation,
+                        0,
+                    ),
+                    ctx,
+                );
+                if let Err(error) = copied {
+                    directories.retire(ctx)?;
+                    return Err(error.into());
+                }
+                transaction
+                    .checkout
+                    .apply_mutations(directories, ctx, cancellation(ctx))
+                    .await?;
+                return Ok(());
+            }
             if node.kind == SourceNodeKind::RegularFile {
                 if node
                     .logical_bytes
@@ -107,10 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             file_id,
                         }
                     }
-                    SourceNodeKind::Directory => AuthoredMutation::CreateDirectory {
-                        path: namespace.value,
-                        metadata,
-                    },
+                    SourceNodeKind::Directory => unreachable!("source directory created above"),
                     SourceNodeKind::SymbolicLink => {
                         let target = self
                             .read_resolved(
