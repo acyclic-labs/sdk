@@ -137,12 +137,18 @@ impl Capability {
 
     /// Preserve the declaring identity of each conjunctive filter.
     pub fn filters(&self) -> Array {
-        self.0.effective().filters().map(|clause| JsValue::from(FilterClause {
-            declaring_block: clause.declaring_block(),
-            subject_id: clause.subject_id().to_owned(),
-            lineage: clause.lineage().map(str::to_owned).collect(),
-            filter: FilterProto::from(clause.filter().clone()).encode_to_vec(),
-        })).collect()
+        self.0
+            .effective()
+            .filters()
+            .map(|clause| {
+                JsValue::from(FilterClause {
+                    declaring_block: clause.declaring_block(),
+                    subject_id: clause.subject_id().to_owned(),
+                    lineage: clause.lineage().map(str::to_owned).collect(),
+                    filter: FilterProto::from(clause.filter().clone()).encode_to_vec(),
+                })
+            })
+            .collect()
     }
 
     pub fn limits(&self) -> Uint8Array {
