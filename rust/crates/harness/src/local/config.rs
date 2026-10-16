@@ -18,6 +18,7 @@ pub struct LocalHarnessConfig {
     /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
     pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
+    pub(super) state_directory: Option<PathBuf>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context: ContextPipeline,
     pub(super) tools: Vec<Tool>,
@@ -41,6 +42,7 @@ impl LocalHarnessConfig {
         Self {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
+            state_directory: None,
             model,
             context: ContextPipeline::default(),
             tools: Vec::new(),
@@ -61,6 +63,13 @@ impl LocalHarnessConfig {
             mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
+    }
+    /// Selects the durable owner, journal and workspace state directory.
+    /// It must be outside the checkout; reopening uses the same directory.
+    #[must_use]
+    pub fn state_directory(mut self, path: impl Into<PathBuf>) -> Self {
+        self.state_directory = Some(path.into());
+        self
     }
     /// Opens an existing volume in the local filesystem directory passed to `new`.
     #[must_use]

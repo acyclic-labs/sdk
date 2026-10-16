@@ -5,6 +5,7 @@ use acyclic_fs::{CancellationToken, WorkBudget, facade::FsWork as _};
 #[tokio::test]
 async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf base > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
@@ -17,11 +18,12 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
         super::checked_commands::call(6, "bash", "test $(cat upstream.txt) = recovered"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path()),
+    )
     .await?;
+    assert!(state.path().join("owner.json").is_file());
     super::checkout_reopen::run(&harness).await?;
     for (expired, expected) in [(false, "closed"), (true, "recovered")] {
         let checkout = harness.workspace().unwrap();
@@ -47,7 +49,8 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
             .write_text("/upstream.txt", expected)
             .await
             .map_err(super::super::storage)?;
-        super::checkout_reopen::run(&harness).await?;
+        assert!(state.path().join("owner.json").is_file());
+    super::checkout_reopen::run(&harness).await?;
         assert_eq!(
             std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?,
             expected.as_bytes()
@@ -78,6 +81,7 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
 #[tokio::test]
 async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf main > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m main"),
@@ -85,10 +89,10 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
         super::checked_commands::call(3, "bash", "printf child > note.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path()),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
@@ -238,6 +242,7 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
 async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_task() -> Result<()>
 {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf 'base\n' > note.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
@@ -256,18 +261,25 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         super::checked_commands::call(10, "fs", "merge --continue"),
         ScriptedTurn::Text("resolved".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
-    assert_eq!(
-        harness
-            .run("merge, inspect markers and resolve them")
-            .await?
-            .text,
-        "resolved"
-    );
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) = harness
+        .submit(
+            OperationId::new(),
+            "merge, inspect markers and resolve them",
+        )
+        .await?
+    else {
+        panic!("durable admission")
+    };
+    let commands = harness.commands()?;
+    harness
+        .advance(task_id, &super::checked_commands::Checked(&commands))
+        .await?;
+    assert_eq!(harness.resume(task_id).await?.text, "resolved");
     assert_eq!(
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
         b"resolved\n"

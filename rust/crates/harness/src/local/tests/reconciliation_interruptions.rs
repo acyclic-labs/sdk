@@ -5,11 +5,10 @@ use acyclic_fs::{CancellationToken, GitCompatStore, WorkBudget};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn open(path: &Path) -> Result<LocalHarness> {
-    LocalHarness::open(crate::test_support::local_harness_config(
-        path,
-        (model()?, text()),
-    )?)
+async fn open(path: &Path, state: &Path) -> Result<LocalHarness> {
+    LocalHarness::open(
+        crate::test_support::local_harness_config(path, (model()?, text()))?.state_directory(state),
+    )
     .await
 }
 
@@ -124,16 +123,17 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
 
 async fn sweep(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let mut harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let mut harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     // Learn the finite native effect boundaries on the real publication path.
@@ -235,7 +235,7 @@ async fn sweep(text: &str) -> Result<()> {
             }
         }
         drop(harness);
-        harness = open(directory.path()).await?;
+        harness = open(directory.path(), state_directory.path()).await?;
         assert_published(&harness, &expected).await?;
         if cut == 5 + effects {
             break;
@@ -247,16 +247,17 @@ async fn sweep(text: &str) -> Result<()> {
 
 async fn negative_control(text: &str) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", "printf base > upstream.txt"),
         super::checked_commands::call(1, "fs", "commit -m base"),
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
@@ -313,7 +314,7 @@ async fn negative_control(text: &str) -> Result<()> {
             .map_err(super::super::storage)?
     );
     drop(harness);
-    let harness = open(directory.path()).await?;
+    let harness = open(directory.path(), state_directory.path()).await?;
     let bytes =
         std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?;
     let failure =
