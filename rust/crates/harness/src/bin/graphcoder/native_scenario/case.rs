@@ -85,7 +85,7 @@ pub(super) async fn prepare_case(
             "model_invocation_ledger": root.join("model-invocations.jsonl"),
             "session_limits": fixture::<SessionLimits>("session_limits", json!({"total_tasks": total_tasks}))?,
             "tools": crate::native_tools::NativeToolsConfig::default(),
-        "context": crate::native::WorkflowContext::default()
+        "context_manifest": null
         }),
     )?;
     // Open the actual diagnostic provider sink before any model invocation.
@@ -218,7 +218,7 @@ pub(super) async fn prepare_case(
             .await
             .map_err(storage)?,
     );
-    let runtime =
+    let (runtime, _) =
         crate::native::runtime(&config, stream.clone(), files.clone(), owner.verifier()?).await?;
     let definition: Arc<TaskDefinition<Value, TurnOutput>> =
         runtime.harness().task("acyclic.stock_turn@1")?;

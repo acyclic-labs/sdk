@@ -2,7 +2,7 @@
 
 use crate::{
     Error, Result, wire,
-    wire_codec::{protocol_identity, validate_protocol},
+    wire_codec::{COMPILED_PROTOCOL, protocol_identity, validate_protocol},
 };
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use prost::Message as _;
@@ -77,10 +77,9 @@ pub fn validate_operation_status(
     owner: Option<&wire::Authority>,
     status: &wire::OperationStatus,
 ) -> Result<()> {
-    let expected = current_protocol();
     validate_protocol(
         status.protocol.as_ref(),
-        (&expected.version, &expected.descriptor_digest),
+        COMPILED_PROTOCOL,
         wire::ErrorCode::Conflict,
         &None,
     )?;

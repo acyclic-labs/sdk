@@ -39,6 +39,7 @@ const packages = {
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
+  manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
@@ -111,7 +112,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
     source = await producer.sourceSnapshot();
   }
-  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
+  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,

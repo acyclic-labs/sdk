@@ -118,7 +118,9 @@ pub fn attenuate(
     Ok(result)
 }
 
-fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
+/// Match canonical resources using the same whole-segment rule as admission.
+/// Callers must validate the resource and pattern with the owning grammar first.
+pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
     if pattern.prefix {
         let prefix = pattern.name.trim_end_matches('/');
         name == prefix

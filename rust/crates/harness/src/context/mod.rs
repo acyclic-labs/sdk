@@ -27,6 +27,8 @@ pub(crate) use compaction::clone_context;
 pub use compaction::*;
 mod snapshot;
 pub use snapshot::*;
+mod manifest;
+pub use manifest::ContextManifest;
 
 mod checkpoint;
 pub use checkpoint::*;
