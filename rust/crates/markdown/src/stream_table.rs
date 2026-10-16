@@ -7,7 +7,6 @@ pub(super) struct Stream {
     table: Table,
     widths: Vec<usize>,
     displayed: Vec<usize>,
-    first: usize,
     pub(super) cost: usize,
     pub(super) valid: Range<usize>,
 }
@@ -58,7 +57,6 @@ impl Markdown {
             table,
             displayed: widths.clone(),
             widths,
-            first: self.stable_lines,
             cost,
             valid,
         });
@@ -101,14 +99,15 @@ impl Markdown {
             }
         }
         let old_rows = stream.table.rows.len();
+        let table_start = self.stable_lines;
         let changed = if widths == stream.displayed {
             // top border, header, separator, then previously committed body rows.
-            let first = stream.first + old_rows + 2;
+            let first = table_start + old_rows + 2;
             self.lines.truncate(first);
             first
         } else {
             // A width change invalidates the rendered rows, never their parsing.
-            self.lines.truncate(stream.first);
+            self.lines.truncate(table_start);
             self.lines.push(border('┌', '┬', '┐', &widths));
             self.lines.extend(
                 stream
@@ -124,7 +123,7 @@ impl Markdown {
                         }
                     }),
             );
-            stream.first
+            table_start
         };
         let rows = addition.render_rows(1, &widths);
         #[cfg(test)]

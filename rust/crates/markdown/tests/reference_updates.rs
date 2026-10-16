@@ -105,34 +105,36 @@ fn doubling_keeps_the_same_mix_of_affected_blocks() {
 }
 
 #[test]
-fn document_budget_growth_keeps_unrelated_inline_checkpoints() {
-    let references = "![][r]\n\n".repeat(60);
-    let definition = format!("[r]: /{}\n\n", "a".repeat(2000));
-    let padding = "x".repeat(100_001 - references.len() - definition.len());
-    let mut markdown = Markdown::default();
-    let mut consumer = Vec::new();
-    let mut push = |delta: &str, bounded: bool| {
-        let before = references::PARSED_BYTES.get();
-        let changed = markdown.push(delta);
-        let parsed = references::PARSED_BYTES.get() - before;
-        if bounded {
-            assert!(parsed <= 512, "{parsed} parser bytes for {delta:?}");
+fn document_budget_growth_keeps_unrelated_open_checkpoints() {
+    for (opening, delta) in [("*x* ", "*x* "), ("\n\n| x |\n|---|\n", "| x |\n")] {
+        let references = "![][r]\n\n".repeat(60);
+        let definition = format!("[r]: /{}\n\n", "a".repeat(2000));
+        let padding = "x".repeat(100_001 - references.len() - definition.len());
+        let mut markdown = Markdown::default();
+        let mut consumer = Vec::new();
+        let mut push = |delta: &str, bounded: bool| {
+            let before = references::PARSED_BYTES.get();
+            let changed = markdown.push(delta);
+            let parsed = references::PARSED_BYTES.get() - before;
+            if bounded {
+                assert!(parsed <= 512, "{parsed} parser bytes for {delta:?}");
+            }
+            assert!(changed <= markdown.lines().len());
+            consumer.truncate(changed);
+            consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+            assert_eq!(consumer, full_parse(&markdown.source));
+        };
+        push(&references, false);
+        push(&definition, false);
+        push(&padding, false);
+        push(opening, false);
+        for _ in 0..100 {
+            push(delta, true);
         }
-        assert!(changed <= markdown.lines().len());
-        consumer.truncate(changed);
-        consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
-        assert_eq!(consumer, full_parse(&markdown.source));
-    };
-    push(&references, false);
-    push(&definition, false);
-    push(&padding, false);
-    push("*x* ", false);
-    for _ in 0..100 {
-        push("*x* ", true);
-    }
-    push(&format!("\n\n{}\n\n", "x".repeat(24_000)), false);
-    for _ in 0..4 {
-        push("![][r]\n\n", true);
+        push(&format!("\n\n{}\n\n", "x".repeat(24_000)), false);
+        for _ in 0..4 {
+            push("![][r]\n\n", true);
+        }
     }
 }
 
