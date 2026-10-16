@@ -13,9 +13,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 .fork_snapshot_payload::<true>(authority, &mut child)
                 .await
                 .and_then(|value| child.finish(value))?;
-            let Some((record, allocation, offset)) = latest else {
+            let Some((storage, allocation, offset)) = latest else {
                 return Ok(((snapshot.head, None), None));
             };
+            // Bind storage after funding so errors also destroy it first.
+            let record = storage;
             if maximum_payload_bytes == 0 {
                 return Err(AuthorityStoreError::InvalidReplayLimit);
             }
