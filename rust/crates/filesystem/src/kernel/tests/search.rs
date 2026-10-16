@@ -8,6 +8,22 @@ fn sorted() -> impl Strategy<Value = Vec<u16>> {
     })
 }
 
+fn legacy_probe_indices(items: &[u16], key: u16) -> Vec<usize> {
+    // Frozen pre-PR decision tree, independent of production search/accounting.
+    let (mut low, mut high) = (0, items.len());
+    let mut probes = Vec::new();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        probes.push(middle);
+        match items[middle].cmp(&key) {
+            Ordering::Less => low = middle + 1,
+            Ordering::Greater => high = middle,
+            Ordering::Equal => break,
+        }
+    }
+    probes
+}
+
 fn compare_known_prefix<const SKIP_FIRST: bool, const UNCHARGED_PROBE: bool>(
     items: &[u16],
     key: u16,
@@ -56,7 +72,13 @@ fn compare_known_prefix<const SKIP_FIRST: bool, const UNCHARGED_PROBE: bool>(
         item.cmp(&key)
     })
     .unwrap();
-    let expected: Vec<_> = baseline
+    let legacy = legacy_probe_indices(items, key);
+    prop_assert_eq!(
+        &baseline,
+        &legacy,
+        "unoptimized traversal retains the old search"
+    );
+    let expected: Vec<_> = legacy
         .into_iter()
         .filter(|index| *index >= offset)
         .collect();
