@@ -275,7 +275,7 @@ where
         summary_files: &'a [&'a FileRef],
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.verify_model_content_with_io(content, io, context, summary_files)
+            self.verify_model_content_with_io::<true>(content, io, context, summary_files)
         })
     }
 

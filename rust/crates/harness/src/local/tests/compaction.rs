@@ -96,7 +96,7 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         file: summary.clone(),
         policy: crate::model::FileProjectionPolicy::BoundedFull,
     });
-    crate::executor::verify_model_contents_with_summary_authorization::<true>(
+    crate::executor::verify_model_contents_with_summary_authorization::<true, true>(
         &journal,
         std::iter::once(&content),
         harness.limits,
@@ -105,7 +105,7 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         None,
     )
     .await?;
-    let main = crate::executor::verify_model_contents_with_summary_authorization::<false>(
+    let main = crate::executor::verify_model_contents_with_summary_authorization::<false, true>(
         &journal,
         std::iter::once(&content),
         harness.limits,

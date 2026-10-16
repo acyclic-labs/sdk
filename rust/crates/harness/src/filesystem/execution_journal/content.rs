@@ -407,7 +407,7 @@ where
         Ok(())
     }
 
-    pub(super) async fn verify_model_content_with_io(
+    pub(super) async fn verify_model_content_with_io<const RELEASE: bool>(
         &self,
         content: &ModelContent,
         io: Option<&PreparationIo>,
@@ -517,7 +517,12 @@ where
                 if summary_files.contains(file) {
                     let _bytes_hold;
                     let bytes = self.load_content(file, io).await?;
-                    _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+                    // Only the accounting test instantiates the omitted-release control.
+                    _bytes_hold = if RELEASE {
+                        io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
+                    } else {
+                        None
+                    };
                     drop(bytes);
                 } else {
                     self.verify_input_file_with_io(file, io).await?;

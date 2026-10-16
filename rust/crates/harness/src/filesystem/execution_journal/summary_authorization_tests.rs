@@ -1,10 +1,13 @@
 use super::*;
 use crate::{
     context::ContextSummary, conversation::ContentPublisher, durable_host::tests::fixture::Fixture,
+    runtime::TaskSpawner,
 };
 use acyclic_fs::Fs;
 use acyclic_stream::MemoryStream;
 use serde_json::json;
+
+mod accounting;
 
 async fn fixture() -> Result<Fixture> {
     Fixture::new(
@@ -335,61 +338,39 @@ fn complete_summary_output_identity_is_required_even_at_a_valid_provenance_key()
 }
 
 #[test]
-fn summary_projection_releases_temporary_owned_buffers() -> Result<()> {
+fn fixture_admissions_reject_generated_nonintegers() -> Result<()> {
     use proptest::prelude::*;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     let fixture = runtime.block_on(fixture())?;
-    let scope = fixture.issuer.issue(
-        "summary-accounting",
-        &crate::Capabilities::new([
-            fixture
-                .storage
-                .capability(VolumeOperation::Read, &mut None)?,
-            fixture
-                .storage
-                .capability(VolumeOperation::Write, &mut None)?,
-        ]),
-        Some(crate::AgentId::from_bytes([1; 16])),
-        None,
-        &mut None,
-    )?;
-    let journal = FilesystemExecutionJournal::new(
-        fixture.stream.clone(),
-        fixture.files.clone(),
-        &SchemaRegistry::new(),
-        super::super::FilesystemJournalBinding {
-            volume: &fixture.storage,
-            verifier: &fixture.issuer.verifier(&mut None)?,
-            scope: &scope,
-            maximum_bytes: 65_536,
-            io: None,
-        },
-    )?;
-    let file = runtime.block_on(output(&journal, OperationId::new(), "summary:0:output"))?;
-    let content = ModelContent::Part(crate::model::ModelContentPart::File {
-        file: file.clone(),
-        policy: crate::model::FileProjectionPolicy::BoundedFull,
-    });
+    let invalid = prop_oneof![
+        Just(serde_json::Value::Null),
+        any::<bool>().prop_map(serde_json::Value::Bool),
+        ".{0,32}".prop_map(serde_json::Value::String),
+        prop::collection::vec(any::<i16>(), 0..5).prop_map(|values| json!(values)),
+        any::<i16>().prop_map(|value| json!({"value": value})),
+        (-10_000i32..10_000).prop_map(|value| json!(value as f64 + 0.5)),
+    ];
     proptest::test_runner::TestRunner::default()
-        .run(&(1usize..17), |repetitions| {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let io = PreparationIo::from_budget(
-                acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024),
-                &cancellation,
-            )?;
-            for _ in 0..repetitions {
-                let before = io.owned_bytes()?;
-                runtime.block_on(journal.verify_model_content_with_io(
-                    &content,
-                    Some(&io),
-                    None,
-                    &[&file],
-                ))?;
-                prop_assert_eq!(io.owned_bytes()?, before, "freed summary retained custody");
-            }
+        .run(&invalid, |input| {
+            let admission = fixture.admission(90, input);
+            let rejects = |admission: &crate::runtime::TaskAdmissionRecord| {
+                matches!(admission.validate(&mut None), Err(Error::Invalid(_)))
+            };
+            prop_assert!(rejects(&admission), "fixture accepted a noninteger");
+            prop_assert!(matches!(
+                runtime.block_on(fixture.host.admit(admission.clone())),
+                Err(Error::Invalid(_))
+            ));
+            let mut permissive = admission;
+            permissive.input_schema = json!({});
+            prop_assert!(
+                !rejects(&permissive),
+                "same detector missed the former permissive schema"
+            );
+            permissive.validate(&mut None)?;
             Ok(())
         })
         .unwrap();

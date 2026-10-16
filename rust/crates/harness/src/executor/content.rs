@@ -8,13 +8,18 @@ pub(crate) async fn verify_model_contents_scoped<'a>(
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
-    verify_model_contents_with_summary_authorization::<true>(
+    verify_model_contents_with_summary_authorization::<true, true>(
         journal, contents, limits, scope, io, context,
     )
     .await
 }
 
-pub(crate) async fn verify_model_contents_with_summary_authorization<'a, const SUMMARIES: bool>(
+// False flags are used only by the authorization and accounting negative controls.
+pub(crate) async fn verify_model_contents_with_summary_authorization<
+    'a,
+    const SUMMARIES: bool,
+    const RELEASE: bool,
+>(
     journal: &dyn ExecutionJournal,
     contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
     limits: Limits,
@@ -64,7 +69,7 @@ pub(crate) async fn verify_model_contents_with_summary_authorization<'a, const S
     let owned = (summaries.capacity() * std::mem::size_of::<&FileRef>()) as u64;
     drop(summaries);
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
+    if RELEASE && let Some(io) = io {
         io.release(owned)?;
     }
     result
