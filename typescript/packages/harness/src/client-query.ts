@@ -6,6 +6,8 @@ export {
   type FileClientDurability,
   WasmClientQuery as ClientQuery,
   WasmQueryViews as QueryViews,
+  WasmSwarmClient as SwarmClient,
+  WasmSwarmViews as SwarmViews,
   WasmTaskVolume as TaskVolume,
   WasmStream,
   type Channel,
@@ -17,5 +19,11 @@ export {
   type QueryFileDelta,
   type QueryFileInfo,
   type QueryViewLimits,
+  type InterestDocument,
+  type SwarmClientLimits,
+  type SwarmViewLimits,
+  type SwarmDelivery,
+  type SwarmStatusInfo,
+  type SwarmStatusValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureHarnessWasm as initializeClientQueries } from "./wasm-runtime.js";
