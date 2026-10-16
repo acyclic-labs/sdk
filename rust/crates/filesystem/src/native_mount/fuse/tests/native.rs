@@ -6,13 +6,6 @@ pub(super) fn posix_config() -> crate::model::VolumeConfig {
     config
 }
 
-// Construct before returning to the polling frame; a boxed value alone still
-// needs a large construction temporary on its caller's stack.
-#[inline(never)]
-fn boxed_future<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
-    Box::pin(make())
-}
-
 pub(super) fn memory_checkout(
     config: crate::model::VolumeConfig,
     mode: crate::model::CheckoutMode,
@@ -21,41 +14,28 @@ pub(super) fn memory_checkout(
     use crate::model::GenerationSelector;
     let fs = crate::Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let future = Box::pin(async {
+    let checkouts = runtime.block_on(async {
         let cancellation = crate::CancellationToken::new();
-        let volume =
-            boxed_future(|| fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation))
-                .await?
-                .value;
+        let volume = fs
+            .create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
         let mut checkouts = Vec::with_capacity(count);
         for _ in 0..count {
             checkouts.push(
-                boxed_future(|| {
-                    volume.checkout(
+                volume
+                    .checkout(
                         GenerationSelector::Head,
                         mode,
                         crate::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
-                })
-                .await?
-                .value,
+                    .await?
+                    .value,
             );
         }
         Ok::<_, crate::OperationFailure<crate::FsError>>(checkouts)
-    });
-    #[cfg(acyclic_fs_loom)]
-    {
-        static REPORTED: std::sync::Once = std::sync::Once::new();
-        REPORTED.call_once(|| {
-            eprintln!(
-                "checkout fixture future: {} bytes backing, {} bytes on the caller stack",
-                std::mem::size_of_val(future.as_ref().get_ref()),
-                std::mem::size_of_val(&future),
-            )
-        });
-    }
-    let checkouts = runtime.block_on(future)?;
+    })?;
     Ok(checkouts)
 }
 
@@ -98,48 +78,11 @@ pub(super) fn shared_sources(
         1,
     )?;
     let checkout = checkouts.into_iter().next().ok_or("one checkout")?;
-    shared_sources_from_checkout(checkout, config)
-}
-
-// Do not reserve source construction's large locals while polling the checkout.
-#[inline(never)]
-fn shared_sources_from_checkout(
-    checkout: MemoryCheckout,
-    config: crate::model::VolumeConfig,
-) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
     Ok((
         MemorySource::new(Arc::clone(&shared), config)?,
         MemorySource::new(shared, config)?,
     ))
-}
-
-#[cfg(acyclic_fs_loom)]
-pub(super) fn invalidation_model_source() -> Arc<dyn MountFilesystem> {
-    use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
-    let config = posix_config();
-    let checkouts = memory_checkout(
-        config,
-        CheckoutMode {
-            access: AccessMode::ReadWrite,
-            consistency: ConsistencyMode::Pinned,
-            mutations: MutationMode::PrivateOverlay,
-        },
-        1,
-    )
-    .unwrap();
-    invalidation_source_from_checkouts(checkouts, config)
-}
-
-#[cfg(acyclic_fs_loom)]
-#[inline(never)]
-fn invalidation_source_from_checkouts(
-    checkouts: Vec<MemoryCheckout>,
-    config: crate::model::VolumeConfig,
-) -> Arc<dyn MountFilesystem> {
-    let checkout = checkouts.into_iter().next().expect("one checkout");
-    let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
-    Arc::new(MemorySource::new(shared, config).unwrap())
 }
 
 pub(super) struct FuseWriteGuard {
