@@ -1,0 +1,2 @@
+{"limits":{"file_bytes":3},"turns":["🦀"],"expect":{"text":null,"error":"assistant output exceeds file limit","request_count":1,
+  "result":null},"replay":false}

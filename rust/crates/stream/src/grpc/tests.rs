@@ -25,7 +25,7 @@ fn channel<S: StreamService + Clone>(service: S) -> Channel {
     ))
 }
 
-pub(super) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
+pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, ConnectError> {
     let provider = Arc::new(provider);
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
@@ -65,11 +65,11 @@ fn unconnected() -> Result<Client, ConnectError> {
 }
 
 /// Ends its first follow cleanly, then denies or delegates later follows.
-struct EndingFollow {
-    inner: MemoryStream,
-    follows: AtomicUsize,
-    deny: bool,
-    finite: bool,
+pub(super) struct EndingFollow {
+    pub(super) inner: MemoryStream,
+    pub(super) follows: AtomicUsize,
+    pub(super) deny: bool,
+    pub(super) finite: bool,
 }
 
 #[async_trait]
@@ -120,6 +120,9 @@ impl StreamProvider for EndingFollow {
         self.inner.follow(path, from).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        if self.deny {
+            return Err(StreamError::AccessDenied);
+        }
         self.inner.children(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

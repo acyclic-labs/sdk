@@ -393,19 +393,19 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         crate::Capabilities::new([
             "task:spawn:context-probe@1",
             "model:generate",
-            "tool:call:acyclic.write_file",
+            "tool:call:write",
         ]),
         Limits::default(),
     )?;
     let context = capture_admitted_context(scope.clone()).await?;
-    let tool = crate::tool::files::write_file()?;
+    let tool = crate::tool::files::write()?;
     let mut tools = ToolRegistry::default();
     tools.register((tool, None), &mut None, None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "publication".into(),
-        name: "acyclic.write_file".into(),
+        name: "write".into(),
         arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
     };
     let base = StockExecutor::new(

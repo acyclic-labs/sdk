@@ -46,7 +46,7 @@ pub(super) fn source<P: StreamProvider>(
                     )?;
                     // Validate existence before scanning: an invalid anchor must never
                     // park waiting for a future creation. Replayed paths are stable.
-                    provider.tail(anchor.clone()).await?;
+                    provider.watermarks(anchor.clone()).await?;
                     for index in 0..resume.next {
                         let child = opened.next().await.ok_or(StreamError::Unavailable)??;
                         if (child.path == anchor) != (index == resume.next - 1) {

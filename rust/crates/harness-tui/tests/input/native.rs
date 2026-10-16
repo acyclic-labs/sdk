@@ -41,13 +41,15 @@ fn draft_history_and_keymap_views_follow_their_injected_files()
         &["external\nhistory"]
     );
     let keymap_path = directory.path().join("config/keymap.json");
-    InputKeymap::from_json(r#"{"Ctrl+l":"Home"}"#)?.save(&keymap_path)?;
+    InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start"}}"#)
+        .unwrap()
+        .save(&keymap_path)?;
     assert!(
         InputKeymap::load(&keymap_path)?
             .help()
             .contains("Ctrl+l\tLine start")
     );
-    std::fs::write(&keymap_path, r#"{"Ctrl+l":"End"}"#)?;
+    std::fs::write(&keymap_path, r#"{"bindings":{"Ctrl+l":"cursor.line-end"}}"#)?;
     assert!(
         InputKeymap::load(&keymap_path)?
             .help()

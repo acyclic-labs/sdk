@@ -126,15 +126,36 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self
-            .children_page(ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await?;
-        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
+        validate_limit(request.limit)?;
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        Ok(stream::try_unfold(
+            (self.clone(), request.parent, changed, None),
+            |(provider, parent, mut changed, mut previous)| async move {
+                loop {
+                    let next = {
+                        let state = provider.state.read().await;
+                        // Switch from the creation wakeup to this parent's own index.
+                        if let Some(index) = state.child_index(parent.as_ref()) {
+                            changed = index.changed.subscribe();
+                        }
+                        changed.borrow_and_update();
+                        state.next_child(parent.as_ref(), previous.as_ref())?
+                    };
+                    if let Some(path) = next {
+                        previous = Some(path.clone());
+                        return Ok(Some((
+                            Child { path },
+                            (provider, parent, changed, previous),
+                        )));
+                    }
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| StreamError::Unavailable)?;
+                }
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(

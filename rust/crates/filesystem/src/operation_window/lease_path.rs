@@ -1,13 +1,17 @@
 use super::{OperationLeaseId, WorkspaceId};
 
+pub(crate) const MAX_ENCODED_BYTES: usize =
+    b"fs/operation-windows-v1/".len() + 32 + b"/leases/".len() + 32 + 1 + 20;
+
 /// Encodes a lease path, admitting and charging writes on the caller's ledger.
-pub(crate) fn encode(
+pub(crate) fn encode<const N: usize>(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,
     expires_at_millis: u64,
-    text: &mut [u8; acyclic_stream::MAX_PATH_BYTES],
+    text: &mut [u8; N],
     mut work: Option<&mut crate::AuthorityWork<'_>>,
 ) -> Result<usize, crate::AuthorityStoreError> {
+    const { assert!(N >= MAX_ENCODED_BYTES) };
     const PREFIX: &[u8] = b"fs/operation-windows-v1/";
     const SEPARATOR: &[u8] = b"/leases/";
     let workspace = workspace_id.into_bytes();

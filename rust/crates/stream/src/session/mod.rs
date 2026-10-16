@@ -25,6 +25,8 @@ mod service;
 mod signal;
 mod sync;
 pub use client::Client;
+#[cfg(acyclic_stream_loom)]
+pub use client::verify_link_isolation;
 pub use service::Service;
 // Child frames carry both their path and the provider-owned resume anchor.
 const CHILD_FRAME_BYTES: usize = 2 * crate::MAX_PATH_BYTES + 128;

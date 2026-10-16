@@ -439,7 +439,7 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
                 source: source.clone(),
                 path,
                 file_id: opened.node.file_id,
-                file: std::sync::Mutex::new(None),
+                file: crate::lock_order::Mutex::new(None),
                 _allocation: allocation,
             }))
         },

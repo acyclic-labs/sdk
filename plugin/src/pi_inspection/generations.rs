@@ -73,6 +73,7 @@ pub(crate) async fn build_writeback_generations<'a>(
             acyclic_fs::IdempotencyKey::from_bytes(
                 phase_operation(operation, b"pi-writeback-fork").into_bytes(),
             ),
+            acyclic_fs::PublicationPermit::Unrestricted,
             &mut accounting,
         )
         .await

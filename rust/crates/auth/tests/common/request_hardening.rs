@@ -1,6 +1,6 @@
 use super::common::{limits, root};
 use acyclic_auth::{
-    authority::{attenuate, Deny, PolicyDecision, Request, Target},
+    authority::{Deny, PolicyDecision, Request, Target, attenuate},
     contract::{Block, Limits, RecordAttributes},
     valid_resource,
 };

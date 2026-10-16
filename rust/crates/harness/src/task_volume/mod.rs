@@ -2,14 +2,18 @@
 
 mod follow;
 mod heads;
+mod plan_name;
 mod schema;
 mod segment;
+mod source;
 mod watermarks;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
+pub use plan_name::PlanName;
 pub use schema::{
     Channel, Component, FileKey, InputPath, Owner, Query, SCHEMA, TaskFile, ToolFile,
 };
+pub use source::FileQuerySource;
 
 use acyclic_stream::query_sync::Mutex;
 use acyclic_stream::{
@@ -18,12 +22,27 @@ use acyclic_stream::{
 };
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
+
+#[cfg(feature = "test-support")]
+use crate::test_support::TaskVolumeFiles as FileIndex;
+#[cfg(not(feature = "test-support"))]
+type FileIndex = std::collections::BTreeMap<FileKey, FileValue>;
+
+#[inline]
+fn item_examined() {
+    #[cfg(feature = "test-support")]
+    crate::test_support::task_volume_item_examined();
+}
 
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Authorization, work or storage failure reading ordinary volume files.
+    #[cfg(feature = "filesystem")]
+    #[error(transparent)]
+    FileRead(#[from] crate::Error),
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),
@@ -156,7 +175,7 @@ struct Index {
     epoch: Uuid,
     next: u64,
     commit: CommitId,
-    files: BTreeMap<FileKey, FileValue>,
+    files: FileIndex,
 }
 
 /// A disposable index over one durable private task volume.
@@ -260,11 +279,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 })
                 .await?;
             let anchor = records.next().await.ok_or(Error::ResetRequired)??;
+            item_examined();
             if anchor.sequence != index.next - 1 || anchor.commit_id != index.commit {
                 return Err(Error::ResetRequired);
             }
             let before = index.next;
             while let Some(record) = records.next().await {
+                item_examined();
                 let record = record?;
                 if record.sequence >= tail {
                     break;

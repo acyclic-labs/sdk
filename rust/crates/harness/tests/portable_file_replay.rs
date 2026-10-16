@@ -226,11 +226,11 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 "operation:observe".to_owned(),
                 "operation:cancel".to_owned(),
                 "task:spawn:fixture.file_replay@1".to_owned(),
-                "tool:call:acyclic.read_file".to_owned(),
+                "tool:call:read".to_owned(),
                 "tool:call:acyclic.read_file_range".to_owned(),
                 "tool:call:acyclic.search_file".to_owned(),
-                "tool:call:acyclic.write_file".to_owned(),
-                "tool:call:acyclic.edit_file".to_owned(),
+                "tool:call:write".to_owned(),
+                "tool:call:edit".to_owned(),
                 "tool:call:acyclic.patch_file".to_owned(),
                 read_grant.clone(),
                 volume.capability(VolumeOperation::Write, &mut None)?,
@@ -261,7 +261,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?
         .await?
         .0;
-    let mut tool = files::read_file()?;
+    let mut tool = files::read()?;
     let executor = Arc::new(FileExecutorSpy {
         inner: tool.executor.clone(),
         executions: AtomicUsize::new(0),
@@ -273,11 +273,11 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     tools.register((tool, None), &mut None, None)?;
     let mutations = [
         (
-            files::write_file()?,
+            files::write()?,
             json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
         ),
         (
-            files::edit_file()?,
+            files::edit()?,
             json!({"file":source,"old_text":"original","new_text":"changed"}),
         ),
         (

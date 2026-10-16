@@ -6,6 +6,10 @@ use std::{
 };
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
+mod checked;
+mod credentials;
+mod isolation;
+mod outbound;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 #[derive(Default)]
@@ -16,9 +20,11 @@ struct Counts {
     follows: AtomicUsize,
     actors: AtomicUsize,
     acknowledgements: AtomicUsize,
+    windows: AtomicUsize,
     changed: tokio::sync::Notify,
     // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
+    guards: Mutex<Vec<(u64, u64, Bytes)>>,
 }
 struct Host<P> {
     provider: Arc<P>,
@@ -26,6 +32,7 @@ struct Host<P> {
     node: String,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     withhold_welcome: bool,
+    confirm_checked: bool,
 }
 #[tonic::async_trait]
 impl<P: StreamProvider> StreamSessionService for Host<P> {
@@ -66,7 +73,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 {
                     for subscription in &interest.upsert {
                         match subscription.kind {
-                            Some(Kind::Follow(_)) => {
+                            Some(Kind::Follow(_) | Kind::Children(_)) => {
                                 counts.follows.fetch_add(1, Ordering::Relaxed);
                                 if let (Some(channel), Some(resume)) =
                                     (subscription.channel, subscription.resume.as_ref())
@@ -82,6 +89,19 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                                         ));
                                 }
                                 counts.changed.notify_one();
+                                if let (Some(channel), Some(Kind::Follow(follow))) =
+                                    (subscription.channel, &subscription.kind)
+                                {
+                                    counts
+                                        .guards
+                                        .lock()
+                                        .map_err(|_| StreamError::Unavailable)?
+                                        .push((
+                                            channel.channel_id,
+                                            channel.generation,
+                                            follow.preceding_commit_id.clone(),
+                                        ));
+                                }
                             }
                             Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => {
                                 counts.actors.fetch_add(1, Ordering::Relaxed);
@@ -99,6 +119,13 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 ) {
                     counts.acknowledgements.fetch_add(1, Ordering::Relaxed);
                 }
+                if matches!(&input, Ok(wire::SessionFrame {
+                    channel_id, body: Some(Body::Window(_)), ..
+                }) if *channel_id != 0)
+                {
+                    counts.windows.fetch_add(1, Ordering::Relaxed);
+                    counts.changed.notify_one();
+                }
                 input.map_err(|_| StreamError::Unavailable)
             })
             .boxed();
@@ -113,9 +140,18 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             receiver.recv().await.ok().map(|frame| (frame, receiver))
         });
         let sent = Arc::clone(&self.counts);
+        let confirm_checked = self.confirm_checked;
         Ok(Reply::new(
             stream::select(
-                output.map(move |item| {
+                output.map(move |mut item| {
+                    if !confirm_checked
+                        && let Ok(wire::SessionFrame {
+                            body: Some(Body::Opened(opened)),
+                            ..
+                        }) = &mut item
+                    {
+                        opened.preceding_commit_id = Bytes::new();
+                    }
                     if item
                         .as_ref()
                         .is_ok_and(|value| matches!(value.body, Some(Body::Data(_))))
@@ -142,12 +178,13 @@ impl Fixture {
         provider: Arc<P>,
         node: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::configured(provider, node, false).await
+        Self::configured(provider, node, false, true).await
     }
     async fn configured<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
         withhold_welcome: bool,
+        confirm_checked: bool,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -170,6 +207,7 @@ impl Fixture {
             node: node.into(),
             controls: controls.clone(),
             withhold_welcome,
+            confirm_checked,
         };
         let server = tokio::spawn(
             tonic::transport::Server::builder()
@@ -317,8 +355,13 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
             Ok(channel)
         })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    )
+    .await?;
     let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
     let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
     append(&provider, "move", 4).await?;
@@ -479,7 +522,14 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
-    let client = Client::open(fixture.channel.clone(), "Bearer fixture".parse()?, None).await?;
+    let client = Client::open(
+        fixture.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        None,
+        None,
+    )
+    .await?;
     let mut cancelled = Box::pin(client.follow(StreamPath::new("a")?, 1));
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
@@ -560,7 +610,8 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
 
 #[tokio::test]
 async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResult {
-    let fixture = Fixture::configured(Arc::new(MemoryStream::default()), "silent", true).await?;
+    let fixture =
+        Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
     let client = fixture.client()?;
     let started = tokio::time::Instant::now();
     let one = StreamPath::new("one")?;
@@ -635,6 +686,114 @@ async fn largest_child_path_fits_its_channel_credit() -> TestResult {
         path
     );
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    for path in ["agents/m", "agents/a", "healthy"] {
+        append(&provider, path, 1).await?;
+    }
+    let old = Fixture::open(Arc::clone(&provider), "old").await?;
+    let new = Fixture::open(Arc::clone(&provider), "new").await?;
+    let channel = new.channel.clone();
+    let connect: Connect = Arc::new(move |_| {
+        let channel = channel.clone();
+        Box::pin(async move { Ok(channel) })
+    });
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    )
+    .await?;
+    let mut children = client
+        .children(crate::ChildrenRequest {
+            parent: Some(StreamPath::new("agents")?),
+            limit: 1,
+        })
+        .await?;
+    let mut healthy = client.follow(StreamPath::new("healthy")?, 1).await?;
+    assert_eq!(
+        children.next().await.ok_or("missing child")??.path.as_str(),
+        "agents/m"
+    );
+    old.controls.send(Ok(frame(
+        1,
+        1,
+        Body::Moved(wire::SessionMoved {
+            node: Some(wire::SessionNode {
+                node_id: "new".into(),
+                endpoint: "https://new.invalid".into(),
+                placement_epoch: 1,
+            }),
+            resume: Some(cursor(999)),
+        }),
+    )))?;
+    tokio::time::timeout(Duration::from_secs(1), new.counts.changed.notified()).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("missing resumed child")??
+            .path
+            .as_str(),
+        "agents/a"
+    );
+    append(&provider, "agents/0", 1).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("discovery ended")??
+            .path
+            .as_str(),
+        "agents/0"
+    );
+    new.controls
+        .send(Err(Status::unavailable("disconnect child session")))?;
+    loop {
+        let changed = new.counts.changed.notified();
+        if new
+            .counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 3, 3))
+        {
+            break;
+        }
+        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+    }
+    append(&provider, "agents/b", 1).await?;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), children.next())
+            .await?
+            .ok_or("reconnect ended")??
+            .path
+            .as_str(),
+        "agents/b"
+    );
+    assert!(
+        new.counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 2, 1))
+    );
+    assert!(
+        new.counts
+            .resumes
+            .lock()
+            .map_err(|_| "resumes poisoned")?
+            .contains(&(1, 3, 3))
+    );
+    append(&provider, "healthy", 1).await?;
+    assert_eq!(next(&mut healthy).await?.sequence, 1);
+    for fixture in [&old, &new] {
+        assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+        assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
+    }
     Ok(())
 }
 

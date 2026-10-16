@@ -10,15 +10,19 @@ use tonic::{
 };
 
 mod credit;
+mod outbound;
 use credit::{Credit, Released};
+use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
+#[cfg(acyclic_stream_loom)]
+pub use pool::model::verify_link_isolation;
 mod progress;
 use progress::Progress;
 #[cfg(test)]
 mod tests;
-type Connect = Arc<
+type Connect = std::sync::Arc<
     dyn Fn(wire::SessionNode) -> BoxFuture<'static, Result<TransportChannel, StreamError>>
         + Send
         + Sync,
@@ -30,6 +34,7 @@ type Read = BoxFuture<
     'static,
     (
         String,
+        u64,
         Response,
         Option<Result<wire::SessionFrame, tonic::Status>>,
     ),
@@ -84,14 +89,15 @@ struct Link {
     epoch: u64,
     credit: wire::SessionWindow,
     channel: TransportChannel,
-    sender: mpsc::Sender<wire::SessionFrame>,
+    sender: Arc<Outbound<wire::SessionFrame>>,
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
 }
 struct Pool {
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
     connect: Connect,
     home: String,
     routes: BTreeMap<u64, Route>,
@@ -107,25 +113,36 @@ struct Pool {
     released: ReleaseSender,
     release_sender: ReleaseSender,
 }
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = self.sender.close();
+    }
+}
 impl Client {
     pub(crate) async fn open(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
-        ca: Option<Arc<[u8]>>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
+        ca: Option<std::sync::Arc<[u8]>>,
+        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<Self, StreamError> {
-        let connect: Connect = Arc::new(move |node| {
+        let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
+            let verifier = verifier.clone();
             Box::pin(async move {
-                grpc::channel_tls(&node.endpoint, ca.as_deref())
-                    .await
-                    .map_err(|_| StreamError::Unavailable)
+                match verifier {
+                    Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
+                    None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
+                }
+                .map_err(|_| StreamError::Unavailable)
             })
         });
-        Self::with_connector(channel, authorization, connect).await
+        Self::with_connector(channel, authorization, credential, connect).await
     }
     async fn with_connector(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
         connect: Connect,
     ) -> Result<Self, StreamError> {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
@@ -135,6 +152,7 @@ impl Client {
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
+            credential,
             connect,
             home: String::new(),
             routes: BTreeMap::new(),
@@ -172,10 +190,29 @@ impl Client {
         from: u64,
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
+        self.follow_records(path, from, None, acknowledge).await
+    }
+    /// Atomically confirms the preceding history on a shared logical channel.
+    pub async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: crate::CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_records(path, from, Some(preceding), true).await
+    }
+    pub(crate) async fn follow_records(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: Option<crate::CommitId>,
+        acknowledge: bool,
+    ) -> Result<RecordStream, StreamError> {
         let kind = Kind::Follow(wire::SessionFollow {
             path: path.to_string(),
             delivery: wire::SessionDelivery::All as i32,
-            ..Default::default()
+            preceding_commit_id: preceding
+                .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
         });
         Ok(self
             .open_kind(kind, from, acknowledge)
@@ -213,7 +250,21 @@ impl Client {
     ) -> Result<BoxStream<'static, Result<Received, StreamError>>, StreamError> {
         let (records, receiver) = mpsc::channel(QUEUE);
         let (ready, opened) = oneshot::channel();
-        let progress = Arc::new(Progress::new(from));
+        let preceding = match &kind {
+            Kind::Follow(follow) => wire_codec::session::preceding_follow(
+                follow,
+                &wire::SessionCursor {
+                    next: from,
+                    opaque: Bytes::new(),
+                },
+            )?
+            .map(|id| *id.as_bytes()),
+            _ => None,
+        };
+        let progress = Arc::new(match preceding {
+            Some(preceding) => Progress::with_preceding(from, Some(preceding)),
+            None => Progress::new(from),
+        });
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -247,16 +298,17 @@ impl Client {
                     .ok_or(StreamError::Unavailable)??;
                 // Delivery disposal returns capacity on every exit, including
                 // stale-generation suppression and cancellation of the cursor.
-                let fresh = if delivery.opaque.is_empty() {
-                    cursor
-                        .progress
-                        .consume(delivery.generation, delivery.sequence)?
-                } else {
-                    cursor.progress.consume_opaque(
+                let fresh = match &delivery.item {
+                    Received::Record(record) => cursor.progress.consume_record(
+                        delivery.generation,
+                        delivery.sequence,
+                        *record.commit_id.as_bytes(),
+                    )?,
+                    Received::Child(_) => cursor.progress.consume_opaque(
                         delivery.generation,
                         delivery.sequence,
                         &delivery.opaque,
-                    )?
+                    )?,
                 };
                 drop(delivery.credit);
                 if fresh {
@@ -275,6 +327,8 @@ struct Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
+        self.progress.cancel();
+        self.receiver.close();
         let _ = self.client.removed.send(self.id);
     }
 }

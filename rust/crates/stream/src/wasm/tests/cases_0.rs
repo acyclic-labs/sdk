@@ -120,6 +120,7 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
 
     let invalid_path = wire::TailRequest {
         path: "/events".to_owned(),
+        ..Default::default()
     };
     assert_eq!(
         validate_request("tail", &invalid_path.encode_to_vec()),

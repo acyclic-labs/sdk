@@ -6,15 +6,25 @@ impl<A, O> CheckoutMountSource<A, O> {
     ) -> Result<Box<dyn Send>, MountSourceError> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let owner = ViewGate::callback_owner()?;
-        let mut lease = invoke(&self.runtime, work, || {
-            self.checkout.view_gate.read_for_callback_with_carrier(
-                owner,
-                expected_epoch,
-                &mut carrier,
-                work.cancellation(),
-                Some(&self.cancellation),
-            )
-        })?;
+        let prepared = self
+            .runtime
+            .prepare_native_wait(work)
+            .map_err(MountSourceError::NativeWork)?;
+        let mut lease = self
+            .runtime
+            .wait_prepared(prepared, || {
+                tokio::time::timeout(
+                    CALLBACK_TIMEOUT,
+                    self.checkout.view_gate.read_for_callback_with_carrier(
+                        owner,
+                        expected_epoch,
+                        &mut carrier,
+                        work.cancellation(),
+                        Some(&self.cancellation),
+                    ),
+                )
+            })
+            .map_err(|_| MountSourceError::Stale)??;
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         carrier
             .with_work(|leaf| {

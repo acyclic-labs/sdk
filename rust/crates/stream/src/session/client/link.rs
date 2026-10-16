@@ -11,6 +11,7 @@ impl Pool {
             destination,
             self.identity.clone(),
             self.authorization.clone(),
+            self.credential.clone(),
         )
         .await?;
         self.install(ready)
@@ -33,28 +34,41 @@ impl Pool {
         if self.links.contains_key(&name) || !self.connecting.insert(name.clone()) {
             return;
         }
-        let connect = Arc::clone(&self.connect);
+        let connect = self.connect.clone();
         let identity = self.identity.clone();
         let authorization = self.authorization.clone();
+        let credential = self.credential.clone();
         self.dials.push(Box::pin(async move {
             let outcome = async {
                 let channel = match channel {
                     Some(channel) => channel,
                     None => connect(node).await?,
                 };
-                open_link(channel, &name, identity, authorization).await
+                open_link(channel, &name, identity, authorization, credential).await
             }
             .await;
             (name, outcome)
         }));
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
+        let Some(link) = self.links.get(&node) else {
+            return;
+        };
+        let epoch = link.epoch;
+        let sender = Arc::clone(&link.sender);
         self.reads.push(Box::pin(async move {
-            let frame = response.next().await;
-            (node, response, frame)
+            let frame = {
+                let closed = sender.cancelled();
+                futures::pin_mut!(closed);
+                match future::select(response.next(), closed).await {
+                    future::Either::Left((frame, _)) => frame,
+                    future::Either::Right(_) => None,
+                }
+            };
+            (node, epoch, response, frame)
         }));
     }
-    pub(super) async fn send(
+    pub(super) fn send(
         &mut self,
         node: &str,
         value: wire::SessionFrame,
@@ -65,14 +79,28 @@ impl Pool {
         {
             wire_codec::session::grant_credit(&mut link.credit, grant)?;
         }
-        link.sender
-            .send(value)
-            .await
-            .map_err(|_| StreamError::Unavailable)
+        let bytes = value.encoded_len();
+        if let Err(error) = link.sender.push(value, bytes) {
+            // A full control queue cannot safely retain remote interests after
+            // cancellation. Evict this node's session, never the shared pool.
+            self.fail_link(node, &error);
+        }
+        Ok(())
     }
-    pub(super) async fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
+    pub(super) fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let (next, opaque) = route.progress.position()?;
+        if route.progress.cancelled() {
+            return self.remove(id);
+        }
+        let progress::Position {
+            next,
+            opaque,
+            preceding,
+        } = route.progress.subscription()?;
+        if let Kind::Follow(follow) = &mut route.kind {
+            follow.preceding_commit_id =
+                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+        }
         route.received = next;
         route.received_opaque = opaque.clone().into();
         route.opened = false;
@@ -81,7 +109,7 @@ impl Pool {
             .links
             .get_mut(&route.node)
             .ok_or(StreamError::Unavailable)?;
-        link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
+        let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
         let subscription = wire::SessionSubscription {
             channel: Some(wire::SessionChannel {
                 channel_id: id,
@@ -93,20 +121,23 @@ impl Pool {
             }),
             kind: Some(route.kind.clone()),
         };
-        link.sender
-            .send(frame(
-                0,
-                0,
-                Body::Interest(wire::SessionInterest {
-                    revision: link.revision,
-                    upsert: vec![subscription],
-                    remove: Vec::new(),
-                }),
-            ))
-            .await
-            .map_err(|_| StreamError::Unavailable)
+        let value = frame(
+            0,
+            0,
+            Body::Interest(wire::SessionInterest {
+                revision,
+                upsert: vec![subscription],
+                remove: Vec::new(),
+            }),
+        );
+        let bytes = value.encoded_len();
+        match link.sender.push(value, bytes) {
+            Ok(()) => link.revision = revision,
+            Err(error) => self.reject(id, error),
+        }
+        Ok(())
     }
-    pub(super) async fn release(
+    pub(super) fn release(
         &mut self,
         node: &str,
         epoch: u64,
@@ -128,9 +159,9 @@ impl Pool {
             return Ok(());
         }
         let grant = std::mem::take(&mut link.released);
-        self.send(node, frame(0, 0, Body::Window(grant))).await
+        self.send(node, frame(0, 0, Body::Window(grant)))
     }
-    pub(super) async fn grant(&mut self, id: u64) -> Result<(), StreamError> {
+    pub(super) fn grant(&mut self, id: u64) -> Result<(), StreamError> {
         let Some(route) = self.routes.get_mut(&id).filter(|route| route.opened) else {
             return Ok(());
         };
@@ -138,7 +169,13 @@ impl Pool {
             u32::try_from(route.records.capacity()).map_err(|_| StreamError::Capacity)?;
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
-            bytes: (u64::from(capacity) * if matches!(route.kind, Kind::Children(_)) { CHILD_FRAME_BYTES as u64 } else { FRAME_BYTES }).saturating_sub(route.credit.bytes),
+            bytes: (u64::from(capacity)
+                * if matches!(route.kind, Kind::Children(_)) {
+                    CHILD_FRAME_BYTES as u64
+                } else {
+                    FRAME_BYTES
+                })
+            .saturating_sub(route.credit.bytes),
         };
         if grant.frames == 0 && grant.bytes == 0 {
             return Ok(());
@@ -147,10 +184,9 @@ impl Pool {
         let node = route.node.clone();
         let generation = route.generation;
         self.send(&node, frame(id, generation, Body::Window(grant)))
-            .await
     }
 
-    pub(super) async fn remove(&mut self, id: u64) -> Result<(), StreamError> {
+    pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         let Some(route) = self.routes.remove(&id) else {
             return Ok(());
         };
@@ -158,21 +194,23 @@ impl Pool {
             return Ok(());
         };
         link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
-        link.sender
-            .send(frame(
+        let revision = link.revision;
+        let node = route.node.clone();
+        self.send(
+            &node,
+            frame(
                 0,
                 0,
                 Body::Interest(wire::SessionInterest {
-                    revision: link.revision,
+                    revision,
                     upsert: Vec::new(),
                     remove: vec![wire::SessionChannel {
                         channel_id: id,
                         generation: route.generation,
                     }],
                 }),
-            ))
-            .await
-            .map_err(|_| StreamError::Unavailable)
+            ),
+        )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
         let link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
@@ -186,7 +224,7 @@ impl Pool {
                 endpoint: String::new(),
                 placement_epoch: 0,
             },
-            Some(link.channel),
+            Some(link.channel.clone()),
         );
         Ok(())
     }
@@ -196,7 +234,8 @@ async fn open_link(
     channel: TransportChannel,
     destination: &str,
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
         let result = tokio::time::timeout(
@@ -206,6 +245,7 @@ async fn open_link(
                 destination,
                 identity.clone(),
                 authorization.clone(),
+                credential.clone(),
             ),
         )
         .await
@@ -224,36 +264,51 @@ async fn handshake(
     channel: TransportChannel,
     destination: &str,
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
-    let (sender, receiver) = mpsc::channel(crate::MAX_ITEMS);
+    // Resolve inside each bounded handshake, including retries and moved-node RPCs.
+    let authorization = grpc::request_authorization(authorization.as_ref(), credential.as_ref())
+        .await
+        .map_err(|error| grpc::status(&error))?;
+    let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
     };
-    sender
-        .send(frame(
-            0,
-            0,
-            Body::Hello(wire::SessionHello {
-                version: 1,
-                client_id: identity,
-                destination_node: destination.into(),
-                receive_bytes: credit.bytes,
-                receive_frames: credit.frames,
-            }),
-        ))
-        .await
-        .map_err(|_| StreamError::Unavailable)?;
-    let input = stream::unfold(receiver, |mut receiver| async move {
-        receiver.recv().await.map(|frame| (frame, receiver))
+    let hello = frame(
+        0,
+        0,
+        Body::Hello(wire::SessionHello {
+            version: 1,
+            client_id: identity,
+            destination_node: destination.into(),
+            receive_bytes: credit.bytes,
+            receive_frames: credit.frames,
+        }),
+    );
+    let bytes = hello.encoded_len();
+    sender.push(hello, bytes)?;
+    // Install ownership before either handshake await. Cancelling a handshake
+    // closes its request stream just as dropping an installed node link does.
+    let link = Link {
+        channel,
+        sender,
+        revision: 0,
+        applied_revision: 0,
+        released: wire::SessionWindow::default(),
+        epoch: 0,
+        credit,
+    };
+    let input = stream::unfold(Arc::clone(&link.sender), |sender| async move {
+        sender.next().await.ok().map(|frame| (frame, sender))
     });
     let mut request = Request::new(input);
     request
         .metadata_mut()
         .insert("authorization", authorization);
     let mut response =
-        wire::stream_session_service_client::StreamSessionServiceClient::new(channel.clone())
+        wire::stream_session_service_client::StreamSessionServiceClient::new(link.channel.clone())
             .session(request)
             .await
             .map_err(|error| grpc::status(&error))?
@@ -275,17 +330,5 @@ async fn handshake(
     {
         return Err(StreamError::Unavailable);
     }
-    Ok((
-        welcome.node_id,
-        Link {
-            channel,
-            sender,
-            revision: 0,
-            applied_revision: 0,
-            released: wire::SessionWindow::default(),
-            epoch: 0,
-            credit,
-        },
-        response,
-    ))
+    Ok((welcome.node_id, link, response))
 }

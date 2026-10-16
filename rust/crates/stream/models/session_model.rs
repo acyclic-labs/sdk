@@ -7,10 +7,16 @@ pub use error::StreamError;
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
+mod cancellation;
+mod checked;
 #[path = "../src/session/policy.rs"]
 mod policy;
 #[path = "../src/session/client/progress.rs"]
 mod progress;
+mod outbound {
+    include!("../src/session/client/outbound.rs");
+    include!("outbound.rs");
+}
 mod gate {
     include!("../src/session/gate.rs");
     include!("gate.rs");
@@ -56,7 +62,7 @@ fn cursor(broken: bool) {
     loom::model(move || {
         let cursor = Arc::new(progress::Progress::new(0));
         let old = Arc::clone(&cursor);
-        let old = loom::thread::spawn(move || old.consume(1, 0));
+        let old = loom::thread::spawn(move || old.consume_record(1, 0, [0; 32]));
         let moved = Arc::clone(&cursor);
         let moved = loom::thread::spawn(move || {
             let early = if broken { Some(moved.next()?) } else { None };
@@ -72,8 +78,8 @@ fn cursor(broken: bool) {
             u64::from(old_applied),
             "resume must follow the fenced consumption"
         );
-        assert!(!cursor.consume(1, resume).unwrap());
-        assert!(cursor.consume(2, resume).unwrap());
+        assert!(!cursor.consume_record(1, resume, [0; 32]).unwrap());
+        assert!(cursor.consume_record(2, resume, [0; 32]).unwrap());
         assert_eq!(cursor.next().unwrap(), resume + 1);
     });
 }
