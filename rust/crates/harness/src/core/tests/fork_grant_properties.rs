@@ -4,6 +4,9 @@ use crate::fork::{ReferenceGrant, SharedGrant};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
+#[path = "fork_grant_boundaries.rs"]
+mod boundaries;
+
 fn file(volume: &VolumeRef, path: &str, media: &str) -> FileRef {
     FileRef::new(
         volume.clone(),
