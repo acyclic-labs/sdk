@@ -198,13 +198,20 @@ impl Fixture {
             Limits::default().file_bytes,
             None,
         )?;
-        let context_manifest = crate::local::turn::default_manifest(
-            publisher.as_ref(),
-            &tools,
-            Limits::default(),
-            None,
-        )
-        .await?;
+        let bytes = crate::context::ContextManifest::new(Default::default(), Vec::new(), &tools)?
+            .encode(Limits::default())?;
+        let digest = blake3::hash(&bytes);
+        let context_manifest = publisher
+            .stage_once(
+                OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap()),
+                &format!("inputs/context/{digest}.json"),
+                &bytes,
+                "application/json",
+                "context-manifest.json",
+                None,
+            )?
+            .await?
+            .0;
         Ok(LocalHarness {
             task_files,
             files: files.clone(),
@@ -221,7 +228,10 @@ impl Fixture {
                 serde_json::Value::Null,
             )?,
             provider: self.provider.clone(),
-            context_manifest,
+            context_manifest: Some(context_manifest),
+            context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: Limits::default(),
             compaction: CompactionPolicy::Disabled,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -234,6 +244,8 @@ impl Fixture {
             admission: StateArc::new(Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace: None,
+            #[cfg(feature = "native-execution")]
+            checkout_context: false,
         })
     }
 
