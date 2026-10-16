@@ -59,20 +59,23 @@ pub(super) fn page<V>(
         {
             continue;
         }
-        if created(value).is_some_and(|created| created > generation) {
+        if found.len() > maximum
+            && found.last_key_value().is_some_and(|(last, _)| segment >= *last)
+        {
+            continue;
+        }
+        if (kind == MemoryStoreEntryKind::Directory && found.contains_key(segment))
+            || created(value).is_some_and(|created| created > generation)
+        {
             continue;
         }
         if found.len() > maximum {
-            if found.last_key_value().is_some_and(|(last, _)| segment >= *last)
-                || found.contains_key(segment)
-            {
-                continue;
-            }
             found.pop_last();
         }
         // Full-path order differs from entry order around punctuation before
         // '/'; later paths can introduce a smaller directory entry.
-        found.entry(segment).or_insert(kind);
+        // Full file keys are unique; repeated directory names were skipped above.
+        found.insert(segment, kind);
     }
     let has_more = found.len() > maximum;
     let entries = found

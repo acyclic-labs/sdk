@@ -17,11 +17,11 @@ fn selected(paths: &BTreeMap<String, Option<u64>>, path: &str, maximum: usize, l
 
 fn measured(paths: &BTreeMap<String, Option<u64>>, path: &str, maximum: usize, legacy: bool)
     -> (allocation_counter::AllocationInfo, MemoryStorePage) {
-    let mut result = None;
+    let mut result = MemoryStorePage { generation: 1, entries: Vec::new(), has_more: false };
     let allocations = allocation_counter::measure(|| {
-        result = Some(selected(paths, path, maximum, legacy));
+        result = selected(paths, path, maximum, legacy);
     });
-    (allocations, result.unwrap_or_else(|| unreachable!("measurement executes synchronously")))
+    (allocations, result)
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn listing_reads_no_generation_values_outside_its_directory_and_cursor() {
     let paths = fixture(4096, false);
     for (path, after, expected_reads) in [
         ("missing", None, 0),
-        ("files", Some("00002047"), 2048),
+        ("files", Some("00002047"), 2),
         ("", Some("files"), 0),
     ] {
         let reads = std::cell::Cell::new(0);
@@ -68,12 +68,20 @@ fn listing_reads_no_generation_values_outside_its_directory_and_cursor() {
         assert_eq!(actual, reference::expected(&paths, path, 1, after, 1, |created| *created));
         assert_eq!(reads.get(), expected_reads, "path={path} after={after:?}");
     }
+    let reads = std::cell::Cell::new(0);
+    let nested = fixture(4096, true);
+    let actual = page(&nested, "files", 1, None, 1, |created| {
+        reads.set(reads.get() + 1);
+        *created
+    });
+    assert_eq!(actual, reference::expected(&nested, "files", 1, None, 1, |created| *created));
+    assert_eq!(reads.get(), 1, "a known directory needs no more visibility reads");
 }
 
 #[test]
-fn punctuation_generation_and_cursor_boundaries() -> crate::Result<()> {
+fn punctuation_generation_and_cursor_boundaries() {
     let paths = [
-        ("foo-.txt", Some(1)), ("foo/first", Some(1)), ("foo/future", Some(4)),
+        ("foo", Some(3)), ("foo-.txt", Some(1)), ("foo/first", Some(1)), ("foo/future", Some(4)),
         ("foo/last", None), ("foo.bar", Some(2)), (".system/secret", Some(1)),
         (".system-safe", Some(1)), ("é/child", Some(1)), ("foo/é/end", Some(4)),
     ].into_iter().map(|(key, value)| (key.to_owned(), value)).collect();
@@ -87,7 +95,6 @@ fn punctuation_generation_and_cursor_boundaries() -> crate::Result<()> {
             }
         }
     }
-    Ok(())
 }
 
 proptest! {
