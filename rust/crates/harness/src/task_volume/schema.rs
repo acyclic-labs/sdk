@@ -27,6 +27,8 @@ pub enum Owner {
 
 /// Tool records share the same immutable segment storage as assistant chunks.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ToolFile {
     /// Completed, validated tool invocation.
     Request,
@@ -42,6 +44,8 @@ pub enum ToolFile {
 
 /// Files below one task, with numeric sequence identities rather than path strings.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
@@ -157,6 +161,7 @@ pub use input_path::InputPath;
 
 /// Logical private-volume file identity; chunk keys retain no full path string.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileKey {
     /// UI-session requests and their immutable execution files.
     Session {
@@ -413,6 +418,7 @@ pub use query::Query;
 
 /// Assistant channel; tools derive their channel from their logical key.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum Channel {
     /// Visible assistant Markdown.
     Text,

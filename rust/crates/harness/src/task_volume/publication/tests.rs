@@ -21,7 +21,7 @@ proptest! {
             }
             let write = Write::new(FileKey::Task { task: Component::new("task").unwrap(),
                 file: TaskFile::Tool { turn: 0, call: Component::new("bash").unwrap(), file: ToolFile::Stdout(0) } }, text.into_bytes());
-            let result = publish(&volume, expected, &write, || std::future::ready(Ok((Vec::new(), None)))).await;
+            let result = publish(&volume, expected, &write, || std::future::ready(Ok::<_, Error>((Vec::new(), None)))).await;
             prop_assert_eq!(result.is_ok(), mutation == 0);
             let snapshot = volume.snapshot(&Query::Root, 8).await.unwrap();
             prop_assert_eq!(snapshot.files.contains(&write), mutation == 0);

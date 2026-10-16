@@ -1,0 +1,1 @@
+V{"messages":[{"role":"assistant","content":null,"tool_calls":[{"type":"function","id":"a","function":{"name":"echo","arguments":"{}"}},{"type":"function","id":"a","function":{"name":"echo","arguments":"{}"}}]},{"role":"tool","tool_call_id":"a","content":"done"}]}

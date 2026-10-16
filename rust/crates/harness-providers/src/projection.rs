@@ -1,5 +1,8 @@
 pub(crate) mod gemini;
+mod gemini_results;
 pub(crate) mod native_reasoning;
+mod sequence;
+pub(crate) mod text;
 mod wire;
 use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
 use acyclic_harness::{
@@ -121,67 +124,14 @@ pub(crate) fn body_named<'a>(
         {
             system.push(text_content(&message.content)?);
         } else {
-            for mut projected in
+            for projected in
                 project_message(adapter, message, names, &call_ids, target, &mut gemini)?
             {
-                match (messages.last_mut(), &mut projected) {
-                    (
-                        Some(Message::Gemini {
-                            role: previous_role,
-                            parts: previous,
-                        }),
-                        Message::Gemini { role, parts },
-                    ) if previous_role == role => {
-                        previous.append(parts);
-                    }
-                    (
-                        Some(Message::Anthropic {
-                            role: previous_role,
-                            content: previous,
-                        }),
-                        Message::Anthropic { role, content },
-                    ) if previous_role == role => {
-                        previous.append(content);
-                    }
-                    (
-                        Some(Message::Item(Item::Json(previous))),
-                        Message::Item(Item::Json(next)),
-                    ) if adapter == Adapter::Chat
-                        && previous["role"] == "assistant"
-                        && next["role"] == "assistant" =>
-                    {
-                        if next["tool_calls"].is_array() {
-                            let calls = previous
-                                .as_object_mut()
-                                .ok_or_else(|| invalid("invalid Chat turn"))?
-                                .entry("tool_calls")
-                                .or_insert_with(|| json!([]));
-                            calls
-                                .as_array_mut()
-                                .ok_or_else(|| invalid("invalid Chat calls"))?
-                                .append(
-                                    next["tool_calls"]
-                                        .as_array_mut()
-                                        .ok_or_else(|| invalid("invalid Chat calls"))?,
-                                );
-                        }
-                        if let Some(reasoning) = next["reasoning_content"].as_str() {
-                            let previous = previous
-                                .as_object_mut()
-                                .ok_or_else(|| invalid("invalid Chat turn"))?
-                                .entry("reasoning_content")
-                                .or_insert_with(|| json!(""));
-                            let mut text = previous.as_str().unwrap_or_default().to_owned();
-                            text.push_str(reasoning);
-                            *previous = json!(text);
-                        }
-                        merge_chat_text(&mut previous["content"], next["content"].take())?;
-                    }
-                    _ => messages.push(projected),
-                }
+                sequence::push(adapter, &mut messages, projected)?;
             }
         }
     }
+    sequence::finish(adapter, &mut messages);
     let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
         Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
         Adapter::Responses => json!({"type":"function","name":name,"description":tool.description,
@@ -190,6 +140,7 @@ pub(crate) fn body_named<'a>(
             "description":tool.description,"parameters":tool.input_schema}}),
         Adapter::Gemini => json!({"name":name,"description":tool.description,"parametersJsonSchema":tool.input_schema}),
     }) }).collect::<Result<_>>()?;
+    system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
         .unwrap_or(provider.context_output());
@@ -456,8 +407,8 @@ fn project_message<'a>(
     match adapter {
         Adapter::Chat => {
             let mut output = Vec::new();
-            if !texts.is_empty() || !calls.is_empty() || results.is_empty() {
-                let mut value = json!({"role":role,"content":if texts.is_empty() {Value::Null} else {json!(texts.concat())}});
+            if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
+                let mut value = json!({"role":role,"content":if texts.is_empty() {if calls.is_empty() {json!("")} else {Value::Null}} else {json!(texts.concat())}});
                 if !calls.is_empty() {
                     value["tool_calls"] = json!(calls);
                 }
@@ -518,11 +469,14 @@ fn project_text(
     texts: &mut Vec<String>,
     ordered: &mut Vec<Item<'_>>,
 ) {
+    if text.is_empty() {
+        return;
+    }
     match adapter {
         Adapter::Chat => texts.push(text),
         Adapter::Responses => ordered.push(Item::Json(json!({
             "type":"message", "role":if role == "tool" { "user" } else { role },
-            "content":[{"type":"input_text","text":text}],
+            "content":[{"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}],
         }))),
         Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),

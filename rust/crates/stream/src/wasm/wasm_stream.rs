@@ -1,16 +1,21 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Box<dyn StreamProvider>,
+    provider: std::sync::Arc<dyn StreamProvider>,
+    connections: Option<crate::session::Connections>,
+    session: Option<crate::session::Client>,
 }
 
 #[wasm_bindgen]
 impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates an in-process provider.
     pub fn new() -> Self {
         Self {
-            provider: Box::new(MemoryStream::default()),
+            connections: None,
+            session: None,
+            provider: std::sync::Arc::new(MemoryStream::default()),
         }
     }
 
@@ -27,11 +32,55 @@ impl WasmStream {
             ..Default::default()
         };
         Ok(Self {
-            provider: Box::new(
+            connections: None,
+            session: None,
+            provider: std::sync::Arc::new(
                 crate::BrowserStream::open(&name, limits)
                     .await
                     .map_err(js_error)?,
             ),
+        })
+    }
+
+    /// Connects canonical platform RPCs and shared push follows. Credentials stay live.
+    #[wasm_bindgen(js_name = connect)]
+    pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
+        let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
+        Ok(Self {
+            connections: Some(remote.connections()),
+            session: Some(remote.session()),
+            provider: std::sync::Arc::new(remote),
+        })
+    }
+
+    /// Pushes the next successful handshake, including reconnects without further records.
+    #[wasm_bindgen(js_name = nextConnection)]
+    pub async fn next_connection(&self, after: u64) -> Result<u64, JsValue> {
+        self.connections
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .changed(after)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Opens a canonical SessionSubscription, yielding encoded SessionFrame data
+    /// and watermarks. Rust owns IDs, ALL/LATEST cursors, anchors and bounded credit.
+    #[wasm_bindgen(js_name = openData)]
+    pub async fn open_data(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        check_command_size(input)?;
+        let subscription = decode::<wire::SessionSubscription>(input)?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?;
+        let frames = session.subscribe(subscription).await.map_err(js_error)?;
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(
+                frames
+                    .map(|frame| frame.map(|frame| frame.encode_to_vec()))
+                    .boxed_local(),
+            )),
         })
     }
 
@@ -56,12 +105,20 @@ impl WasmStream {
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
-                let tail = self.provider.tail(path).await.map_err(js_error)?;
-                wire::TailResponse {
-                    tail,
-                    ..Default::default()
+                if request.accepted {
+                    let marks = self.provider.watermarks(path).await.map_err(js_error)?;
+                    wire::TailResponse {
+                        tail: marks.accepted,
+                        durable: Some(marks.durable),
+                    }
+                    .encode_to_vec()
+                } else {
+                    wire::TailResponse {
+                        tail: self.provider.tail(path).await.map_err(js_error)?,
+                        durable: None,
+                    }
+                    .encode_to_vec()
                 }
-                .encode_to_vec()
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;
@@ -195,5 +252,23 @@ impl WasmStream {
                     .boxed_local(),
             )),
         })
+    }
+}
+
+impl WasmStream {
+    /// Physical connection generations used by Rust client recovery drivers.
+    #[must_use]
+    pub fn connections(&self) -> Option<crate::session::Connections> {
+        self.connections.clone()
+    }
+    /// Shares the platform pool, including standalone durability updates.
+    #[must_use]
+    pub fn session_client(&self) -> Option<crate::session::Client> {
+        self.session.clone()
+    }
+    /// Shares the exact provider with higher-level Rust WASM clients.
+    #[must_use]
+    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {
+        self.provider.clone()
     }
 }

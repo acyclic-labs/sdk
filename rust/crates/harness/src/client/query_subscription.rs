@@ -11,6 +11,11 @@ pub(crate) fn query_error(error: crate::task_volume::Error) -> Error {
     Error::Storage(error.to_string())
 }
 
+pub(crate) enum PublishError {
+    Rejected(Error),
+    Failed(Error),
+}
+
 pub(crate) struct QuerySubscription {
     target: StreamPath,
     query: Query,
@@ -68,10 +73,6 @@ impl QuerySubscription {
         self.reset
     }
 
-    pub fn discard_rejected(&mut self) {
-        self.pending = None;
-    }
-
     pub async fn wait_next(&mut self) -> Result<()> {
         if self.pending.is_none() {
             self.pending = Some(
@@ -87,14 +88,21 @@ impl QuerySubscription {
 
     pub async fn publish_next<F>(&mut self, mut publish: F) -> Result<()>
     where
-        F: for<'a> std::ops::AsyncFnMut(&'a Change) -> Result<()>,
+        F: for<'a> std::ops::AsyncFnMut(&'a Change) -> std::result::Result<(), PublishError>,
     {
         self.wait_next().await?;
         let change = self
             .pending
             .as_ref()
             .ok_or_else(|| Error::Storage("query delivery missing".into()))?;
-        publish(change).await?;
+        match publish(change).await {
+            Ok(()) => {}
+            Err(PublishError::Rejected(error)) => {
+                self.pending = None;
+                return Err(error);
+            }
+            Err(PublishError::Failed(error)) => return Err(error),
+        }
         self.cursor = change.cursor.clone();
         self.pending = None;
         Ok(())
