@@ -13,9 +13,41 @@ fn fail<T>(error: impl std::fmt::Debug) -> T {
     std::process::exit(1);
 }
 
-fn benchmark_marker(name: &str, native: bool, begin: bool) {
+fn benchmark_marker(
+    name: &str,
+    size: usize,
+    context: u8,
+    begin: bool,
+    work: &Option<NativeMaterializationWork>,
+    store: &MemoryLazyWorkspaceStore,
+) {
     if std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some() {
-        eprintln!("ACYCLIC_BENCH_BOUNDARY name={name} native={native} begin={begin}");
+        let meter = work.as_ref().map(|work| {
+            let meter = work.runtime_meter();
+            meter.allocation_owner().unwrap_or(meter)
+        });
+        let (leaf, leaf_bytes) = meter.as_ref().map_or((0, 0), |meter| {
+            (
+                std::sync::Arc::as_ptr(meter) as *const () as usize,
+                std::mem::size_of_val(meter.as_ref()),
+            )
+        });
+        let store_bytes = std::mem::size_of_val(store);
+        let store = std::ptr::from_ref(store) as usize;
+        eprintln!(
+            "ACYCLIC_BENCH_BOUNDARY name={name} size={size} context={context} begin={begin} leaf={leaf:#x} leaf_bytes={leaf_bytes} store={store:#x} store_bytes={store_bytes}"
+        );
+    }
+}
+
+struct Fragments(usize);
+impl std::io::Write for Fragments {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += 1;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -144,14 +176,16 @@ macro_rules! bench_node {
             let (value, allocation, mut ctx) = make_input();
             complete(store.$put(id, (value, allocation), &mut ctx)).unwrap_or_else(fail);
             if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
-                eprintln!("{} size={size} context={context} json_bytes={} before={:?}",
-                    stringify!($name), encoded.len(), work.as_ref().map(NativeMaterializationWork::receipt));
+                let mut fragments = Fragments(0);
+                serde_json::to_writer(&mut fragments, &node).unwrap_or_else(fail);
+                eprintln!("{} size={size} context={context} json_bytes={} fragments={} before={:?}",
+                    stringify!($name), encoded.len(), fragments.0, work.as_ref().map(NativeMaterializationWork::receipt));
             }
-            benchmark_marker(stringify!($name), context != 0, true);
+            benchmark_marker(stringify!($name), size, context, true, &work, &store);
             bencher.with_inputs(make_input).bench_values(|(value, allocation, mut ctx)| {
                 complete(store.$put(id, (value, allocation), &mut ctx)).unwrap_or_else(fail);
             });
-            benchmark_marker(stringify!($name), context != 0, false);
+            benchmark_marker(stringify!($name), size, context, false, &work, &store);
             if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
                 eprintln!("{} size={size} context={context} after={:?}", stringify!($name),
                     work.as_ref().map(NativeMaterializationWork::receipt));
