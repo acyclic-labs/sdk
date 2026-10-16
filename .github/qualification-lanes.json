@@ -9,7 +9,7 @@
   },
   {
     "lane": "docs",
-    "runner": "ubuntu-24.04",
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
     "workers": 2,
     "artifact": "",
     "artifact_path": "",
@@ -17,7 +17,7 @@
   },
   {
     "lane": "generation",
-    "runner": "ubuntu-24.04",
+    "runner": "blacksmith-2vcpu-ubuntu-2404",
     "workers": 2,
     "artifact": "",
     "artifact_path": "",

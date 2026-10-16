@@ -306,6 +306,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         .find_map(|line| line.strip_prefix("host: "))
         .unwrap()
         .to_owned();
+    assert!(rustdoc_targets(&[&target]).unwrap().contains(&target));
     let available = BTreeSet::from([target.clone()]);
     let profile = historical_profiles_for_package(&metadata, "profile-owner", &target, &available)
         .unwrap()
@@ -384,6 +385,11 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         assert!(matches!(error, ProfileError::InvalidRustdoc(_)));
         assert!(!rejected.exists());
     }
+    assert_eq!(
+        super::execution::rustup_lookup_count(),
+        2,
+        "all profiles share one producer and target discovery"
+    );
 }
 
 #[test]

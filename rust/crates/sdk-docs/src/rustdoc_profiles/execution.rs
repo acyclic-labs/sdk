@@ -86,64 +86,53 @@ pub fn load_metadata(
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 
-/// Queries and provisions targets on the toolchain producing Rustdoc JSON.
-pub fn rustdoc_targets(required: &[&str]) -> Result<BTreeSet<String>, ProfileError> {
-    let installed = Command::new("rustup")
-        .args([
-            "target",
-            "list",
-            "--installed",
-            "--toolchain",
-            RUSTDOC_TOOLCHAIN,
-        ])
+struct RustdocProducer {
+    cargo: PathBuf,
+    targets: BTreeSet<String>,
+}
+
+thread_local! {
+    // Profile batches are sequential; each calling thread retains its producer.
+    static PRODUCER: std::cell::RefCell<Option<RustdocProducer>> = const { std::cell::RefCell::new(None) };
+    #[cfg(test)]
+    static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn rustup_lookup_count() -> usize {
+    LOOKUPS.get()
+}
+
+fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
+    #[cfg(test)]
+    LOOKUPS.set(LOOKUPS.get() + 1);
+    Command::new("rustup")
+        .args(args)
         .output()
-        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
+}
+
+fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
+    let installed = rustup_lookup(&[
+        "target",
+        "list",
+        "--installed",
+        "--toolchain",
+        RUSTDOC_TOOLCHAIN,
+    ])?;
     if !installed.status.success() {
         return Err(ProfileError::InvalidRustdoc(format!(
             "cannot query {RUSTDOC_TOOLCHAIN} targets: {}",
             String::from_utf8_lossy(&installed.stderr)
         )));
     }
-    let mut targets = String::from_utf8_lossy(&installed.stdout)
+    let targets = String::from_utf8_lossy(&installed.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    for &target in required {
-        if targets.contains(target) {
-            continue;
-        }
-        let added = Command::new("rustup")
-            .args([
-                "target",
-                "add",
-                "--toolchain",
-                RUSTDOC_TOOLCHAIN,
-                "--",
-                target,
-            ])
-            .output()
-            .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
-        if !added.status.success() {
-            return Err(ProfileError::InvalidRustdoc(format!(
-                "cannot install {target} for {RUSTDOC_TOOLCHAIN}: {}",
-                String::from_utf8_lossy(&added.stderr)
-            )));
-        }
-        targets.insert(target.to_owned());
-    }
-    Ok(targets)
-}
-
-fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
-    rustdoc_targets(&[target])?;
-    let output = Command::new("rustup")
-        .args(["which", "cargo", "--toolchain", RUSTDOC_TOOLCHAIN])
-        .output()
-        .map_err(|error| {
-            ProfileError::InvalidRustdoc(format!("cannot select pinned Rustdoc toolchain: {error}"))
-        })?;
+        .collect();
+    let output = rustup_lookup(&["which", "cargo", "--toolchain", RUSTDOC_TOOLCHAIN])?;
     if !output.status.success() {
         return Err(ProfileError::InvalidRustdoc(format!(
             "Rustdoc toolchain {RUSTDOC_TOOLCHAIN} is unavailable: {}",
@@ -155,25 +144,72 @@ fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
             .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?
             .trim(),
     );
-    let bin = cargo.parent().ok_or_else(|| {
-        ProfileError::InvalidRustdoc("pinned Cargo has no toolchain directory".into())
-    })?;
-    let mut command = Command::new(&cargo);
-    command
-        .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
-        .env(
-            "RUSTC",
-            bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-        )
-        .env(
-            "RUSTDOC",
-            bin.join(if cfg!(windows) {
-                "rustdoc.exe"
-            } else {
-                "rustdoc"
-            }),
-        );
-    Ok(command)
+    Ok(RustdocProducer { cargo, targets })
+}
+
+fn with_producer<T>(
+    required: &[&str],
+    use_producer: impl FnOnce(&RustdocProducer) -> T,
+) -> Result<T, ProfileError> {
+    PRODUCER.with_borrow_mut(|cached| {
+        let producer = match cached {
+            Some(producer) => producer,
+            None => cached.insert(resolve_producer()?),
+        };
+        for &target in required {
+            if producer.targets.contains(target) {
+                continue;
+            }
+            let added = Command::new("rustup")
+                .args([
+                    "target",
+                    "add",
+                    "--toolchain",
+                    RUSTDOC_TOOLCHAIN,
+                    "--",
+                    target,
+                ])
+                .output()
+                .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+            if !added.status.success() {
+                return Err(ProfileError::InvalidRustdoc(format!(
+                    "cannot install {target} for {RUSTDOC_TOOLCHAIN}: {}",
+                    String::from_utf8_lossy(&added.stderr)
+                )));
+            }
+            producer.targets.insert(target.to_owned());
+        }
+        Ok(use_producer(producer))
+    })
+}
+
+/// Queries and provisions targets on the toolchain producing Rustdoc JSON.
+pub fn rustdoc_targets(required: &[&str]) -> Result<BTreeSet<String>, ProfileError> {
+    with_producer(required, |producer| producer.targets.clone())
+}
+
+fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
+    with_producer(&[target], |producer| {
+        let bin = producer.cargo.parent().ok_or_else(|| {
+            ProfileError::InvalidRustdoc("pinned Cargo has no toolchain directory".into())
+        })?;
+        let mut command = Command::new(&producer.cargo);
+        command
+            .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
+            .env(
+                "RUSTC",
+                bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
+            )
+            .env(
+                "RUSTDOC",
+                bin.join(if cfg!(windows) {
+                    "rustdoc.exe"
+                } else {
+                    "rustdoc"
+                }),
+            );
+        Ok(command)
+    })?
 }
 
 /// A Cargo-owned target; binary receipts are for source guides, never public API extraction.
@@ -330,4 +366,23 @@ pub fn execute_profile(
         )));
     }
     Ok(observation)
+}
+
+#[test]
+fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
+    let targets = rustdoc_targets(&["wasm32-unknown-unknown"])
+        .unwrap()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let lookups = rustup_lookup_count();
+    let profiles = proptest::collection::vec(0..targets.len(), 0..32);
+    proptest::test_runner::TestRunner::default()
+        .run(&profiles, |order| {
+            for index in order {
+                nightly_rustdoc_command(&targets[index]).unwrap();
+            }
+            proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
+            Ok(())
+        })
+        .unwrap();
 }
