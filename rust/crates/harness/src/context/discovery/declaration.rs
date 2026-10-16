@@ -152,14 +152,7 @@ impl ContextDiscovery {
                             path: child(&directory, name),
                         };
                         let (file, bytes) = source.read(reader, limits.instruction_bytes).await?;
-                        if bytes.len() as u64 > limits.instruction_bytes
-                            || std::str::from_utf8(&bytes).is_err()
-                            || bytes.contains(&0)
-                        {
-                            return Err(Error::Invalid(
-                                "instruction is oversized or invalid text".into(),
-                            ));
-                        }
+                        limits.validate_instruction(&bytes)?;
                         result.instructions.push(file);
                     }
                 }
@@ -225,6 +218,20 @@ impl Default for ContextDiscoveryLimits {
 }
 
 impl ContextDiscoveryLimits {
+    /// Rejects oversized, non-UTF-8 or NUL-containing instruction bodies.
+    pub fn validate_instruction(self, bytes: &[u8]) -> Result<()> {
+        self.validate()?;
+        if bytes.len() as u64 > self.instruction_bytes
+            || std::str::from_utf8(bytes).is_err()
+            || bytes.contains(&0)
+        {
+            return Err(Error::Invalid(
+                "instruction is oversized or invalid text".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(self) -> Result<()> {
         if self.entries == 0
             || self.directories == 0
