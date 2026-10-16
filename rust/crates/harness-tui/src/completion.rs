@@ -257,6 +257,7 @@ impl CompletionMenu {
                 let (base, range, _) = editor.completion_change()?;
                 let old = self.version.as_ref()?;
                 (Rc::ptr_eq(base, &old.0)
+                    && editor.cursor() >= request.range.start
                     && range.start >= request.range.start
                     && range.end <= request.range.end)
                     .then_some(request.range.start)

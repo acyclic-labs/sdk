@@ -5,6 +5,8 @@ use ratatui::{
     style::{Modifier, Style},
     widgets::{Block, Borders, Clear, Widget},
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Command and file-completion popup. Geometry is capped at 60 columns and 12
 /// rows and text is clipped by display width, including on narrow terminals.
@@ -82,28 +84,77 @@ impl Widget for CompletionPopup<'_> {
             .skip(first)
             .take(usize::from(inner.height))
         {
-            let text = format!(
-                "{}{}  {}",
-                item.label,
-                if item.tool { " [tool]" } else { "" },
-                item.description
-            );
-            let text: String = text
-                .chars()
-                .map(|c| if c.is_control() { '�' } else { c })
-                .collect();
             let style = if index == self.menu.selected {
                 self.style.patch(self.selected_style)
             } else {
                 self.style
             };
-            buffer.set_stringn(
-                inner.x,
-                inner.y + (index - first) as u16,
-                text,
-                usize::from(inner.width),
-                style,
-            );
+            let mut x = inner.x;
+            for part in [
+                item.label.as_str(),
+                if item.tool { " [tool]" } else { "" },
+                "  ",
+                item.description.as_str(),
+            ] {
+                render_part(
+                    part,
+                    &mut x,
+                    inner.right(),
+                    inner.y + (index - first) as u16,
+                    style,
+                    buffer,
+                );
+            }
         }
     }
 }
+
+// Borrow only a cell-bounded prefix. A Unicode grapheme can contain arbitrarily
+// many zero-width scalars: cap inspection at 64 UTF-8 bytes per available cell,
+// replacing a possibly incomplete final cluster rather than rendering half of it.
+fn render_part(text: &str, x: &mut u16, right: u16, y: u16, style: Style, buffer: &mut Buffer) {
+    if *x >= right {
+        return;
+    }
+    let mut end = text.len().min(usize::from(right - *x) * 64);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = &text[..end];
+    for (at, grapheme) in prefix.grapheme_indices(true) {
+        if *x >= right {
+            break;
+        }
+        if end < text.len() && at + grapheme.len() == end {
+            render_symbol("�", x, right, y, style, buffer);
+        } else if grapheme.chars().any(char::is_control) {
+            for character in grapheme.chars() {
+                let mut utf8 = [0; 4];
+                let symbol = if character.is_control() {
+                    "�"
+                } else {
+                    character.encode_utf8(&mut utf8)
+                };
+                render_symbol(symbol, x, right, y, style, buffer);
+            }
+        } else {
+            render_symbol(grapheme, x, right, y, style, buffer);
+        }
+    }
+}
+
+fn render_symbol(symbol: &str, x: &mut u16, right: u16, y: u16, style: Style, buffer: &mut Buffer) {
+    let width = symbol.width();
+    if width == 0 || *x >= right {
+        return;
+    }
+    if width > usize::from(right - *x) {
+        *x = right;
+        return;
+    }
+    buffer.set_stringn(*x, y, symbol, width, style);
+    *x += width as u16;
+}
+
+#[cfg(test)]
+mod tests;

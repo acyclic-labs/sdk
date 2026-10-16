@@ -574,3 +574,21 @@ fn unicode_data_mappings_are_matched_in_both_directions() {
         assert!(fuzzy_score(&folded, &input).is_some(), "{record}");
     }
 }
+
+#[test]
+fn moving_before_a_cached_mention_after_an_edit_still_accepts_without_submit() {
+    use acyclic_harness_tui::PromptInput;
+    let mut input = PromptInput::new(Editor::new("@src @src"));
+    files(&mut input.completion);
+    input.refresh_completions();
+    input.committed_text("/", 0);
+    input.editor.set_cursor(4, false);
+    input.refresh_completions();
+    assert!(input.completion.active(&input.editor));
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 80)
+            .is_empty()
+    );
+    assert_eq!(input.editor.text(), "@src/readme.md @src/");
+}

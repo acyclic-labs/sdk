@@ -90,10 +90,53 @@ proptest! {
         }
     }
 
+    #[test]
+    fn batched_edits_and_cursor_moves_agree_with_full_scan(
+        prefix in "[a-z @/\\\"\n]{0,48}",
+        batches in prop::collection::vec(prop::collection::vec(
+            (0u8..8, "[a-z @/\\\"\n界]{0,6}", any::<u16>()), 1..8), 1..24)
+    ) {
+        let mut editor = Editor::new(&prefix);
+        let mut menu = CompletionMenu::default();
+        menu.set_file("workspace/src/main.rs", Some(b"")).unwrap();
+        menu.set_file("commands/theme.md", Some(b"theme")).unwrap();
+        menu.refresh(&editor);
+        for (step, batch) in batches.iter().enumerate() {
+            for (op, text, offset) in batch {
+                match op {
+                    0 => editor.insert(text, step as u64),
+                    1 => editor.delete(true, step as u64),
+                    2 => editor.delete(false, step as u64),
+                    3 | 7 => editor.set_cursor(usize::from(*offset) % (editor.text().len()+1), *op == 7),
+                    4 => { editor.undo(); }
+                    5 => { editor.redo(); }
+                    _ => editor.set_text(text, step as u64),
+                }
+            }
+            menu.refresh(&editor);
+            prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+        }
+    }
+
 }
 
 #[test]
 #[should_panic(expected = "unchanged refresh must do zero work")]
 fn negative_control_detects_repeated_scanning() {
     unchanged_work(1000, 2, true);
+}
+
+#[test]
+#[should_panic(expected = "incremental requests must match the full scan")]
+fn full_scan_oracle_detects_a_cursor_before_the_cached_token() {
+    let mut editor = Editor::new("@src @src");
+    let start = completion_request(&editor).unwrap().range.start;
+    editor.insert("/", 0);
+    editor.set_cursor(4, false);
+    let broken = request_from(&editor, start, &mut 0);
+    assert_eq!(
+        broken,
+        completion_request(&editor),
+        "incremental requests must match the full scan"
+    );
 }
