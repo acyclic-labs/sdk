@@ -17,24 +17,23 @@ pub(crate) fn paths_conflict(existing: &str, path: &str) -> bool {
 pub(crate) fn conflicts<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     for existing in paths.keys() {
         let existing: &str = existing.borrow();
-        match existing.cmp(path) {
-            Ordering::Less => {
-                if path.as_bytes().get(existing.len()) == Some(&b'/') && path.starts_with(existing)
-                {
-                    return true;
+        let common = existing.len().min(path.len());
+        match existing.as_bytes()[..common].cmp(&path.as_bytes()[..common]) {
+            Ordering::Less => {}
+            Ordering::Greater => return false,
+            Ordering::Equal => match existing.len().cmp(&path.len()) {
+                Ordering::Less => {
+                    if path.as_bytes()[existing.len()] == b'/' {
+                        return true;
+                    }
                 }
-            }
-            Ordering::Equal => {}
-            Ordering::Greater => {
-                let Some(suffix) = existing.strip_prefix(path) else {
-                    return false;
-                };
-                match suffix.as_bytes().first() {
-                    Some(b'/') => return true,
-                    Some(byte) if *byte > b'/' => return false,
+                Ordering::Equal => {}
+                Ordering::Greater => match existing.as_bytes()[path.len()] {
+                    b'/' => return true,
+                    byte if byte > b'/' => return false,
                     _ => {}
-                }
-            }
+                },
+            },
         }
     }
     false

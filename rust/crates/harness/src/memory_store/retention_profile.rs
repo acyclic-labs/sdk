@@ -66,6 +66,7 @@ fn profile(tracing: bool) -> Result<()> {
                 ("first-ancestor", "files/00000000/child"),
                 ("existing-descendant", "files"),
                 ("missing-root", "missing"),
+                ("before-first-root", "aaa"),
             ] {
                 measure(&store, query, label, tracing, syscalls)?;
             }
@@ -101,6 +102,29 @@ fn profile(tracing: bool) -> Result<()> {
             ] {
                 measure(&store, &query, &label, tracing, false)?;
             }
+        }
+    }
+    if !syscalls {
+        for length in [64, 4000] {
+            let query = "\u{e9}".repeat(length / 2);
+            let mut store = super::super::super::tests::store(1, 41)?;
+            for index in 0..40 {
+                store.stage(
+                    &format!("{query}-{index:08}"),
+                    b"x",
+                    "text/plain",
+                    "x",
+                    true,
+                )?;
+            }
+            store.stage(&format!("{query}/child"), b"x", "text/plain", "x", true)?;
+            measure(
+                &store,
+                &query,
+                &format!("prefix-{length}-punctuation"),
+                tracing,
+                false,
+            )?;
         }
     }
     let mut punctuation = super::super::super::tests::store(1, 4097)?;
