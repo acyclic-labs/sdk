@@ -15,6 +15,8 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 
 [dependencies]
 acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support"] }
+diffy.workspace = true
+serde-saphyr = { version = "=1.3.0", features = ["serialize"] }
 libfuzzer-sys = "0.4"
 prost.workspace = true
 acyclic-stream = { path = "../stream", default-features = false }
@@ -102,6 +104,27 @@ bench = false
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_interests"
+path = "fuzz_targets/client_interests.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_diff"
+path = "fuzz_targets/client_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "command_parser"
+path = "fuzz_targets/command_parser.rs"
 test = false
 doc = false
 bench = false

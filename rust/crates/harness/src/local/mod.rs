@@ -126,10 +126,19 @@ impl LocalHarness {
                         &directory,
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
+                        false,
                     )
                     .await?,
                 )),
-                LocalProject::Volume { .. } => None,
+                LocalProject::Volume { .. } => Some(Arc::new(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                )),
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
             #[cfg(feature = "native-execution")]

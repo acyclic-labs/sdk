@@ -82,6 +82,7 @@ pub(super) async fn open(
     directory: &Path,
     identity: Option<[u8; 16]>,
     operation: acyclic_fs::OperationId,
+    existing: bool,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -98,10 +99,24 @@ pub(super) async fn open(
         .load_lazy_workspace(id, &mut accounting)
         .await
         .map_err(storage)?;
+    let selected = if original.is_some() || existing {
+        Some(
+            filesystem
+                .open_workspace(&name, &work, &cancellation)
+                .await
+                .map_err(storage)?,
+        )
+    } else {
+        None
+    };
+    let config = selected.as_ref().map_or_else(
+        || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        |workspace| workspace.volume_config(),
+    );
     let source = NativeDemandSource::open(
         std::borrow::Cow::Borrowed(&path),
-        acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable).profile,
-        acyclic_fs::VolumeLimits::default(),
+        config.profile,
+        config.limits,
         original.as_ref().map(|state| state.source),
         None,
         &work,
@@ -116,16 +131,15 @@ pub(super) async fn open(
     }
     let source = Arc::new(source);
     let fresh = original.is_none();
-    let view = match original {
-        Some(_) => {
-            let workspace = filesystem
-                .open_workspace(&name, &work, &cancellation)
-                .await
-                .map_err(storage)?;
+    let view = match selected {
+        Some(workspace) if original.is_some() => {
             LazyWorkspace::open(workspace, source, store.clone(), &mut accounting)
                 .await
                 .map_err(storage)?
         }
+        Some(workspace) => LazyWorkspace::bind(workspace, source, store.clone(), &mut accounting)
+            .await
+            .map_err(storage)?,
         None => {
             LazyWorkspace::attach(
                 filesystem,
@@ -155,4 +169,60 @@ pub(super) async fn open(
             identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
         ),
     })
+}
+
+// A configured SDK volume gets one persistent private native view. Bootstrap
+// into a sibling and rename only the complete generation, before binding its
+// native source. Subsequent commands and reopen reuse the ordinary lazy path.
+pub(super) async fn open_volume(
+    filesystem: &acyclic_fs::LocalFs,
+    volume: &VolumeRef,
+    directory: &Path,
+    operation: acyclic_fs::OperationId,
+) -> Result<LocalWorkspace> {
+    let path = directory.join("project");
+    if !path.try_exists().map_err(storage)? {
+        let staging = directory.join("project-initializing");
+        if staging.try_exists().map_err(storage)? {
+            crate::filesystem::NativeDirectory(directory)
+                .remove(&staging)
+                .map_err(Error::Storage)?;
+        }
+        owner::directory(&staging)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let name = volume.storage_name(&mut None)?;
+        let workspace = filesystem
+            .open_workspace(&name, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        let generation = workspace
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        generation
+            .materialize(
+                ["/"].into_iter(),
+                &acyclic_fs::MaterializeOptions::native(&staging),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?;
+        std::fs::rename(&staging, &path).map_err(storage)?;
+    }
+    let identity = acyclic_fs::capture_root_identity(&path)
+        .map_err(storage)?
+        .to_bytes();
+    open(
+        filesystem,
+        volume,
+        &path,
+        directory,
+        Some(identity),
+        operation,
+        true,
+    )
+    .await
 }

@@ -76,6 +76,15 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, Error> {
     wire.try_into()
 }
 
+/// Strict single-caveat ingress shared by native and browser holders.
+pub fn decode_caveat(bytes: &[u8]) -> Result<Caveat, Error> {
+    let wire = CaveatProto::decode(bytes).map_err(|_| Error::Invalid)?;
+    if wire.encode_to_vec() != bytes {
+        return Err(Error::Invalid);
+    }
+    wire.try_into()
+}
+
 /// Strict envelope ingress, including block position, version and depth checks.
 pub fn decode_capability(bytes: &[u8]) -> Result<Capability, Error> {
     let wire = CapabilityProto::decode(bytes).map_err(|_| Error::Invalid)?;

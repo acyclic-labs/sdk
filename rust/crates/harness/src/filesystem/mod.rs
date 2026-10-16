@@ -34,7 +34,6 @@ use acyclic_fs::{
     Workspace, WorkspaceError, WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 

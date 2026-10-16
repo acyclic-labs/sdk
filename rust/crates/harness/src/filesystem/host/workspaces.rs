@@ -221,7 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction
-                        .write(path, Bytes::copy_from_slice(bytes), budget, &cancellation)
+                        .write(path, bytes.clone(), budget, &cancellation)
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
@@ -514,3 +514,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bytes_tests;
