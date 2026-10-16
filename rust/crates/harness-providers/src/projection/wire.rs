@@ -43,9 +43,27 @@ pub(crate) struct Body<'a> {
 }
 impl Serialize for Body<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.fields.len() + 1))?;
+        self.serialize_fields(serializer, None, None)
+    }
+}
+
+impl Body<'_> {
+    pub(crate) fn serialize_fields<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include: Option<&[&str]>,
+        model: Option<&str>,
+    ) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
         for (name, value) in &self.fields {
-            map.serialize_entry(name, value)?;
+            if include.is_none_or(|fields| fields.contains(&name.as_str()))
+                && !(name == "model" && model.is_some())
+            {
+                map.serialize_entry(name, value)?;
+            }
+        }
+        if let Some(model) = model {
+            map.serialize_entry("model", model)?;
         }
         map.serialize_entry(self.messages_field, &self.messages)?;
         map.end()
@@ -88,38 +106,5 @@ impl<'a> Body<'a> {
             }
         }
         args
-    }
-}
-
-/// A count request borrows the already projected generation without cloning its tree.
-#[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
-pub(crate) struct BorrowedCountBody<'a, 'b> {
-    pub generation: &'a Body<'b>,
-    pub adapter: crate::Adapter,
-}
-#[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
-impl Serialize for BorrowedCountBody<'_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        if self.adapter == crate::Adapter::Gemini {
-            #[derive(Serialize)]
-            struct Gemini<'a, 'b> {
-                #[serde(rename = "generateContentRequest")]
-                request: &'a Body<'b>,
-            }
-            // The preparation inserts the Gemini model before either serialization.
-            return Gemini {
-                request: self.generation,
-            }
-            .serialize(serializer);
-        }
-        let mut map = serializer.serialize_map(None)?;
-        for (field, value) in &self.generation.fields {
-            if crate::counting::wire::fields(self.adapter).contains(&field.as_str()) {
-                map.serialize_entry(field, value)?;
-            }
-        }
-        map.serialize_entry(self.generation.messages_field, &self.generation.messages)?;
-        map.end()
     }
 }

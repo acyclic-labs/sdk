@@ -1,11 +1,34 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { accessSync, constants, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export function bindingKey(moduleDigest, runnerVersion, args, environment, script) {
-  return createHash("sha256").update(JSON.stringify([moduleDigest, runnerVersion, process.version, args, environment, script])).digest("hex");
+export function bindingKey(moduleDigest, runnerIdentity, args, environment, script) {
+  return createHash("sha256").update(JSON.stringify([moduleDigest, runnerIdentity, process.version, args, environment, script])).digest("hex");
+}
+
+async function digest(path) {
+  const hash = createHash("sha256");
+  for await (const bytes of createReadStream(path)) hash.update(bytes);
+  return hash.digest("hex");
+}
+
+export async function runnerIdentity(command) {
+  const directories = /[/\\]/u.test(command) ? [""] : (process.env.PATH ?? "").split(delimiter);
+  const suffixes = process.platform === "win32" ? ["", ...(process.env.PATHEXT ?? ".EXE;.COM").split(";")] : [""];
+  for (const directory of directories) {
+    for (const suffix of suffixes) {
+      const candidate = resolve(directory, command + suffix);
+      try {
+        accessSync(candidate, constants.X_OK);
+        if (!statSync(candidate).isFile()) continue;
+      } catch { continue; }
+      const executable = realpathSync(candidate);
+      return {executable, digest:await digest(executable)};
+    }
+  }
+  throw new Error(`WASM runner unavailable: ${command}`);
 }
 
 export function cachedRunner(cache) {
@@ -24,17 +47,14 @@ async function run(args, runner) {
     return result.status ?? 1;
   }
   const module = resolve(args[0]);
-  const version = spawnSync(runner, ["--version"], {encoding:"utf8", windowsHide:true});
-  if (version.error || version.status !== 0) throw version.error ?? new Error("WASM runner unavailable");
-  const digest = createHash("sha256");
-  for await (const bytes of createReadStream(module)) digest.update(bytes);
+  const identity = await runnerIdentity(runner);
   const environment = Object.entries(process.env).filter(([key]) => /^(WASM_BINDGEN_|NODE_|LLVM_PROFILE_FILE)/u.test(key)).sort();
-  const key = bindingKey(digest.digest("hex"), version.stdout, [process.cwd(), ...args.slice(1)], environment, readFileSync(fileURLToPath(import.meta.url), "utf8"));
+  const key = bindingKey(await digest(module), identity, [process.cwd(), ...args.slice(1)], environment, readFileSync(fileURLToPath(import.meta.url), "utf8"));
   const cache = join(dirname(module), ".node-wasm-tests", key);
   mkdirSync(cache, {recursive:true});
   const cached = cachedRunner(cache);
   // The upstream runner owns generation and the test harness. Reuse its exact JS.
-  const command = cached ? "node" : runner;
+  const command = cached ? "node" : identity.executable;
   const commandArgs = cached ? ["--expose-gc", ...(process.env.NODE_ARGS ?? "").split(",").filter(Boolean), cached] : args;
   const result = spawnSync(command, commandArgs, {
     stdio:"inherit", windowsHide:true,

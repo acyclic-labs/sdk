@@ -1,7 +1,6 @@
 use crate::{Adapter, invalid};
 use acyclic_harness::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Declarative counting endpoint on the provider's own origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,33 +60,53 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
     Ok(resolved.into())
 }
 
+/// Both native admission and browser preparation borrow the same projected input.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(crate) enum CountBody<'a> {
-    Direct(crate::projection::wire::Body<'a>),
+pub(crate) enum CountBody<'a, 'b> {
+    Direct(CountInput<'a, 'b>),
     Gemini {
         #[serde(rename = "generateContentRequest")]
-        request: crate::projection::wire::Body<'a>,
+        request: CountInput<'a, 'b>,
     },
 }
 
-pub(crate) fn body<'a>(
-    mut generation: crate::projection::wire::Body<'a>,
-    model: &str,
+pub(crate) struct CountInput<'a, 'b> {
+    generation: &'a crate::projection::wire::Body<'b>,
+    model: &'a str,
     adapter: Adapter,
-) -> CountBody<'a> {
+}
+
+pub(crate) fn body<'a, 'b>(
+    generation: &'a crate::projection::wire::Body<'b>,
+    model: &'a str,
+    adapter: Adapter,
+) -> CountBody<'a, 'b> {
+    let input = CountInput {
+        generation,
+        model,
+        adapter,
+    };
     if adapter == Adapter::Gemini {
-        generation
-            .fields
-            .insert("model".into(), json!(format!("models/{model}")));
-        return CountBody::Gemini {
-            request: generation,
-        };
+        CountBody::Gemini { request: input }
+    } else {
+        CountBody::Direct(input)
     }
-    generation
-        .fields
-        .retain(|field, _| fields(adapter).contains(&field.as_str()));
-    CountBody::Direct(generation)
+}
+
+impl Serialize for CountInput<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.adapter == Adapter::Gemini {
+            self.generation.serialize_fields(
+                serializer,
+                None,
+                Some(&format!("models/{}", self.model)),
+            )
+        } else {
+            self.generation
+                .serialize_fields(serializer, Some(fields(self.adapter)), None)
+        }
+    }
 }
 
 pub(crate) fn fields(adapter: Adapter) -> &'static [&'static str] {

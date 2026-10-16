@@ -22,21 +22,16 @@ impl PreparedInput {
         .await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let mut files = crate::files::resolve(&provider.files, request.request(), None).await?;
-        let mut body =
+        let body =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let generation = serde_json::to_vec(&body)
             .map_err(|_| invalid("model request encoding failed"))?
             .into();
-        if provider.config.adapter == crate::Adapter::Gemini {
-            body.fields.insert(
-                "model".into(),
-                serde_json::json!(format!("models/{}", provider.model.name)),
-            );
-        }
-        let count = serde_json::to_vec(&projection::wire::BorrowedCountBody {
-            generation: &body,
-            adapter: provider.config.adapter,
-        })
+        let count = serde_json::to_vec(&counting::wire::body(
+            &body,
+            &provider.model.name,
+            provider.config.adapter,
+        ))
         .map_err(|_| invalid("token count encoding failed"))?
         .into();
         drop(body);

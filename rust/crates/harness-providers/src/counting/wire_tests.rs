@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 use serde_json::Value;
+use serde_json::json;
 
 fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
     let field = match adapter {
@@ -9,7 +10,7 @@ fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
         _ => "messages",
     };
     let generation = crate::projection::wire::Body::fixture(value, field);
-    serde_json::to_value(super::body(generation, model, adapter))
+    serde_json::to_value(super::body(&generation, model, adapter))
         .map_err(|_| invalid("fixture encoding failed"))
 }
 
@@ -55,19 +56,30 @@ fn gemini_counts_the_full_generate_request_with_system_tools_and_schema() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn borrowed_count_serialization_matches_the_native_envelope(text in ".{0,64}", output in any::<u32>()) {
+    fn borrowed_count_serialization_matches_the_protocol_and_preserves_generation(text in ".{0,64}", output in any::<u32>()) {
         for adapter in [Adapter::Chat, Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
             let field = match adapter { Adapter::Responses => "input", Adapter::Gemini => "contents", _ => "messages" };
             let mut original = json!({"model":"model", "stream":true, "max_output_tokens":output,
                 "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
             original[field] = json!([{"role":"user","content":text}]);
-            let mut generation = crate::projection::wire::Body::fixture(original.clone(), field);
-            if adapter == Adapter::Gemini { generation.fields.insert("model".into(), json!("models/model")); }
-            let borrowed = serde_json::to_vec(&crate::projection::wire::BorrowedCountBody {generation:&generation,adapter}).unwrap();
-            let native = serde_json::to_vec(&super::body(crate::projection::wire::Body::fixture(original, field), "model", adapter)).unwrap();
-            prop_assert_eq!(&borrowed, &native);
-            // The same oracle rejects omitting the counter's field filter/envelope.
-            prop_assert_ne!(serde_json::to_vec(&generation).unwrap(), native);
+            let generation = crate::projection::wire::Body::fixture(original.clone(), field);
+            let counted = serde_json::to_value(super::body(&generation, "model", adapter)).unwrap();
+            // Independent wire expectations, rather than comparing two implementations.
+            let mut expected = json!({"model":"model", "tools":[]});
+            expected[field] = original[field].clone();
+            if adapter == Adapter::Responses {
+                expected["reasoning"] = original["reasoning"].clone();
+                expected["text"] = original["text"].clone();
+            }
+            if adapter == Adapter::Gemini {
+                expected = original.clone();
+                expected["model"] = json!("models/model");
+                expected = json!({"generateContentRequest":expected});
+            }
+            prop_assert_eq!(&counted, &expected);
+            // A missing filter/envelope fails the same independent oracle.
+            prop_assert_ne!(&original, &expected);
+            prop_assert_eq!(serde_json::to_value(&generation).unwrap(), original);
         }
     }
     #[test]
