@@ -1,93 +1,21 @@
 use super::*;
-use acyclic_stream::{grpc, session, wire};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{broadcast, mpsc};
-use tonic::{Request, Response, Status, Streaming};
-use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
-
-#[derive(Default)]
-struct Counts {
-    connections: AtomicUsize,
-    sessions: AtomicUsize,
-    follows: AtomicUsize,
-    children: AtomicUsize,
-    actors: AtomicUsize,
+use acyclic_harness::task_volume::{Change, Generation};
+use std::sync::atomic::Ordering;
+mod fixture {
+    use acyclic_stream;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../stream/tests/support/session.rs"
+    ));
 }
-struct Host {
-    provider: Arc<MemoryStream>,
-    counts: Arc<Counts>,
-    resets: broadcast::Sender<()>,
-    closed: mpsc::Sender<()>,
-}
-struct SessionLifetime(mpsc::Sender<()>);
-impl Drop for SessionLifetime {
-    fn drop(&mut self) {
-        // A failed assertion may drop the receiver before fixture teardown.
-        let _ = self.0.try_send(());
-    }
-}
-
-#[tonic::async_trait]
-impl StreamSessionService for Host {
-    type SessionStream =
-        acyclic_stream::BoxProviderStream<'static, std::result::Result<wire::SessionFrame, Status>>;
-
-    async fn session(
-        &self,
-        request: Request<Streaming<wire::SessionFrame>>,
-    ) -> std::result::Result<Response<Self::SessionStream>, Status> {
-        assert_eq!(
-            request
-                .metadata()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer publication-test")
-        );
-        self.counts.sessions.fetch_add(1, Ordering::Relaxed);
-        let counts = Arc::clone(&self.counts);
-        let input = request
-            .into_inner()
-            .map(move |frame| {
-                if let Ok(wire::SessionFrame {
-                    body: Some(wire::session_frame::Body::Interest(interest)),
-                    ..
-                }) = &frame
-                {
-                    for subscription in &interest.upsert {
-                        use wire::session_subscription::Kind;
-                        let count = match subscription.kind {
-                            Some(Kind::Follow(_)) => &counts.follows,
-                            Some(Kind::Children(_)) => &counts.children,
-                            Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => &counts.actors,
-                            _ => continue,
-                        };
-                        count.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                frame.map_err(|_| acyclic_stream::StreamError::Unavailable)
-            })
-            .boxed();
-        let output = session::serve(
-            Arc::clone(&self.provider),
-            "node".into(),
-            session::Limits::default(),
-            input,
-        )
-        .map_err(|error| Status::invalid_argument(error.code()))?;
-        let lifetime = SessionLifetime(self.closed.clone());
-        let resets = self.resets.subscribe();
-        Ok(Response::new(futures::stream::unfold(
-            Some((output, resets, lifetime)), |state| async move {
-                let (mut output, mut resets, lifetime) = state?;
-                tokio::select! {
-                    frame = output.next() => frame.map(|frame| (
-                        frame.map_err(|error| Status::failed_precondition(error.code())),
-                        Some((output, resets, lifetime)),
-                    )),
-                    _ = resets.recv() => Some((Err(Status::unavailable("reset publication Session")), None)),
-                }
-            },
-        ).boxed()))
+use fixture::{Counts, Fixture, Options, Traffic};
+impl Fixture {
+    fn client(&self) -> Result<acyclic_stream::grpc::Client> {
+        Ok(self
+            .tls_client
+            .as_ref()
+            .ok_or("TLS fixture required")?
+            .with_credential("fixture")?)
     }
 }
 
@@ -96,46 +24,18 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
     let provider = Arc::new(MemoryStream::default());
     let volume_path = StreamPath::new("volumes/task")?;
     let writer = TaskVolume::open(Arc::clone(&provider), volume_path.clone()).await?;
-    let counts = Arc::new(Counts::default());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
-    let pem = certificate.cert.pem();
-    let accepted = Arc::clone(&counts);
-    let incoming = futures::stream::try_unfold(listener, move |listener| {
-        let counts = Arc::clone(&accepted);
-        async move {
-            let (socket, _) = listener.accept().await?;
-            socket.set_nodelay(true)?;
-            counts.connections.fetch_add(1, Ordering::Relaxed);
-            Ok::<_, std::io::Error>(Some((socket, listener)))
-        }
-    });
-    let unary = grpc::Service::new(Arc::clone(&provider));
-    let (resets, _) = broadcast::channel(1);
-    let (closed, mut ended) = mpsc::channel(2);
-    let host = Host {
-        resets: resets.clone(),
-        closed,
-        provider,
-        counts: Arc::clone(&counts),
-    };
-    let server = tokio::spawn(
-        tonic::transport::Server::builder()
-            .tls_config(tonic::transport::ServerTlsConfig::new().identity(
-                tonic::transport::Identity::from_pem(
-                    pem.clone(),
-                    certificate.signing_key.serialize_pem(),
-                ),
-            ))?
-            .add_service(wire::stream_service_server::StreamServiceServer::new(unary))
-            .add_service(StreamSessionServiceServer::new(host))
-            .serve_with_incoming(incoming),
-    );
+    let fixture = Fixture::with_options(
+        Arc::clone(&provider),
+        "node",
+        Options {
+            tls: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let counts = &fixture.counts;
     let result = tokio::time::timeout(Duration::from_secs(8), async {
-        let client = Arc::new(grpc::Client::connect_eager_with_ca_certificate(
-            endpoint, "publication-test", pem.as_bytes(),
-        ).await?);
+        let client = Arc::new(fixture.client()?);
         let reader = TaskVolume::open(Arc::clone(&client), volume_path.clone()).await?;
         let query = Query::Root;
         let seed = writer.snapshot(&query, 1).await?;
@@ -150,7 +50,10 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
             folded.insert(snapshot.files[0].key.clone(), snapshot.files[0].clone());
         }
         // Keep an unread channel saturated while independent file queries advance.
-        let unread = client.follow(volume_path, generation.position).await?;
+        let unread_from = generation.position;
+        let mut unread = client.follow(volume_path, unread_from).await?;
+        let unread_id = counts.guards.lock().map_err(|_| "guards poisoned")?.iter()
+            .find(|(_, _, guard)| guard.is_empty()).ok_or("unread channel omitted")?.0;
         let mut children = client.children(acyclic_stream::ChildrenRequest { parent: Some(StreamPath::new("volumes")?), limit: 1 }).await?;
         assert_eq!(children.next().await.ok_or("discovery ended")??.path.as_str(), "volumes/task");
         let mut measured = Vec::new();
@@ -158,20 +61,32 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         for index in 0..40 {
             if index == 20 {
                 assert_eq!(counts.sessions.load(Ordering::Relaxed), 1);
-                resets.send(())?;
+                assert_eq!(verify_sharing(counts, 1), Ok(()));
+                fixture.reset()?;
             }
             let content = format!("goal-{index}");
             let started = Instant::now();
             generation = writer.append(generation, &write("GOAL.md", &content)?).await?;
+            let mut changes = Vec::with_capacity(observations.len());
             for (view, observation) in observations.iter_mut().enumerate() {
                 let change = observation.changes.next().await.ok_or("publication follow ended")??;
                 if view == 0 && index >= 8 { measured.push(started.elapsed().as_nanos()); }
-                assert_eq!(change.cursor.position, generation.position);
-                assert_eq!(change.cursor.commit, generation.commit);
-                let file = change.file.ok_or("root query filtered a publication")?;
-                assert_eq!(file.bytes.as_ref(), content.as_bytes());
-                if view == 0 { folded.insert(file.key.clone(), file); last = change.cursor; }
+                changes.push(change);
             }
+            assert_eq!(verify_publication(&changes, 32, generation, content.as_bytes()), Ok(()));
+            let first = changes.remove(0);
+            let file = first.file.ok_or("root query filtered a publication")?;
+            folded.insert(file.key.clone(), file);
+            last = first.cursor;
+            if index == 1 {
+                fixture.until(|counts| flow(counts, 1, unread_id, 1).is_some_and(|flow|
+                    flow.positions.len() == 2 && flow.granted_frames == 2)).await;
+                let saturated = flow(counts, 1, unread_id, 1).ok_or("missing unread flow")?;
+                assert_eq!(saturated.positions, [unread_from + 1, unread_from + 2]);
+                assert_eq!(saturated.granted_frames - saturated.positions.len() as u64, 0);
+                assert!(saturated.sent_bytes > 0 && saturated.sent_bytes <= saturated.granted_bytes);
+            }
+
         }
         let pinned = reader.snapshot_at(&query, last.clone(), 1).await?;
         assert_eq!(pinned.files, folded.values().cloned().collect::<Vec<_>>());
@@ -194,11 +109,23 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         assert_eq!(writer.snapshot(&query, 1).await?.files, snapshot.files);
         let _later = TaskVolume::open(Arc::clone(&client), StreamPath::new("volumes/later")?).await?;
         assert_eq!(children.next().await.ok_or("discovery ended")??.path.as_str(), "volumes/later");
-        assert_eq!(counts.connections.load(Ordering::Relaxed), 1);
-        assert_eq!(counts.sessions.load(Ordering::Relaxed), 2);
-        assert_eq!(counts.follows.load(Ordering::Relaxed), 68);
+        assert_eq!(verify_sharing(counts, 2), Ok(()));
+        assert_eq!(counts.follows.load(Ordering::Relaxed) - counts.children.load(Ordering::Relaxed), 68);
         assert_eq!(counts.children.load(Ordering::Relaxed), 2);
         assert_eq!(counts.actors.load(Ordering::Relaxed), 0);
+        // Drain the formerly blocked channel through every publication, including
+        // the reset. Old buffered generations must not duplicate or lose a cut.
+        for (offset, sequence) in (unread_from..generation.position).enumerate() {
+            let record = unread.next().await.ok_or("unread follow ended")??;
+            assert_eq!(record.sequence, sequence);
+            let file = Write::from_record(&record)?.ok_or("publication omitted file")?;
+            let expected = if offset < 40 { format!("goal-{offset}") } else { "between-tiers".into() };
+            assert_eq!(file.bytes.as_ref(), expected.as_bytes());
+        }
+        assert!(futures::poll!(unread.next()).is_pending());
+        let drained = flow(counts, 2, unread_id, 2).ok_or("resumed unread flow omitted")?;
+        assert_eq!(drained.positions, (unread_from + 1..=generation.position).collect::<Vec<_>>());
+        assert!(drained.granted_frames >= drained.positions.len() as u64);
         measured.sort_unstable();
         println!("publication_session follows=68 children=2 sessions=2 connections=1 actor_channels=0 samples=32 p50_ns={} p99_ns={}", measured[15], measured[31]);
         drop(unread);
@@ -207,9 +134,116 @@ async fn publication_observes_share_one_streams_session_and_resume_at_the_snapsh
         drop(resumed);
         drop(reset.changes);
         // Every Session must close before force-closing the fixture server.
-        for _ in 0..2 { ended.recv().await.ok_or("Session shutdown omitted")?; }
+        fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2).await;
         Ok(()) as Result
     }).await;
-    server.abort();
     result?
+}
+
+fn flow(counts: &Counts, session: usize, channel: u64, generation: u64) -> Option<Traffic> {
+    counts
+        .traffic
+        .lock()
+        .expect("fixture traffic poisoned")
+        .get(&(session, channel, generation))
+        .cloned()
+}
+fn verify_sharing(counts: &Counts, sessions: usize) -> std::result::Result<(), &'static str> {
+    if counts.sessions.load(Ordering::Relaxed) != sessions {
+        return Err("session sharing");
+    }
+    if counts.connections.load(Ordering::Relaxed) != 1 {
+        return Err("connection sharing");
+    }
+    if counts.actors.load(Ordering::Relaxed) != 0 {
+        return Err("actor channel opened");
+    }
+    Ok(())
+}
+fn verify_publication(
+    changes: &[Change],
+    expected: usize,
+    generation: Generation,
+    content: &[u8],
+) -> std::result::Result<(), &'static str> {
+    if changes.len() != expected {
+        return Err("missing publication delivery");
+    }
+    for change in changes {
+        if change.cursor.position != generation.position
+            || change.cursor.commit != generation.commit
+        {
+            return Err("publication cursor");
+        }
+        if change
+            .file
+            .as_ref()
+            .is_none_or(|file| file.key != FileKey::Goal || file.bytes.as_ref() != content)
+        {
+            return Err("publication content");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unshared_volume_queries_fail_the_same_sharing_verifier_without_a_timeout() -> Result {
+    let memory = Arc::new(MemoryStream::default());
+    let writer = TaskVolume::open(Arc::clone(&memory), StreamPath::new("unshared")?).await?;
+    let fixture = Fixture::with_options(
+        memory,
+        "node",
+        Options {
+            tls: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let mut observations = Vec::new();
+    for _ in 0..3 {
+        let reader =
+            TaskVolume::open(Arc::new(fixture.client()?), StreamPath::new("unshared")?).await?;
+        observations.push(reader.observe(Query::Root, None, 1).await?);
+    }
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 3);
+    assert_eq!(verify_sharing(&fixture.counts, 1), Err("session sharing"));
+    drop(observations);
+    drop(writer);
+    fixture
+        .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 3)
+        .await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_missed_publication_fails_the_same_cursor_verifier_without_a_timeout() -> Result {
+    let memory = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("missed")?;
+    let writer = TaskVolume::open(Arc::clone(&memory), path.clone()).await?;
+    let fixture = Fixture::with_options(
+        memory,
+        "node",
+        Options {
+            tls: true,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let reader = TaskVolume::open(Arc::new(fixture.client()?), path).await?;
+    let observation = reader.observe(Query::Root, None, 1).await?;
+    let initial = observation.snapshot.ok_or("snapshot omitted")?.generation;
+    // Deliberately broken delivery configuration suppresses the first publication.
+    let mut broken = observation.changes.skip(1);
+    let first = writer.append(initial, &write("GOAL.md", "first")?).await?;
+    writer.append(first, &write("GOAL.md", "second")?).await?;
+    let delivered = broken.next().await.ok_or("broken follow ended")??;
+    assert_eq!(
+        verify_publication(&[delivered], 1, first, b"first"),
+        Err("publication cursor")
+    );
+    drop(broken);
+    fixture
+        .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
+        .await;
+    Ok(())
 }
