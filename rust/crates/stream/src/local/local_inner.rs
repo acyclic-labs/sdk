@@ -1,13 +1,19 @@
 struct LocalInner {
     provider: MemoryStream,
     commit_clock: Arc<PinnedCommitClock>,
+    // Lock order: visibility -> journal -> synced watch; never acquire provider state while holding journal.
     journal: Arc<Mutex<Journal>>,
     /// Held exclusively while a mutation applies and writes its frame, and
     visibility: RwLock<()>,
     /// The journal's `synced` sequence, published under the journal lock so
     synced: watch::Sender<u64>,
-    changed: watch::Sender<u64>,
-    poisoned: AtomicBool,
+    // None is terminal; publication and failure share one synchronized push state.
+    changed: watch::Sender<Option<u64>>,
+    // Model-only mutation control at the production persist wake site.
+    #[cfg(acyclic_loom)]
+    omit_persist_wake: bool,
+    // Lock order: visibility -> durable_tails, after releasing provider state and journal.
+    durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
 }
 
 impl LocalInner {
@@ -20,10 +26,18 @@ impl LocalInner {
     }
 
     fn poison(&self) -> StreamError {
-        self.poisoned.store(true, Ordering::Release);
+        self.changed.send_replace(None);
         // Wake every caller waiting for a flush, so it sees the poison.
         self.synced.send_modify(|_| {});
         StreamError::Unavailable
+    }
+
+    fn published(&self) {
+        self.changed.send_modify(|revision| {
+            if let Some(revision) = revision {
+                *revision = revision.saturating_add(1);
+            }
+        });
     }
 
     /// Records that every frame through `target` is durable.

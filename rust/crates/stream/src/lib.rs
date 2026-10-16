@@ -9,8 +9,12 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod follow_tests;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_tests;
 pub mod http_response;
 pub mod persistence;
 pub mod preparation;
@@ -32,6 +36,8 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")
@@ -43,6 +49,11 @@ pub use browser::{BrowserStream, BrowserStreamLimits};
 mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
+
+#[cfg(all(acyclic_loom, feature = "local"))]
+#[path = "memory/recovery_model.rs"]
+/// Bounded schedule verification of production query concurrency paths.
+pub mod verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;

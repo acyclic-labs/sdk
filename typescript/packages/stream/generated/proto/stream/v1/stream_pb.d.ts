@@ -548,6 +548,12 @@ export declare type CommitCondition = Message<"acyclic.stream.v1.CommitCondition
      */
     value: AbsentCondition;
     case: "absent";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v1.HeadCondition head = 3;
+     */
+    value: HeadCondition;
+    case: "head";
   } | { case: undefined; value?: undefined };
 };
 
@@ -556,6 +562,32 @@ export declare type CommitCondition = Message<"acyclic.stream.v1.CommitCondition
  * Use `create(CommitConditionSchema)` to create a new message.
  */
 export declare const CommitConditionSchema: GenMessage<CommitCondition>;
+
+/**
+ * @generated from message acyclic.stream.v1.HeadCondition
+ */
+export declare type HeadCondition = Message<"acyclic.stream.v1.HeadCondition"> & {
+  /**
+   * @generated from field: string path = 1;
+   */
+  path: string;
+
+  /**
+   * @generated from field: uint64 expected = 2;
+   */
+  expected: bigint;
+
+  /**
+   * @generated from field: bytes commit_id = 3;
+   */
+  commitId: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.stream.v1.HeadCondition.
+ * Use `create(HeadConditionSchema)` to create a new message.
+ */
+export declare const HeadConditionSchema: GenMessage<HeadCondition>;
 
 /**
  * @generated from message acyclic.stream.v1.AppendMutation
@@ -853,6 +885,12 @@ export declare type CommitConflict = Message<"acyclic.stream.v1.CommitConflict">
      */
     value: ExistsCommitConflict;
     case: "exists";
+  } | {
+    /**
+     * @generated from field: acyclic.stream.v1.HeadCommitConflict head = 4;
+     */
+    value: HeadCommitConflict;
+    case: "head";
   } | { case: undefined; value?: undefined };
 };
 
@@ -861,6 +899,32 @@ export declare type CommitConflict = Message<"acyclic.stream.v1.CommitConflict">
  * Use `create(CommitConflictSchema)` to create a new message.
  */
 export declare const CommitConflictSchema: GenMessage<CommitConflict>;
+
+/**
+ * @generated from message acyclic.stream.v1.HeadCommitConflict
+ */
+export declare type HeadCommitConflict = Message<"acyclic.stream.v1.HeadCommitConflict"> & {
+  /**
+   * @generated from field: string path = 1;
+   */
+  path: string;
+
+  /**
+   * @generated from field: bytes expected = 2;
+   */
+  expected: Uint8Array;
+
+  /**
+   * @generated from field: bytes actual = 3;
+   */
+  actual: Uint8Array;
+};
+
+/**
+ * Describes the message acyclic.stream.v1.HeadCommitConflict.
+ * Use `create(HeadCommitConflictSchema)` to create a new message.
+ */
+export declare const HeadCommitConflictSchema: GenMessage<HeadCommitConflict>;
 
 /**
  * @generated from message acyclic.stream.v1.CommitConflicts

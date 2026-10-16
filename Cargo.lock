@@ -557,6 +557,7 @@ dependencies = [
  "hyper-util",
  "indexed_db_futures",
  "js-sys",
+ "loom",
  "pin-project-lite",
  "proptest",
  "prost",
