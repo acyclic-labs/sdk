@@ -1,15 +1,22 @@
 use super::*;
 use crate::tool::ToolRegistry;
 
-#[tokio::test]
 #[allow(
     clippy::too_many_lines,
     reason = "one actual parent compaction, child capture, retry and publication scenario"
 )]
-async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
+async fn published_summary(
+    inputs: [&[u8]; 3],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<(
+    MemoryHarnessStorage,
+    StreamAggregate<MemoryStream>,
+    crate::fork::ForkSeed,
+    Context,
+    Limits,
+)> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
-    let model = Arc::new(summary_model(5));
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
@@ -35,7 +42,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .stage(
                 last,
                 &format!("turns/{index}/input.txt"),
-                "q".repeat(60_000).as_bytes(),
+                inputs[index],
                 "text/plain",
                 "input.txt",
             )
@@ -69,7 +76,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .stage(
             later,
             "turns/later/input.txt",
-            "r".repeat(60_000).as_bytes(),
+            inputs[2],
             "text/plain",
             "later-input.txt",
         )
@@ -482,8 +489,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         )
         .await?;
     assert_eq!(aggregate.reducer().fork(&seed.child), Some(&seed));
-    assert_summary_child_import(&storage, &aggregate, &seed, &captured, limits).await?;
-    Ok(())
+    Ok((storage, aggregate, seed, captured, limits))
 }
 
 #[allow(
@@ -750,3 +756,18 @@ async fn assert_summary_child_import(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
+    let early = "q".repeat(60_000);
+    let late = "r".repeat(60_000);
+    let (storage, parent, seed, captured, limits) = published_summary(
+        [early.as_bytes(), early.as_bytes(), late.as_bytes()],
+        Arc::new(summary_model(5)),
+    )
+    .await?;
+    assert_summary_child_import(&storage, &parent, &seed, &captured, limits).await
+}
+
+#[path = "summary_round_trips.rs"]
+mod summary_round_trips;
