@@ -15,6 +15,7 @@ use super::{
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::lock_order::{Mutex as RankedMutex, OPERATION, VIEW};
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::{HostRoot, NativeHostWork};
 use crate::sync::{Condvar, Mutex, MutexGuard, RwLock, TryLockError};

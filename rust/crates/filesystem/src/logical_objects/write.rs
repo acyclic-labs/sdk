@@ -123,33 +123,43 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         record_write(work, length)
     }
-    pub(super) async fn publish_batch(
+    pub(super) async fn publish_batch<const HASHED: bool, T, V>(
         &self,
-        writes: &[ObjectWrite],
+        writes: &[T],
+        parts: V,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), crate::FsError>
+    where
+        V: Copy + for<'a> Fn(&'a T) -> (ObjectId, &'a OwnedBytes),
+    {
         work.check()?;
         if writes.is_empty() {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
         let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
-        let (mut unique, unique_custody) = vector::<Option<&ObjectWrite>>(writes.len(), work)?;
+        let (mut unique, unique_custody) = vector::<Option<&T>>(writes.len(), work)?;
         let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
-            self.validate_write(write.object_id, &write.bytes, work)?;
+            let (id, body) = parts(write);
+            if HASHED {
+                // HashedObject already authenticated these immutable bytes.
+                work.check()?;
+                self.limit(body.len() as u64)?;
+            } else {
+                self.validate_write(id, body, work)?;
+            }
             if let Some(previous) = unique
                 .iter()
                 .flatten()
-                .find(|previous| previous.object_id == write.object_id)
+                .find(|previous| parts(previous).0 == id)
             {
-                if previous.bytes != write.bytes {
+                if parts(previous).1 != body {
                     return Err(ObjectStoreError::DigestMismatch.into());
                 }
                 continue;
             }
-            let (request, mut allocation) =
-                put_request(&self.bucket, write.object_id, write.bytes.clone(), work)?;
+            let (request, mut allocation) = put_request(&self.bucket, id, body.clone(), work)?;
             request_bytes = request_bytes
                 .checked_add(request.0.object_key.capacity() as u64)
                 .and_then(|bytes| {
@@ -175,7 +185,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             requests.push(request);
             unique.push(Some(write));
             total = total
-                .checked_add(write.bytes.len() as u64)
+                .checked_add(body.len() as u64)
                 .ok_or(WorkError::Overflow)?;
         }
         work.admit(WorkCounters {
@@ -197,6 +207,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 self.finish_writes(
                     results.map(|value| value.map(|info| info.info().size).map_err(native_error)),
                     &mut unique,
+                    parts,
                     work,
                 )
                 .await
@@ -232,6 +243,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                                 .map_err(ObjectStoreError::LogicalObjects)
                         }),
                         &mut unique,
+                        parts,
                         work,
                     )
                     .await;
@@ -239,22 +251,26 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 result.and(late)
             }
         };
-        let bytes = (unique.capacity() * size_of::<Option<&ObjectWrite>>()) as u64;
+        let bytes = (unique.capacity() * size_of::<Option<&T>>()) as u64;
         drop(unique);
         release(work, unique_custody, bytes)?;
         result?;
         work.check()
     }
-    async fn finish_writes(
+    async fn finish_writes<T, V>(
         &self,
         results: impl ExactSizeIterator<Item = Result<u64, ObjectStoreError>>,
-        unique: &mut [Option<&ObjectWrite>],
+        unique: &mut [Option<&T>],
+        parts: V,
         work: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), crate::FsError>
+    where
+        V: Copy + for<'a> Fn(&'a T) -> (ObjectId, &'a OwnedBytes),
+    {
         let count_valid = results.len() == unique.len();
         let mut failure = None;
         for (write, result) in unique.iter_mut().zip(results) {
-            let length = write.ok_or(ObjectStoreError::Corrupt)?.bytes.len() as u64;
+            let length = parts(write.ok_or(ObjectStoreError::Corrupt)?).1.len() as u64;
             match result {
                 Ok(size) => {
                     record_write(work, length)?;
@@ -279,9 +295,17 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             return Err(error.into());
         }
         for write in unique.iter().flatten() {
-            self.verify_existing(write.object_id, write.bytes.len() as u64, work)
-                .await?;
+            let (id, body) = parts(write);
+            self.verify_existing(id, body.len() as u64, work).await?;
         }
         Ok(())
     }
+}
+
+pub(super) fn raw_parts(write: &ObjectWrite) -> (ObjectId, &OwnedBytes) {
+    (write.object_id, &write.bytes)
+}
+
+pub(super) fn hashed_parts(object: &crate::storage::HashedObject) -> (ObjectId, &OwnedBytes) {
+    (object.object_id(), object.bytes())
 }

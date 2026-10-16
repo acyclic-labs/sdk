@@ -256,3 +256,54 @@ pub fn local_poison_wakes_followers() {
 pub fn local_persist_wakes_parked_followers(omit_wake: bool) {
     crate::local::query_model::persist_wakes_parked_followers(omit_wake);
 }
+
+/// Exhausts the real session registration adapter against accepted-history loss.
+/// `omit_anchor` is the negative control: it bypasses only checked registration.
+///
+/// # Panics
+/// Panics if a recovered history is delivered under the old snapshot's cut.
+pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
+    loom::model(move || {
+        let provider = MemoryStream::default();
+        let (path, anchor) = seed(&provider).unwrap();
+        let replacement = MemoryStream::default();
+        block_on(replacement.append(AppendRequest {
+            path: path.clone(),
+            records: vec![
+                Bytes::from_static(b"replacement"),
+                Bytes::from_static(b"new tail"),
+            ],
+            if_tail: Some(0),
+            idempotency_key: None,
+        }))
+        .unwrap();
+        let recovery = thread::spawn({
+            let provider = provider.clone();
+            move || block_on(recover(&provider, &replacement))
+        });
+        block_on(async {
+            let follow = wire::SessionFollow {
+                path: path.as_str().into(),
+                delivery: wire::SessionDelivery::All as i32,
+            };
+            let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
+            let registered = if omit_anchor {
+                provider.follow(path, cursor.next).await
+            } else {
+                wire_codec::session::follow_records(&provider, &follow, &cursor).await
+            };
+            let error = match registered {
+                Err(error) => error,
+                Ok(mut records) => match records.next().await {
+                    Some(Err(error)) => error,
+                    other => panic!("spliced old snapshot into recovered history: {other:?}"),
+                },
+            };
+            assert!(matches!(
+                error,
+                StreamError::NotFound | StreamError::OutOfRange | StreamError::PrefixNotRetained
+            ));
+        });
+        recovery.join().unwrap().unwrap();
+    });
+}
