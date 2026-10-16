@@ -54,6 +54,7 @@ test("each package dependency precedes its consumer and is prepared exactly once
     const result = actual(rows, selected, code);
     assert.equal(result.length, new Set(result).size);
     for (const name of result) {
+      assert.ok(typeof name === "string");
       const row = rows[names.indexOf(name)];
       for (const next of [...row.refs, ...row.dependencies, ...row.peers]) {
         assert.ok(result.indexOf(names[next]) < result.indexOf(name));
