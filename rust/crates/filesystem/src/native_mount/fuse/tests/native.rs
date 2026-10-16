@@ -439,7 +439,7 @@ pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
                 source: source.clone(),
                 path,
                 file_id: opened.node.file_id,
-                file: std::sync::Mutex::new(None),
+                file: crate::lock_order::Mutex::new(None),
                 _allocation: allocation,
             }))
         },
@@ -651,5 +651,102 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         "last facade drop and the real keeper terminal phase allocate no new controls"
     );
     assert!(original.cancellation().is_cancelled());
+    Ok(())
+}
+
+#[test]
+fn full_case_fold_fuse_preserves_native_names_for_long_expanding_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+    config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
+    let (source, _) = shared_sources(config)?;
+    let source = Arc::new(source);
+    let work = fuse_fixture_work();
+    let long = "ΐ".repeat(100);
+    source.create_file(&name(&long), FileMetadata::default(), None, &work)?;
+    source.write_range(&name(&long), 0, Bytes::from_static(b"body"))?;
+    let projection = super::super::FuseProjection {
+        core: projection_core(
+            source.clone(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?,
+        skips_opendir: false,
+    };
+    let first = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new(&long), &work)?;
+    let inode = first.attr.ino.0;
+    assert_eq!(
+        projection
+            .lookup_entry(ROOT_INODE, std::ffi::OsStr::new(&long), &work)?
+            .attr
+            .ino
+            .0,
+        inode
+    );
+    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let opened = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .file_handle(inode, handle)
+        .map_err(NativeMountError::from)?
+        .open_file
+        .clone();
+    assert_eq!(opened.file(&work)?.read_range(0, 4)?.as_ref(), b"body");
+    projection.rename_name(
+        ROOT_INODE,
+        std::ffi::OsStr::new(&long),
+        ROOT_INODE,
+        std::ffi::OsStr::new("renamed"),
+        0,
+        &work,
+    )?;
+    assert_eq!(
+        projection
+            .core
+            .state()
+            .map_err(NativeMountError::from)?
+            .path(inode)
+            .map_err(NativeMountError::from)?,
+        &name("renamed")
+    );
+    assert!(source.lookup(&name(&long))?.is_none());
+    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let reopened = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .file_handle(inode, handle)
+        .map_err(NativeMountError::from)?
+        .open_file
+        .clone();
+    assert_eq!(reopened.file(&work)?.read_range(0, 4)?.as_ref(), b"body");
+    projection.rename_name(
+        ROOT_INODE,
+        std::ffi::OsStr::new("renamed"),
+        ROOT_INODE,
+        std::ffi::OsStr::new(&long),
+        0,
+        &work,
+    )?;
+    assert_eq!(
+        projection
+            .core
+            .state()
+            .map_err(NativeMountError::from)?
+            .path(inode)
+            .map_err(NativeMountError::from)?,
+        &name(&long)
+    );
+    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let restored = projection
+        .core
+        .state()
+        .map_err(NativeMountError::from)?
+        .file_handle(inode, handle)
+        .map_err(NativeMountError::from)?
+        .open_file
+        .clone();
+    assert_eq!(restored.file(&work)?.read_range(0, 4)?.as_ref(), b"body");
     Ok(())
 }

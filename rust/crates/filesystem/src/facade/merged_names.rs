@@ -1,5 +1,5 @@
 use super::names::{
-    CASE_FOLD_COLLISION_SCAN_PAGE, folded_binding_collision, name_fold_key, retire_name_owned,
+    CASE_FOLD_COLLISION_SCAN_PAGE, folded_binding_match, name_fold_key, retire_name_owned,
 };
 use super::*;
 
@@ -43,9 +43,10 @@ async fn admit_tree_binding<O: AsyncObjectStore>(
             )?;
             let page = Owned::new(page, allocation, bytes);
             let result = (|| {
-                if folded_binding_collision(
+                if folded_binding_match(
                     name,
                     &folded.0,
+                    false,
                     &[],
                     page.value.entries.iter(),
                     accounting,
