@@ -129,14 +129,24 @@ fn listing_with_tracing() { profile(true); }
 fn profile(tracing: bool) {
     let dispatch = if tracing { tracing::Dispatch::new(tracing_subscriber::registry()) } else { tracing::Dispatch::none() };
     let _dispatch = tracing::dispatcher::set_default(&dispatch);
+    let implementation = std::env::var("HARNESS_DIRECTORY_PROFILE").ok();
+    let implementations: &[bool] = match implementation.as_deref() {
+        Some("before") => &[true],
+        Some("after") => &[false],
+        _ => &[true, false],
+    };
+    let syscalls = std::env::var_os("HARNESS_DIRECTORY_SYSCALLS").is_some();
     for (label, nested, path) in [("distinct", false, "files"), ("nested", true, "files"), ("absent", false, "missing")] {
         let paths = fixture(4096, nested);
-        for legacy in [true, false] {
+        for &legacy in implementations {
             let mut times = Vec::with_capacity(32);
             for _ in 0..32 {
+                if syscalls { eprintln!("DIRECTORY_BEGIN"); }
                 let started = std::time::Instant::now();
                 let page = selected(&paths, path, 1, legacy);
-                times.push(started.elapsed());
+                let elapsed = started.elapsed();
+                if syscalls { eprintln!("DIRECTORY_END"); }
+                times.push(elapsed);
                 std::hint::black_box(page);
             }
             times.sort_unstable();
