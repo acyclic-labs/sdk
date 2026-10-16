@@ -341,14 +341,34 @@ impl<'a> KernelAccounting<'a> {
     /// Checks work before performing it.
     #[inline]
     pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        self.check()?;
         match self {
-            Self::Standalone { work, budget, .. } => work.admit(&delta, budget).map_err(Into::into),
-            Self::BorrowedStandalone { work, budget, .. } => {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.admit(&delta, budget).map_err(Into::into)
+            }
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.admit(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.admit(delta).map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+                // Keep existing ledger failures before caller cancellation,
+                // and caller cancellation before the proposed work's limit.
+                let native = crate::materializer::native_materialization_work_error;
+                state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                cancellation.check()?;
+                state.admit(delta).map_err(native).map_err(Into::into)
+            }),
         }
     }
 

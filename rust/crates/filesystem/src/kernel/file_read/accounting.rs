@@ -54,7 +54,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 reconciled?;
             }
             ReadAllocationStep::CheckCopy(bytes) => {
-                self.accounting.check()?;
                 self.accounting.admit(WorkCounters {
                     bytes_copied: bytes,
                     ..WorkCounters::UNCHARGED

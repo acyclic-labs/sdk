@@ -30,9 +30,12 @@ fn copy_once<const BROKEN: bool>(
         pending: WorkCounters::UNCHARGED,
     };
     if observed
-        .observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(
-            8,
-        ))
+        .observe(super::super::super::codec::ReadAllocationStep::CheckCopy(8))
+        .and_then(|()| {
+            observed.observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(
+                8,
+            ))
+        })
         .is_ok()
     {
         let mut output = [0; 8];
