@@ -18,6 +18,10 @@ const FOLDS: &[(&str, &str)] = &[
 ];
 
 pub fn check(data: &[u8]) {
+    check_with_lowercase_fold(data, false);
+}
+
+pub fn check_with_lowercase_fold(data: &[u8], broken: bool) {
     let limits = VolumeLimits::default();
     if let Ok(text) = std::str::from_utf8(data)
         && let Ok(path) = PortablePath::parse(text, limits)
@@ -83,7 +87,19 @@ pub fn check(data: &[u8]) {
         limits.maximum_component_bytes,
     )
     .unwrap();
-    assert_eq!(name.case_fold_key(), expected.as_bytes());
+    let folded_key = if broken {
+        std::str::from_utf8(name.as_bytes())
+            .unwrap()
+            .to_lowercase()
+            .into_bytes()
+    } else {
+        name.case_fold_key()
+    };
+    assert_eq!(
+        folded_key,
+        expected.as_bytes(),
+        "full Unicode case fold was lost"
+    );
     let folded = LogicalName::new(
         NameEncoding::Utf8,
         expected.into_bytes(),

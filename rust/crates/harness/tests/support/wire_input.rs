@@ -2,6 +2,10 @@ use acyclic_harness::{client::jsonl, wire};
 use prost::Message;
 
 pub fn check(data: &[u8]) {
+    check_with_dropped_generation(data, false);
+}
+
+pub fn check_with_dropped_generation(data: &[u8], broken: bool) {
     if let Ok(frame) = wire::ClientFrame::decode(data) {
         assert_eq!(
             wire::ClientFrame::decode(frame.encode_to_vec().as_slice()).unwrap(),
@@ -41,9 +45,16 @@ pub fn check(data: &[u8]) {
             through_revision: u64::from_le_bytes(number),
         })),
     };
+    let mut decoded = jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap();
+    if broken {
+        let Some(wire::client_frame::Frame::Acknowledge(ack)) = &mut decoded.frame else {
+            unreachable!();
+        };
+        ack.generation.clear();
+    }
     assert_eq!(
-        jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap(),
-        frame
+        decoded, frame,
+        "client JSONL roundtrip changed the generation"
     );
     let frame = wire::ServerFrame {
         frame: Some(wire::server_frame::Frame::Admission(wire::Admission {

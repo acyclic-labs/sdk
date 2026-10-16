@@ -30,3 +30,15 @@ proptest! {
         journal::check(&data);
     }
 }
+
+#[test]
+#[should_panic(expected = "client JSONL roundtrip changed the generation")]
+fn negative_control_detects_dropped_generation() {
+    wire::check_with_dropped_generation(b"generation", true);
+}
+
+#[test]
+#[should_panic(expected = "journal lost a complete committed record")]
+fn negative_control_detects_lost_committed_record() {
+    journal::check_with_dropped_record(b"record", true);
+}

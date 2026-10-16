@@ -30,3 +30,9 @@ proptest! {
         input::check(&data);
     }
 }
+
+#[test]
+#[should_panic(expected = "full Unicode case fold was lost")]
+fn negative_control_detects_lowercase_only_fold() {
+    input::check_with_lowercase_fold(&[1], true);
+}

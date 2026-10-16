@@ -5,6 +5,10 @@ use acyclic_harness::{
 use prost::Message;
 
 pub fn check(data: &[u8]) {
+    check_with_dropped_record(data, false);
+}
+
+pub fn check_with_dropped_record(data: &[u8], broken: bool) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state");
     std::fs::write(&path, data).unwrap();
@@ -60,7 +64,14 @@ pub fn check(data: &[u8]) {
             store.append(record).unwrap();
             ends.push(std::fs::metadata(&path).unwrap().len() as usize);
         }
-        assert_eq!(store.load().unwrap(), records);
+        let mut recovered = store.load().unwrap();
+        if broken {
+            recovered.pop();
+        }
+        assert_eq!(
+            recovered, records,
+            "journal lost a complete committed record"
+        );
     }
     let bytes = std::fs::read(&path).unwrap();
     let choice = data.iter().fold(0usize, |choice, &byte| {
