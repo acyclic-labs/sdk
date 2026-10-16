@@ -43,6 +43,8 @@ mod commands;
 pub use commands::*;
 mod mentions;
 pub use mentions::*;
+mod diff;
+pub use diff::*;
 mod notifications;
 pub use notifications::*;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

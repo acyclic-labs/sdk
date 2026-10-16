@@ -11,6 +11,13 @@ use acyclic_harness::{
 use serde_json::{Value, json};
 
 #[cfg(not(target_arch = "wasm32"))]
+mod client_command_parser;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/client/commands/parse.rs"]
+mod command_parse;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../src/context/discovery/frontmatter.rs"]
+mod frontmatter;
 mod client_command_files;
 #[cfg(not(target_arch = "wasm32"))]
 mod client_command_parity;
