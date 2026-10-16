@@ -1,11 +1,24 @@
 #![no_main]
 
 use acyclic_harness::{
-    context::ContextManifest, conversation::Limits, filesystem::ModelTaskCommand,
+    context::{ContextDiscoveryLimits, ContextManifest},
+    conversation::Limits,
+    filesystem::ModelTaskCommand,
 };
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
+    for instruction_bytes in [0, 1, 16, 4096] {
+        let bounds = ContextDiscoveryLimits {
+            instruction_bytes,
+            ..Default::default()
+        };
+        if bounds.validate_instruction(input).is_ok() {
+            assert!(instruction_bytes > 0 && input.len() as u64 <= instruction_bytes);
+            assert!(!input.contains(&0));
+            assert_eq!(std::str::from_utf8(input).unwrap().as_bytes(), input);
+        }
+    }
     let limits = Limits {
         render_bytes: 4096,
         file_bytes: 4096,

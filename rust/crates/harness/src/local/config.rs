@@ -72,7 +72,7 @@ impl LocalHarnessConfig {
         self.project = LocalProject::Volume { directory, volume };
         self
     }
-    /// Selects the immutable context manifest retained with each submitted turn.
+    /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
     #[must_use]
     pub fn context_manifest(mut self, reference: crate::conversation::FileRef) -> Self {
         self.context_manifest = Some(reference);

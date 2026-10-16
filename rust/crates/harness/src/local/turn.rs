@@ -45,7 +45,10 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let model = crate::filesystem::ModelTaskCommand {
-            context_manifest: self.context_manifest.clone(),
+            context_manifest: match &self.context_manifest {
+                Some(reference) => reference.clone(),
+                None => self.stage_context_manifest(operation).await?,
+            },
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -69,7 +72,7 @@ impl LocalHarness {
         self.finish_turn_inputs(operation, payload).await
     }
 
-    fn input_publisher(
+    pub(super) fn input_publisher(
         &self,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
@@ -268,28 +271,4 @@ fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
-}
-
-// One content-addressed default file per effective catalog, shared by every
-// prompt opened with that catalog. Admission retains its exact immutable ref.
-pub(super) async fn default_manifest(
-    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
-    tools: &ToolRegistry,
-    limits: Limits,
-) -> Result<crate::conversation::FileRef> {
-    let manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
-    let bytes = manifest.encode(limits)?;
-    let digest = blake3::hash(&bytes);
-    let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());
-    Ok(publisher
-        .stage_once(
-            operation,
-            &format!("inputs/context/{digest}.json"),
-            &bytes,
-            "application/json",
-            "context-manifest.json",
-            None,
-        )?
-        .await?
-        .0)
 }

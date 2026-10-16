@@ -28,6 +28,7 @@ mod admission;
 mod checkout_tools;
 mod compaction;
 mod config;
+mod context;
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
 mod owner;
@@ -61,7 +62,7 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context_manifest: crate::conversation::FileRef,
+    context_manifest: Option<crate::conversation::FileRef>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -253,20 +254,6 @@ impl LocalHarness {
                 )
                 .await?,
             );
-            let context_manifest = match config.context_manifest {
-                Some(reference) => reference,
-                None => {
-                    let publisher = FilesystemContentPublisher::new(
-                        files.clone(),
-                        &journal,
-                        &verifier,
-                        &signed,
-                        config.limits.file_bytes,
-                        None,
-                    )?;
-                    turn::default_manifest(publisher.as_ref(), &tools, config.limits).await?
-                }
-            };
             Ok(Self {
                 files,
                 task_files,
@@ -278,7 +265,7 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context_manifest,
+                context_manifest: config.context_manifest,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
