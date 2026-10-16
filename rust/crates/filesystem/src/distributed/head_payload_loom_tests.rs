@@ -120,13 +120,22 @@ fn durable(sequence: u64, previous_digest: Digest, body: &'static [u8]) -> Durab
     record
 }
 
-fn request(suffix: &str, records: Vec<acyclic_stream::OwnedBytes>, key: u8) -> CommitRequest {
+fn request(
+    suffix: &str,
+    records: Vec<acyclic_stream::OwnedBytes>,
+    key: u8,
+    tail: Option<u64>,
+) -> CommitRequest {
+    let path = stream_path(ID, suffix).unwrap();
     CommitRequest {
-        conditions: Vec::new(),
-        mutations: vec![CommitMutation::Append {
-            path: stream_path(ID, suffix).unwrap(),
-            records,
+        conditions: vec![match tail {
+            Some(expected) => CommitCondition::Tail {
+                path: path.clone(),
+                expected,
+            },
+            None => CommitCondition::Absent { path: path.clone() },
         }],
+        mutations: vec![CommitMutation::Append { path, records }],
         idempotency_key: stream_key(b"head-model", &[key]).unwrap(),
     }
 }
@@ -143,7 +152,11 @@ fn model(change: Change, recheck: bool) {
             "/records",
             vec![[GENESIS_DOMAIN, &epoch].concat().into(), first_bytes.into()],
             0,
+            None,
         );
+        initial.conditions.push(CommitCondition::Absent {
+            path: stream_path(ID, "/epochs").unwrap(),
+        });
         initial.mutations.push(CommitMutation::Append {
             path: stream_path(ID, "/epochs").unwrap(),
             records: vec![[EPOCH_DOMAIN, &epoch].concat().into()],
@@ -179,7 +192,7 @@ fn model(change: Change, recheck: bool) {
         let writer_provider = provider.clone();
         let writer = loom::thread::spawn(move || {
             let request = match change {
-                Change::Publish => request("/records", vec![second_bytes.into()], 1),
+                Change::Publish => request("/records", vec![second_bytes.into()], 1, Some(2)),
                 Change::Fence => request(
                     "/epochs",
                     vec![
@@ -188,11 +201,13 @@ fn model(change: Change, recheck: bool) {
                             .into(),
                     ],
                     2,
+                    Some(1),
                 ),
                 Change::Retire => request(
                     "/retirement",
                     vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED)],
                     3,
+                    None,
                 ),
                 Change::Cancel => {
                     cancellation.cancel();
