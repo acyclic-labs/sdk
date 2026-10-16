@@ -6,6 +6,7 @@ import { FilesystemService } from "../packages/filesystem/generated/proto/filesy
 import { BucketsService } from "../packages/objects/generated/proto/objects/v1/objects_pb.js";
 import { MachinesService } from "../packages/machines/generated/proto/machines/v1/machines_pb.js";
 import { createStreamGrpcClient } from "../packages/stream/src/grpc.js";
+import { DefaultStreamProvider } from "../packages/stream/src/default.js";
 import { createFilesystemGrpcClient } from "../packages/filesystem/src/grpc.js";
 import { createObjectsV1GrpcClients } from "../packages/objects/src/v1-grpc.js";
 import { createMachinesGrpcClient } from "../packages/machines/src/grpc.js";
@@ -43,5 +44,32 @@ test("every product gRPC client resolves current credentials and stops on failur
         } finally { release?.(); }
       }
     }), { numRuns: 16 });
+  } finally { await close(); }
+});
+
+test("default Streams selection snapshots providers once and renews through its native client", async () => {
+  const sent: string[] = [];
+  const { endpoint, certificate, close } = await credentialTlsFixture(router => {
+    router.service(StreamService, { tail(_request, context) {
+      sent.push(context.requestHeader.get("authorization") ?? "");
+      return { tail: 7n };
+    } });
+  });
+  try {
+    await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 6 }), async values => {
+      let calls = 0;
+      let reads = 0;
+      const callback = () => values[calls++]!;
+      const options = { endpoint, token: "stale", caCertificate: Buffer.from(certificate), credential: callback };
+      Object.defineProperty(options, "credential", { get: () => ++reads === 1 ? callback : undefined });
+      const client = new DefaultStreamProvider(options);
+      const start = sent.length;
+      for (const _value of values) expect(await client.tail("credential/test")).toBe(7n);
+      expect(sent.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
+      expect(calls).toBe(values.length);
+      expect(reads).toBe(1);
+      await expect(client.tail("credential/test")).rejects.toThrow();
+      expect(sent.length).toBe(start + values.length);
+    }), { numRuns: 8 });
   } finally { await close(); }
 });

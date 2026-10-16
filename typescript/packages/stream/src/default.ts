@@ -14,11 +14,15 @@ export class DefaultStreamProvider implements StreamProvider {
   #selection: ProviderSelection | undefined;
 
   constructor(options: StreamEnvironment) {
+    const endpoint = options.endpoint;
+    const token = options.token;
+    const credential = options.credential;
+    const caCertificate = options.caCertificate;
     this.#options = {
-      endpoint: options.endpoint,
-      ...(options.token === undefined ? {} : { token: options.token }),
-      ...(options.credential === undefined ? {} : { credential: options.credential }),
-      ...(options.caCertificate === undefined ? {} : { caCertificate: options.caCertificate.slice() }),
+      endpoint,
+      ...(token === undefined ? {} : { token }),
+      ...(credential === undefined ? {} : { credential }),
+      ...(caCertificate === undefined ? {} : { caCertificate: caCertificate.slice() }),
     };
   }
 
