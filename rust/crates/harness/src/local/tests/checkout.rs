@@ -42,7 +42,7 @@ async fn an_unmounted_scratch_directory_captures_edits_and_additions() -> Result
         .unwrap()
         .clone();
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state.path())
             .without_default_tools()
             .tool(fs),
@@ -86,7 +86,7 @@ async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::write(directory.path().join("note"), b"ordinary").map_err(super::super::storage)?;
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, text()))?
+        super::checkout_config(directory.path(), (model()?, text()))?
             .state_directory(state.path())
             .without_default_tools(),
     )
@@ -125,7 +125,7 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state_directory.path()),
     )
     .await?;
@@ -255,7 +255,7 @@ async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = text();
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state_directory.path()),
     )
     .await?;

@@ -6,7 +6,7 @@ async fn immediate_reopen_after_drop_and_close_has_no_retiring_fence() -> Result
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let config = || {
-        crate::test_support::local_harness_config(directory.path(), (model()?, text()))
+        super::checkout_config(directory.path(), (model()?, text()))
             .map(|config| config.state_directory(state.path()))
     };
     let harness = LocalHarness::open(config()?).await?;
@@ -80,7 +80,7 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         ("bash", "printf child > note.txt"),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, first.clone()))?
+        super::checkout_config(directory.path(), (model()?, first.clone()))?
             .state_directory(state.path()),
     )
     .await?;
@@ -100,7 +100,7 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         ("fs", "status"),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, resumed.clone()))?
+        super::checkout_config(directory.path(), (model()?, resumed.clone()))?
             .state_directory(state.path()),
     )
     .await?;
@@ -151,7 +151,7 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path()),
     )
     .await?;
@@ -229,7 +229,7 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         ("bash", "echo third"),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path()),
     )
     .await?;
@@ -336,7 +336,7 @@ async fn arriving_directories_remain_watched_after_creation_and_rename() -> Resu
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state.path()),
     )
     .await?;
@@ -373,7 +373,7 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
         ScriptedTurn::Text("done".into()),
     ]);
     let mut harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path()),
     )
     .await?;
@@ -409,11 +409,8 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
         drop(coordinator);
         drop(harness);
         harness = LocalHarness::open(
-            crate::test_support::local_harness_config(
-                directory.path(),
-                (model()?, provider.clone()),
-            )?
-            .state_directory(state.path()),
+            super::checkout_config(directory.path(), (model()?, provider.clone()))?
+                .state_directory(state.path()),
         )
         .await?;
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(

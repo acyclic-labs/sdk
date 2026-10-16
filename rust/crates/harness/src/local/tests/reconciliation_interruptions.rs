@@ -6,10 +6,8 @@ use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn open(path: &Path, state: &Path) -> Result<LocalHarness> {
-    LocalHarness::open(
-        crate::test_support::local_harness_config(path, (model()?, text()))?.state_directory(state),
-    )
-    .await
+    LocalHarness::open(super::checkout_config(path, (model()?, text()))?.state_directory(state))
+        .await
 }
 
 async fn capture(harness: &LocalHarness) -> Result<()> {
@@ -131,7 +129,7 @@ async fn sweep(text: &str) -> Result<()> {
         ScriptedTurn::Text("done".into()),
     ]);
     let mut harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state_directory.path()),
     )
     .await?;
@@ -277,7 +275,7 @@ async fn negative_control(text: &str) -> Result<()> {
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state_directory.path()),
     )
     .await?;

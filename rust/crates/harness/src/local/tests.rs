@@ -30,6 +30,16 @@ fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
+#[cfg(feature = "native-execution")]
+fn checkout_config(
+    workspace: impl Into<std::path::PathBuf>,
+    model: (Model, Arc<dyn ModelProvider>),
+) -> Result<LocalHarnessConfig> {
+    // These scripts exercise filesystem commands, not summary-model requests.
+    Ok(crate::test_support::local_harness_config(workspace, model)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
+}
+
 fn capacity() -> ModelContextCapacity {
     ModelContextCapacity {
         context_tokens: 32_768,

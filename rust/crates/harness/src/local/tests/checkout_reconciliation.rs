@@ -19,7 +19,7 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state.path()),
     )
     .await?;
@@ -90,7 +90,7 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
         ScriptedTurn::Text("done".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+        super::checkout_config(directory.path(), (model()?, provider))?
             .state_directory(state.path()),
     )
     .await?;
@@ -264,7 +264,7 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         ScriptedTurn::Text("resolved".into()),
     ]);
     let harness = LocalHarness::open(
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path())
             .compaction(crate::context::CompactionPolicy::Disabled),
     )
