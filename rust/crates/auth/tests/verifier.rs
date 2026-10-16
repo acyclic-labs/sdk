@@ -147,3 +147,21 @@ fn cached_clock_cannot_predate_birth_and_validity_is_half_open() {
     cap.check(&trust, 999).unwrap();
     assert_eq!(cap.check(&trust, 1000), Err(VerifyError::Time));
 }
+
+#[test]
+fn signed_parser_seed_corpus() {
+    let trust = Snapshot::default();
+    let bytes = root(|_| {});
+    let root = verify(&bytes, &trust, NOW).unwrap();
+    let child = root.attenuate(vec![Caveat { kind: CaveatKind::ExpiresAtUnixSeconds(900) }], &[5;32]).unwrap();
+    let cases = [("root", root.encode()), ("attenuated", child.encode()), ("sealed", child.seal().unwrap().encode())];
+    for (name, bytes) in cases {
+        let parsed = verify(&bytes, &trust, NOW).unwrap();
+        assert_eq!(parsed.encode().as_slice(), bytes.as_slice());
+        // Explicit corpus regeneration shares the same fully signed fixtures.
+        if let Some(directory) = std::env::var_os("AUTH_CORPUS_OUTPUT") {
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(std::path::Path::new(&directory).join(name), bytes.as_slice()).unwrap();
+        }
+    }
+}
