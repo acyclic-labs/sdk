@@ -26,6 +26,8 @@ pub use session::{
 };
 mod transport;
 pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
+mod content;
+mod usage;
 mod views;
 pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
 #[cfg(not(target_arch = "wasm32"))]

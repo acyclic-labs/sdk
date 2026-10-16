@@ -66,6 +66,20 @@ fn admission(command: &wire::CommandEnvelope, state: wire::AdmissionState) -> wi
     }
 }
 
+async fn submit<S: ClientStateStore>(
+    client: &mut HarnessClient<S>,
+    command: wire::CommandEnvelope,
+) -> Result<Vec<wire::Admission>> {
+    let mut responses = Vec::new();
+    client
+        .submit(command, |response| {
+            responses.push(response);
+            Ok(())
+        })
+        .await?;
+    Ok(responses)
+}
+
 #[test]
 fn replay_recovers_projection_and_cursor_and_deduplicates() {
     let mut session = session();
@@ -451,7 +465,7 @@ async fn reconnect_resends_verbatim_and_resumes_the_committed_cut() {
         .await
         .unwrap();
     let command = command();
-    assert!(client.submit(command.clone()).await.is_err());
+    assert!(submit(&mut client, command.clone()).await.is_err());
     assert_eq!(client.session().pending().count(), 1);
     let recovered = ClientSession::open(client.into_session().into_store()).unwrap();
     let mut client = HarnessClient::connect(host.clone(), recovered)
@@ -620,7 +634,7 @@ fn streaming_views_share_tool_identity_and_keep_provider_usage() {
     );
     assert_eq!(
         views.tools["AGGREGATE_KIND_TASK:task"]["call"].output,
-        "first\nsecond\n"
+        tool_text("first\nsecond\n")
     );
     assert_eq!(views.tools["AGGREGATE_KIND_TASK:task"]["call"].name, "bash");
     assert_eq!(views.usage["AGGREGATE_KIND_TASK:task"], usage);
@@ -648,3 +662,16 @@ mod lifecycle;
 
 #[path = "client_session_review.rs"]
 mod review;
+
+fn tool_text(text: &str) -> acyclic_harness::model::ToolResultContent {
+    acyclic_harness::model::ToolResultContent::Parts {
+        parts: vec![acyclic_harness::model::ModelDataPart::Text { text: text.into() }],
+    }
+}
+
+#[path = "support/client_files.rs"]
+#[cfg(feature = "filesystem")]
+mod client_files;
+#[path = "client_session_files.rs"]
+#[cfg(feature = "filesystem")]
+mod files;

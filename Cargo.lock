@@ -331,8 +331,11 @@ name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-harness",
+ "acyclic-stream",
+ "futures",
  "libfuzzer-sys",
  "prost",
+ "serde_json",
  "tempfile",
 ]
 

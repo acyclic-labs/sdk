@@ -2,10 +2,10 @@
 use crate::{Error, Result};
 use std::fs::File;
 
-#[cfg(not(loom))]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) type WriterLock = File;
 
-#[cfg(not(loom))]
+#[cfg(not(acyclic_harness_loom))]
 pub(super) fn acquire(file: File) -> Result<WriterLock> {
     // No nested acquisitions or wait/wakeup protocol: a busy writer returns immediately.
     file.try_lock()
@@ -26,10 +26,12 @@ fn validate(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(loom)]
-pub(super) use modeled::{WriterLock, acquire, disable_exclusion};
+#[cfg(all(acyclic_harness_loom, test))]
+pub(super) use modeled::disable_exclusion;
+#[cfg(acyclic_harness_loom)]
+pub(super) use modeled::{WriterLock, acquire};
 
-#[cfg(loom)]
+#[cfg(acyclic_harness_loom)]
 mod modeled {
     use super::*;
     use loom::sync::Mutex;
@@ -85,6 +87,7 @@ mod modeled {
     }
 
     // Negative control, absent from normal builds: bypass the actual acquisition path.
+    #[cfg(test)]
     pub(crate) fn disable_exclusion() {
         if let Ok(mut locks) = LOCKS.lock() {
             locks.enforce = false;

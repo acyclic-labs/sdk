@@ -40,6 +40,7 @@ pub struct HarnessClient<S> {
     session: ClientSession<S>,
     deliveries: Option<BoxProviderStream<'static, Result<wire::Delivery>>>,
     buffered_delivery: Option<wire::Delivery>,
+    files: Option<Arc<dyn crate::conversation::ContentResidencyVerifier>>,
 }
 
 impl<S: ClientStateStore> HarnessClient<S> {
@@ -66,11 +67,27 @@ impl<S: ClientStateStore> HarnessClient<S> {
             session,
             deliveries: None,
             buffered_delivery: None,
+            files: None,
         })
     }
 
-    /// Queues intent durably before sending it, preserving it after a lost response.
-    pub async fn submit(&mut self, command: wire::CommandEnvelope) -> Result<wire::Admission> {
+    /// Binds the platform filesystem reader used by both live and recovered views.
+    /// Without read authority, content-bearing deliveries fail before cursor commit.
+    pub fn with_files(
+        mut self,
+        files: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    ) -> Self {
+        self.files = Some(files);
+        self
+    }
+
+    /// Queues intent durably and publishes every admission in outbox order,
+    /// including a predecessor that stops draining with an indeterminate outcome.
+    pub async fn submit(
+        &mut self,
+        command: wire::CommandEnvelope,
+        admitted: impl FnMut(wire::Admission) -> Result<()>,
+    ) -> Result<()> {
         let operation_id = command
             .operation
             .as_ref()
@@ -78,23 +95,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
             .operation_id
             .clone();
         self.queue(command)?;
-        let mut response = None;
-        self.drain_outbox(Some(&operation_id), |admission| {
-            response = Some(admission);
-            Ok(())
-        })
-        .await?;
-        let admission = response.ok_or_else(|| Error::Conflict("submission disappeared".into()))?;
-        let actual = admission
-            .operation
-            .as_ref()
-            .ok_or_else(|| Error::Conflict("admission identity missing".into()))?;
-        if actual.operation_id != operation_id {
-            return Err(Error::Indeterminate(crate::OperationId::parse(
-                &actual.operation_id,
-            )?));
-        }
-        Ok(admission)
+        self.drain_outbox(Some(&operation_id), admitted).await
     }
 
     /// Queues a command without starting I/O, for offline use or ordered flushing.
@@ -183,7 +184,11 @@ impl<S: ClientStateStore> HarnessClient<S> {
         delivery: wire::Delivery,
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<wire::Delivery> {
-        self.buffered_delivery = Some(self.session.receive_delivery(delivery, before_commit)?);
+        self.buffered_delivery = Some(
+            self.session
+                .receive_delivery(delivery, self.files.as_deref(), before_commit)
+                .await?,
+        );
         // Maintenance can fail after append; retain the committed frame before it runs.
         self.session.compact_if_needed()?;
         if let Some(delivery) = self.buffered_delivery.as_ref()

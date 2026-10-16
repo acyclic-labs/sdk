@@ -2,6 +2,7 @@
 
 use super::{
     ClientViews,
+    content::MessageContent,
     views::{authority_key, payload},
 };
 use crate::{
@@ -167,11 +168,31 @@ impl<S: ClientStateStore> ClientSession<S> {
         Ok(acknowledge)
     }
 
-    pub(super) fn receive_delivery(
+    /// Resolves canonical files, publishes the complete frame, then commits its cursor.
+    /// File and validation failures leave the views and durable cut unchanged.
+    pub async fn receive_delivery(
         &mut self,
         delivery: wire::Delivery,
+        files: Option<&dyn crate::conversation::ContentResidencyVerifier>,
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<wire::Delivery> {
+        let authority = valid_authority(delivery.authority.as_ref())?;
+        let view_revision = self.view_revision(authority);
+        let mut messages = Vec::with_capacity(delivery.events.len());
+        for event in &delivery.events {
+            let payload = payload(event)?;
+            let content = if event.revision > view_revision {
+                if let crate::core::EventPayload::ConversationMessageAppended { message } = &payload
+                {
+                    MessageContent::read(message, files).await?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            messages.push((payload, content));
+        }
         let record = SessionRecord {
             request: None,
             response: Some(wire::ServerFrame {
@@ -185,7 +206,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         else {
             return Err(Error::Storage("delivery record missing".into()));
         };
-        self.deliver(delivery, &record, true, before_commit)?;
+        self.deliver(delivery, &record, true, messages, before_commit)?;
         match record.response.and_then(|response| response.frame) {
             Some(wire::server_frame::Frame::Delivery(delivery)) => Ok(delivery),
             _ => Err(Error::Storage("delivery record missing".into())),
@@ -330,7 +351,29 @@ impl<S: ClientStateStore> ClientSession<S> {
                     self.admit(admission, record, persist)?;
                 }
                 Some(wire::server_frame::Frame::Delivery(delivery)) => {
-                    self.deliver(delivery, record, persist, |_| Ok(()))?;
+                    let messages = delivery
+                        .events
+                        .iter()
+                        .map(|event| {
+                            let payload = payload(event)?;
+                            if persist
+                                && event.revision
+                                    > self.view_revision(valid_authority(
+                                        delivery.authority.as_ref(),
+                                    )?)
+                                && let crate::core::EventPayload::ConversationMessageAppended {
+                                    message,
+                                } = &payload
+                                && MessageContent::requires_files(message)
+                            {
+                                return Err(Error::Unsupported(
+                                    "message projection requires a filesystem provider".into(),
+                                ));
+                            }
+                            Ok((payload, None))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    self.deliver(delivery, record, persist, messages, |_| Ok(()))?;
                 }
                 _ => return Err(Error::Invalid("unsupported client journal response".into())),
             },
@@ -471,6 +514,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         delivery: &wire::Delivery,
         record: &SessionRecord,
         persist: bool,
+        messages: Vec<(crate::core::EventPayload, Option<MessageContent>)>,
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<()> {
         let authority = valid_authority(delivery.authority.as_ref())?;
@@ -488,7 +532,6 @@ impl<S: ClientStateStore> ClientSession<S> {
         }
         let mut revision = delivery.from_revision;
         let protocol = current_protocol();
-        let mut payloads = Vec::with_capacity(delivery.events.len());
         for event in &delivery.events {
             revision = revision
                 .checked_add(1)
@@ -501,7 +544,6 @@ impl<S: ClientStateStore> ClientSession<S> {
                     "delivery event identity or sequence mismatch".into(),
                 ));
             }
-            payloads.push(payload(event)?);
         }
         if revision != delivery.through_revision {
             return Err(Error::Conflict("delivery is not contiguous".into()));
@@ -522,6 +564,17 @@ impl<S: ClientStateStore> ClientSession<S> {
                 "delivery does not follow view cursor".into(),
             ));
         }
+        let skip = delivery
+            .events
+            .iter()
+            .take_while(|event| event.revision <= view_revision)
+            .count();
+        let usage = if persist {
+            self.views
+                .prepare_usage(authority, messages.iter().skip(skip))?
+        } else {
+            None
+        };
         before_commit(
             record
                 .response
@@ -534,10 +587,17 @@ impl<S: ClientStateStore> ClientSession<S> {
         // Recovery reads only durable metadata. Replaying history rehydrates the
         // projection without re-appending or moving the durable cursor backwards.
         if persist && delivery.through_revision > view_revision {
-            for (event, payload) in delivery.events.iter().zip(payloads) {
-                if event.revision > view_revision {
-                    self.views.apply(authority, &event.operation_id, payload);
-                }
+            for (event, (payload, content)) in delivery
+                .events
+                .iter()
+                .skip(skip)
+                .zip(messages.into_iter().skip(skip))
+            {
+                self.views
+                    .apply(authority, &event.operation_id, payload, content);
+            }
+            if let Some((usage, total)) = usage {
+                self.views.set_usage(authority, usage, total);
             }
             self.view_revisions.insert(key.clone(), revision);
         }

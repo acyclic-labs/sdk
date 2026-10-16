@@ -1,5 +1,5 @@
 //! Production journal with its crate-local file-lock shim instrumented by loom.
-#![cfg(loom)]
+#![cfg(acyclic_harness_loom)]
 use acyclic_harness::{
     Error, Result,
     client::{ClientSession, ClientStateStore, SessionRecord},
@@ -14,8 +14,8 @@ use loom::{
 
 #[path = "support/client_command.rs"]
 mod client_command;
-// Compile both production files, selecting loom only for this test crate. Dependencies
-// retain their normal configuration; no Tokio dependency synchronization is modeled.
+// Compile the production path with the dedicated acyclic_harness_loom cfg.
+// The crate-local shim instruments exclusion; no Tokio locks are assumed modeled.
 #[path = "../src/client/journal.rs"]
 mod journal;
 #[path = "../src/client/journal_lock.rs"]
