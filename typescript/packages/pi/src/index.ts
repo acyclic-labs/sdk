@@ -31,7 +31,7 @@ export function piProvider<Request, Event>(bridge: PiBridge<Request, Event>): Mo
       }
       return bridge.contextCapacity(model);
     },
-    countTokens(request) {
+    async countTokens(request) {
       if (bridge.countTokens === undefined) {
         throw new TypeError("Pi provider requires explicit token accounting");
       }

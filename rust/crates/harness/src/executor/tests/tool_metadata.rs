@@ -68,3 +68,77 @@ fn reverse_scan_negative_control_selects_the_wrong_steps_signature() {
     assert_eq!(correct["signature"], "first");
     assert_ne!(correct, broken);
 }
+
+#[tokio::test]
+async fn complete_batch_keeps_each_signature_through_execution_and_replay() -> Result<()> {
+    let calls: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|id| {
+            crate::model::ToolCall::new(id.into(), "example.echo".into(), json!({"value":id}))
+                .with_metadata(json!({"signature":format!("signed-{id}")}))
+        })
+        .collect();
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn(calls.iter().cloned().map(ModelEvent::ToolCall)),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count),
+    );
+    let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "exact".into(), "1".into(), json!({}))?,
+        model.clone(),
+        ContextPipeline::default(),
+        echo_tools(
+            tool.clone(),
+            json!({"type":"object"}),
+            json!({}),
+            crate::tool::json_projection_schema(json!({})),
+        )?,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        None,
+    )?;
+    let journal = Journal::default();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("user".into()),
+        selected_context: None,
+        max_steps: 4,
+    };
+    let output = executor.execute(input.clone(), &journal).await?;
+    assert_eq!(output.text, "done");
+    let followup = model.requests()[1].clone();
+    let projected: Vec<_> = followup
+        .messages
+        .iter()
+        .flat_map(|m| m.content.parts())
+        .filter_map(|p| match p {
+            ModelContentPart::ToolCall(call) => Some(call.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(projected, calls);
+    let events = journal.0.lock().unwrap().clone();
+    for event in events {
+        if let ExecutionEvent::ToolStarted {
+            call_id,
+            invocation,
+            ..
+        } = event.event
+        {
+            let bytes = journal.load(&invocation, None)?.await?;
+            let recorded: crate::tool::RecordedInvocation = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(recorded.metadata["signature"], format!("signed-{call_id}"));
+        }
+    }
+    assert_eq!(executor.execute(input, &journal).await?, output);
+    assert_eq!(tool.0.load(Ordering::SeqCst), 2);
+    assert_eq!(model.requests().len(), 2);
+    Ok(())
+}

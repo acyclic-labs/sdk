@@ -351,7 +351,9 @@ fn settle_turn(
     if let Some(parent) = turn_outcome_parent(message) {
         by_id.entry(parent).or_default().1.get_or_insert(position);
     }
-    if (message.kind == MessageKind::Assistant || turn_outcome_parent(message).is_some())
+    if ((message.kind == MessageKind::Assistant
+        && !message.extensions.contains_key("acyclic.model.reasoning"))
+        || turn_outcome_parent(message).is_some())
         && *pending_user == message.reply_to
     {
         *pending_user = None;

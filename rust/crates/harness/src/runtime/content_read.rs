@@ -106,7 +106,7 @@ where
 }
 
 impl TaskContext {
-    pub(super) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+    pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         self.output_content
             .as_ref()
             .filter(|binding| {

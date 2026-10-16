@@ -147,10 +147,12 @@ impl TaskContext {
         } else {
             request
         };
-        let input_tokens = binding
-            .provider
-            .count_tokens(&request)?
-            .validate(&request, &mut None)?;
+        let counting = binding.provider.count_tokens(&request);
+        let counted = match deadline {
+            Some(deadline) => crate::live::timeout_until(deadline, counting).await?,
+            None => counting.await,
+        }?;
+        let input_tokens = counted.validate(&request, &mut None)?;
         if input_tokens
             .checked_add(u64::from(output_tokens))
             .is_none_or(|total| total > u64::from(capacity.context_tokens))

@@ -30,12 +30,12 @@ fn sampling_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedMode
             output_tokens: 1024,
         })
         .with_token_counter(|request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(request.bytes().len())
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("byte-model request overflow".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+                vec![0; request.request().messages.len()],
+            ))
         })
 }
 

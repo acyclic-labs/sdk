@@ -208,12 +208,14 @@ fn task_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedModelPro
             let fixed = serde_json::to_vec(&request.request().tools)
                 .map_err(|error| Error::Invalid(error.to_string()))?
                 .len();
-            Ok(acyclic_harness::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(fixed)
-                    .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
-                message_tokens,
-            })
+            Ok(
+                acyclic_harness::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    u32::try_from(fixed)
+                        .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+                    message_tokens,
+                ),
+            )
         })
 }
 

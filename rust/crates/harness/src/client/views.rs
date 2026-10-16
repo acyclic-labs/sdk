@@ -264,6 +264,7 @@ impl ClientViews {
                     tool_call(tool, name, arguments);
                 }
             }
+            ModelEvent::ReasoningBlock { .. } => {}
             ModelEvent::Completed { metadata } => {
                 let message = crate::conversation::assistant_message_id(turn);
                 if self.transcripts.get(&key).is_some_and(|transcript| {

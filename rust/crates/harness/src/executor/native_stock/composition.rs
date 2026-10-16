@@ -8,11 +8,12 @@ pub(crate) struct NativeStockExecutor {
 }
 
 impl NativeStockExecutor {
-    /// Copies main's stock configuration after validating its issued task binding.
+    /// Consumes the command's funded registry; its original PreparationIo retains
+    /// that custody until this executor is dropped. Copies the remaining configuration.
     pub(crate) fn new(
         model: (&Model, Arc<dyn ModelProvider>),
         pipeline: &ContextPipeline,
-        tools: &ToolRegistry,
+        tools: ToolRegistry,
         binding: (
             Arc<crate::runtime::TaskContext>,
             OperationId,
@@ -76,8 +77,6 @@ impl NativeStockExecutor {
         )?)?;
         let model = crate::model::clone_model(model, Some(&io))?;
         let pipeline = pipeline.copy(Some(&io))?;
-        let (tools, custody) = tools.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
         let (fence, custody) = fence.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
         let (scope, custody) = context.scope().clone_with_native_work(work)?;

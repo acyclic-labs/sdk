@@ -244,9 +244,10 @@ pub fn admit_model_event(
         ModelEvent::Content { delta } => prior_text_bytes
             .checked_add(delta.len() as u64)
             .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
-        ModelEvent::Reasoning { .. } | ModelEvent::ToolCall(_) | ModelEvent::Completed { .. } => {
-            prior_text_bytes
-        }
+        ModelEvent::Reasoning { .. }
+        | ModelEvent::ReasoningBlock { .. }
+        | ModelEvent::ToolCall(_)
+        | ModelEvent::Completed { .. } => prior_text_bytes,
     };
     if text_bytes > limits.file_bytes {
         return Err(JsValue::from_str("assistant output exceeds file limit"));

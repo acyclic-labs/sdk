@@ -300,6 +300,11 @@ impl ModelContentPart {
                 file: file.clone_in_quota(quota)?,
                 policy: policy.copy_fields(quota)?,
             },
+            Self::Reasoning { block } => Self::Reasoning {
+                block: crate::core::copy(block, quota, |value: &ReasoningBlock, _| {
+                    value.payload_bytes()
+                })?,
+            },
             Self::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
