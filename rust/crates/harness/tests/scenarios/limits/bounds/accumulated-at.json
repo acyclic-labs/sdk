@@ -1,0 +1,3 @@
+{"limits":{"file_bytes":4},"turns":[[{"type":"event","kind":"content","delta":"ab"},{"type":"event","kind":"content","delta":"cd"},{
+  "type":"event","kind":"completed","metadata":null}]],"expect":{"text":"abcd","events":[{"kind":"model","event":{"kind":"content",
+  "delta":"ab"}},{"kind":"model","event":{"kind":"content","delta":"cd"}},{"kind":"model","event":{"kind":"completed"}}]}}

@@ -1,6 +1,6 @@
 //! Drafts are plain UTF-8 files, one injected private-volume path per item.
 //! History is a JSON array in the user's volume. Live-query consumers fold
-//! snapshots through `Editor::set_text`, `parse_history` and `InputKeymap::from_json`.
+//! snapshots through `Editor::set_text`, `parse_history` and `InputKeymap::parse`.
 
 use crate::{Editor, PromptHistory};
 use std::{

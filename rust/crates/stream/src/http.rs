@@ -1,5 +1,6 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
 use crate::{http_codec, http_validation, wire_codec, *};
+pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -9,8 +10,10 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{collections::VecDeque, net::IpAddr, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 use tracing::{Span, field::Empty};
+mod session;
+mod shared;
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -22,8 +25,12 @@ pub struct ConnectError;
 pub struct HttpStream {
     client: Client,
     endpoint: Url,
-    authorization: HeaderValue,
+    authorization: Option<HeaderValue>,
+    credential: Option<CredentialProvider>,
     maximum: usize,
+    sessions: Arc<crate::query_sync::SyncMutex<Option<crate::grpc::Client>>>,
+    session_endpoint: tonic::transport::Endpoint,
+    session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
 }
 impl HttpStream {
     /// Acknowledges an opaque hosted transport receipt.
@@ -43,10 +50,30 @@ impl HttpStream {
     ) -> Result<Self, ConnectError> {
         Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
     }
+    /// Resolve the current credential immediately before each physical request.
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ConnectError> {
+        Self::build(endpoint, None, Some(credential), maximum, ca)
+    }
+
     /// Extends system trust with a caller-supplied PEM CA certificate.
     pub fn with_ca_certificate(
         endpoint: &str,
         token: &str,
+        maximum: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ConnectError> {
+        Self::build(endpoint, Some(token), None, maximum, ca)
+    }
+
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
         maximum: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
@@ -64,8 +91,6 @@ impl HttpStream {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.len() > crate::MAX_BEARER_TOKEN_BYTES
             || maximum == 0
         {
             return Err(ConnectError);
@@ -73,9 +98,7 @@ impl HttpStream {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let mut authorization =
-            HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
-        authorization.set_sensitive(true);
+        let authorization = token.map(credential_header).transpose()?;
         let mut client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
@@ -87,13 +110,30 @@ impl HttpStream {
                 reqwest::Certificate::from_pem(ca).map_err(|_| ConnectError)?,
             );
         }
+        let (session_endpoint, session_verifier) = session::session_endpoint(&endpoint, ca)?;
         Ok(Self {
             client: client.build().map_err(|_| ConnectError)?,
             endpoint,
             authorization,
+            credential,
             maximum,
+            sessions: Arc::new(crate::query_sync::SyncMutex::new(None)),
+            session_endpoint,
+            session_verifier,
         })
     }
+    async fn authorization(&self) -> Result<HeaderValue, StreamError> {
+        if let Some(provider) = &self.credential {
+            let token = provider
+                .resolve()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
+            credential_header(&token).map_err(|_| StreamError::AccessDenied)
+        } else {
+            self.authorization.clone().ok_or(StreamError::AccessDenied)
+        }
+    }
+
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         self.request_json(route, move || http_codec::encode(route, &bytes))
             .await
@@ -139,7 +179,7 @@ impl HttpStream {
         let mut response = self
             .client
             .post(url)
-            .header(AUTHORIZATION, self.authorization.clone())
+            .header(AUTHORIZATION, self.authorization().await?)
             .header("content-type", "application/json")
             .body(body)
             .send()
@@ -181,16 +221,12 @@ impl HttpStream {
         http_validation::validate(route, &value).map_err(|_| StreamError::Unavailable)?;
         Ok(value)
     }
-    async fn read_page(
-        &self,
-        request: ReadRequest,
-        check_empty: bool,
-    ) -> Result<Vec<Record>, StreamError> {
+    async fn read_page(&self, request: ReadRequest) -> Result<Vec<Record>, StreamError> {
         let from = request.from;
         let limit = request.limit;
         let path = request.path.clone();
         // Streams never shrink. Establish cursor validity before the read,
-        if check_empty && from > self.tail(path).await? {
+        if from > self.tail(path).await? {
             return Err(StreamError::OutOfRange);
         }
         let response = self
@@ -291,102 +327,6 @@ impl HttpStream {
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
-    // Keep clock control local to follow: HTTP request deadlines retain their real
-    async fn follow_with_delay<D, F>(
-        &self,
-        path: StreamPath,
-        from: u64,
-        delay: D,
-    ) -> Result<RecordStream, StreamError>
-    where
-        D: FnMut(Duration) -> F + Send + 'static,
-        F: std::future::Future<Output = ()> + Send + 'static,
-    {
-        let mut observation = FollowObservation::new(from);
-        let context = (!observation.span.is_disabled())
-            .then(|| obs::OperationSpan::new(observation.span.clone()));
-        let tail = self.tail(path.clone());
-        let tail = match &context {
-            Some(context) => context.scope(tail),
-            None => obs::Scoped::new(tail, tracing::dispatcher::get_default(Clone::clone)),
-        }
-        .await;
-        match tail {
-            Ok(tail) if from <= tail => {}
-            Ok(_) => {
-                observation.failed(&StreamError::OutOfRange);
-                return Err(StreamError::OutOfRange);
-            }
-            Err(error) => {
-                observation.failed(&error);
-                return Err(error);
-            }
-        }
-        observation.span.record("phase", "consumer");
-        let follow = stream::try_unfold(
-            (
-                self.clone(),
-                path,
-                from,
-                VecDeque::<Record>::new(),
-                delay,
-                observation,
-            ),
-            |(provider, path, mut next, mut queued, mut delay, mut observation)| async move {
-                let result = async {
-                    loop {
-                        if let Some(record) = queued.pop_front() {
-                            next = record
-                                .sequence
-                                .checked_add(1)
-                                .ok_or(StreamError::Unavailable)?;
-                            if !observation.span.is_disabled() {
-                                observation
-                                    .span
-                                    .record("rev", next)
-                                    .record("queued", queued.len())
-                                    .record("phase", "consumer");
-                            }
-                            return Ok(record);
-                        }
-                        observation.span.record("phase", "read");
-                        let poll = obs::OperationSpan::new(tracing::trace_span!(
-                            "acyclic.stream.http.follow.poll"
-                        ));
-                        queued = poll
-                            .scope(provider.read_page(
-                                ReadRequest {
-                                    path: path.clone(),
-                                    from: next,
-                                    limit: 256,
-                                },
-                                false,
-                            ))
-                            .await?
-                            .into();
-                        observation.span.record("queued", queued.len());
-                        if queued.is_empty() {
-                            observation.span.record("phase", "sleep");
-                            let sleep = obs::OperationSpan::new(tracing::debug_span!(
-                                "acyclic.stream.http.follow.sleep",
-                                delay_ms = 250_u64
-                            ));
-                            sleep.scope(delay(Duration::from_millis(250))).await;
-                        }
-                    }
-                }
-                .await;
-                if let Err(error) = &result {
-                    observation.failed(error);
-                }
-                Ok(Some((
-                    result?,
-                    (provider, path, next, queued, delay, observation),
-                )))
-            },
-        );
-        Ok(obs::Scoped::with_context(follow, context).boxed())
-    }
     async fn commit_request(
         &self,
         request: CommitRequest,
@@ -447,6 +387,7 @@ impl StreamProvider for HttpStream {
                     "tail",
                     wire::TailRequest {
                         path: path.to_string(),
+                        ..Default::default()
                     }
                     .encode_to_vec(),
                 )
@@ -457,6 +398,9 @@ impl StreamProvider for HttpStream {
         Ok(StreamBounds {
             tail: self.tail(path).await?,
         })
+    }
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        self.session_client()?.watermarks(path).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         parse_append(
@@ -483,28 +427,13 @@ impl StreamProvider for HttpStream {
         Ok(result)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        Ok(stream::iter(self.read_page(request, true).await?.into_iter().map(Ok)).boxed())
+        Ok(stream::iter(self.read_page(request).await?.into_iter().map(Ok)).boxed())
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.follow_with_delay(path, from, tokio::time::sleep).await
+        self.session_client()?.follow(path, from).await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let limit = request.limit;
-        let value = self
-            .request(
-                "children",
-                wire::ChildrenRequest {
-                    parent: request.parent.map(|path| path.to_string()),
-                    limit,
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        let children = parse_children(&value)?;
-        if children.len() > limit as usize {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+        self.session_client()?.children(request).await
     }
     async fn children_page(
         &self,
@@ -566,6 +495,15 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
+fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
+    if !acyclic_auth::credential::valid_credential(token) {
+        return Err(ConnectError);
+    }
+    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 // Dropping a pending physical HTTP request cancels that request, independently
 struct HttpObservation {
     span: obs::OperationSpan,
@@ -584,7 +522,61 @@ include!("http/follow.rs");
 
 #[cfg(test)]
 mod tests {
-    use super::HttpStream;
+    use super::{HttpStream, StreamError, wire};
+    use prost::Message;
+
+    #[test]
+    fn http_credentials_are_current_sensitive_and_fail_before_transport() {
+        use acyclic_auth::credential::{CredentialError, CredentialProvider};
+        use futures::{executor::block_on, future};
+        use proptest::prelude::*;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
+            .run(
+                &prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 2..8),
+                |values| {
+                    let expected = values.clone();
+                    let index = Arc::new(AtomicUsize::new(0));
+                    let calls = index.clone();
+                    let provider = HttpStream::with_credential_provider(
+                        "https://fixture.invalid",
+                        CredentialProvider::new(move || {
+                            future::ready(
+                                values
+                                    .get(calls.fetch_add(1, Ordering::Relaxed))
+                                    .cloned()
+                                    .ok_or(CredentialError::Invalid),
+                            )
+                        }),
+                        1024,
+                        None,
+                    )
+                    .unwrap();
+                    for value in &expected {
+                        let header = block_on(provider.authorization()).unwrap();
+                        prop_assert!(header.is_sensitive());
+                        prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
+                    }
+                    prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
+                    let result = block_on(
+                        provider.request(
+                            "tail",
+                            wire::TailRequest {
+                                path: "valid/path".into(),
+                                ..Default::default()
+                            }
+                            .encode_to_vec(),
+                        ),
+                    );
+                    prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
@@ -670,3 +662,5 @@ mod tests {
 
 #[cfg(test)]
 mod http_follow_tests;
+#[cfg(test)]
+mod session_tests;

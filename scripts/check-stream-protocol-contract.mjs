@@ -39,8 +39,8 @@ try {
     assert.equal(messages.has(name), false, `${name} must not be published`);
   }
 
-  const assertFields = (name, expected) => {
-    const message = messages.get(name);
+  const assertFields = (name, expected, selected = messages) => {
+    const message = selected.get(name);
     assert.ok(message, `${name} is missing`);
     assert.deepEqual((message.field ?? []).map(field => [field.name, field.number]), expected);
   };
@@ -49,7 +49,8 @@ try {
     assert.deepEqual(message.reservedRange?.map(range => [range.start, range.end]), numbers);
     assert.deepEqual(message.reservedName, names);
   };
-  assertFields("TailResponse", [["tail", 1]]);
+  assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
+  assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
   assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
   assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
   assertFields("AcknowledgeDeliveryResponse", []);
@@ -71,6 +72,23 @@ try {
     ["fork", 4], ["commit", 7],
   ]);
   assertReserved("IdempotencyObservation", [[5, 6], [6, 7]], ["trim", "delete"]);
+
+  const session = files.find(file => file.name === "stream/v1/session.proto");
+  assert.ok(session, "Session descriptor is missing");
+  const sessionMessages = new Map(session.messageType.map(message => [message.name, message]));
+  const sessionService = session.service.find(item => item.name === "StreamSessionService");
+  assert.deepEqual(sessionService.method.map(method => [method.name, method.clientStreaming, method.serverStreaming]), [["Session", true, true]]);
+  assertFields("SessionFollow", [["path", 1], ["delivery", 2], ["preceding_commit_id", 3]], sessionMessages);
+  assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2]], sessionMessages);
+  assertFields("SessionCursor", [["next", 1], ["opaque", 2]], sessionMessages);
+  assertFields("SessionSubscription", [
+    ["channel", 1], ["resume", 2], ["follow", 10], ["children", 11],
+    ["fs_publications", 12], ["actor_socket", 13], ["actor_call", 14],
+  ], sessionMessages);
+  assertFields("SessionData", [
+    ["after", 1], ["accepted", 2], ["durable", 3], ["record", 10], ["child", 11],
+    ["fs_publication", 12], ["actor_socket", 13], ["actor_call", 14], ["latest_value", 15],
+  ], sessionMessages);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

@@ -81,8 +81,7 @@ impl<S: MaterializationJournalStore>
         }
         let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let state =
-            parking_lot::Mutex::new((Some(journal), None::<S::ActionCompletion<'_>>, false));
+        let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
         let reader = generation
             .workspace()
             .checkout(
@@ -110,24 +109,34 @@ impl<S: MaterializationJournalStore>
             async move {
                 match phase {
                     Before => {
-                        authorized.expect("effect authorization").await?;
-                        let journal = state.lock().0.take().ok_or_else(invalid)?;
-                        self.verify_effect_context(&journal)
-                            .await
-                            .map_err(E::from)?;
-                        let completion = self
-                            .store
-                            .prepare_action(journal)
-                            .await
-                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state.lock() = (None, Some(completion), true);
+                        state
+                            .before(
+                                authorized.expect("effect authorization"),
+                                |journal| async {
+                                    self.check_plan(&journal.plan).map_err(E::from)?;
+                                    self.check_custody(&journal).map_err(E::from)?;
+                                    // Acceptance checks both live tails; the backend
+                                    // separately checks the physical allocation.
+                                    self.verify_allocation(&journal).await.map_err(E::from)?;
+                                    self.store.prepare_action(journal).await.map_err(|error| {
+                                        E::from(MaterializationError::Store(error))
+                                    })
+                                },
+                                invalid,
+                            )
+                            .await?;
                     }
                     Completed => {
-                        let completion = state.lock().1.take().ok_or_else(invalid)?;
-                        let journal = completion
-                            .await
-                            .map_err(|error| E::from(MaterializationError::Store(error)))?;
-                        *state.lock() = (Some(journal), None, false);
+                        state
+                            .completed(
+                                |completion| async {
+                                    completion.await.map_err(|error| {
+                                        E::from(MaterializationError::Store(error))
+                                    })
+                                },
+                                invalid,
+                            )
+                            .await?;
                     }
                 }
                 Ok(())

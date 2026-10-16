@@ -61,6 +61,8 @@ pub use crate::{
 
 mod materialize;
 pub use materialize::materialize_checkout_with_work;
+#[cfg(fuzzing)]
+pub use materialize::verify_native_staging_selection;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout, materialize_checkout_paths,

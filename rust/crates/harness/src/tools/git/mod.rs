@@ -6,12 +6,12 @@ use acyclic_fs::{
     ApplyOptions, CancellationToken, Generation, GitCommand, GitCommandOutput, GitCompatRepository,
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy, GitTreeRef,
     IdempotencyKey, JoinOutcome, LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore,
-    LocalFs, LocalObjectBackend, MaterializeOptions, MemoryMergeResolutionCache,
-    MergeDriverRegistry, OperationId, OperationWindowCoordinator, OperationWindowLease,
-    PublicationPermit, TransactionCommit, WorkBudget, Workspace as FsWorkspace, WorkspaceError,
-    WorkspaceGraph, WorkspacePathApply, WorkspaceRestore, apply_git_patch, blame_git_generations,
-    capture_git_compatible_generation, capture_git_compatible_generation_incremental,
-    git_compatible_diff_counts, grep_git_generation, resolve_merge_plan, walk_git_tree,
+    LocalFs, LocalObjectBackend, MemoryMergeResolutionCache, MergeDriverRegistry, OperationId,
+    OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
+    WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
+    WorkspaceRestore, apply_git_patch, blame_git_generations, capture_git_compatible_generation,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
+    resolve_merge_plan, walk_git_tree,
 };
 use serde_json::json;
 use std::{
@@ -28,8 +28,12 @@ type LocalLazyWorkspace = LazyWorkspace<
     NativeDemandSource,
     LocalCoreStateStore,
 >;
-fn display(error: impl std::fmt::Display) -> crate::Error {
-    crate::Error::Storage(error.to_string())
+fn json_error(source: serde_json::Error) -> Error {
+    Error::NativeJson {
+        code: crate::wire::ErrorCode::Storage,
+        source,
+        custody: None,
+    }
 }
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -37,7 +41,6 @@ fn now_millis() -> u64 {
         .map(|time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
-use crate::filesystem::NativeDirectory;
 mod helpers;
 use acyclic_fs::facade::FsWork as _;
 use helpers::existing_tracked_paths;
@@ -104,6 +107,8 @@ fn committed(
 
 mod commands;
 mod errors;
+mod failure;
+pub use failure::Failure;
 mod executor;
 mod materialize;
 mod resolve;
@@ -112,4 +117,7 @@ pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_g
 pub(crate) use materialize::RootMaterializingGitExecutor;
 
 mod run;
+pub(crate) use run::run_with_guard;
 pub use run::{Output, Workspace, run};
+
+pub(crate) use materialize::publish_checkout_transition;

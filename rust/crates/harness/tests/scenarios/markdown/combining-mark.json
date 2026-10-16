@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"content","delta":"caf"},{"type":"event","kind":"content","delta":
+  "e"},{"type":"event","kind":"content","delta":"́"},{"type":"event","kind":"completed","metadata":null}
+  ]],"expect":{"text":"café","model_events":[{"kind":"content","delta":"caf"},{"kind":"content","delta":
+  "e"},{"kind":"content","delta":"́"},{"kind":"completed","metadata":null}]}}

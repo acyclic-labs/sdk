@@ -138,7 +138,7 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
     assert_eq!(items[0].value, "theme");
     assert_eq!(items[0].description, description);
     let mut input = PromptInput::default();
-    input.keymap = InputKeymap::from_json(r#"{"Ctrl+j":"Enter"}"#)?;
+    input.keymap = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#).unwrap();
     let history = parse_history(r#"["older\rprompt","newer\r\nhistory"]"#)?;
     input.replace_history(history);
     input.committed_text("@dr", 0);

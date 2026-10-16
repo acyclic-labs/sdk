@@ -65,6 +65,11 @@ path = "tests/native_binding_model.rs"
 required-features = ["native-mount"]
 
 [[test]]
+name = "native_stage_loom"
+path = "tests/native_stage_loom.rs"
+required-features = ["native-mount"]
+
+[[test]]
 name = "accounting_reconciliation"
 path = "tests/accounting_reconciliation.rs"
 required-features = ["memory"]
@@ -95,6 +100,7 @@ path = "tests/native_source_watch_custody.rs"
 required-features = ["local", "native-mount"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -239,3 +245,13 @@ name = "projfs_paths"
 path = "benches/projfs_paths.rs"
 harness = false
 required-features = ["native-mount"]
+
+[[bench]]
+name = "object_batches"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "object_batches_alloc"
+harness = false
+required-features = ["memory"]

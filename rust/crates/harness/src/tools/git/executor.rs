@@ -10,7 +10,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
         let snapshot = OperationWindowCoordinator::new(self.fs.operation_window_store())
             .snapshot(lease.workspace_id)
             .await
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let active = match snapshot.phase {
             acyclic_fs::OperationWindowPhase::Active { leases, .. } => {
                 leases.get(&lease.lease_id).is_some_and(|active| {
@@ -59,7 +59,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?
+                        .map_err(Error::from)?
                         .id()
                         != workspace_generation.id()
                 {
@@ -89,11 +89,11 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                     }
                 }
-                .map_err(display)?;
+                .map_err(Error::from)?;
                 let proof = captured
                     .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Captured {
                     tree: GitTreeRef::exact(
                         captured.generation.workspace_id(),
@@ -121,7 +121,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                 .await
                                 .map(|receipt| receipt.value)
                                 .map_err(|failure| failure.error)
-                                .map_err(display)?
+                                .map_err(Error::from)?
                                 .id()
                                 == source.generation
                     }
@@ -131,7 +131,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                 &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                             )
                             .await
-                            .map_err(display)?
+                            .map_err(Error::from)?
                             == *source
                     }
                 };
@@ -155,17 +155,18 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?
+                    .map_err(Error::from)?
                     .id();
                 let workspace = self
                     .lazy_current
                     .fork(
                         &destination,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                        self.permit,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?
+                    .map_err(Error::from)?
                     .0;
                 WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
@@ -174,7 +175,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         fork_generation,
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let workspace_id = workspace.workspace().id();
                 if *switch {
                     *self
@@ -194,12 +195,12 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let tree = GitTreeRef::Lazy(
                     lazy_workspace
                         .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
                         .await
-                        .map_err(display)?,
+                        .map_err(Error::from)?,
                 );
                 *self
                     .switched
@@ -227,7 +228,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                     json!({
                         "from": hex::encode(from.id().digest().as_bytes()),
                         "to": hex::encode(to.id().digest().as_bytes()),
@@ -268,7 +269,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let generation = match self
                     .current
                     .restore_generation(
@@ -278,7 +279,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         self.permit,
                     )
                     .await
-                    .map_err(display)?
+                    .map_err(Error::from)?
                 {
                     WorkspaceRestore::Restored(generation)
                     | WorkspaceRestore::AlreadyRestored(generation)
@@ -316,7 +317,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
                     .await
                     .map(|receipt| receipt.value)
-                    .map_err(|failure| display(failure.error))?;
+                    .map_err(|failure| Error::from(failure.error))?;
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -324,7 +325,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 let initial = plan
                     .apply(options, BTreeMap::new(), self.permit)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let mut projected_conflicts = None;
                 let outcome = if let JoinOutcome::Conflicted {
                     conflicts,
@@ -334,8 +335,8 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     let typed = plan
                         .describe_conflicts(conflicts, truncated)
                         .await
-                        .map_err(display)?;
-                    let typed_json = serde_json::to_string(&typed).map_err(display)?;
+                        .map_err(Error::from)?;
+                    let typed_json = serde_json::to_string(&typed).map_err(json_error)?;
                     let candidate = {
                         let mut cache = self.merge_cache.lock().await;
                         resolve_merge_plan(typed, &self.merge_drivers, &mut *cache, false).map_err(
@@ -353,7 +354,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     let outcome = plan
                         .apply_candidate(options, &candidate, self.permit)
                         .await
-                        .map_err(display)?;
+                        .map_err(Error::from)?;
                     if has_markers {
                         projected_conflicts = Some(typed_json);
                     }
@@ -417,7 +418,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let outcome = self
                     .current
                     .apply_paths_from(
@@ -429,7 +430,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         self.permit,
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let generation = match outcome {
                     WorkspacePathApply::Applied(generation)
                     | WorkspacePathApply::AlreadyApplied(generation)
@@ -446,7 +447,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                     }))
                                     .collect::<Vec<_>>()
                             }))
-                            .map_err(display)?,
+                            .map_err(json_error)?,
                         ));
                     }
                     WorkspacePathApply::Stale(_) => {
@@ -473,7 +474,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 let generation = self.generation(*tree).await?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "archive".to_owned(),
                     value: json!({
@@ -498,10 +499,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     100_000,
                 )
                 .await
-                .map_err(display)?;
+                .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "grep".to_owned(),
-                    value: serde_json::to_value(result).map_err(display)?,
+                    value: serde_json::to_value(result).map_err(json_error)?,
                 })
             }
             GitFilesystemAction::Blame { path, commits } => {
@@ -512,10 +513,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 }
                 let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "blame".to_owned(),
-                    value: serde_json::to_value(lines).map_err(display)?,
+                    value: serde_json::to_value(lines).map_err(json_error)?,
                 })
             }
             GitFilesystemAction::Clean {
@@ -531,7 +532,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 }
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let candidates: Vec<_> = entries
                     .into_iter()
                     .filter(|entry| {
@@ -557,7 +558,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 for path in &candidates {
                     transaction
                         .remove(
@@ -568,7 +569,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?;
+                        .map_err(Error::from)?;
                 }
                 committed(
                     transaction
@@ -589,7 +590,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?,
+                        .map_err(Error::from)?,
                 )
             }
             GitFilesystemAction::ApplyPatch { patch } => committed(
@@ -600,7 +601,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     self.permit,
                 )
                 .await
-                .map_err(display)?,
+                .map_err(Error::from)?,
             ),
             GitFilesystemAction::CheckIgnore { paths, tree } => {
                 let generation = self.generation(*tree).await?;
@@ -614,7 +615,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?
+                        .map_err(Error::from)?
                         .id()
                         != generation.id()
                 {

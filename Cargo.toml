@@ -7,6 +7,7 @@ members = [
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
   "rust/crates/auth",
+  "rust/crates/auth-wasm",
   "rust/crates/conformance",
   "rust/crates/contract-derive",
   "rust/crates/filesystem",
@@ -22,6 +23,7 @@ members = [
   "rust/crates/machines",
   "rust/crates/machines-wasm",
   "rust/crates/machines-daytona",
+  "rust/crates/markdown",
   "rust/crates/native-runtime",
   "rust/crates/objects",
   "rust/crates/objects-wasm",
@@ -52,9 +54,11 @@ blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
 diffy = "0.5.2"
 divan = "0.1.21"
+dirs = "6.0.0"
 bytes = "1.10.1"
 fs2 = "0.4.3"
 futures = "0.3.31"
+getrandom = "0.3.4"
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
@@ -134,7 +138,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)", "cfg(acyclic_harness_loom)", "cfg(acyclic_loom)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"

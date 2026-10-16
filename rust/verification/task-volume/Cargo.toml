@@ -6,7 +6,7 @@ edition = "2024"
 
 # Compile the production projection itself without transport/dev-test dependencies.
 [lib]
-path = "../../crates/harness/src/task_volume/mod.rs"
+path = "lib.rs"
 
 [[test]]
 name = "query-model"
@@ -20,6 +20,7 @@ loom = { version = "0.7.2", features = ["futures"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 uuid = { version = "1.25", features = ["serde", "v4"] }
 
 [workspace]

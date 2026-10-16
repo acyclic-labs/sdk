@@ -1,0 +1,4 @@
+{"folder":".tasks/t/status.json","writes":[{"path":".tasks/u/status.json","text":"other"},{"path":".tasks/t/status.json"
+  ,"text":"running"},{"path":".tasks/t/requests/a.json","text":"run"},{"path":".tasks/t/status.json","text":"done"}],
+  "expect":{"files":{".tasks/t/status.json":"done"},"changes":[null,{"path":".tasks/t/status.json","text":"running"}
+  ,null,{"path":".tasks/t/status.json","text":"done"}]}}

@@ -1,35 +1,3 @@
-struct FollowObservation {
-    span: tracing::Span,
-    terminal: bool,
-}
-impl FollowObservation {
-    fn new(from: u64) -> Self {
-        Self {
-            span: tracing::info_span!(
-                "acyclic.stream.http.follow",
-                rev = from,
-                queued = 0_u64,
-                phase = "tail",
-                terminal = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            ),
-            terminal: false,
-        }
-    }
-    fn failed(&mut self, error: &StreamError) {
-        self.span.record("terminal", "error");
-        obs::failed(&self.span, error.code());
-        self.terminal = true;
-    }
-}
-impl Drop for FollowObservation {
-    fn drop(&mut self) {
-        if !self.terminal {
-            self.span.record("terminal", "dropped");
-        }
-    }
-}
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
     value.as_str().ok_or(StreamError::Unavailable)
 }

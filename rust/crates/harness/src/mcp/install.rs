@@ -139,7 +139,7 @@ impl McpConfig {
         for (server, required, result) in results {
             match result {
                 Ok((additional, grants)) => {
-                    tools = tools.extend(additional)?;
+                    tools.extend(additional)?;
                     capabilities.0.extend(grants.0);
                 }
                 Err(error) if required => return Err(error),
