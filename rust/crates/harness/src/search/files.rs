@@ -283,7 +283,9 @@ where
             Ok(_) => {}
         }
         let dispatch = async {
-            let (request, _input_custody) = request(&input.bytes, work)?;
+            // Tuple fields retire the decoded query before its allocation owner.
+            let input = request(&input.bytes, work)?;
+            let request = &input.0;
             let provider =
                 resolve()?.ok_or_else(|| super::rejection(work, "search is not configured"))?;
             authorize(false).await?;
@@ -294,28 +296,30 @@ where
                         "search provider has no native producer",
                     ));
                 }
-                let (response, custody) = provider.search_with_native_work(&request, work)?.await?;
-                if !custody.work().shares_allocation_context(work)
-                    || custody.bytes() < super::native::response_bytes(&response)?
+                let response = provider.search_with_native_work(request, work)?.await?;
+                if !response.1.work().shares_allocation_context(work)
+                    || response.1.bytes() < super::native::response_bytes(&response.0)?
                 {
                     return Err(super::error(
                         Some(work),
                         "search response lacks original-ledger custody",
                     ));
                 }
-                if response.results.len() > request.max_results as usize {
+                if response.0.results.len() > request.max_results as usize {
                     return Err(super::rejection(
                         Some(work),
                         "search backend exceeded result limit",
                     ));
                 }
                 // Encode before releasing the provider's original allocation.
+                let (response, custody) = response;
                 let outcome = SearchOutcome::Succeeded { response };
                 let encoded = encode(&outcome, Some(work))?;
+                drop(outcome);
                 drop(custody);
                 return Ok(encoded);
             } else {
-                provider.search(&request).await?
+                provider.search(request).await?
             };
             if response.results.len() > request.max_results as usize {
                 return Err(super::rejection(
