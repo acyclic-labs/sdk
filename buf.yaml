@@ -22,8 +22,6 @@ modules:
     excludes:
       - rust/crates/stream/proto/validation
   - path: rust/crates/contract-derive/proto
-deps:
-  - buf.build/googleapis/googleapis
 lint:
   use:
     - STANDARD

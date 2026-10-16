@@ -49,6 +49,9 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "source_attestation_tests.rs"]
+mod source_attestation;
+
 #[test]
 fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);

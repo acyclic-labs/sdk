@@ -717,6 +717,8 @@ pub(super) fn collect_source_files_inner(
                 || ((under_proto || under_crate_proto)
                     && path.extension().and_then(OsStr::to_str) == Some("proto"))
                 || (under_conformance && path.extension().and_then(OsStr::to_str) == Some("json"))
+                || relative == Path::new("compatibility/Cargo.toml")
+                || relative.starts_with("compatibility/src")
                 || descriptor_input
                 || plugin_install_asset
                 || relative
