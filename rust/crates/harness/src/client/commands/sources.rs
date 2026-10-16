@@ -236,11 +236,14 @@ impl CommandSources {
                     } else {
                         name
                     };
-                    (
-                        metadata.description.unwrap_or_else(|| name.clone()),
-                        name,
-                        &bytes[body..],
-                    )
+                    let description = match metadata.description {
+                        Some(description) => description,
+                        None if skill => {
+                            return Err(Error::Invalid("skill description absent".into()));
+                        }
+                        None => name.clone(),
+                    };
+                    (description, name, &bytes[body..])
                 } else {
                     if skill {
                         return Err(Error::Invalid("skill frontmatter absent".into()));

@@ -237,6 +237,11 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
         ),
         (
             "skills/corrected/SKILL.md",
+            b"---\nname: corrected\n---\nMissing description".as_slice(),
+            false,
+        ),
+        (
+            "skills/corrected/SKILL.md",
             b"---\nname: corrected\ndescription: corrected\n---\nGood".as_slice(),
             true,
         ),
