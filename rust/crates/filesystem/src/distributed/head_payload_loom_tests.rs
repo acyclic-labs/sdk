@@ -38,6 +38,12 @@ fn ready<F: Future>(future: F) -> F::Output {
     }
 }
 
+fn phase(name: &str) {
+    if std::env::var_os("ACYCLIC_FS_HEAD_MODEL_DIAGNOSTICS").is_some() {
+        eprintln!("head model: {name}");
+    }
+}
+
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -142,6 +148,7 @@ fn request(
 
 fn model(change: Change, recheck: bool) {
     loom::model(move || {
+        phase("seed");
         let first = durable(1, Digest::ZERO, b"old");
         let second = durable(2, first.digest, b"new");
         let first_bytes = StreamsDurableRecord::encode(&first, STREAM_RECORD_LIMIT).unwrap();
@@ -165,6 +172,7 @@ fn model(change: Change, recheck: bool) {
             ready(inner.commit(initial)).unwrap(),
             CommitOutcome::Committed(_)
         ));
+        phase("seeded");
         let cancellation = CancellationToken::new();
         let provider = Arc::new(ModelStream(
             Mutex::new(State {
@@ -178,6 +186,7 @@ fn model(change: Change, recheck: bool) {
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let reader = loom::thread::spawn(move || {
+            phase("read");
             let store = StreamAuthorityStore::new(reader_provider);
             let mut work = AuthorityWork::new(BUDGET, &reader_cancel);
             let result = if recheck {
@@ -191,10 +200,12 @@ fn model(change: Change, recheck: bool) {
                 }))
             };
             work.spent().verify(BUDGET).unwrap();
+            phase("read done");
             result
         });
         let writer_provider = provider.clone();
         let writer = loom::thread::spawn(move || {
+            phase("change");
             let request = match change {
                 Change::Publish => request("/records", vec![second_bytes.into()], 1, Some(2)),
                 Change::Fence => request(
