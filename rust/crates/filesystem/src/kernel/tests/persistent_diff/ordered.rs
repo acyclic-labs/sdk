@@ -4,6 +4,9 @@ use proptest::prelude::*;
 type Changes = Vec<ValueChange<FileId, FileRecord>>;
 type Outcome = Result<(Changes, bool), String>;
 
+#[path = "ordered/prefixes.rs"]
+mod prefixes;
+
 std::thread_local! {
     static COMPARISONS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
@@ -184,8 +187,9 @@ fn sparse_overlap_keeps_the_baseline_budget_and_actual_reset_is_required() {
 }
 
 fn replay_pages<const PREFIX: bool, const RESET: bool>(
+    pages: &[(bool, Vec<u8>)],
     budget: u64,
-) -> (Outcome, WorkCounters, u64) {
+) -> (Outcome, WorkCounters, u64, Changes) {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(
         WorkBudget {
@@ -199,14 +203,12 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
     let mut truncated = false;
     COMPARISONS.with(|count| count.set(Some(0)));
     let result = (|| {
-        for (before, keys) in (1..=64)
-            .map(|key| (true, vec![key]))
-            .chain([(false, vec![1, 64])])
-        {
+        for (before, keys) in pages {
             let mut records = Owned::<Vec<FileRecord>>::allocate(keys.len(), &mut accounting)?;
-            records.value.extend(keys.into_iter().map(|key| {
-                let mut record = file_record(key).unwrap();
-                record.link_count = if before { 1 } else { 2 };
+            assert_eq!(records.value.capacity(), keys.len());
+            records.value.extend(keys.iter().map(|key| {
+                let mut record = file_record(*key).unwrap();
+                record.link_count = if *before { 1 } else { 2 };
                 record
             }));
             let bytes = records.bytes;
@@ -224,7 +226,7 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
             // value transfers; the test never manages an insertion cursor.
             push_page::<FileTableFormat, PREFIX, RESET>(
                 page,
-                before,
+                *before,
                 &mut tasks,
                 &mut values,
                 128,
@@ -238,23 +240,28 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
     let probes = COMPARISONS.with(|count| count.replace(None).unwrap());
     let work = accounting.spent();
     tasks.retire(&mut accounting).unwrap();
+    let partial = values.value.clone();
     let outcome = match result {
         Ok(()) => Ok((values.value.clone(), truncated)),
         Err(error) => Err(error.to_string()),
     };
     values.retire(&mut accounting).unwrap();
-    (outcome, work, probes)
+    (outcome, work, probes, partial)
 }
 
 #[test]
 fn actual_page_mover_preserves_all_277_comparison_budget_prefixes() {
-    let (baseline, work, probes) = replay_pages::<false, true>(277);
+    let pages: Vec<_> = (1..=64)
+        .map(|key| (true, vec![key]))
+        .chain([(false, vec![1, 64])])
+        .collect();
+    let (baseline, work, probes, _) = replay_pages::<false, true>(&pages, 277);
     assert!(baseline.is_ok());
     assert_eq!(work.items_examined, 277);
     assert_eq!(probes, 277);
     for budget in 0..=277 {
-        let (old, old_work, old_calls) = replay_pages::<false, true>(budget);
-        let (new, new_work, new_calls) = replay_pages::<true, true>(budget);
+        let (old, old_work, old_calls, _) = replay_pages::<false, true>(&pages, budget);
+        let (new, new_work, new_calls, _) = replay_pages::<true, true>(&pages, budget);
         assert_eq!(old_work.items_examined, old_calls);
         assert_eq!(new_work.items_examined, new_calls);
         assert!(old_calls <= budget && new_calls <= budget);
@@ -265,7 +272,7 @@ fn actual_page_mover_preserves_all_277_comparison_budget_prefixes() {
             assert_eq!(new_calls, budget);
         }
     }
-    let (broken, _, _) = replay_pages::<true, false>(u64::MAX);
+    let (broken, _, _, _) = replay_pages::<true, false>(&pages, u64::MAX);
     assert_ne!(
         broken, baseline,
         "the production reset is essential across sides"
