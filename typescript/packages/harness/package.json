@@ -56,8 +56,8 @@
   },
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-wasm.mjs harness",
-    "build": "bun run generate && bun run build:wasm && bun x tsc -p tsconfig.json",
-    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
+    "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
+    "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
     "test": "bun run generate && bun run build && bun test test",
     "test:browser:mcp": "node test/mcp-http-fixture.mjs",

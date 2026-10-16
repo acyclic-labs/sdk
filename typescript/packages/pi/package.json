@@ -18,10 +18,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun run generate && tsc -b",
-    "test": "bun run generate && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false",
+    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false",
     "generate": "bun ../../../scripts/generate.mjs pi",
-    "prepack": "bun run generate"
+    "prepack": "bun run generate",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs pi",
+    "check": "bun run generate && bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false"
   },
   "peerDependencies": {
     "@acyclic-labs/harness": "0.2.0"

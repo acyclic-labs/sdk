@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageClosure } from "./package-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
@@ -57,7 +58,8 @@ const packages = {
 };
 
 const [packageArgument, outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
-if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument))) {
+if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument)
+  && (!/^[a-z][a-z-]*$/.test(packageArgument) || !existsSync(join(root, "typescript/packages", packageArgument, "package.json"))))) {
   throw new Error(`${usage}\nPACKAGE is one of: ${Object.keys(packages).join(", ")}`);
 }
 
@@ -97,11 +99,17 @@ const profileDirectory = profile === "dev" ? "debug" : profile;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
 
-for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
+const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
+const targets = grouped ? [packageArgument] : packageArgument
+  ? [...packageClosure(root, packageArgument === "manifest" ? "workers" : packageArgument)]
+    .map(name => name === "workers" ? "manifest" : name).filter(name => Object.hasOwn(packages, name))
+  : Object.keys(packages);
+if (!grouped) run(process.execPath, [join(root, "scripts/generate.mjs"), ...(packageArgument ? [packageArgument === "manifest" ? "workers" : packageArgument] : [])]);
+
+for (const name of targets) {
   let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
   let family, producer, source, revision;
   if (packages[name].family) {
-    run(process.execPath, [join(root, "scripts/generate.mjs"), name]);
     const { nativeFamily } = await import("./native-family.mjs");
     const { createNativeProducer } = await import("./build-native-family.mjs");
     family = nativeFamily(name);
@@ -114,7 +122,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
     source = await producer.sourceSnapshot();
   }
-  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
+  const output = outputArgument && name === packageArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,

@@ -6,8 +6,8 @@ import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
 
-const source = readFileSync("scripts/generate.mjs", "utf8");
-const closure = source.slice(source.indexOf("const packages = new Set();"), source.indexOf("function run("));
+const source = readFileSync("scripts/package-closure.mjs", "utf8");
+const closure = source.slice(source.indexOf("export function")).replace("export function", "function");
 const names = "abcdefghijkl";
 
 function actual(rows, selected, code = closure) {
@@ -25,7 +25,7 @@ function actual(rows, selected, code = closure) {
           peerDependencies: Object.fromEntries(row.peers.map(index => [`@acyclic-labs/${names[index % rows.length]}`, "0.2.0"])) });
     },
   };
-  return Array.from(runInNewContext(`${code}\n[...packages].sort()`, context));
+  return Array.from(runInNewContext(`${code}\n[...packageClosure(root, selected)]`, context));
 }
 
 function expected(rows, selected) {
@@ -43,10 +43,32 @@ function expected(rows, selected) {
 test("package generation covers exactly the transitive project and npm dependency closure", () => {
   const edges = fc.array(fc.nat(11), { maxLength: 12 });
   fc.assert(fc.property(fc.array(fc.record({ refs: edges, dependencies: edges, peers: edges }), { minLength: 1, maxLength: 12 }), fc.nat(11), (rows, selected) => {
-    assert.deepEqual(actual(rows, selected), expected(rows, selected));
+    assert.deepEqual(actual(rows, selected).sort(), expected(rows, selected));
   }), { numRuns: 64 });
   const rows = [{ refs: [], dependencies: [], peers: [1] }, { refs: [], dependencies: [], peers: [] }];
-  assert.notDeepEqual(actual(rows, 0, closure.replace("...manifest.peerDependencies", "...{}")), expected(rows, 0));
+  assert.notDeepEqual(actual(rows, 0, closure.replace("...manifest.peerDependencies", "...{}")).sort(), expected(rows, 0));
+});
+
+test("each package dependency precedes its consumer and is prepared exactly once", () => {
+  const check = (rows, selected, code = closure) => {
+    const result = actual(rows, selected, code);
+    assert.equal(result.length, new Set(result).size);
+    for (const name of result) {
+      const row = rows[names.indexOf(name)];
+      for (const next of [...row.refs, ...row.dependencies, ...row.peers]) {
+        assert.ok(result.indexOf(names[next]) < result.indexOf(name));
+      }
+    }
+  };
+  const edges = fc.array(fc.nat(11), { maxLength: 12 });
+  fc.assert(fc.property(fc.array(fc.record({ refs: edges, dependencies: edges, peers: edges }), { minLength: 1, maxLength: 12 }), fc.nat(11), (rows, selected) => {
+    const acyclic = rows.map((row, index) => Object.fromEntries(Object.entries(row)
+      .map(([kind, edges]) => [kind, index === 0 ? [] : edges.map(edge => edge % index)])));
+    check(acyclic, selected);
+  }), { numRuns: 64 });
+  const old = closure.replace("    packages.add(name);", "")
+    .replace("visited.add(name);", "visited.add(name); packages.add(name);");
+  assert.throws(() => check([{ refs: [], dependencies: [], peers: [] }, { refs: [0], dependencies: [], peers: [] }], 1, old));
 });
 
 test("generated runtime bindings stay out of the source index", () => {
@@ -63,6 +85,6 @@ test("every TypeScript package prepares generation for build, test and prepack",
   for (const name of ["actors", "auth", "filesystem", "harness", "inference", "machines", "objects", "pi", "sdk", "stream", "swarm", "workers"]) {
     const { scripts } = JSON.parse(readFileSync(`typescript/packages/${name}/package.json`, "utf8"));
     assert.equal(scripts.generate, `bun ../../../scripts/generate.mjs ${name}`);
-    for (const operation of ["build", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);
+    for (const operation of ["build", "check", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);
   }
 });

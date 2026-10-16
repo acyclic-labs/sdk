@@ -3,22 +3,91 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { packageClosure } from "./package-closure.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");
 const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf("const [packageArgument"));
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
 
+test("standalone package WASM targets follow references while groups keep exclusive targets", () => {
+  const selection = build.slice(build.indexOf("const grouped ="), build.indexOf("if (!grouped)"));
+  const targets = (name, grouped) => Array.from(runInNewContext(`${selection}\ntargets`, {
+    packageArgument: name, packageClosure, root: process.cwd(),
+    packages: Object.fromEntries(names.map(name => [name, {}])),
+    process: { env: grouped ? { ACYCLIC_WASM_GROUPS_PREPARED: "1" } : {} },
+  }));
+  assert.deepEqual(targets("pi", false), ["actors", "objects", "harness"]);
+  assert.deepEqual(targets("filesystem", false), ["actors", "filesystem"]);
+  assert.deepEqual(targets("harness", false), ["actors", "objects", "harness"]);
+  for (const name of names) assert.deepEqual(targets(name, true), [name]);
+});
+
+test("shared generation precedes every build under all 72 group completion orders", async () => {
+  async function exercise(code, stream, harness) {
+    let generations = 0;
+    const pending = new Map();
+    const state = { execPath: "fixture-node", env: {}, exitCode: 0 };
+    const execution = runInNewContext(`(async () => {${code}\n})()`, {
+      process: state, console: { error: error => { throw error; } },
+      spawnSync: () => { generations++; return { status: 0 }; },
+      spawn: (_executable, args, options) => {
+        assert.equal(generations, 1, "generation must precede every build");
+        assert.equal(options.env.ACYCLIC_WASM_GROUPS_PREPARED, "1");
+        const group = ["stream", "harness"].includes(args[1]) ? args[1] : "root";
+        assert.ok(!pending.has(group));
+        const child = new EventEmitter();
+        pending.set(group, child);
+        return child;
+      },
+    });
+    void execution.catch(() => {}); // The broken control can fail before joining.
+    assert.equal(generations, 1, "generation must precede group creation");
+    for (let step = 0; step < 9; step++) {
+      const group = step === stream ? "stream" : step === harness ? "harness" : "root";
+      const child = pending.get(group);
+      assert.ok(child, `missing ${group} at ${step}`);
+      pending.delete(group);
+      child.emit("close", 0);
+      await Promise.resolve();
+    }
+    await execution;
+    assert.equal(state.exitCode, 0);
+    assert.equal(generations, 1);
+    assert.equal(pending.size, 0);
+  }
+  for (let stream = 0; stream < 9; stream++) for (let harness = 0; harness < 9; harness++) {
+    if (stream !== harness) await exercise(source, stream, harness);
+  }
+  const broken = source.replace(/const generated = spawnSync[\s\S]*?(?=const results =)/, "");
+  // Group creation would immediately invoke the conflicting writers again.
+  await assert.rejects(exercise(broken, 0, 1), /generation must precede/);
+});
+
+test("failed generation starts no WASM group", async () => {
+  for (const generated of [{ status: 7 }, { error: new Error("generator spawn failed") }]) {
+    let children = 0;
+    await assert.rejects(runInNewContext(`(async () => {${source}\n})()`, {
+      process: { execPath: "node", env: {} },
+      spawnSync: () => generated,
+      spawn: () => { children++; throw new Error("child must not start"); },
+    }), /generation exited with 7|generator spawn failed/);
+    assert.equal(children, 0);
+  }
+});
+
 for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream", "spawn", "multiple", "root-multiple"]) {
   test(`WASM groups join every child: ${failure ?? "success"}, wrapper=${wrapper || "disabled"}`, async () => {
     const calls = [];
     const completed = [];
     const paths = new Set();
-    let live = 0, budget = 0, maximum = 0;
+    let live = 0, budget = 0, maximum = 0, generations = 0;
     const state = { execPath: "fixture-node", env: { RUSTC_WRAPPER: wrapper, CARGO_BUILD_JOBS: "16" }, exitCode: 0 };
     const errors = [];
     const spawn = (executable, args, options) => {
       assert.equal(executable, state.execPath);
+      assert.equal(generations, 1, "shared generation must finish once before any group starts");
+      assert.equal(options.env.ACYCLIC_WASM_GROUPS_PREPARED, "1");
       assert.equal(args[0], "scripts/build-wasm.mjs");
       assert.equal(options.stdio, "inherit");
       assert.equal(options.env.RUSTC_WRAPPER, wrapper);
@@ -45,8 +114,16 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
       return child;
     };
     await runInNewContext(`(async () => {${source}\n})()`, {
-      spawn, process: state, console: { error: error => { assert.equal(live, 0); errors.push(String(error)); } },
+      spawn, spawnSync: (executable, args, options) => {
+        assert.equal(executable, state.execPath);
+        assert.deepEqual(Array.from(args), ["scripts/generate.mjs"]);
+        assert.equal(options.stdio, "inherit");
+        assert.equal(live, 0);
+        generations++;
+        return { status: 0 };
+      }, process: state, console: { error: error => { assert.equal(live, 0); errors.push(String(error)); } },
     });
+    assert.equal(generations, 1);
     assert.equal(maximum, 3);
     assert.equal(live, 0);
     const skipped = failure === "root-multiple" ? ["auth", "filesystem", "objects", "machines", "inference", "manifest"] : [];
