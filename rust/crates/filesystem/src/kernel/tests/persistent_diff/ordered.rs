@@ -145,13 +145,13 @@ async fn compare(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(256))]
     #[test]
     fn traversal_matches_old_receipts_and_budget_prefixes_across_pages_and_sides(
-        before in prop::collection::btree_set(1_u8..64, 0..33),
-        after in prop::collection::btree_set(1_u8..64, 0..33),
+        before in prop::collection::btree_set(1_u8..=255, 0..65),
+        after in prop::collection::btree_set(1_u8..=255, 0..65),
         left_width in 1_usize..9, right_width in 1_usize..9,
-        maximum in 1_u32..80, budget in any::<usize>(),
+        maximum in 1_u32..129, budget in any::<usize>(),
     ) {
         tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(compare(
             &before.into_iter().collect::<Vec<_>>(), &after.into_iter().collect::<Vec<_>>(),
