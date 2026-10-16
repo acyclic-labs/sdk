@@ -738,4 +738,3 @@ mod reconciliation_interruptions;
 
 #[cfg(feature = "mcp-http")]
 mod mcp;
-mod task_files;
