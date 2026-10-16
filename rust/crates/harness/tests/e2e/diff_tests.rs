@@ -1,5 +1,4 @@
-use super::{TestResult, diff_case::DiffCase, diffs, scenario};
-use std::path::Path;
+use super::diff_case::DiffCase;
 
 proptest::proptest! {
     #[test]
@@ -21,33 +20,4 @@ proptest::proptest! {
             proptest::prop_assert_eq!(serde_json::to_value(case)?, serde_json::to_value(decoded)?);
         }
     }
-}
-
-#[tokio::test]
-async fn dropping_a_real_publication_breaks_unchanged_renderer_expectations() -> TestResult {
-    futures::future::try_join_all(
-        ["replace", "remove", "remove-empty"]
-            .into_iter()
-            .map(dropped_publication),
-    )
-    .await?;
-    Ok(())
-}
-
-async fn dropped_publication(name: &str) -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
-    let value = scenario::load_value(&root, &root.join(format!("diffs/{name}.json")))?;
-    let mut value = value;
-    value.as_object_mut().ok_or("case")?.remove("driver");
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        diffs::run_with_consumer(serde_json::from_value::<DiffCase>(value)?, true),
-    )
-    .await?
-    .unwrap_err();
-    assert!(
-        error.to_string().contains("rendered diffs differ"),
-        "{error}"
-    );
-    Ok(())
 }

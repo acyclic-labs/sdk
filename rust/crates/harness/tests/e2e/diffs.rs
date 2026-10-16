@@ -15,10 +15,6 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub(super) async fn run(case: DiffCase) -> TestResult {
-    run_with_consumer(case, false).await
-}
-
-pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) -> TestResult {
     let temporary = diff_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
@@ -139,7 +135,7 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
             );
         }
     }
-    let broken = drop_publication.then(|| view.clone());
+    let dropped = view.clone();
     {
         let changes = paths
             .into_iter()
@@ -182,14 +178,17 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
         )
         .await?;
     }
-    let mut rendered = rendered_files(&view)?;
-    if let Some(broken) = broken {
-        if rendered != case.expect.diffs {
-            return Err("baseline consumer differs before fault injection".into());
-        }
-        // The second consumer misses this same publication. Both see identical
-        // model execution, wire frames, persisted files and fixture expectations.
-        rendered = rendered_files(&broken)?;
+    assert_rendered(&view, &case.expect.diffs)?;
+    if !case.expect.diffs.is_empty() {
+        // Drop the publication only for this consumer. Exercise the same oracle
+        // immediately after the real follow and fold, without another execution
+        // or an await that could delay reaching the negative-control assertion.
+        let error = assert_rendered(&dropped, &case.expect.diffs)
+            .expect_err("consumer that dropped the publication passed unchanged expectations");
+        assert!(
+            error.to_string().contains("rendered diffs differ"),
+            "{error}"
+        );
     }
     // Fs::local reuses live roots. Release every holder before a cold reopen.
     drop(frames);
@@ -231,12 +230,18 @@ pub(super) async fn run_with_consumer(case: DiffCase, drop_publication: bool) ->
     {
         return Err("diff scenario prompt was lost before model dispatch".into());
     }
-    if rendered != case.expect.diffs {
-        return Err(format!(
-            "rendered diffs differ: expected {:?}, got {rendered:?}",
-            case.expect.diffs
-        )
-        .into());
+    Ok(())
+}
+
+fn assert_rendered(
+    view: &DiffView,
+    expected: &std::collections::BTreeMap<String, Value>,
+) -> TestResult {
+    let rendered = rendered_files(view)?;
+    if &rendered != expected {
+        return Err(
+            format!("rendered diffs differ: expected {expected:?}, got {rendered:?}").into(),
+        );
     }
     Ok(())
 }
