@@ -331,3 +331,45 @@ proptest::proptest! {
 fn negative_control_root_falls_back_to_the_filtered_caller() {
     root_context_case(1, true);
 }
+
+fn causal_registry_case(foreign: bool, broken: bool) {
+    let first = Capture::default();
+    let second = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let a = tracing::Dispatch::new(tracing_subscriber::registry().with(first.clone()));
+    let b = tracing::Dispatch::new(tracing_subscriber::registry().with(second));
+    let root = tracing::dispatcher::with_default(&a, || {
+        super::OperationSpan::new_root(tracing::info_span!(parent: None, "test.causal.root"))
+    });
+    let dispatch = if foreign { &b } else { &a };
+    let cause = tracing::dispatcher::with_default(dispatch, || {
+        super::OperationSpan::new(tracing::info_span!(parent: None, "test.causal.interest"))
+    });
+    if broken {
+        root.span.follows_from(cause.context().id());
+    } else {
+        root.follows_from_same_subscriber(&cause);
+    }
+    let history = first.0.lock().unwrap().spans.clone();
+    let root = history
+        .iter()
+        .find(|span| span.name == "test.causal.root")
+        .unwrap();
+    assert_eq!(
+        root.follows_from.len(),
+        usize::from(!foreign),
+        "foreign span IDs must never cross subscriber registries"
+    );
+}
+
+proptest::proptest! {
+    #[test]
+    fn causal_links_require_identical_subscriber_registries(foreign in proptest::bool::ANY) {
+        causal_registry_case(foreign, false);
+    }
+}
+#[test]
+#[should_panic(expected = "foreign span IDs must never cross subscriber registries")]
+fn negative_control_passes_foreign_ids_to_a_session_subscriber() {
+    causal_registry_case(true, true);
+}

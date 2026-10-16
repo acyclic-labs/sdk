@@ -296,6 +296,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
             active: Arc::clone(&pool.active),
+            admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
         };
@@ -525,6 +526,74 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         let _b = b.await?;
         assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
         assert_eq!(fixture.counts.follows.load(Ordering::Relaxed), 1);
+        Ok(())
+    })
+}
+
+#[test]
+fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
+    let name = format!(
+        "{}::overlapping_subscribers_cannot_alias_equal_channel_span_ids",
+        module_path!()
+    );
+    if retry_capture::isolate(&name)? {
+        return Ok(());
+    }
+    let first = Capture::default();
+    let second = Capture::default();
+    let (_a_registration, a_dispatch) = retry_capture::dispatch(first.clone());
+    let (_b_registration, b_dispatch) = retry_capture::dispatch(second.clone());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let memory = Arc::new(MemoryStream::default());
+        append(&memory, "events", 1).await?;
+        let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
+        let client = fixture.client()?;
+        let a_origin = origin(&a_dispatch, true);
+        let a = a_origin
+            .scope(client.follow(StreamPath::new("events")?, 1))
+            .await?;
+        let b_origin = origin(&b_dispatch, false);
+        let mut b = b_origin
+            .scope(client.follow(StreamPath::new("events")?, 1))
+            .await?;
+        let a_history = first.0.lock().unwrap().spans.clone();
+        let b_history = second.0.lock().unwrap().spans.clone();
+        let a_channel = a_history
+            .iter()
+            .find(|span| span.name == "stream.session.channel")
+            .unwrap();
+        let b_channel = b_history
+            .iter()
+            .find(|span| span.name == "stream.session.channel")
+            .unwrap();
+        assert_eq!(
+            a_channel.id, b_channel.id,
+            "the probe must exercise subscriber-local ID aliasing"
+        );
+        let physical = a_history
+            .iter()
+            .find(|span| span.name == "stream.session")
+            .unwrap();
+        assert_eq!(physical.parent_id, None);
+        assert_eq!(
+            physical.follows_from.len(),
+            1,
+            "foreign interest must not add an aliased causal edge"
+        );
+        assert_eq!(a_history[physical.follows_from[0]].id, a_channel.id);
+        assert_eq!(second.all("stream.session").len(), 0);
+        drop(a);
+        drop(a_origin);
+        fixture
+            .until(|counts| counts.removals.load(Ordering::Relaxed) == 1)
+            .await;
+        assert_eq!(first.closed("first.request"), 1);
+        append(&memory, "events", 1).await?;
+        assert_eq!(next(&mut b).await?.sequence, 1);
+        assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
         Ok(())
     })
 }

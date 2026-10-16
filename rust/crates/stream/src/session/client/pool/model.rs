@@ -21,6 +21,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
                 active: Arc::clone(&pool.active),
+                admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
             };
@@ -124,6 +125,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
             active: Arc::clone(&pool.active),
+            admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
         };
@@ -221,6 +223,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
             active: Arc::new(AtomicU64::new(0)),
+            admissions: Arc::new(Admissions::new()),
             attempt_epoch: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(gate::Gate::new()),
         };
@@ -391,6 +394,7 @@ pub fn verify_registration_deadline(broken: bool) {
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
                 active: Arc::new(AtomicU64::new(0)),
+                admissions: Arc::new(Admissions::new()),
                 attempt_epoch: Arc::new(AtomicU64::new(0)),
                 abandoned: Arc::new(gate::Gate::new()),
             };
@@ -488,6 +492,7 @@ pub fn verify_node_dials(fault: u8) {
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
                 active: Arc::clone(&pool.active),
+                admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
             };
@@ -576,4 +581,85 @@ pub fn verify_node_dials(fault: u8) {
             }
         });
     }
+}
+
+/// B has received terminal Closed, but its output is intentionally unpolled.
+/// Its cursor reservation is not an admission and cannot own A's reconnect.
+pub fn verify_terminal_cursor_dial(broken: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
+    loom::model(move || {
+        let (mut pool, receiver_b) = fixture(channel.clone());
+        pool.links.remove("bad");
+        let (records, receiver_a) = mpsc::channel(2);
+        pool.routes.get_mut(&1).unwrap().records = records;
+        pool.routes.get_mut(&1).unwrap().node = "good".into();
+        let client = Client {
+            commands: mpsc::channel(2).0,
+            removed: Arc::clone(&pool.removed),
+            next_id: Arc::new(AtomicU64::new(5)),
+            active: Arc::clone(&pool.active),
+            admissions: Arc::clone(&pool.admissions),
+            attempt_epoch: Arc::clone(&pool.attempt_epoch),
+            abandoned: Arc::clone(&pool.abandoned),
+        };
+        let a = client
+            .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)
+            .unwrap();
+        let _terminal_b = client
+            .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver_b)
+            .unwrap();
+        pool.admissions.remove(1).unwrap();
+        pool.admissions.remove(3).unwrap();
+        assert!(pool.receive_frame(
+            "good",
+            frame(
+                3,
+                1,
+                Body::Closed(wire::SessionClosed {
+                    code: StreamError::AccessDenied.code().into(),
+                    message: String::new(),
+                })
+            )
+        ));
+        assert!(!pool.routes.contains_key(&3));
+        pool.reconnect("good").unwrap();
+        assert!(pool.dials.contains_key("good"));
+        // Only opaque network I/O is substituted. Entry ownership, its drop,
+        // cursor cancellation and the removal wake are the production paths.
+        pool.dials
+            .insert("good".into(), Box::pin(future::pending()));
+        let withdrawal = loom::thread::spawn(move || drop(a));
+        if !broken {
+            pool.close_idle();
+        }
+        assert_eq!(loom::future::block_on(pool.removed.next()).unwrap(), 1);
+        withdrawal.join().unwrap();
+        assert_eq!(pool.active.load(Ordering::Acquire), 1);
+        let interested = if broken {
+            pool.active.load(Ordering::Acquire)
+                > pool.routes.values().filter(|route| route.live()).count() as u64
+        } else {
+            pool.node_interested("good")
+        };
+        assert!(
+            !interested,
+            "a terminal cursor must not imply a pending Open"
+        );
+        pool.close_idle();
+        assert!(
+            pool.dials.is_empty(),
+            "terminal output must not preserve a reconnect"
+        );
+        pool.dial_ready("good".into(), 0, Err(StreamError::AccessDenied))
+            .unwrap();
+        assert!(
+            pool.routes.contains_key(&1),
+            "ownerless completion must be ignored"
+        );
+    });
 }

@@ -122,7 +122,7 @@ impl Pool {
         if let Some(observation) = &link.observation {
             observation
                 .operation
-                .follows_from(route.observation.context().id());
+                .follows_from_same_subscriber(&route.observation);
         }
         let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
         let subscription = wire::SessionSubscription {

@@ -19,6 +19,7 @@ pub(in crate::session::client) fn fixture(
         home_channel: channel.clone(),
         next_link: 3,
         active: Arc::new(AtomicU64::new(0)),
+        admissions: Arc::new(Admissions::new()),
         attempt_epoch: Arc::new(AtomicU64::new(0)),
         abandoned: Arc::new(gate::Gate::new()),
         dial_epoch: 0,
@@ -27,6 +28,7 @@ pub(in crate::session::client) fn fixture(
         released: Arc::clone(&released),
         release_sender: released,
     };
+    pool.admissions.bind_home("good").unwrap();
     for (node, epoch) in [("bad", 1), ("good", 2)] {
         pool.links.insert(
             node.into(),

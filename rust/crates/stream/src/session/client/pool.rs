@@ -79,6 +79,7 @@ impl Pool {
             Ok(ready) => {
                 let installed = self.install(ready)?;
                 if node.is_empty() && self.home.is_empty() {
+                    self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
                     for route in self
                         .routes
@@ -99,7 +100,7 @@ impl Pool {
         }
         Ok(())
     }
-    fn close_idle(&mut self) {
+    pub(super) fn close_idle(&mut self) {
         if self.active.load(Ordering::Acquire) == 0 {
             self.close_links();
         } else {
@@ -117,10 +118,10 @@ impl Pool {
         }
     }
     pub(super) fn node_interested(&self, node: &str) -> bool {
-        self.routes.values().any(|route| route.node == node && route.live())
-            // An Open reserved on the home node can still be queued. Shared
-            // initialization belongs to the pool, including this admission gap.
-            || (node == self.home && self.active.load(Ordering::Acquire) > self.routes.values().filter(|route| route.live()).count() as u64)
+        self.routes
+            .values()
+            .any(|route| route.node == node && route.live())
+            || self.admissions.interested(node)
     }
     fn close_links(&mut self) {
         self.links.clear();
@@ -129,7 +130,7 @@ impl Pool {
         self.pending.clear();
         self.routes.clear();
     }
-    fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
+    pub(super) fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
             Ok(()) => true,
             Err(error) => {
@@ -159,6 +160,7 @@ impl Pool {
                 ready,
                 observation,
             } => {
+                self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
                     return Ok(());
