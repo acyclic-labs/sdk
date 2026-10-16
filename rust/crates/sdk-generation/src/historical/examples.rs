@@ -99,69 +99,8 @@ pub fn scope_source_file_hashes(
     }
 }
 
-/// Executes actual historical targets against their original owner and captured source.
+/// Execute each target with one shared Cargo cache and one source baseline.
 pub fn execute_examples(
-    root: &Path,
-    cargo: &Path,
-    target_dir: &Path,
-    examples: &[Example],
-    owner_metadata: Option<&BTreeMap<String, Metadata>>,
-    captured: Option<&CapturedSource>,
-) -> Result<Vec<ExampleExecution>, String> {
-    let mut groups = BTreeMap::<String, Vec<(usize, Example)>>::new();
-    for (index, example) in examples.iter().enumerate() {
-        groups
-            .entry(example.package.clone())
-            .or_default()
-            .push((index, example.clone()));
-    }
-    if owner_metadata.is_none() || groups.len() < 2 {
-        return run_examples(root, cargo, target_dir, examples, owner_metadata, captured);
-    }
-    let before = crate::imported_source_file_hashes(root, target_dir).map_err(|e| e.to_string())?;
-    let (run_root, cargo, build) = (root.to_owned(), cargo.to_owned(), target_dir.to_owned());
-    let metadata = owner_metadata.cloned();
-    let captured = captured.cloned();
-    let environment = sdk_docs::command("cargo");
-    let results = crate::parallel::map(groups.into_iter().collect(), move |(owner, entries)| {
-        sdk_docs::with_command_environment(&environment, || {
-            let examples = entries
-                .iter()
-                .map(|(_, example)| example.clone())
-                .collect::<Vec<_>>();
-            let executed = run_examples(
-                &run_root,
-                &cargo,
-                &build.join(crate::sha256_bytes(owner.as_bytes()).trim_start_matches("sha256:")),
-                &examples,
-                metadata.as_ref(),
-                captured.as_ref(),
-            )?;
-            Ok::<_, String>(
-                entries
-                    .into_iter()
-                    .zip(executed)
-                    .map(|((index, _), result)| (index, result))
-                    .collect::<Vec<_>>(),
-            )
-        })
-    });
-    // Preserve caller order and check the complete shared source closure after
-    // every worker has joined. A mutator cannot choose a later baseline.
-    let mut results = results
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if crate::imported_source_file_hashes(root, target_dir).map_err(|e| e.to_string())? != before {
-        return Err("historical source closure changed during example execution".into());
-    }
-    results.sort_by_key(|(index, _)| *index);
-    Ok(results.into_iter().map(|(_, result)| result).collect())
-}
-
-fn run_examples(
     root: &Path,
     cargo: &Path,
     target_dir: &Path,

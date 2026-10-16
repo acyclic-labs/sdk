@@ -401,14 +401,16 @@ pub(super) fn execute_default_profiles(
     source_sha256: &str,
     cargo_path: &Path,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    concurrent::execute_default_profiles(
-        root,
-        output,
-        rustdoc_dir,
-        metadata,
-        source_sha256,
-        cargo_path,
-    )
+    let executed = compile_default_profiles(root, output, rustdoc_dir, metadata, cargo_path)?;
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
 }
 
 fn compile_default_profiles(
@@ -417,16 +419,11 @@ fn compile_default_profiles(
     rustdoc_dir: &Path,
     metadata: &Metadata,
     cargo_path: &Path,
-    owner: Option<&str>,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     let host = rustc_host()?;
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
-    let target_dir = match owner {
-        Some(owner) => output
-            .join(".profile-build")
-            .join(crate::sha256_bytes(owner.as_bytes()).trim_start_matches("sha256:")),
-        None => output.join(".profile-build"),
-    };
+    // Share Cargo's validated compiler/dependency cache across current owners.
+    let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
     let (host_output, browser_output) =
@@ -446,9 +443,6 @@ fn compile_default_profiles(
         .collect::<BTreeSet<_>>();
     let mut executed = Vec::new();
     for package in &metadata.packages {
-        if owner.is_some_and(|owner| package.name.as_ref() != owner) {
-            continue;
-        }
         let owned_binding = api_owner_for_package(metadata, package.name.as_str())
             .ok()
             .is_some_and(|owner| owner.rustdoc_package == package.name.as_ref());
@@ -711,5 +705,3 @@ pub(super) fn retain_profile_generated_sources(
 
 #[cfg(test)]
 mod tests;
-
-mod concurrent;
