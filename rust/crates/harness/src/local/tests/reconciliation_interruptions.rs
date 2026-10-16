@@ -234,10 +234,32 @@ async fn sweep(text: &str) -> Result<()> {
                 result?;
             }
         }
-        drop(harness);
-        harness = open(directory.path(), state_directory.path()).await?;
+        // Reconstruct the exact production binding from durable selection and
+        // reconciliation records; retain unrelated scratch mounts and task I/O.
+        // No native projection or model needs restarting at these cuts.
+        {
+            let mut state = super::super::workspace::lock_owned(
+                super::super::workspace::StateArc::clone(&checkout.state),
+            )
+            .await;
+            state.active = None;
+            state.watcher = None;
+            state.initialized = false;
+        }
+        Box::pin(super::super::checkout_tools::CheckoutTools::new(
+            Arc::clone(checkout),
+            harness.project(),
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            Arc::clone(harness.task_files()),
+        ))
+        .await?;
         assert_published(&harness, &expected).await?;
         if cut == 5 + effects {
+            // One complete host reopen additionally checks binding and mount
+            // reconstruction after every durable interruption was recovered.
+            drop(harness);
+            harness = open(directory.path(), state_directory.path()).await?;
+            assert_published(&harness, &expected).await?;
             break;
         }
         cut += 1;

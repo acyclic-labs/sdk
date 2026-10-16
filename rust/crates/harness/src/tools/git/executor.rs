@@ -33,6 +33,39 @@ where
         }
     }
 
+    async fn validate_merge_resolution(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> Result<(), Self::Error> {
+        self.validate().await?;
+        let GitFilesystemAction::Join { target_tree, .. } = action else {
+            return Err(Error::Invalid("merge continuation requires a join".into()));
+        };
+        let applied = self
+            .current
+            .operation_generation(
+                IdempotencyKey::from_bytes(operation.into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value
+            .ok_or_else(|| {
+                Self::error("Git merge has unresolved entries; no join was published")
+            })?;
+        let before = self.generation(*target_tree).await?;
+        let current = self.generation(tree).await?;
+        if !acyclic_fs::git_merge_is_resolved(&before, &applied, &current).await? {
+            return Err(Self::error(
+                "Git merge still contains unresolved conflict markers",
+            ));
+        }
+        self.validate().await
+    }
+
     async fn execute(
         &self,
         operation_id: OperationId,
@@ -298,7 +331,7 @@ where
                 ..
             } => {
                 let source = self.workspace(*source_workspace).await?;
-                let mut builder = source.join_into(&self.current);
+                let mut builder = source.join_into(&self.current).git_metadata();
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
@@ -346,8 +379,17 @@ where
                         matches!(resolution, acyclic_fs::MergeResolution::Text(text)
                                 if acyclic_fs::text_merge::has_conflict_markers(text))
                     });
+                    let resolutions = super::materialize::prepared(
+                        async {
+                            plan.prepare_candidate(&candidate)
+                                .await
+                                .map_err(Error::from)
+                        },
+                        &|| self.validate(),
+                    )
+                    .await?;
                     let outcome = plan
-                        .apply_candidate(options, &candidate, self.permit)
+                        .apply(options, resolutions, self.permit)
                         .await
                         .map_err(Error::from)?;
                     if has_markers {

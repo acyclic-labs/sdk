@@ -50,7 +50,7 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
             .await
             .map_err(super::super::storage)?;
         assert!(state.path().join("owner.json").is_file());
-    super::checkout_reopen::run(&harness).await?;
+        super::checkout_reopen::run(&harness).await?;
         assert_eq!(
             std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?,
             expected.as_bytes()
@@ -253,17 +253,20 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
         super::checked_commands::call(6, "bash", "printf 'parent\n' > note.txt"),
         super::checked_commands::call(7, "fs", "commit -m parent"),
         super::checked_commands::call(8, "fs", "merge topic"),
+        super::checked_commands::call(9, "bash", "false && printf 'wrong\n' > note.txt"),
+        super::checked_commands::call(10, "fs", "merge --continue"),
         super::checked_commands::call(
-            9,
+            11,
             "bash",
             "grep -q '^<<<<<<<' note.txt && printf 'resolved\n' > note.txt",
         ),
-        super::checked_commands::call(10, "fs", "merge --continue"),
+        super::checked_commands::call(12, "fs", "merge --continue"),
         ScriptedTurn::Text("resolved".into()),
     ]);
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
-            .state_directory(state.path()),
+            .state_directory(state.path())
+            .compaction(crate::context::CompactionPolicy::Disabled),
     )
     .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) = harness
@@ -306,10 +309,17 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
             .unwrap()
             .contains("conflict")
     );
+    assert_eq!(results["checkout-9"]["success"], false);
     assert!(
-        results["checkout-10"].get("result").is_some(),
+        results["checkout-10"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unresolved")
+    );
+    assert!(
+        results["checkout-12"].get("result").is_some(),
         "merge continuation failed: {}",
-        results["checkout-10"]
+        results["checkout-12"]
     );
     Ok(())
 }

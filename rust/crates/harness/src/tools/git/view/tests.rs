@@ -51,6 +51,101 @@ async fn execute(
 }
 
 #[tokio::test]
+async fn merge_continue_cannot_commit_an_unpublished_unresolved_entry() -> TestResult {
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let repository = main.id();
+    main.write_text("/note", "base\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let child = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["checkout", "-b", "topic"],
+    )
+    .await?
+    .switched
+    .ok_or("missing child")?;
+    child
+        .workspace()
+        .write("/note", bytes::Bytes::from_static(b"\xffchild"))
+        .await?;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        repository,
+        &["commit", "-m", "child"],
+    )
+    .await?;
+    execute(
+        &filesystem,
+        &store,
+        child.view(),
+        repository,
+        &["checkout", "main"],
+    )
+    .await?;
+    main.write("/note", bytes::Bytes::from_static(b"\xfeparent"))
+        .await?;
+    execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["commit", "-m", "parent"],
+    )
+    .await?;
+    let merge = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "topic"],
+    )
+    .await;
+    assert!(matches!(merge, Err(Error::Conflict(_))));
+    let compatibility = GitCompatRepository::new(repository, store.clone());
+    let before = compatibility
+        .pending_transition()
+        .await?
+        .ok_or("missing pending merge")?;
+    let continuation = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "--continue"],
+    )
+    .await;
+    assert!(
+        matches!(continuation, Err(Error::Conflict(ref message)) if message.contains("unresolved entries"))
+    );
+    assert_eq!(compatibility.pending_transition().await?, Some(before));
+    let bytes = main
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .read(
+            "/note",
+            64,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    assert_eq!(bytes.as_ref(), b"\xfeparent");
+    Ok(())
+}
+
+#[tokio::test]
 async fn volume_branches_use_the_same_facade_without_a_native_source() -> TestResult {
     let (_directory, filesystem, store, main) = fixture().await?;
     main.write_text("/note", "base\n").await?;

@@ -55,6 +55,7 @@ async fn main_bytes(harness: &LocalHarness) -> Result<acyclic_stream::OwnedBytes
 #[tokio::test]
 async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_main() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let first = commands(&[
         ("bash", "printf main > note.txt"),
@@ -62,10 +63,10 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         ("fs", "checkout -b agents/child"),
         ("bash", "printf child > note.txt"),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, first.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, first.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     run(&harness).await?;
     assert_eq!(main_bytes(&harness).await?.as_ref(), b"main");
@@ -82,10 +83,10 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         ("fs", "checkout main"),
         ("fs", "status"),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, resumed.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, resumed.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     assert_eq!(main_bytes(&harness).await?.as_ref(), b"main");
     run(&harness).await?;
@@ -108,6 +109,7 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
             .finish(),
     );
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let write = |index: usize, text: &str| {
         ScriptedTurn::Events(vec![
@@ -132,10 +134,10 @@ async fn default_write_publishes_to_the_selected_checkout_and_bash_reads_it() ->
         super::checked_commands::call(7, "bash", "cat from-write.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     run(&harness).await?;
     let requests = provider.requests();
@@ -188,6 +190,7 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let unread = directory.path().join("unread.txt");
     std::fs::write(&unread, b"unrelated source bytes").map_err(super::super::storage)?;
     #[cfg(unix)]
@@ -209,10 +212,10 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         ("bash", "echo second"),
         ("bash", "echo third"),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     let view = harness
         .workspace()
@@ -303,6 +306,7 @@ proptest::proptest! {
 #[tokio::test]
 async fn arriving_directories_remain_watched_after_creation_and_rename() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(
             0,
@@ -315,10 +319,10 @@ async fn arriving_directories_remain_watched_after_creation_and_rename() -> Resu
         super::checked_commands::call(3, "bash", "printf renamed-edit > moved/deep/note.txt"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path()),
+    )
     .await?;
     let workspace = harness.workspace().unwrap().view().workspace();
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -345,16 +349,17 @@ async fn arriving_directories_remain_watched_after_creation_and_rename() -> Resu
 #[tokio::test]
 async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "fs", "status"),
         ScriptedTurn::Text("done".into()),
         super::checked_commands::call(1, "fs", "status"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let mut harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let mut harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     for reconciling in [false, true] {
         let checkout = harness.workspace().unwrap();
@@ -387,10 +392,13 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
         let workspace_id = workspace.id();
         drop(coordinator);
         drop(harness);
-        harness = LocalHarness::open(crate::test_support::local_harness_config(
-            directory.path(),
-            (model()?, provider.clone()),
-        )?)
+        harness = LocalHarness::open(
+            crate::test_support::local_harness_config(
+                directory.path(),
+                (model()?, provider.clone()),
+            )?
+            .state_directory(state.path()),
+        )
         .await?;
         let coordinator = acyclic_fs::OperationWindowCoordinator::new(
             harness

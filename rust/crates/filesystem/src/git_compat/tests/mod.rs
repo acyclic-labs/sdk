@@ -34,6 +34,18 @@ impl TestExecutor {
 impl GitFilesystemExecutor for TestExecutor {
     type Error = TestExecutorError;
 
+    async fn validate_merge_resolution(
+        &self,
+        _operation: OperationId,
+        _action: &GitFilesystemAction,
+        _tree: GitTreeRef,
+    ) -> Result<(), Self::Error> {
+        self.result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|_| TestExecutorError)
+    }
+
     async fn execute(
         &self,
         operation_id: OperationId,

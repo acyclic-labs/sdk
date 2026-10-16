@@ -221,6 +221,17 @@ where
         self.inner.validate().await
     }
 
+    async fn validate_merge_resolution(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .validate_merge_resolution(operation, action, tree)
+            .await
+    }
+
     async fn execute(
         &self,
         operation_id: OperationId,

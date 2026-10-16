@@ -249,6 +249,19 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
     );
     assert!(matches!(
         continued
+            .run(GitCommand::MergeContinue, tree(3), &TestExecutor::failing())
+            .await,
+        Err(GitCompatRunError::Executor(_))
+    ));
+    assert!(
+        continued
+            .pending_transition()
+            .await
+            .expect("pending after rejected resolution")
+            .is_some()
+    );
+    assert!(matches!(
+        continued
             .run(
                 GitCommand::MergeContinue,
                 tree(3),

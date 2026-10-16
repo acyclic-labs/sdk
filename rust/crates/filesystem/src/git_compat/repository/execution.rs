@@ -106,13 +106,17 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         let pending = self.pending_join("continue").await?;
-        let GitFilesystemAction::Join { tracked_paths, .. } = pending.action else {
-            return Err(GitCompatError::InvalidState.into());
-        };
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate_merge_resolution(pending.id.operation_id(), &pending.action, workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        let GitFilesystemAction::Join { tracked_paths, .. } = pending.action else {
+            return Err(GitCompatError::InvalidState.into());
+        };
         self.complete_transition_result(
             pending.id,
             &GitFilesystemResult::Applied {

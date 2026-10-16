@@ -59,6 +59,8 @@ mod capture;
 pub use capture::*;
 mod patch;
 pub use patch::*;
+mod merge;
+pub use merge::git_merge_is_resolved;
 mod diff;
 pub use diff::*;
 

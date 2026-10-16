@@ -10,6 +10,14 @@ pub trait GitFilesystemExecutor: Send + Sync {
         async { Ok(()) }
     }
 
+    /// Confirms the original join published and its current files are resolved.
+    fn validate_merge_resolution(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Executes or recovers one exact action.
     fn execute(
         &self,
