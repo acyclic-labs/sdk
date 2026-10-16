@@ -1,98 +1,5 @@
+use super::fixture::fixture;
 use super::*;
-
-fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
-    let (_, commands) = mpsc::channel(2);
-    let released = Arc::new(signal::Signal::new());
-    let mut pool = Pool {
-        identity: Bytes::from_static(b"model"),
-        authorization: Some("Bearer fixture".parse().unwrap()),
-        credential: None,
-        connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
-        home: "good".into(),
-        routes: BTreeMap::new(),
-        links: BTreeMap::new(),
-        reads: FuturesUnordered::new(),
-        dials: FuturesUnordered::new(),
-        connecting: BTreeSet::new(),
-        pending: VecDeque::new(),
-        home_channel: channel.clone(),
-        next_link: 3,
-        active: Arc::new(AtomicU64::new(0)),
-        attempt_epoch: Arc::new(AtomicU64::new(0)),
-        abandoned: Arc::new(gate::Gate::new()),
-        dial_epoch: 0,
-        commands,
-        removed: Arc::new(signal::Signal::new()),
-        released: Arc::clone(&released),
-        release_sender: released,
-    };
-    for (node, epoch) in [("bad", 1), ("good", 2)] {
-        pool.links.insert(
-            node.into(),
-            Link {
-                observation: None,
-                epoch,
-                credit: wire::SessionWindow {
-                    bytes: crate::MAX_COMMAND_BYTES as u64,
-                    frames: 2,
-                },
-                channel: channel.clone(),
-                sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
-                revision: 0,
-                applied_revision: 0,
-                released: wire::SessionWindow::default(),
-            },
-        );
-    }
-    let mut healthy = None;
-    for (id, node, kind) in [
-        (
-            1,
-            "bad",
-            Kind::Children(wire::ChildrenRequest {
-                parent: Some("agents".into()),
-                limit: 1,
-            }),
-        ),
-        (
-            3,
-            "good",
-            Kind::Follow(wire::SessionFollow {
-                path: "healthy".into(),
-                ..Default::default()
-            }),
-        ),
-    ] {
-        let (records, receiver) = mpsc::channel(2);
-        if id == 3 {
-            healthy = Some(receiver);
-        }
-        pool.routes.insert(
-            id,
-            Route {
-                node: node.into(),
-                attempt_epoch: 0,
-                kind,
-                generation: 1,
-                placement_epoch: 0,
-                received: 0,
-                received_opaque: Bytes::new(),
-                acknowledge: false,
-                acknowledged: 0,
-                opened: true,
-                credit: wire::SessionWindow {
-                    bytes: crate::MAX_COMMAND_BYTES as u64,
-                    frames: 2,
-                },
-                progress: Arc::new(Progress::new(0)),
-                records,
-                ready: None,
-                observation: crate::obs::OperationSpan::new(tracing::Span::none()),
-            },
-        );
-    }
-    (pool, healthy.unwrap())
-}
 
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {
@@ -179,7 +86,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 1,
                 "new interest must own a fresh pending dial"
             );
-            assert!(pool.connecting.contains("good"));
+            assert!(pool.dials.contains_key("good"));
             pool.links
                 .insert("good".into(), links.remove("good").unwrap());
             assert!(pool.receive_frame(
@@ -553,5 +460,120 @@ struct RegistrationWake(Arc<AtomicU64>);
 impl std::task::Wake for RegistrationWake {
     fn wake(self: std::sync::Arc<Self>) {
         self.0.fetch_add(1, Ordering::Release);
+    }
+}
+
+/// Exhausts real Cursor drop versus dial cleanup and live-owner selection.
+/// One dispatch thread and one withdrawing cursor are the complete race;
+/// independent nodes have no additional shared state or ordering constraints.
+pub fn verify_node_dials(fault: u8) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
+    for same_node in [false, true] {
+        let channel = channel.clone();
+        loom::model(move || {
+            let (mut pool, healthy) = fixture(channel.clone());
+            pool.links.remove("bad");
+            let (records, receiver) = mpsc::channel(2);
+            pool.routes.get_mut(&1).unwrap().records = records;
+            if same_node {
+                pool.routes.get_mut(&1).unwrap().node = "good".into();
+            }
+            let client = Client {
+                commands: mpsc::channel(2).0,
+                removed: Arc::clone(&pool.removed),
+                next_id: Arc::new(AtomicU64::new(5)),
+                active: Arc::clone(&pool.active),
+                attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                abandoned: Arc::clone(&pool.abandoned),
+            };
+            let a = client
+                .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver)
+                .unwrap();
+            let _b = client
+                .cursor(3, Arc::clone(&pool.routes[&3].progress), healthy)
+                .unwrap();
+            let dropped = Arc::new(AtomicU64::new(0));
+            struct Blocked(Arc<AtomicU64>);
+            impl std::future::Future for Blocked {
+                type Output = (String, u64, Result<Ready, StreamError>);
+                fn poll(
+                    self: std::pin::Pin<&mut Self>,
+                    _: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<Self::Output> {
+                    std::task::Poll::Pending
+                }
+            }
+            impl Drop for Blocked {
+                fn drop(&mut self) {
+                    self.0.store(1, Ordering::Release);
+                }
+            }
+            if !same_node {
+                pool.dial(
+                    wire::SessionNode {
+                        node_id: "bad".into(),
+                        ..Default::default()
+                    },
+                    None,
+                );
+                // Transport internals are outside the concurrency contract.
+                // Keep the real map entry and cancellation path, substituting
+                // only the opaque I/O future so tonic's large async stack does
+                // not become part of the Loom scheduler's coroutine stack.
+                pool.dials
+                    .insert("bad".into(), Box::pin(Blocked(Arc::clone(&dropped))));
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(poll_dials(&mut pool.dials, &mut cx).is_pending());
+            }
+            let withdrawal = loom::thread::spawn(move || drop(a));
+            // First scan races the cancellation store; final scan happens only
+            // after the real removal wake, with A still in the route table.
+            if fault != 1 {
+                pool.close_idle();
+            }
+            assert_eq!(loom::future::block_on(pool.removed.next()).unwrap(), 1);
+            withdrawal.join().unwrap();
+            if same_node {
+                let owner = if fault == 2 {
+                    pool.routes
+                        .iter()
+                        .find(|(_, route)| route.node == "good")
+                        .map(|(id, _)| *id)
+                } else {
+                    pool.dial_owner("good")
+                };
+                assert_eq!(
+                    owner,
+                    Some(3),
+                    "reconnect must select a live interest before removal"
+                );
+            } else {
+                if fault != 1 {
+                    pool.close_idle();
+                }
+                assert!(pool.dials.is_empty(), "withdrawn node must cancel its dial");
+                assert_eq!(
+                    dropped.load(Ordering::Acquire),
+                    1,
+                    "connector work must be dropped"
+                );
+                pool.dial_ready("bad".into(), 0, Err(StreamError::AccessDenied))
+                    .unwrap();
+                assert!(
+                    pool.routes.contains_key(&1),
+                    "ownerless completion must be ignored"
+                );
+                assert!(
+                    pool.links.contains_key("good"),
+                    "another node must remain live"
+                );
+                assert_eq!(pool.active.load(Ordering::Acquire), 1);
+            }
+        });
     }
 }

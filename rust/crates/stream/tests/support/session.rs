@@ -53,6 +53,7 @@ pub(super) struct Counts {
     pub(super) transmitted_bytes: AtomicUsize,
     pub(super) sent: AtomicUsize,
     pub(super) follows: AtomicUsize,
+    pub(super) removals: AtomicUsize,
     pub(super) children: AtomicUsize,
     // Fixture locks are never nested and never cross an await.
     pub(super) traffic: Mutex<std::collections::BTreeMap<(usize, u64, u64), Traffic>>,
@@ -123,6 +124,10 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                     ..
                 }) = &input
                 {
+                    counts
+                        .removals
+                        .fetch_add(interest.remove.len(), Ordering::Relaxed);
+                    counts.changed.notify_one();
                     for subscription in &interest.upsert {
                         if matches!(subscription.kind, Some(Kind::Children(_))) {
                             counts.children.fetch_add(1, Ordering::Relaxed);

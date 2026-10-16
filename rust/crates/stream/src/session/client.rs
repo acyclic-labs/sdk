@@ -26,7 +26,7 @@ pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
-    verify_pool_lifetime, verify_registration_deadline,
+    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
 };
 mod progress;
 use progress::Progress;
@@ -121,8 +121,7 @@ struct Pool {
     routes: BTreeMap<u64, Route>,
     links: BTreeMap<String, Link>,
     reads: FuturesUnordered<Read>,
-    dials: FuturesUnordered<Dial>,
-    connecting: BTreeSet<String>,
+    dials: BTreeMap<String, Dial>,
     pending: VecDeque<(u64, u64)>,
     home_channel: TransportChannel,
     next_link: u64,
@@ -134,6 +133,11 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+}
+impl Route {
+    fn live(&self) -> bool {
+        !self.progress.cancelled() && !self.records.is_closed()
+    }
 }
 impl Drop for Link {
     fn drop(&mut self) {
@@ -186,8 +190,7 @@ impl Client {
             routes: BTreeMap::new(),
             links: BTreeMap::new(),
             reads: FuturesUnordered::new(),
-            dials: FuturesUnordered::new(),
-            connecting: BTreeSet::new(),
+            dials: BTreeMap::new(),
             pending: VecDeque::new(),
             home_channel: channel.clone(),
             next_link: 1,

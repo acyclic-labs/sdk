@@ -71,3 +71,18 @@ fn registration_expiry_races_open_and_releases_the_real_cursor_guard() {
 fn negative_control_forgets_the_logical_registration_deadline() {
     acyclic_stream::session::verify_registration_deadline(true);
 }
+
+#[test]
+fn node_dial_cancellation_and_reconnect_use_real_cursor_fences() {
+    acyclic_stream::session::verify_node_dials(0);
+}
+#[test]
+#[should_panic(expected = "withdrawn node must cancel its dial")]
+fn negative_control_preserves_an_ownerless_dial_while_another_node_is_active() {
+    acyclic_stream::session::verify_node_dials(1);
+}
+#[test]
+#[should_panic(expected = "reconnect must select a live interest before removal")]
+fn negative_control_selects_a_cancelled_interest_before_removal() {
+    acyclic_stream::session::verify_node_dials(2);
+}

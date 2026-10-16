@@ -283,3 +283,51 @@ fn admitted_work_keeps_observation_after_observer_drop() {
         }
     }
 }
+
+fn root_context_case(mode: u8, broken: bool) {
+    use tracing::callsite::Callsite as _;
+    let seen = Capture::default();
+    let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone()));
+    let root = tracing::dispatcher::with_default(&subscriber, || {
+        let caller = tracing::info_span!("test.root.caller");
+        caller.in_scope(|| {
+            let span = match mode {
+                0 => tracing::Span::none(),
+                1 => tracing::Span::new_disabled(
+                    tracing::callsite! {
+                        name: "test.root.filtered", kind: tracing::metadata::Kind::SPAN,
+                        level: tracing::Level::DEBUG, fields:
+                    }
+                    .metadata(),
+                ),
+                _ => tracing::info_span!(parent: None, "test.root.enabled"),
+            };
+            if broken {
+                super::OperationSpan::new(span)
+            } else {
+                super::OperationSpan::new_root(span)
+            }
+        })
+    });
+    assert_eq!(
+        seen.closed("test.root.caller"),
+        1,
+        "a root must never retain its caller"
+    );
+    assert_eq!(root.context().id(), root.id());
+    drop(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn root_context_preserves_only_its_own_span(mode in 0_u8..3) {
+        root_context_case(mode, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a root must never retain its caller")]
+fn negative_control_root_falls_back_to_the_filtered_caller() {
+    root_context_case(1, true);
+}

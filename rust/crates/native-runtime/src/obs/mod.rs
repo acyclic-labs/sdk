@@ -52,6 +52,17 @@ impl OperationSpan {
             dispatch,
         }
     }
+    /// Captures an explicitly rooted span without retaining a filtered caller.
+    pub fn new_root(span: Span) -> Self {
+        let dispatch = span
+            .with_subscriber(|(_, dispatch)| dispatch.clone())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        Self {
+            context: span.clone(),
+            span,
+            dispatch,
+        }
+    }
     /// Borrows the operation's poll/drop context, including a filtered caller.
     pub fn context(&self) -> &Span {
         &self.context
