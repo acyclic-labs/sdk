@@ -1,4 +1,4 @@
-//! Validate resolution against the original durable join publication.
+//! Validate only unresolved identities retained in the pending Git join.
 use super::*;
 
 /// Checks only the actual conflicted paths in the current immutable view.
@@ -70,8 +70,33 @@ mod tests {
                 .value;
             let mut large = vec![b'x'; 17 * 1024 * 1024];
             large[..14].copy_from_slice(b">>>>>>> clean\n");
-            workspace
-                .write("/large", bytes::Bytes::from(large))
+            let mut transaction = workspace
+                .begin_transaction(crate::IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+                .await
+                .unwrap()
+                .value;
+            let content = transaction
+                .stage_content(
+                    &mut std::io::Cursor::new(large),
+                    17 * 1024 * 1024,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                )
+                .await
+                .unwrap()
+                .value;
+            transaction
+                .write_staged("/large", &[content], WorkBudget::UNBOUNDED, &stop)
+                .await
+                .unwrap();
+            transaction
+                .commit(
+                    None,
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &stop,
+                    |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) },
+                )
                 .await
                 .unwrap();
             workspace
