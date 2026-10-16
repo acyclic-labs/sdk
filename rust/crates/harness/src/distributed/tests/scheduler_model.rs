@@ -2,7 +2,10 @@ use super::model_provider::{
     Pending, PublicationCut, block_on, pause_before_publish, publish_until_cut,
 };
 use super::*;
-use crate::conversation::{BoundedContentFuture, ContentIo};
+use crate::{
+    Outcome,
+    conversation::{BoundedContentFuture, ContentIo},
+};
 use acyclic_stream::StreamPath;
 use loom::sync::atomic::AtomicU8;
 
