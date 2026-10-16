@@ -3,6 +3,7 @@ use crate::{CancellationToken, NativeMaterializationWork};
 
 fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
     crate::initialize_test_native_io();
+    let started = std::time::Instant::now();
     loom::model(move || {
         let cancellation = CancellationToken::new();
         let original =
@@ -40,16 +41,6 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
         }
         let hash_scope_cancellation = scope_cancellation.clone();
         let hash_cancellation = cancellation.clone();
-        let hash = loom::thread::spawn(move || {
-            let mut accounting = KernelAccounting::native(&hash_work, &hash_cancellation);
-            let cancelled_before = hash_scope_cancellation.is_cancelled();
-            let result = if shadow {
-                hash_lazy_value(&LazyShadow::Empty, &mut accounting)
-            } else {
-                hash_lazy_value(&LazyOverlay::Empty, &mut accounting)
-            };
-            (cancelled_before, result)
-        });
         let other_work = work.clone();
         let other = loom::thread::spawn(move || {
             other_work.charge(WorkCounters {
@@ -58,7 +49,15 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
             })
         });
         let cancel = loom::thread::spawn(move || scope_cancellation.cancel());
-        let (cancelled_before, result) = hash.join().unwrap();
+        // The model thread performs hashing. This retains all interleavings
+        // of the same three actors without an idle fourth thread and its join.
+        let mut accounting = KernelAccounting::native(&hash_work, &hash_cancellation);
+        let cancelled_before = hash_scope_cancellation.is_cancelled();
+        let result = if shadow {
+            hash_lazy_value(&LazyShadow::Empty, &mut accounting)
+        } else {
+            hash_lazy_value(&LazyOverlay::Empty, &mut accounting)
+        };
         let other_result = other.join().unwrap();
         cancel.join().unwrap();
         assert!(
@@ -103,16 +102,25 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
         assert!(state.capture_custody.is_none());
         assert!(!state.recheck_items);
     });
+    eprintln!(
+        "node hash model context={context} shadow={shadow}: {:?}",
+        started.elapsed()
+    );
 }
 
-#[test]
-fn node_hash_preserves_prefix_and_other_charge_during_cancellation() {
-    for context in 0..3 {
-        for shadow in [false, true] {
-            exercise(false, false, context, shadow);
+macro_rules! context_model {
+    ($name:ident, $context:expr) => {
+        #[test]
+        fn $name() {
+            for shadow in [false, true] {
+                exercise(false, false, $context, shadow);
+            }
         }
-    }
+    };
 }
+context_model!(root_hash_preserves_prefix_and_competing_charge, 0);
+context_model!(resource_hash_preserves_prefix_and_competing_charge, 1);
+context_model!(invocation_hash_preserves_prefix_and_competing_charge, 2);
 
 fn counterexample(action: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
     let error = std::panic::catch_unwind(action).expect_err("broken hash must fail");

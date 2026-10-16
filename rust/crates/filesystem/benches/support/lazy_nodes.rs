@@ -3,7 +3,7 @@ use acyclic_fs::lazy_workspace::{
     LazyOverlay, LazyOverlayChange, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceStore,
     MemoryLazyWorkspaceStore,
 };
-use acyclic_fs::{CancellationToken, FsWork, NativeMaterializationWork, WorkBudget, WorkCounters};
+use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters};
 use divan::Bencher;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
@@ -82,7 +82,7 @@ fn accounting<'a>(
 ) -> KernelAccounting<'a> {
     match work {
         Some(work) => KernelAccounting::NativeOriginal { work, cancellation },
-        None => BUDGET.accounting(cancellation),
+        None => KernelAccounting::standalone(BUDGET, cancellation),
     }
 }
 
@@ -99,11 +99,14 @@ fn input<'a, T: Clone>(
         bytes_copied: bytes,
         ..WorkCounters::UNCHARGED
     };
-    accounting.admit(copied).unwrap_or_else(fail);
+    accounting.charge(copied).unwrap_or_else(fail);
     let value = value.clone();
-    accounting.record_completed(copied).unwrap_or_else(fail);
+    let actual = actual(&value);
+    let excess = bytes
+        .checked_sub(actual)
+        .unwrap_or_else(|| fail("clone grew its buffer"));
     accounting
-        .reconcile_owned(&mut allocation, bytes, actual(&value))
+        .release_owned(&mut allocation, excess)
         .unwrap_or_else(fail);
     (value, allocation, accounting)
 }
