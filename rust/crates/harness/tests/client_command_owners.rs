@@ -160,3 +160,90 @@ proptest! {
         if !bytes.is_empty() { prop_assert!(CommandControl::from_bytes(&bytes, (bytes.len()-1) as u64).is_err()); }
     }
 }
+
+struct NoReads;
+impl ContentResidencyVerifier for NoReads {}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Every bounded Unicode source file round-trips through the live catalog
+    // and expands only its placeholders, independent of the native reader.
+    #[test]
+    fn followed_file_templates_round_trip(suffix in "[a-z]{1,8}", body in prop::collection::vec(any::<char>(), 0..32), arguments in "[A-Za-z0-9]{0,12}") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("source-property").unwrap()).await.unwrap());
+            let mut client = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 64).await.unwrap();
+            let name = format!("custom-{suffix}");
+            let body: String = body.into_iter().map(|ch| if ch == '\0' { '\u{fffd}' } else { ch }).collect();
+            let body = format!("prefix {body} $ARGUMENTS");
+            let cut = volume.snapshot(&Query::Inputs, 64).await.unwrap();
+            volume.append(cut.generation, &FileValue::new(FileKey::parse(&format!(".codex/prompts/{name}.md")).unwrap(), body.clone().into_bytes())).await.unwrap();
+            let _sources = CommandSources::observe(&mut client, &volume, acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(), vec![], vec![], Arc::new(NoReads), Default::default(), 32_768, 64).await.unwrap();
+            let encoded = serde_json::to_vec(&client.catalog().commands().collect::<Vec<_>>()).unwrap();
+            let decoded = CommandCatalog::from_bytes(&encoded, 32_768).unwrap();
+            let result = decoded.resolve(&format!("/{name} {arguments}"), &NoReads, 32_768).await.unwrap();
+            let CommandResolution::Prompt { text, .. } = result else { panic!("template did not resolve") };
+            prop_assert_eq!(text, body.replace("$ARGUMENTS", &arguments));
+            Ok(())
+        })?;
+    }
+}
+
+#[tokio::test]
+async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_corrected() -> Result<()> {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("catalog-edits")?,
+        )
+        .await?,
+    );
+    let mut client = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 64).await?;
+    let mut catalog: Value = client
+        .state(CommandFileRoot::Config, "commands.json")?
+        .unwrap();
+    catalog
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|spec| spec["name"] == "model")
+        .unwrap()["aliases"] = json!(["choose"]);
+    client
+        .install_catalog(serde_json::to_vec(&catalog).unwrap())
+        .await?;
+    let mut sources = CommandSources::observe(
+        &mut client,
+        &volume,
+        acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+        vec![],
+        vec![],
+        Arc::new(NoReads),
+        Default::default(),
+        32_768,
+        64,
+    )
+    .await?;
+    for (body, valid) in [
+        (b"bad\0source".as_slice(), false),
+        (b"Hello $ARGUMENTS".as_slice(), true),
+    ] {
+        let cut = volume.snapshot(&Query::Inputs, 64).await?;
+        volume
+            .append(
+                cut.generation,
+                &FileValue::new(FileKey::parse(".codex/prompts/added.md")?, body.to_vec()),
+            )
+            .await?;
+        sources.changed().await?;
+        let result = sources.refresh(&mut client).await;
+        assert_eq!(result.is_ok(), valid);
+        if valid {
+            assert!(client.catalog().commands().any(|spec| spec.name == "added"));
+        }
+        assert_eq!(
+            client.catalog().complete("CHOOSE").next().unwrap().name,
+            "model"
+        );
+    }
+    Ok(())
+}

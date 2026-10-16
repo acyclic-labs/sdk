@@ -22,6 +22,58 @@ struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
 fuzz_target!(|input: &[u8]| {
+    if input.len() <= 1024 {
+        let _ = futures::executor::block_on(async {
+            use acyclic_harness::task_volume::{FileKey, FileValue, Query, TaskVolume};
+            use std::sync::Arc;
+            let volume = Arc::new(
+                TaskVolume::open(
+                    Arc::new(acyclic_stream::MemoryStream::default()),
+                    acyclic_stream::StreamPath::new("fuzz-sources").unwrap(),
+                )
+                .await?,
+            );
+            let mut client = acyclic_harness::client::CommandSession::open(
+                volume.clone(),
+                uuid::Uuid::from_bytes(acyclic_harness::OperationId::new().into_bytes()),
+                32_768,
+                64,
+            )
+            .await?;
+            let (path, bytes) = if input.first() == Some(&1) {
+                ("skills/fuzz/SKILL.md", &input[1..])
+            } else {
+                (".codex/prompts/fuzzed.md", input)
+            };
+            let cut = volume.snapshot(&Query::Inputs, 64).await?;
+            volume
+                .append(
+                    cut.generation,
+                    &FileValue::new(FileKey::parse(path)?, bytes.to_vec()),
+                )
+                .await?;
+            let _source = acyclic_harness::client::CommandSources::observe(
+                &mut client,
+                &volume,
+                acyclic_harness::client::DEFAULT_COMMANDS_JSON.to_vec(),
+                vec![],
+                vec![],
+                Arc::new(NoReads),
+                Default::default(),
+                32_768,
+                64,
+            )
+            .await?;
+            let encoded =
+                serde_json::to_vec(&client.catalog().commands().collect::<Vec<_>>()).unwrap();
+            let restored = CommandCatalog::from_bytes(&encoded, 32_768)?;
+            assert_eq!(
+                client.catalog().commands().collect::<Vec<_>>(),
+                restored.commands().collect::<Vec<_>>()
+            );
+            Ok::<_, Error>(())
+        });
+    }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
         let machine = command_machine::DirectTool::new();
         if let Ok(state) = machine.initialize(&value) {
