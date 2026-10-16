@@ -124,6 +124,8 @@ impl LocalHarness {
             context_manifest: config.context_manifest,
             #[cfg(test)]
             context_read_observer: None,
+            #[cfg(feature = "hooks")]
+            hooks: crate::hooks::Hooks::default(),
             limits: config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
