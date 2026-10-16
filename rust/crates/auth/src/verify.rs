@@ -3,9 +3,10 @@ use crate::{BIRTH_DOMAIN, KEY_DOMAIN, SEAL_DOMAIN, VERSION, authority, contract:
 use ed25519_dalek::{Signer, SigningKey};
 use prost::Message;
 use std::collections::HashSet;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 mod effective;
+mod wire;
 pub use effective::{Effective, ScopedFilter};
 
 /// Authentication, structural admission or authority failure.
@@ -86,16 +87,6 @@ enum Proof {
     Sealed([u8; 64]),
 }
 
-// Owned wire proof buffers are scrubbed on return, including failed merges.
-struct Envelope(CapabilityProto);
-impl Drop for Envelope {
-    fn drop(&mut self) {
-        if let Some(TipProofProto::Secret(secret)) = &mut self.0.proof {
-            secret.zeroize();
-        }
-    }
-}
-
 /// Immutable authenticated chain. No account or issuer signing key is retained.
 /// Only its tip can sign an append; neither fields nor a mutable wire view are exposed.
 pub struct VerifiedCapability {
@@ -119,20 +110,14 @@ pub fn verify(
     trust: &impl Trust,
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
-    let mut envelope = Envelope(CapabilityProto::default());
-    envelope
-        .0
-        .merge(bytes)
-        .map_err(|_| VerifyError::Malformed)?;
-    if envelope.0.version != VERSION {
-        return Err(VerifyError::Version(envelope.0.version));
+    let envelope = wire::decode(bytes)?;
+    if envelope.version != VERSION {
+        return Err(VerifyError::Version(envelope.version));
     }
-    let canonical = Zeroizing::new(envelope.0.encode_to_vec());
-    if canonical.as_slice() != bytes || envelope.0.blocks.is_empty() {
+    if envelope.blocks.is_empty() {
         return Err(VerifyError::Malformed);
     }
     let wire = envelope
-        .0
         .blocks
         .iter()
         .map(|signed| {
@@ -192,7 +177,7 @@ pub fn verify(
     let mut signer = public_key(&leaf.public_key)?;
     let mut previous = [0; 32];
     let mut ids = Vec::with_capacity(wire.len());
-    for (index, (block, signed)) in wire.iter().zip(&envelope.0.blocks).enumerate() {
+    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
         block_message(&mut message, index as u64, &previous, &signed.payload);
         verify_signature(&signer, &message, &signed.signature)?;
         previous = block_id(&message, &signed.signature);
@@ -205,28 +190,21 @@ pub fn verify(
             return Err(VerifyError::Malformed);
         }
     }
-    let proof = match envelope.0.proof.take().ok_or(VerifyError::Malformed)? {
-        TipProofProto::Secret(mut secret) => {
-            let seed = secret.as_slice().try_into().map(Zeroizing::new);
-            secret.zeroize();
-            let seed: Zeroizing<[u8; 32]> = seed.map_err(|_| VerifyError::Malformed)?;
-            let key = SigningKey::from_bytes(&seed);
+    let proof = match envelope.proof {
+        wire::Proof::Secret(secret) => {
+            let seed: &[u8; 32] = secret.as_slice().try_into().map_err(|_| VerifyError::Malformed)?;
+            let key = SigningKey::from_bytes(seed);
             if key.verifying_key() != signer {
                 return Err(VerifyError::Signature);
             }
             Proof::Append(key)
         }
-        TipProofProto::Sealed(signature) => {
+        wire::Proof::Sealed(signature) => {
             message.clear();
             message.extend_from_slice(SEAL_DOMAIN);
             message.extend_from_slice(&previous);
             verify_signature(&signer, &message, &signature)?;
-            Proof::Sealed(
-                signature
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| VerifyError::Signature)?,
-            )
+            Proof::Sealed(signature)
         }
     };
     // No expensive claims/subset conversion happens until every signature is valid.
@@ -239,7 +217,7 @@ pub fn verify(
     }
     let mut verified = VerifiedCapability {
         blocks,
-        signed: std::mem::take(&mut envelope.0.blocks),
+        signed: envelope.blocks,
         ids,
         issuers,
         environment_issuer: environment,
@@ -404,18 +382,12 @@ impl VerifiedCapability {
 
     /// Sensitive transport bytes. The returned buffer is scrubbed when dropped.
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
-        let proof = match &self.proof {
+        match &self.proof {
             Proof::Append(key) => {
                 let secret = Zeroizing::new(key.to_bytes());
-                TipProofProto::Secret(secret.to_vec())
+                wire::encode(&self.signed, 18, secret.as_slice(), VERSION)
             }
-            Proof::Sealed(signature) => TipProofProto::Sealed(signature.to_vec()),
-        };
-        let envelope = Envelope(CapabilityProto {
-            blocks: self.signed.clone(),
-            proof: Some(proof),
-            version: VERSION,
-        });
-        Zeroizing::new(envelope.0.encode_to_vec())
+            Proof::Sealed(signature) => wire::encode(&self.signed, 26, signature, VERSION),
+        }
     }
 }

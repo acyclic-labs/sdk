@@ -7,6 +7,44 @@ use proptest::prelude::*;
 use prost::Message;
 use signed::*;
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn borrowed_encoding_is_canonical_with_one_allocation(depth in 1..=8u8, sealed in any::<bool>()) {
+        let trust = Snapshot::default();
+        let mut cap = verify(&root(|_| {}), &trust, NOW).unwrap();
+        for index in 1..depth {
+            cap = cap.attenuate(vec![], &[index + 4; 32]).unwrap();
+        }
+        if sealed { cap = cap.seal().unwrap(); }
+        let mut encoded = None;
+        let measured = allocation_counter::measure(|| { encoded = Some(cap.encode()); });
+        let encoded = encoded.unwrap();
+        prop_assert_eq!(measured.count_total, 1);
+        prop_assert_eq!(measured.bytes_total, encoded.len() as u64);
+        let wire = CapabilityProto::decode(encoded.as_slice()).unwrap();
+        let canonical = wire.encode_to_vec();
+        prop_assert_eq!(canonical.as_slice(), encoded.as_slice());
+        let decoded = verify(&encoded, &trust, NOW).unwrap();
+        let round_trip = decoded.encode();
+        prop_assert_eq!(round_trip.as_slice(), encoded.as_slice());
+        // The former deep-clone encoder must fail the same allocation budget.
+        let broken = allocation_counter::measure(|| {
+            std::hint::black_box(wire.clone().encode_to_vec());
+        });
+        prop_assert!(broken.count_total > 1);
+    }
+    #[test]
+    fn duplicate_proofs_are_rejected(first_sealed in any::<bool>(), second_sealed in any::<bool>(), secret in any::<[u8;32]>()) {
+        let trust = Snapshot::default();
+        let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
+        let mut bytes = if first_sealed { cap.seal().unwrap().encode().to_vec() } else { cap.encode().to_vec() };
+        let proof = if second_sealed { [vec![26, 64], vec![0; 64]].concat() } else { [vec![18, 32], secret.to_vec()].concat() };
+        bytes.splice(bytes.len()-2..bytes.len()-2, proof);
+        prop_assert!(matches!(verify(&bytes, &trust, NOW), Err(VerifyError::Malformed)));
+    }
+}
+
 fn caveat() -> impl Strategy<Value = Caveat> {
     prop_oneof![
         (0..1200u64).prop_map(CaveatKind::ExpiresAtUnixSeconds),
