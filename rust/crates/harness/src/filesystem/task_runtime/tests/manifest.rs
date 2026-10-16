@@ -155,55 +155,99 @@ fn command_requests_use_manifest_not_live_catalog() {
         .build()
         .unwrap();
     let template = runtime.block_on(Fixture::new()).unwrap();
-    let mut runner = proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+    let config = proptest::test_runner::Config {
         source_file: Some(file!()),
         test_name: Some(concat!(
             module_path!(),
             "::command_requests_use_manifest_not_live_catalog"
         )),
         ..Default::default()
+    };
+    let cases = config.cases;
+    assert!(cases > 0);
+    let workers = std::thread::available_parallelism()
+        .unwrap()
+        .get()
+        .min(cases as usize);
+    let mut seeds = proptest::test_runner::TestRunner::new(config.clone());
+    let strategy = (
+        any::<bool>(),
+        2u8..32,
+        proptest::string::string_regex("[a-zé猫]{1,32}").unwrap(),
+    )
+        .sboxed();
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for index in 0..workers {
+            let mut config = config.clone();
+            config.max_shrink_iters = config.max_shrink_iters();
+            config.cases = cases / workers as u32 + u32::from(index < cases as usize % workers);
+            // Split from one root RNG, including when PROPTEST_RNG_SEED is set:
+            // independent workers must not repeat the same generated cases.
+            let rng = seeds.new_rng();
+            let strategy = strategy.clone();
+            let template = &template;
+            handles.push(scope.spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let executed = std::cell::Cell::new(0u64);
+                let mut runner = proptest::test_runner::TestRunner::new_with_rng(config, rng);
+                runner
+                    .run(&strategy, |(selected, revision, text)| {
+                        executed.set(executed.get() + 1);
+                        let (request, tools) = runtime.block_on(async {
+                            let mut fixture = isolated_fixture(template).await?;
+                            change_live_revision(&mut fixture, revision)?;
+                            let runtime = fixture.runtime(None).await?;
+                            let provider =
+                                Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                                    "done".into(),
+                                )]));
+                            let (reference, tools) = manifest(&fixture, selected, &text).await?;
+                            let reader = reader(&fixture)?;
+                            let commands = runtime
+                                .commands()
+                                .with_model(
+                                    &model()?,
+                                    provider.clone(),
+                                    &ContextPipeline::default(),
+                                    &CompactionPolicy::Disabled,
+                                    None,
+                                )?
+                                .with_context_manifest(
+                                    reference,
+                                    reader.as_ref(),
+                                    Limits::default(),
+                                )
+                                .await?;
+                            let (task, fence, command, payload) =
+                                retained_command(&fixture, &runtime).await?;
+                            let context = runtime.task_context(task, fence.clone()).await?;
+                            assert!(matches!(
+                                commands.execute(context, fence, command, payload).await?,
+                                TaskCommandProgress::Ready(_)
+                            ));
+                            let requests = provider.requests();
+                            assert_eq!(requests.len(), 1);
+                            Ok::<_, Error>((requests.into_iter().next().unwrap(), tools))
+                        })?;
+                        prop_assert_eq!(request.tools, tools);
+                        prop_assert_eq!(&request.messages[0].content, &ModelContent::Text(text));
+                        Ok(())
+                    })
+                    .unwrap();
+                executed.get()
+            }));
+        }
+        let executed: u64 = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum();
+        assert!(executed >= u64::from(cases));
+        eprintln!("manifest property: {executed} cases on {workers} workers");
     });
-    runner
-        .run(
-            &(any::<bool>(), 2u8..32, "[a-zé猫]{1,32}"),
-            |(selected, revision, text)| {
-                let (request, tools) = runtime.block_on(async {
-                    let mut fixture = isolated_fixture(&template).await?;
-                    change_live_revision(&mut fixture, revision)?;
-                    let runtime = fixture.runtime(None).await?;
-                    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-                        "done".into(),
-                    )]));
-                    let (reference, tools) = manifest(&fixture, selected, &text).await?;
-                    let reader = reader(&fixture)?;
-                    let commands = runtime
-                        .commands()
-                        .with_model(
-                            &model()?,
-                            provider.clone(),
-                            &ContextPipeline::default(),
-                            &CompactionPolicy::Disabled,
-                            None,
-                        )?
-                        .with_context_manifest(reference, reader.as_ref(), Limits::default())
-                        .await?;
-                    let (task, fence, command, payload) =
-                        retained_command(&fixture, &runtime).await?;
-                    let context = runtime.task_context(task, fence.clone()).await?;
-                    assert!(matches!(
-                        commands.execute(context, fence, command, payload).await?,
-                        TaskCommandProgress::Ready(_)
-                    ));
-                    let requests = provider.requests();
-                    assert_eq!(requests.len(), 1);
-                    Ok::<_, Error>((requests.into_iter().next().unwrap(), tools))
-                })?;
-                prop_assert_eq!(request.tools, tools);
-                prop_assert_eq!(&request.messages[0].content, &ModelContent::Text(text));
-                Ok(())
-            },
-        )
-        .unwrap();
 }
 
 #[tokio::test]
