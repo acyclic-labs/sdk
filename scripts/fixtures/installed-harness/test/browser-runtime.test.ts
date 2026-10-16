@@ -74,10 +74,14 @@ test("installed browser entry executes the ordinary registered runtime", async (
         return { context_tokens: 128, output_tokens: 16 };
       }, (bytes, request_digest) => {
         const request = JSON.parse(new TextDecoder().decode(bytes));
+        expect(JSON.stringify(request.messages)).toContain("installed pinned context");
         return { request_digest, fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
       }, { kind: "disabled" });
     const command = crypto.randomUUID();
-    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
+    const context_manifest = await runtime.stage(crypto.randomUUID(), "stock-context", new TextEncoder().encode(JSON.stringify({
+      conventions: ["installed pinned context"], discovery: { instructions: [], skills: [] }, selected_skills: [], tools: [],
+    })));
+    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ context_manifest, input: "hello", max_steps: 1 })));
     const operation = crypto.randomUUID();
     const receiveOperation = crypto.randomUUID();
     const receivePayload = await runtime.stage(receiveOperation, "stock-receive", new TextEncoder().encode(JSON.stringify({ after: 0 })));
