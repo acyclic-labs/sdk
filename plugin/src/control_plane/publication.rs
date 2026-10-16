@@ -52,8 +52,12 @@ impl ControlPlane {
                 .roots
                 .get(&root_key(root_id))
                 .ok_or_else(|| "root workspace is unavailable".to_owned())?;
-            publisher =
-                publisher.with_root_merge_drivers(root_id, merge_drivers_for(workspace).await?);
+            publisher = publisher.with_root_merge_drivers(
+                root_id,
+                WorkspacePolicy::load_merge_drivers(workspace)
+                    .await
+                    .map_err(display)?,
+            );
         }
         Ok(MultiRootPublicationCoordinator::new(
             self.store.clone(),
@@ -180,8 +184,10 @@ impl ControlPlane {
                 Err(WorkspaceError::NotFound) => String::new(),
                 Err(error) => return Err(display(error)),
             };
-            let ignore =
-                GitIgnorePolicy::parse(&format!("{ignore_text}\n{}", reserved_ignore_rules()));
+            let ignore = GitIgnorePolicy::parse(&format!(
+                "{ignore_text}\n{}",
+                acyclic_harness::filesystem::RESERVED_IGNORE_RULES
+            ));
             let repository = GitCompatRepository::new(parent_repository_id, self.store.clone());
             let tracked = repository.tracked_paths().await.map_err(display)?;
             let child_binding = child_route

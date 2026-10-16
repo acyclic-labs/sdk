@@ -29,6 +29,7 @@ members = [
   "rust/crates/stream-napi",
   "rust/crates/harness-tui",
   "rust/crates/workers",
+  "rust/fuzz",
   "rust/crates/manifest",
   "plugin",
 ]

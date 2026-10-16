@@ -77,7 +77,7 @@ pub(crate) async fn purge_durable_state(data: &Path) -> Result<(), String> {
     let parent = data
         .parent()
         .ok_or_else(|| "durable state path has no parent".to_owned())?;
-    remove_tree_checked(parent, data)
+    NativeDirectory(parent).remove(data)
 }
 
 /// Takes the service lock when no service holds it, and clears the identity

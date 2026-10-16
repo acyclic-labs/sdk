@@ -10,7 +10,7 @@ mod plan_query;
 mod plans;
 mod scenario;
 use acyclic_harness::context::CompactionPolicy;
-use execution::run;
+use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
