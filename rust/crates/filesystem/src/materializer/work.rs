@@ -82,7 +82,9 @@ impl NativeMaterializationWork {
             .as_ref()
             .map_or(&self.cancellation, |view| &view.cancellation)
     }
-    pub(super) fn state<T>(
+    // The leaf stays locked through operation. Do not re-enter demand or drop
+    // owners whose destruction releases through this leaf.
+    pub(crate) fn state<T>(
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {

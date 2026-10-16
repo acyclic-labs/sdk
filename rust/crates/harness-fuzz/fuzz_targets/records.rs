@@ -1,8 +1,7 @@
 #![no_main]
 
 use acyclic_harness::{
-    AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*,
-    workflow::WorkflowCommand,
+    AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*, workflow,
 };
 use libfuzzer_sys::fuzz_target;
 use serde::{Serialize, de::DeserializeOwned};
@@ -10,7 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 // Compile the private production record without adding a public parser API.
 #[path = "../../harness/src/local/owner_record.rs"]
 mod owner_record;
-#[path = "../../harness/src/local/admission/record.rs"]
+#[path = "../../harness/src/goal/request_head.rs"]
 mod turn_record;
 
 fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {

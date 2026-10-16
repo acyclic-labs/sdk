@@ -5,6 +5,9 @@ mod filesystem;
 #[path = "support/admission.rs"]
 mod admission;
 
+#[path = "support/lazy_nodes.rs"]
+mod lazy_nodes;
+
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
