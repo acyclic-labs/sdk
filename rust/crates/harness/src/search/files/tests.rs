@@ -460,3 +460,46 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn request_file_types_keep_host_ownership_and_reset_legacy_cursors() -> Result<()> {
+    use crate::task_volume::Owner;
+    let input = FileKey::parse(".tasks/t/requests/search-one.json").unwrap();
+    assert_eq!(input.owner(), Owner::Caller);
+    for path in [
+        ".tasks/t/requests/search-one/started.json",
+        ".tasks/t/requests/search-one/result.json",
+    ] {
+        let key = FileKey::parse(path).unwrap();
+        assert_eq!(key.path(), path);
+        assert_eq!(key.owner(), Owner::Harness);
+    }
+    let stream = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("legacy-task-files").unwrap();
+    stream
+        .append(acyclic_stream::AppendRequest {
+            path: path.clone(),
+            records: vec![
+                serde_json::to_vec(
+                    &json!({"volume":uuid::Uuid::new_v4(),"epoch":uuid::Uuid::new_v4(),"schema":2}),
+                )
+                .unwrap()
+                .into(),
+            ],
+            if_tail: Some(0),
+            idempotency_key: None,
+        })
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let volume = TaskVolume::open(stream, path).await.map_err(storage)?;
+    let snapshot = volume.snapshot(&Query::Root, 0).await.map_err(storage)?;
+    let mut cursor = snapshot.cursor;
+    cursor.schema = 2;
+    let reset = volume
+        .observe(Query::Root, Some(cursor), 0)
+        .await
+        .map_err(storage)?;
+    assert!(reset.reset);
+    assert!(reset.snapshot.unwrap().files.is_empty());
+    Ok(())
+}

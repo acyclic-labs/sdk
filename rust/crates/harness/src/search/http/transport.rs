@@ -89,10 +89,17 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             .await
             .map_err(|_| transport_error(work, "search HTTP request failed"))?;
         if !response.status().is_success() {
-            return Err(super::super::rejection(
-                work,
-                "search HTTP request rejected",
-            ));
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Err(super::super::rejection(
+                    work,
+                    "search HTTP request rejected",
+                ));
+            }
+            return Err(crate::Error::Invalid(format!(
+                "search HTTP status {}",
+                response.status().as_u16()
+            )));
         }
         if response
             .headers()
