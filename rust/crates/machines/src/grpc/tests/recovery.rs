@@ -2,12 +2,10 @@ use super::*;
 
 #[tokio::test]
 async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
-    let provider = GrpcProvider {
-        client: wire::machines_service_client::MachinesServiceClient::with_interceptor(
-            TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
-            BearerAuth::default(),
-        ),
-    };
+    let provider = GrpcProvider::grpc_with_auth(
+        TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+        BearerAuth::default(),
+    );
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")
         .unwrap_or_else(|_| unreachable!());
     let child =
