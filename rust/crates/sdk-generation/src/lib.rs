@@ -129,8 +129,7 @@ pub fn run(
     values: impl IntoIterator<Item = String>,
     stdout: &mut dyn Write,
 ) -> Result<(), CliError> {
-    file_cache::begin_run();
-    sdk_docs::with_rustdoc_cache(|| run_inner(values, stdout))
+    file_cache::with_run(|| sdk_docs::with_rustdoc_cache(|| run_inner(values, stdout)))
 }
 
 fn run_inner(

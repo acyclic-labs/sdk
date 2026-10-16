@@ -107,6 +107,7 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
                 .transpose()?;
             (metadata, plan, revision)
         };
+    let historical_plan = historical_plan.map(crate::parallel::Arc::new);
     if args.channel == Channel::Release && args.historical_archives.is_none() {
         let published = published_packages(&root)?;
         let versions = metadata

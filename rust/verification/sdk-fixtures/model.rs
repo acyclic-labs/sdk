@@ -74,6 +74,22 @@ fn a_panicking_owner_still_joins_every_other_worker() {
     });
 }
 
+#[test]
+fn joined_owners_share_one_immutable_plan() {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.check(|| {
+        let plan = parallel::Arc::new(vec![17, 29]);
+        let shared = parallel::Arc::clone(&plan);
+        let identity = parallel::Arc::as_ptr(&plan) as usize;
+        assert_eq!(parallel::map(vec![0, 1], move |release| {
+            assert_eq!(parallel::Arc::as_ptr(&shared) as usize, identity);
+            shared[release]
+        }), vec![17, 29]);
+        assert_eq!(parallel::Arc::strong_count(&plan), 1);
+    });
+}
+
 #[path = "../../crates/sdk-docs/src/concrete_versions.rs"]
 mod concrete_versions;
 

@@ -50,7 +50,6 @@ impl Scope {
 }
 
 /// Verified archive inputs for one immutable historical source/version.
-#[derive(Clone)]
 pub struct Plan {
     pub released_packages: Vec<ReleasedPackage>,
     pub source_files: BTreeMap<String, String>,

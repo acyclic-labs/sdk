@@ -33,6 +33,9 @@ proptest! {
                 prop_assert_eq!(&*values.borrow(), &reference);
                 prop_assert!(values.borrow().keys().all(|key| previous.contains(key) || current.contains(key)));
             }
+            finish_metadata(&values, &recent);
+            reference.retain(|key, _| current.contains(key));
+            prop_assert_eq!(&*values.borrow(), &reference);
             prop_assert_eq!(&*recent.borrow(), &current);
             previous = current;
         }
@@ -158,13 +161,13 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
     let calls = Cell::new(0);
     sdk_docs::with_command_environment(&command, || {
         let query = |context: &str| {
-            begin_run();
-            resolved_cargo(&cargo);
-            owner_metadata(&cargo, context, || {
-                calls.set(calls.get() + 1);
-                Ok(calls.get().to_string())
+            with_run(|| {
+                resolved_cargo(&cargo);
+                owner_metadata(&cargo, context, || {
+                    calls.set(calls.get() + 1);
+                    Ok(calls.get().to_string())
+                }).unwrap()
             })
-            .unwrap()
         };
         assert_eq!(query("source/config/environment-a"), "1");
         assert_eq!(query("source/config/environment-a"), "1");
@@ -173,6 +176,7 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
         fs::write(&cargo, "changed Cargo").unwrap();
         assert_eq!(query("source/config/environment-a"), "3");
         assert_eq!(query("source/config/environment-b"), "4");
+        METADATA.with_borrow(|values| assert_eq!(values.len(), 1));
         assert_eq!(query("source/config/environment-b"), "4");
         METADATA.with_borrow(|values| assert_eq!(values.len(), 1));
         crate::run(["help".into()], &mut Vec::new()).unwrap();
