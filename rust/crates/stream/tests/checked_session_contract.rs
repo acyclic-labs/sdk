@@ -191,3 +191,33 @@ fn negative_control_infers_durability_from_acceptance() {
 fn negative_control_drops_snapshot_checked_state() {
     reject_mutant(Fault::DropSnapshotAnchor, "snapshot decode bytes");
 }
+
+#[test]
+fn watermark_corpus_seeds_reach_their_named_outcomes() {
+    use acyclic_stream::{StreamWatermarks, wire_codec::watermarks_from_wire};
+    for (seed, expected) in [
+        (
+            include_bytes!("../fuzz/corpus/follow_contract/watermarks-impossible").as_slice(),
+            Err(StreamError::Unavailable),
+        ),
+        (
+            include_bytes!("../fuzz/corpus/follow_contract/watermarks-held-flush").as_slice(),
+            Ok(StreamWatermarks {
+                accepted: u64::MAX,
+                durable: 0,
+            }),
+        ),
+        (
+            include_bytes!("../fuzz/corpus/follow_contract/watermarks-legacy").as_slice(),
+            Err(StreamError::Unsupported),
+        ),
+    ] {
+        let (&selector, bytes) = seed.split_first().unwrap();
+        assert_eq!(selector, 2);
+        assert_eq!(
+            watermarks_from_wire(wire::TailResponse::decode(bytes).unwrap()),
+            expected
+        );
+        assert_eq!(check(seed, Fault::None), Ok(()));
+    }
+}
