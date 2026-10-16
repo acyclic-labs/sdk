@@ -37,6 +37,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
+    "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
     "build": "bun run generate:client && bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs actors",
     "generate:client": "node ../../../scripts/generate-actors.mjs write",

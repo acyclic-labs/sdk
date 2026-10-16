@@ -1,0 +1,8 @@
+{
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name","arguments":{"name":"No route"}},{"type":"error",
+    "error":"offline"}]],
+  "resume":["offline"],
+  "recoveries":[{"observed":[{"kind":"tool_call","call_id":"missing","name":"set_name","arguments":{"name":"No route"}}],"continuation":
+    [{"kind":"completed","metadata":null}]}],
+  "expect":{"reconciliation_count":1}
+}

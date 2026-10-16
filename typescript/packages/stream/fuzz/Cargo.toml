@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-stream-typescript-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

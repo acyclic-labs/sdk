@@ -17,7 +17,7 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:c8acf71df64ceebc4b7047bda105223a4ac83428feb59ebf146c67b093bffa4b",
+      "schemaDigest": "sha256:b47ed268aa31466389cf99c4c6f5ab500af26ccf8c48fcfc97b66ee5f0f1a8bf",
       "conformanceDigest": "sha256:3b9ffcc21007714337ab0fb32417941e49f5f9bef7d55e5f4418cae005a443df"
     },
     "filesystem": {

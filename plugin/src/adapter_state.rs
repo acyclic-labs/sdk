@@ -437,33 +437,3 @@ pub(crate) fn validate_state_bounds(state: &AdapterState) -> Result<(), String> 
     }
     validate_pi_bindings(state)
 }
-
-pub(crate) fn remove_tree_checked(root: &Path, target: &Path) -> Result<(), String> {
-    let root = root.canonicalize().map_err(display)?;
-    let parent = target
-        .parent()
-        .ok_or_else(|| "discard target has no parent".to_owned())?
-        .canonicalize()
-        .map_err(display)?;
-    if parent != root {
-        return Err("refusing to discard a path outside the plugin workspace root".to_owned());
-    }
-    if !target.exists() {
-        return Ok(());
-    }
-    let target = match target.canonicalize() {
-        Ok(target) => target,
-        #[cfg(target_os = "windows")]
-        Err(error) if error.raw_os_error() == Some(369) => return Ok(()),
-        Err(error) => return Err(display(error)),
-    };
-    if target.parent() != Some(root.as_path()) {
-        return Err("refusing to discard a path outside the plugin workspace root".to_owned());
-    }
-    match fs::remove_dir_all(target) {
-        Ok(()) => Ok(()),
-        #[cfg(target_os = "windows")]
-        Err(error) if error.raw_os_error() == Some(369) => Ok(()),
-        Err(error) => Err(display(error)),
-    }
-}

@@ -80,6 +80,7 @@ printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
 if [[ "$1" == rustc ]]; then
   model=mcp-loom
   [[ " $* " != *' --test timer_loom '* ]] || model=timer_loom
+  [[ " $* " != *' --test guest_loom '* ]] || model=guest_loom
   printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
 fi
 EOF
@@ -186,11 +187,12 @@ chmod +x "$gate/bin/mcp_loom"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 3 ]]
+[[ "${#cargo_calls[@]}" -eq 4 ]]
 [[ "${cargo_calls[0]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features -- --cfg loom' ]]
 timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
 [[ "${cargo_calls[1]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
-[[ "${cargo_calls[2]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[2]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[3]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 for lane in docs generation; do
   : >"$gate/cargo.log"

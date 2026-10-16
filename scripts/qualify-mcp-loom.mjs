@@ -14,6 +14,10 @@ export function qualifyTimerLoom(run = spawnSync) {
   });
 }
 
+export function qualifyGuestLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
@@ -42,5 +46,6 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
   if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
+  else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
   else qualifyMcpLoom(features.length ? features : undefined);
 }
