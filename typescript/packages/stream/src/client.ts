@@ -143,9 +143,12 @@ export class StreamClient {
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
   static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
+    const callback = environment?.credential;
     return new StreamClient(new DefaultStreamProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
-      token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
+      ...(callback === undefined
+        ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
+        : { credential: callback }),
       ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
     }));
   }
