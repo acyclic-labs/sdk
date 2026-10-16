@@ -14,10 +14,12 @@ members = ["."]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [features]
-notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+default = ["runtime"]
+runtime = ["dep:acyclic-harness"]
+notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
-acyclic-harness = { path = ".." }
+acyclic-harness = { path = "..", optional = true }
 diffy = "=0.5.2"
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
@@ -33,6 +35,7 @@ which = "=8.0.6"
 [[bin]]
 name = "protocol_identity"
 path = "fuzz_targets/protocol_identity.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -40,6 +43,7 @@ bench = false
 [[bin]]
 name = "hook_output"
 path = "fuzz_targets/hook_output.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -47,6 +51,7 @@ bench = false
 [[bin]]
 name = "goal_parser"
 path = "fuzz_targets/goal_parser.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -54,6 +59,7 @@ bench = false
 [[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -61,6 +67,7 @@ bench = false
 [[bin]]
 name = "mcp_executable"
 path = "fuzz_targets/mcp_executable.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -68,6 +75,7 @@ bench = false
 [[bin]]
 name = "client_diff"
 path = "fuzz_targets/client_diff.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -75,6 +83,7 @@ bench = false
 [[bin]]
 name = "command_parser"
 path = "fuzz_targets/command_parser.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -90,6 +99,7 @@ bench = false
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
