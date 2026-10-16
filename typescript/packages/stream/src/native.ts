@@ -97,7 +97,8 @@ export class NativeStreamProvider implements StreamProvider {
 
   static async connect(endpoint: string, token: string | undefined, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, credential?: CredentialProvider): Promise<NativeStreamProvider> {
     const certificate = caCertificate === undefined ? undefined : Buffer.from(caCertificate);
-    const resolve = credential === undefined ? undefined : nativeCredentials(credentialProvider({ credential }));
+    let abandon = (): void => {};
+    const resolve = credential === undefined ? undefined : nativeCredentials(credentialProvider({ credential }), () => abandon());
     if (resolve === undefined) validateCredential(token);
     const module = await loadNativeModule();
     let result: GeneratedNative.NativeStreamConnectResult;
@@ -117,6 +118,11 @@ export class NativeStreamProvider implements StreamProvider {
     }
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
+    const client = result.client;
+    if (resolve !== undefined) {
+      if (typeof client.abandonSessionAttempts !== "function") throw new StreamError("configuration", "Stream native companion does not support credential cancellation");
+      abandon = () => client.abandonSessionAttempts();
+    }
     return new NativeStreamProvider(result.client, module, resolve);
   }
 

@@ -47,6 +47,7 @@ class Cancellation {
 }
 class Client {
   constructor(readonly resolve: () => Promise<string>) {}
+  abandonSessionAttempts(): void {}
   static async connectWithCredentialResult(_endpoint: string, resolve: () => Promise<string>) {
     return { client: new Client(resolve) };
   }

@@ -23,6 +23,7 @@ impl Pool {
         let identity = self.identity.clone();
         let authorization = self.authorization.clone();
         let credential = self.credential.clone();
+        let epoch = self.dial_epoch;
         self.dials.push(Box::pin(async move {
             let outcome = async {
                 let channel = match channel {
@@ -32,7 +33,7 @@ impl Pool {
                 open_link(channel, &name, identity, authorization, credential).await
             }
             .await;
-            (name, outcome)
+            (name, epoch, outcome)
         }));
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
