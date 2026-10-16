@@ -3,12 +3,10 @@ use acyclic_harness::{
     local::LocalHarness,
     tui::{
         self, PromptBox, PromptInput, Viewport,
-        key_event::InputEvent,
         ratatui::{Terminal, backend::CrosstermBackend},
         term::{Environment, ScreenMode, Tty},
     },
 };
-use futures::StreamExt;
 use std::{sync::Arc, time::Instant};
 
 pub async fn run(
@@ -22,7 +20,6 @@ pub async fn run(
             .await?;
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
-    let mut host = Box::pin(client::run_local_commands(local.clone(), operation));
     let mut tty = Tty::open()?;
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
@@ -30,23 +27,9 @@ pub async fn run(
     } else {
         ScreenMode::Alternate
     })?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(tty))?;
-    // TODO(#604): consume the Tty decoder's async controlling-terminal input,
-    // including negotiation-buffered keys and Windows console input handles.
-    let mut events = Box::pin(tui::crossterm::event::EventStream::new().filter_map(
-        |event| async move {
-            use tui::crossterm::event::Event;
-            match event {
-                Ok(Event::Key(key)) => Some(Ok(InputEvent::Key(key))),
-                Ok(Event::Mouse(mouse)) => Some(Ok(InputEvent::Mouse(mouse))),
-                Ok(Event::Paste(text)) => Some(Ok(InputEvent::Paste(text))),
-                Ok(Event::Resize(w, h)) => Some(Ok(InputEvent::Resize(w, h))),
-                Ok(Event::FocusGained) => Some(Ok(InputEvent::Focus(true))),
-                Ok(Event::FocusLost) => Some(Ok(InputEvent::Focus(false))),
-                Err(error) => Some(Err(acyclic_harness::Error::Storage(error.to_string()))),
-            }
-        },
-    ));
+    let (tty, output) = tty.split();
+    let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
+    let mut events = client::terminal_events(tty);
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;
@@ -79,7 +62,6 @@ pub async fn run(
         })?;
         let Some(event) = client::next_file_tui_event(
             &mut client,
-            &mut host,
             &mut events,
             &mut completions,
             &mut input,

@@ -60,6 +60,19 @@ pub async fn local_ui(
     let mut files =
         super::CommandSession::open_authorized(local.task_files().clone(), session, 65_536, 4096)
             .await?;
+    #[cfg(feature = "tui")]
+    {
+        let mut settings = files
+            .state(super::CommandFileRoot::Config, "settings.json")?
+            .unwrap_or_else(|| serde_json::json!({}));
+        if settings["renderer"] != "ratatui" {
+            settings["renderer"] = serde_json::json!("ratatui");
+            files
+                .write_state(super::CommandFileRoot::Config, "settings.json", &settings)
+                .await?;
+        }
+        crate::tui::catalog::configure(&mut files).await?;
+    }
     if files.selected_task()?.is_none() {
         let task = crate::TaskId::parse(&owner.id)?;
         let mut layout = files

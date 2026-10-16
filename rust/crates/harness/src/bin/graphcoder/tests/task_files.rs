@@ -85,3 +85,46 @@ proptest::proptest! {
         })?;
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(12))]
+    // The incremental projection equals the independently paged retained archive
+    // after eviction, unrelated layout writes, history cuts and full reopen.
+    #[test]
+    fn archive_projection_survives_retention_and_history_cuts(
+        texts in proptest::collection::vec("[a-z]{1,12}", 8..14),
+        cut in 0usize..14,
+    ) {
+        struct NoFiles;
+        impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use acyclic_harness::client::{CommandFileRoot, CommandSession};
+            let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("archive-retention").unwrap()).await.unwrap());
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "archive".into() };
+            let mut commands = CommandSession::open(volume.clone(), OperationId::new().to_string().parse().unwrap(), 65_536, 24).await.unwrap();
+            let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
+            let key = "AGGREGATE_KIND_TASK:archive";
+            for (index, text) in texts.iter().enumerate() {
+                commands.submit("prompt", &NoFiles).await.unwrap();
+                let request = commands.take_request().unwrap();
+                commands.consume(&request, |_,_,_| async { Ok(serde_json::json!({"text":text})) }).await.unwrap();
+                let mut layout = commands.state(CommandFileRoot::Session, "layout.json").unwrap().unwrap();
+                layout["unrelated_navigation"] = serde_json::json!(index);
+                if index == cut { layout["history_after"] = serde_json::json!(commands.output_sequence()); }
+                commands.write_state(CommandFileRoot::Session, "layout.json", &layout).await.unwrap();
+                let mut expected = Vec::new();
+                for back in 0..24 {
+                    let Some(value) = commands.output_page(back).unwrap() else { break };
+                    expected.push(value["ok"]["text"].as_str().unwrap().to_owned());
+                }
+                expected.reverse();
+                client.project_commands(&commands, &owner).unwrap();
+                proptest::prop_assert_eq!(&client.views().transcripts[key].streaming_text, &expected.join("\n\n"));
+                let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
+                replay.project_commands(&commands, &owner).unwrap();
+                proptest::prop_assert_eq!(&replay.views().transcripts[key], &client.views().transcripts[key]);
+            }
+            Ok(())
+        })?;
+    }
+}

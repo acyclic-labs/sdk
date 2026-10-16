@@ -43,6 +43,7 @@ where
                 io: Some(&io),
             },
         )?;
+        let journal = journal.with_task_files(self.task_files.clone());
         let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
@@ -111,6 +112,7 @@ where
                 io: None,
             },
         )?;
+        let journal = journal.with_task_files(self.task_files.clone());
         if admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE)

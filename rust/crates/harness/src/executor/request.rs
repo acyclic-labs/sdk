@@ -55,7 +55,7 @@ impl StockExecution<'_> {
                 let operation = span.clone();
                 span.scope(async move {
                     let result = self
-                        .dispatch_model_step(journal, input, step, prior_messages, purpose)
+                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
                         .await
                         .and_then(|events| completed_model_events(events, input.operation_id));
                     operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
@@ -70,7 +70,7 @@ impl StockExecution<'_> {
                 let _ = span;
                 async move {
                     let events = self
-                        .dispatch_model_step(journal, input, step, prior_messages, purpose)
+                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
                         .await?;
                     completed_model_events(events, input.operation_id)
                 }

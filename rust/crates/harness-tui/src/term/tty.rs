@@ -90,16 +90,10 @@ impl ProbeIo for RawTty {
         self.flush()
     }
 
-    fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        loop {
-            if Instant::now() >= deadline {
-                return Ok(0);
-            }
-            match self.file.read(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause(deadline),
-                result => return result,
-            }
-        }
+    fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
+        // The lifecycle takes its state lock around this call. Never sleep
+        // while holding it: a pending input read must not starve frame output.
+        self.file.read(bytes)
     }
 }
 
@@ -119,4 +113,22 @@ fn pause(deadline: Instant) {
     std::thread::sleep(
         Duration::from_millis(1).min(deadline.saturating_duration_since(Instant::now())),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<()> {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let _master = File::from(pty.controller);
+        let mut tty = RawTty::from_file(File::from(pty.user))?;
+        let result = tty.receive(&mut [0; 8], Instant::now() + Duration::from_millis(1));
+        let restored = tty.restore();
+        // The old implementation slept until the deadline and returned zero,
+        // keeping lifecycle::active locked for the entire wait.
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        restored
+    }
 }

@@ -48,7 +48,6 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
 pub async fn next_file_tui_event(
     client: &mut super::TaskFileClient,
-    host: &mut (impl std::future::Future<Output = Result<()>> + Unpin),
     input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
@@ -56,7 +55,6 @@ pub async fn next_file_tui_event(
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
-        result = host => { result?; Err(Error::Conflict("local command owner stopped".into())) },
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
@@ -69,4 +67,34 @@ pub async fn next_file_tui_event(
             Ok(None)
         },
     }
+}
+
+/// Follow controlling-terminal input through the decoder retained by negotiation.
+/// Terminal waits use Tokio's blocking executor, never the bounded filesystem
+/// I/O service needed by the active task. Closing output wakes the retained read.
+#[cfg(feature = "tui")]
+pub fn terminal_events(
+    tty: crate::tui::term::Tty,
+) -> acyclic_stream::BoxProviderStream<'static, Result<crate::tui::key_event::InputEvent>> {
+    Box::pin(futures::stream::try_unfold(
+        (tty, std::collections::VecDeque::new()),
+        |(mut tty, mut pending)| async move {
+            loop {
+                if let Some(event) = pending.pop_front() {
+                    return Ok(Some((event, (tty, pending))));
+                }
+                let completion = tokio::task::spawn_blocking(move || {
+                    let events = tty.read_events(
+                        std::time::Instant::now() + std::time::Duration::from_secs(86_400),
+                    );
+                    (tty, events)
+                });
+                let (reader, events) = completion
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                tty = reader;
+                pending.extend(events.map_err(|error| Error::Storage(error.to_string()))?);
+            }
+        },
+    ))
 }

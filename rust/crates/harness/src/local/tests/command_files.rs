@@ -158,10 +158,8 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
 #[tokio::test]
 async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
-    let make = || {
-        LocalHarnessConfig::new(directory.path(), (model().unwrap(), scripted([])))
-            .without_default_tools()
-    };
+    // The native mount is composed by the default bash binding.
+    let make = || LocalHarnessConfig::new(directory.path(), (model().unwrap(), scripted([])));
     let harness = LocalHarness::open(make()).await?;
     let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
     assert!(retained.mounts().any(|(_, mount)| {

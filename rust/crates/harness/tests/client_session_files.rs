@@ -272,29 +272,10 @@ async fn invalid_tool_files_never_reach_jsonl_or_the_durable_cursor() {
             .await
             .unwrap()
             .with_files(fixture.reader.clone());
-        let mut output = Vec::new();
-        assert!(
-            acyclic_harness::client::run_headless(
-                &mut client,
-                command(),
-                headless::target(),
-                &mut output
-            )
-            .await
-            .is_err()
-        );
+        assert!(client.next_delivery().await.is_err());
         assert_eq!(client.session().resume().cursors[0].revision, 0);
         assert!(host.acknowledgements.lock().unwrap().is_empty());
         assert_eq!(client.session().views(), &Default::default());
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .lines()
-                .all(|line| !matches!(
-                    jsonl::parse_server_frame(line).unwrap().frame,
-                    Some(wire::server_frame::Frame::Delivery(_))
-                ))
-        );
     }
 }
 

@@ -120,5 +120,13 @@
       "abcd"
     ],
     "copied": "abc"
+  },
+  {
+    "row": "Ordinary startup typing submits a slash prompt once with CR LF",
+    "text": "",
+    "bytes": "/delegate say hello\r\n",
+    "expected": "",
+    "visible": [],
+    "submitted": "/delegate say hello"
   }
 ]

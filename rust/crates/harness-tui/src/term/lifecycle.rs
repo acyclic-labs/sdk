@@ -11,6 +11,7 @@ pub(crate) struct State<W: Write> {
     pub(crate) guard: RestoreGuard<W>,
     active: bool,
     closed: bool,
+    restored: bool,
 }
 
 #[cfg(any(unix, acyclic_harness_tui_loom))]
@@ -39,10 +40,20 @@ pub(crate) fn detach<W: Write>(
     os_restore: impl FnOnce(&mut W) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut owner = owner.lock().map_err(|_| io::ErrorKind::Other)?;
+    if owner
+        .as_ref()
+        .is_none_or(|current| !Arc::ptr_eq(current, state))
+    {
+        return Ok(());
+    }
     let result = restore(state, true, os_restore);
     // Failed restoration retains ownership; a new session must never inherit
     // an unfinished journal or race a later restoration attempt.
-    if result.is_ok() {
+    if result.is_ok()
+        && owner
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, state))
+    {
         *owner = None;
     }
     result
@@ -63,6 +74,7 @@ impl<W: Write> State<W> {
             guard: RestoreGuard::new(writer, &Capabilities::default()),
             active: true,
             closed: false,
+            restored: false,
         }
     }
 }
@@ -92,9 +104,14 @@ pub(crate) fn restore<W: Write>(
     let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
     state.closed |= terminate;
     state.active = false;
+    if state.restored {
+        return Ok(());
+    }
     let dec = state.guard.restore();
     let os = os_restore(state.guard.writer());
-    dec.and(os)
+    let result = dec.and(os);
+    state.restored = result.is_ok();
+    result
 }
 
 #[cfg(any(unix, acyclic_harness_tui_loom))]
@@ -107,6 +124,7 @@ pub(crate) fn resume<W: Write>(
         os_reapply(state.guard.writer())?;
         state.guard.reapply()?;
         state.active = true;
+        state.restored = false;
     }
     Ok(())
 }
@@ -322,5 +340,71 @@ mod terminal_lifecycle_model {
             assert!(worker.join().is_ok());
             assert!(active(&state, |_| Ok(())).is_err());
         });
+    }
+    fn split_drop_model(broken: bool) {
+        loom::model(move || {
+            let owner = Arc::new(Mutex::new(None));
+            let old = attach(&owner, || Ok(Vec::<u8>::new())).unwrap();
+            detach(&owner, &old, |_| Ok(())).unwrap();
+            let closing_owner = Arc::clone(&owner);
+            let delayed = loom::thread::spawn(move || {
+                detach(&closing_owner, &old, |_| Ok(())).unwrap();
+                if broken {
+                    // Negative control removes the identity fence on delayed close.
+                    *closing_owner.lock().unwrap() = None;
+                }
+            });
+            let fresh = attach(&owner, || Ok(Vec::<u8>::new())).unwrap();
+            delayed.join().unwrap();
+            assert!(
+                owner
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &fresh)),
+                "delayed split-half close detached the new owner"
+            );
+        });
+    }
+
+    #[test]
+    fn delayed_split_half_cannot_detach_a_new_terminal() {
+        split_drop_model(false);
+    }
+    #[test]
+    fn negative_control_detects_unfenced_split_half_close() {
+        assert!(std::panic::catch_unwind(|| split_drop_model(true)).is_err());
+    }
+    fn stale_restore_model(broken: bool) {
+        loom::model(move || {
+            let raw = Arc::new(Mutex::new(true));
+            let old = Mutex::new(State::new(Vec::<u8>::new()));
+            restore(&old, true, |_| {
+                *raw.lock().unwrap() = false;
+                Ok(())
+            })
+            .unwrap();
+            *raw.lock().unwrap() = true; // The next owner has entered raw mode.
+            restore(&old, false, |_| {
+                *raw.lock().unwrap() = false;
+                Ok(())
+            })
+            .unwrap();
+            if broken {
+                *raw.lock().unwrap() = false;
+            } // Removed successful-restore fence.
+            assert!(
+                *raw.lock().unwrap(),
+                "old terminal repeated OS restoration after handoff"
+            );
+        });
+    }
+    #[test]
+    fn completed_restore_cannot_mutate_a_reopened_terminal() {
+        stale_restore_model(false);
+    }
+    #[test]
+    fn negative_control_detects_repeated_os_restoration() {
+        assert!(std::panic::catch_unwind(|| stale_restore_model(true)).is_err());
     }
 }

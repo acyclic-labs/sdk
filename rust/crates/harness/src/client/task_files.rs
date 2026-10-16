@@ -11,7 +11,8 @@ use futures::StreamExt as _;
 pub struct TaskFileClient {
     session: ClientSession<MemoryClientState>,
     changes: ChangeStream,
-    command_cut: Option<(u64, Option<crate::task_volume::FileValue>)>,
+    command_projection: super::command_output::Projection,
+    commands_dirty: bool,
 }
 impl TaskFileClient {
     /// Observe an authorized task selection at one atomic cut.
@@ -38,7 +39,8 @@ impl TaskFileClient {
         Ok(Self {
             session,
             changes: observation.changes,
-            command_cut: None,
+            command_projection: super::command_output::Projection::default(),
+            commands_dirty: false,
         })
     }
     /// Presentation state reconstructed from the followed files.
@@ -51,17 +53,11 @@ impl TaskFileClient {
         files: &super::CommandSession<P>,
         owner: &wire::Authority,
     ) -> Result<()> {
-        let cut = (
-            files.output_sequence(),
-            files
-                .state_file(super::CommandFileRoot::Session, "layout.json")?
-                .cloned(),
-        );
-        if self.command_cut.as_ref() != Some(&cut) {
-            if cut.0 > 0 {
-                self.session.project_commands(files, owner)?;
-            }
-            self.command_cut = Some(cut);
+        let changed = self.command_projection.refresh(files, owner)?;
+        if changed || self.commands_dirty {
+            self.session
+                .project_commands(&self.command_projection, files.active_task());
+            self.commands_dirty = false;
         }
         Ok(())
     }
@@ -78,7 +74,7 @@ impl TaskFileClient {
             .await
             .ok_or_else(|| Error::Conflict("task follow ended; reopen snapshot".into()))??;
         self.session.query_change(change)?;
-        self.command_cut = None;
+        self.commands_dirty = true;
         Ok(())
     }
 }

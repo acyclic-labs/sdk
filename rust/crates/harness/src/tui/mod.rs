@@ -12,3 +12,5 @@ pub use diff::diff_lines;
 
 #[cfg(feature = "terminal")]
 mod help;
+
+pub(crate) mod catalog;

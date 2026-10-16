@@ -25,6 +25,12 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         None
     }
 
+    /// Follows an authorized cancellation request while a model stream is active.
+    /// The default journal has no filesystem cancellation binding.
+    fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        Box::pin(std::future::pending())
+    }
+
     /// Implementations must scope sequences and retry keys by `operation_id`.
     fn replay<'a>(
         &'a self,

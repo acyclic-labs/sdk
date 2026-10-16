@@ -762,17 +762,11 @@ mod jsonl_tests;
 #[path = "client_session_views.rs"]
 mod views;
 
-#[path = "client_session_headless.rs"]
-mod headless;
-
 #[path = "client_session_recovery.rs"]
 mod recovery;
 
 #[path = "client_session_admissions.rs"]
 mod admissions;
-
-#[path = "client_session_lifecycle.rs"]
-mod lifecycle;
 
 #[path = "client_session_review.rs"]
 mod review;

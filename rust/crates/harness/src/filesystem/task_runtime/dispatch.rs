@@ -152,6 +152,9 @@ where
                             ),
                         });
                     }
+                    Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                        return Err(error);
+                    }
                     Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
                         return Ok(CommandDispatch::Indeterminate);
                     }

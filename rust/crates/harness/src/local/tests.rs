@@ -721,10 +721,10 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 
-#[cfg(feature = "native-execution")]
-mod checked_commands;
 #[cfg(all(feature = "native-execution", windows))]
 mod bash_environment;
+#[cfg(feature = "native-execution")]
+mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
 
@@ -758,3 +758,7 @@ mod headless;
 
 #[path = "tests/task_files.rs"]
 mod task_files;
+
+#[cfg(feature = "tui")]
+#[path = "tests/live_ui.rs"]
+mod live_ui;

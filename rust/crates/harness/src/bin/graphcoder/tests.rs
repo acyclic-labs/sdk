@@ -448,12 +448,14 @@ async fn submitted_commands_quit_and_drafts_use_real_query_files() {
         InputEffect::Submit {
             text: "replacement".into(),
             queued: false,
-            edit: Some("prior-message".into()),
+            edit: Some(OperationId::new().to_string()),
         },
     )
     .await
     .unwrap_err();
-    assert!(matches!(error, acyclic_harness::Error::Unsupported(_)));
+    assert!(
+        matches!(error, acyclic_harness::Error::NotFound(message) if message == "editable prompt request")
+    );
     assert_eq!(
         volume.snapshot(&Query::Root, 64).await.unwrap().generation,
         before
@@ -614,3 +616,6 @@ mod task_files;
 
 #[path = "tests/history_bounds.rs"]
 mod history_bounds;
+
+#[path = "tests/execution_feedback.rs"]
+mod execution_feedback;

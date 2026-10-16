@@ -13,7 +13,10 @@ pub async fn consume_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
     let settings = session.request_settings(request).await?;
     let result = session
         .consume(request, |operation, target, resolution| {
-            local.dispatch_configured_command(operation, target, resolution, &settings)
+            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> = Box::pin(
+                local.dispatch_configured_command(operation, target, resolution, &settings),
+            );
+            future
         })
         .await?;
     Ok(result)
@@ -53,41 +56,70 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
 ) -> Result<Option<serde_json::Value>> {
     let settings = session.request_settings(request).await?;
     session
-        .consume(request, |operation, target, resolution| {
-            let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
-                Box::pin(async move {
-                    let target = target.filter(|task| task.to_string() != local.client_owner().id);
-                    let mut result = local
-                        .dispatch_configured_command(operation, target, resolution, &settings)
-                        .await?;
-                    if result.get("admission_operation").is_some() {
-                        let task = result
-                            .get("task")
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or_else(|| {
-                                Error::Invalid("command admission has no task".into())
-                            })?;
-                        let output = local.resume(crate::TaskId::parse(task)?).await?;
-                        let output = serde_json::to_value(output)
-                            .map_err(|error| Error::Invalid(error.to_string()))?;
-                        result
-                            .as_object_mut()
-                            .ok_or_else(|| {
-                                Error::Invalid("command result must be an object".into())
-                            })?
-                            .extend(
-                                output
-                                    .as_object()
-                                    .ok_or_else(|| {
-                                        Error::Invalid("turn output must be an object".into())
-                                    })?
-                                    .clone(),
-                            );
-                    }
-                    Ok(result)
-                });
-            future
-        })
+        .consume_with_recovery::<true, _, _, _, _>(
+            request,
+            |operation, target, resolution| {
+                let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
+                    Box::pin(async move {
+                        let target =
+                            target.filter(|task| task.to_string() != local.client_owner().id);
+                        let mut result = local
+                            .dispatch_configured_command(operation, target, resolution, &settings)
+                            .await?;
+                        if result.get("admission_operation").is_some() {
+                            let task = result
+                                .get("task")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| {
+                                    Error::Invalid("command admission has no task".into())
+                                })?;
+                            let output = local.resume(crate::TaskId::parse(task)?).await?;
+                            let output = serde_json::to_value(output)
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                            result
+                                .as_object_mut()
+                                .ok_or_else(|| {
+                                    Error::Invalid("command result must be an object".into())
+                                })?
+                                .extend(
+                                    output
+                                        .as_object()
+                                        .ok_or_else(|| {
+                                            Error::Invalid("turn output must be an object".into())
+                                        })?
+                                        .clone(),
+                                );
+                        }
+                        Ok(result)
+                    });
+                future
+            },
+            |operation, _, resolution| async move {
+                if !matches!(
+                    resolution,
+                    CommandResolution::Prompt { .. }
+                        | CommandResolution::Tool {
+                            tool: CommandTool::Spawn,
+                            ..
+                        }
+                        | CommandResolution::Submit {
+                            request: CommandRequest::Replace { .. }
+                        }
+                ) {
+                    return Err(Error::Indeterminate(operation));
+                }
+                let task = crate::runtime::task_id_for_admission(operation);
+                // Resume the existing fenced stock task. Never repeat dispatch or
+                // create another admission after recovering an execution claim.
+                let output = local.resume(task).await?;
+                let mut value = serde_json::to_value(output)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                value["task"] = serde_json::json!(task);
+                value["selected_task"] = serde_json::json!(task);
+                value["admission_operation"] = serde_json::json!(operation);
+                Ok(value)
+            },
+        )
         .await
 }
 
@@ -121,13 +153,29 @@ pub(crate) async fn run_local_command_files(
         if only_session && !matches!(request.key, crate::task_volume::FileKey::Session { .. }) {
             continue;
         }
-        match run_local_command(&mut commands, &local, &request).await {
-            // Claim CAS contention has already followed the winning cut and
-            // requeued the request. Completed outcomes are never dispatched again.
-            Err(Error::Conflict(_)) => continue,
-            result => {
-                result?;
+        if let Err(error) = run_local_command(&mut commands, &local, &request).await {
+            if !only_session && commands.failure_is_saved(&request, &error).await? {
+                continue;
             }
+            // Only a failed claim CAS was requeued by the shared consumer.
+            // Headless failures retain their existing terminal error contract.
+            if matches!(&error, Error::Conflict(message)
+                if message == "command query advanced; retry from the new cut")
+            {
+                continue;
+            }
+            return Err(error);
         }
     }
+}
+
+/// Drive the local owner throughout presentation, including awaited input writes.
+/// Polling it only while waiting for events can strand a file lock held by an
+/// owner future while presentation waits for that same file operation.
+pub async fn with_local_commands<T, E: From<Error>>(
+    local: Arc<LocalHarness>,
+    session: OperationId,
+    presentation: impl std::future::Future<Output = std::result::Result<T, E>>,
+) -> std::result::Result<T, E> {
+    super::scheduling::drive_command_owner(run_local_commands(local, session), presentation).await
 }

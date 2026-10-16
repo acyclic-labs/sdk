@@ -126,6 +126,10 @@ pub struct Probe {
 }
 
 impl Probe {
+    pub(crate) fn pending_escape(&self) -> bool {
+        self.frame == b"\x1b"
+    }
+
     pub(crate) fn idle(&self) -> bool {
         self.state == 0
     }

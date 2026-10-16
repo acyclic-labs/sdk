@@ -63,6 +63,8 @@ pub struct ClientRenderer {
     notices: Vec<Line<'static>>,
     notice_file: Option<crate::task_volume::FileValue>,
     file_notices: Vec<Line<'static>>,
+    outcome_cut: Option<(u64, u64)>,
+    outcome_notice: Option<Line<'static>>,
     composed_notices: Vec<Line<'static>>,
     diff_cut: Option<(
         crate::conversation::VolumeRef,
@@ -295,6 +297,8 @@ impl ClientRenderer {
     fn compose_notices(&mut self) {
         self.composed_notices.clone_from(&self.notices);
         self.composed_notices.extend_from_slice(&self.file_notices);
+        self.composed_notices
+            .extend(self.outcome_notice.iter().cloned());
     }
 
     /// Current followed lifecycle, used by the shared prompt's queue indicator.
@@ -310,6 +314,22 @@ impl ClientRenderer {
     ) -> crate::Result<Screen<'_>> {
         use crate::client::CommandFileRoot;
         let layout = files.state(CommandFileRoot::Session, "layout.json")?;
+        let cut = (
+            files.output_sequence(),
+            layout
+                .as_ref()
+                .and_then(|value| value["history_after"].as_u64())
+                .unwrap_or(0),
+        );
+        if self.outcome_cut != Some(cut) {
+            let output = files.output_page(0)?;
+            self.outcome_notice = output
+                .as_ref()
+                .and_then(|value| value["error"].as_str())
+                .map(|message| Line::raw(message.escape_debug().to_string()));
+            self.outcome_cut = Some(cut);
+            self.compose_notices();
+        }
         let feedback = files.state_file(CommandFileRoot::Session, "notifications.json")?;
         if self.notice_file.as_ref() != feedback {
             let messages: Vec<String> = feedback

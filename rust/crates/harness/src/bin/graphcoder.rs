@@ -69,7 +69,12 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()
     {
-        let result = view::run(local.clone(), operation, args.inline).await;
+        let result = client::with_local_commands(
+            local.clone(),
+            operation,
+            view::run(local.clone(), operation, args.inline),
+        )
+        .await;
         client::disconnect_local(local).await?;
         result?;
         return Ok(0);

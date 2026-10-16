@@ -1,56 +1,61 @@
-//! Canonical protobuf JSON, shared by stdin, stdout and service adapters.
+//! GraphCoder and the harness headless runner use one filesystem JSONL dialect.
+//!
+//! Submit: one serialized `task_volume::FileValue` request per line. Its key is
+//! `FileKey::Session { session, file: TaskFile::Request(operation) }`, and its
+//! bytes are the serialized `CommandResolution` (or `CommandRequest`). The
+//! caller fixes the operation/session before opening either `-p` or JSONL mode.
+//! Reusing exactly those bytes and that identity is a retry, not another prompt.
+//!
+//! Observe: the first stdout line is `(Query, HeadSnapshot)`, represented as a
+//! JSON array. `HeadSnapshot.cursor` is the exact accepted cut. Subsequent lines
+//! are `task_volume::Change` values following from that cursor, with no gaps.
+//! Requests, execution claims/outcomes, canonical chunks, and materialized text
+//! heads use the same task-volume schemas as every other file client. `-p` and
+//! `--input-format jsonl` produce this identical observation stream. EOF drains
+//! accepted work; stderr contains diagnostics, never another stdout protocol.
+//!
+//! JSON values use their Rust serde representations; file bytes are the
+//! `OwnedBytes` representation, with no protobuf wrappers or alternate dialect.
+//! The helpers below are the codecs for this contract. Connection admission
+//! separately checks owner, operation, immutable bytes and authorized paths.
+use crate::{
+    Error, Result,
+    task_volume::{Change, FileValue, HeadSnapshot, Query},
+};
 
-use crate::{Error, Result, wire};
-use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
-use serde::de::DeserializeSeed;
-use std::sync::OnceLock;
+/// Maximum serialized request line accepted before parsing.
+pub const MAXIMUM_REQUEST_BYTES: usize = 65_536;
 
-fn descriptor(name: &str) -> Result<prost_reflect::MessageDescriptor> {
-    static POOL: OnceLock<std::result::Result<DescriptorPool, String>> = OnceLock::new();
-    let pool = POOL
-        .get_or_init(|| {
-            DescriptorPool::decode(crate::FILE_DESCRIPTOR_SET).map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(|error| Error::Invalid(error.clone()))?;
-    pool.get_message_by_name(name)
-        .ok_or_else(|| Error::Invalid(format!("missing wire descriptor {name}")))
+fn encode(value: &impl serde::Serialize) -> Result<String> {
+    serde_json::to_string(value).map_err(|error| Error::Invalid(error.to_string()))
 }
-
-fn encode(message: &impl Message, name: &str) -> Result<String> {
-    let dynamic = DynamicMessage::decode(descriptor(name)?, message.encode_to_vec().as_slice())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    serde_json::to_string(&dynamic).map_err(|error| Error::Invalid(error.to_string()))
+fn decode<T: serde::de::DeserializeOwned>(line: &str) -> Result<T> {
+    serde_json::from_str(line).map_err(|error| Error::Invalid(error.to_string()))
 }
-
-fn decode<M: Message + Default>(line: &str, name: &str) -> Result<M> {
-    let mut decoder = serde_json::Deserializer::from_str(line);
-    let dynamic = descriptor(name)?
-        .deserialize(&mut decoder)
-        .map_err(|error| Error::Invalid(format!("invalid wire JSON: {error}")))?;
-    decoder
-        .end()
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    M::decode(dynamic.encode_to_vec().as_slice()).map_err(|error| Error::Invalid(error.to_string()))
+/// Serialize a request file without a trailing newline.
+pub fn request(file: &FileValue) -> Result<String> {
+    encode(file)
 }
-
-/// Renders the exact service frame as one line, without a trailing newline.
-pub fn server_frame(frame: &wire::ServerFrame) -> Result<String> {
-    encode(frame, "acyclic.harness.v2.ServerFrame")
+/// Parse a bounded request file; the connection enforces its admission policy.
+pub fn parse_request(line: &str) -> Result<FileValue> {
+    if line.len() > MAXIMUM_REQUEST_BYTES {
+        return Err(Error::Invalid("stdin line exceeds byte bound".into()));
+    }
+    decode(line)
 }
-
-/// Parses one service frame, including protobuf bytes and string-valued u64s.
-pub fn parse_server_frame(line: &str) -> Result<wire::ServerFrame> {
-    decode(line, "acyclic.harness.v2.ServerFrame")
+/// Serialize the initial query and exact materialized-head snapshot.
+pub fn snapshot(query: &Query, head: &HeadSnapshot) -> Result<String> {
+    encode(&(query, head))
 }
-
-/// Renders one wire command frame.
-pub fn client_frame(frame: &wire::ClientFrame) -> Result<String> {
-    encode(frame, "acyclic.harness.v2.ClientFrame")
+/// Parse the first observation line.
+pub fn parse_snapshot(line: &str) -> Result<(Query, HeadSnapshot)> {
+    decode(line)
 }
-
-/// Parses `--input-format jsonl` input using the service's schema.
-pub fn parse_client_frame(line: &str) -> Result<wire::ClientFrame> {
-    decode(line, "acyclic.harness.v2.ClientFrame")
+/// Serialize one cursor-follow publication.
+pub fn change(value: &Change) -> Result<String> {
+    encode(value)
+}
+/// Parse a subsequent observation publication.
+pub fn parse_change(line: &str) -> Result<Change> {
+    decode(line)
 }

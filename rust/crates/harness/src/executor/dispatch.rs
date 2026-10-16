@@ -4,6 +4,29 @@ use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
 impl StockExecution<'_> {
+    /// Cancellation covers preparation and response headers as well as chunks.
+    pub(super) async fn cancellable_model_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
+    ) -> Result<Vec<ModelEvent>> {
+        let cancellation = journal.model_cancellation();
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
+            Box::pin(self.dispatch_model_step(journal, input, step, prior_messages, purpose));
+        match futures::future::select(cancellation, execution).await {
+            Either::Left((result, _)) => {
+                result?;
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                ))
+            }
+            Either::Right((result, _)) => result,
+        }
+    }
+
     /// Replays or resolves one model step.
     pub(super) async fn dispatch_model_step(
         &self,

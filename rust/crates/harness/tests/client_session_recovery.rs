@@ -1,6 +1,5 @@
-use super::headless::target;
 use super::*;
-use acyclic_harness::client::{FileClientState, HeadlessOutcome, run_headless, run_jsonl};
+use acyclic_harness::client::FileClientState;
 use std::fs::OpenOptions;
 
 struct CheckpointStore {
@@ -47,56 +46,38 @@ fn admission_boundary(padding: usize) -> ClientSession<MemoryClientState> {
 }
 
 async fn stdin_recovers_both_admissions(first_id: u128, second_id: u128) -> Vec<wire::Admission> {
-    use futures::StreamExt as _;
     let host = Arc::new(Host::default());
     host.requires_admission.store(true, Ordering::Relaxed);
     let mut first = command();
     first.operation.as_mut().unwrap().operation_id = uuid::Uuid::from_u128(first_id).to_string();
     let mut second = next_command();
     second.operation.as_mut().unwrap().operation_id = uuid::Uuid::from_u128(second_id).to_string();
-    let mut target = target();
-    target.operation_id = second.operation.as_ref().unwrap().operation_id.clone();
-    let input = futures::stream::iter([first.clone(), second.clone()])
-        .enumerate()
-        .map({
-            let host = host.clone();
-            move |(index, command)| {
-                *host.admission_state.lock().unwrap() = Some(if index == 0 {
-                    wire::AdmissionState::Indeterminate
-                } else {
-                    wire::AdmissionState::Accepted
-                });
-                Ok(jsonl::client_frame(&wire::ClientFrame {
-                    frame: Some(wire::client_frame::Frame::Command(command)),
-                })
-                .unwrap())
-            }
-        });
     let mut client = HarnessClient::connect(host.clone(), session())
         .await
         .unwrap();
-    let mut output = Vec::new();
-    assert_eq!(
-        run_jsonl(&mut client, target, input, &mut output)
-            .await
-            .unwrap(),
-        HeadlessOutcome::Completed
-    );
+    let mut admissions = Vec::new();
+    *host.admission_state.lock().unwrap() = Some(wire::AdmissionState::Indeterminate);
+    client
+        .submit(first.clone(), |response| {
+            admissions.push(response);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    *host.admission_state.lock().unwrap() = Some(wire::AdmissionState::Accepted);
+    client
+        .submit(second.clone(), |response| {
+            admissions.push(response);
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert_eq!(client.session().pending().count(), 0);
     assert_eq!(
         host.commands.lock().unwrap().as_slice(),
         &[first, command_with_id(first_id), second]
     );
-    String::from_utf8(output)
-        .unwrap()
-        .lines()
-        .filter_map(
-            |line| match jsonl::parse_server_frame(line).unwrap().frame {
-                Some(wire::server_frame::Frame::Admission(admission)) => Some(admission),
-                _ => None,
-            },
-        )
-        .collect()
+    admissions
 }
 
 fn command_with_id(id: u128) -> wire::CommandEnvelope {
@@ -120,7 +101,7 @@ async fn stdin_emits_a_recovered_predecessor_before_the_new_commands_admission()
 }
 
 #[tokio::test]
-async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
+async fn admission_checkpoint_failure_keeps_intent_for_retry() {
     for after_replace in [false, true] {
         for reopen in [false, true] {
             let fail = Arc::new(AtomicBool::new(true));
@@ -132,9 +113,13 @@ async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
             .unwrap();
             let host = Arc::new(Host::default());
             let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
-            let mut output = Vec::new();
+            let mut admissions = Vec::new();
             assert!(
-                run_headless(&mut client, command(), target(), &mut output)
+                client
+                    .submit(command(), |response| {
+                        admissions.push(response);
+                        Ok(())
+                    })
                     .await
                     .is_err()
             );
@@ -142,15 +127,7 @@ async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
                 client.session().pending().cloned().collect::<Vec<_>>(),
                 [command()]
             );
-            assert!(
-                !String::from_utf8(output)
-                    .unwrap()
-                    .lines()
-                    .any(|line| matches!(
-                        jsonl::parse_server_frame(line).unwrap().frame,
-                        Some(wire::server_frame::Frame::Admission(_))
-                    ))
-            );
+            assert!(admissions.is_empty());
             let state = client.into_session();
             let state = if reopen {
                 ClientSession::open(state.into_store()).unwrap()
@@ -159,23 +136,14 @@ async fn admission_checkpoint_failure_keeps_intent_for_jsonl_retry() {
             };
             fail.store(false, Ordering::Relaxed);
             let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
-            let mut output = Vec::new();
-            assert_eq!(
-                run_headless(&mut client, command(), target(), &mut output)
-                    .await
-                    .unwrap(),
-                HeadlessOutcome::Completed
-            );
-            let admissions: Vec<_> = String::from_utf8(output)
-                .unwrap()
-                .lines()
-                .filter_map(
-                    |line| match jsonl::parse_server_frame(line).unwrap().frame {
-                        Some(wire::server_frame::Frame::Admission(admission)) => Some(admission),
-                        _ => None,
-                    },
-                )
-                .collect();
+            let mut admissions = Vec::new();
+            client
+                .submit(command(), |response| {
+                    admissions.push(response);
+                    Ok(())
+                })
+                .await
+                .unwrap();
             assert_eq!(
                 admissions,
                 [admission(&command(), wire::AdmissionState::Accepted)]
@@ -373,38 +341,37 @@ async fn indeterminate_admission_blocks_submission_and_outbox_drain() {
 }
 
 #[tokio::test]
-async fn headless_reports_an_indeterminate_predecessor_without_sending_the_target() {
-    for jsonl in [false, true] {
+async fn blocked_predecessor_is_reported_without_sending_the_target() {
+    for queued in [false, true] {
         let host = Arc::new(Host::default());
         *host.admission_state.lock().unwrap() = Some(wire::AdmissionState::Indeterminate);
         let mut state = session();
         state.queue(command()).unwrap();
         let next = next_command();
-        if jsonl {
+        if queued {
             state.queue(next.clone()).unwrap();
         }
         let mut client = HarnessClient::connect(host.clone(), state).await.unwrap();
-        let mut target = target();
-        target.operation_id = next.operation.as_ref().unwrap().operation_id.clone();
-        let mut output = Vec::new();
-        let outcome = if jsonl {
-            run_jsonl(&mut client, target, futures::stream::empty(), &mut output).await
+        let mut admissions = Vec::new();
+        if queued {
+            client
+                .flush_outbox(|response| {
+                    admissions.push(response);
+                    Ok(())
+                })
+                .await
+                .unwrap();
         } else {
-            run_headless(&mut client, next, target, &mut output).await
-        };
-        assert_eq!(outcome.unwrap(), HeadlessOutcome::Indeterminate);
+            client
+                .submit(next, |response| {
+                    admissions.push(response);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
         assert_eq!(host.commands.lock().unwrap().as_slice(), &[command()]);
         assert_eq!(client.session().pending().count(), 2);
-        let admissions = String::from_utf8(output)
-            .unwrap()
-            .lines()
-            .filter_map(
-                |line| match jsonl::parse_server_frame(line).unwrap().frame {
-                    Some(wire::server_frame::Frame::Admission(admission)) => Some(admission),
-                    _ => None,
-                },
-            )
-            .collect::<Vec<_>>();
         assert_eq!(
             admissions,
             [admission(&command(), wire::AdmissionState::Indeterminate)]

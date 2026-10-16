@@ -33,12 +33,21 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                     "This action is unavailable in this session".into(),
                 ));
             }
+            object.remove("view_input");
             object.remove("view_request");
             object.remove("view_back");
             files
                 .write_state(CommandFileRoot::Session, "layout.json", &layout)
                 .await?;
         }
+        InputEffect::Submit {
+            text,
+            edit: Some(message),
+            ..
+        } => {
+            files.replace_message(&message, text).await?;
+        }
+        InputEffect::Interrupt => files.cancel_active().await?,
         InputEffect::Quit => {
             files
                 .publish_resolution(CommandResolution::Submit {
@@ -46,8 +55,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 })
                 .await?;
         }
-        // TODO(#495): bind interruption, message replacement and native clipboard/editor
-        // request files to the execution owner; never turn them into chat.
+        // Clipboard and external editor effects require a separate platform binding.
         _ => {
             return Err(Error::Unsupported(
                 "This action is unavailable in this session".into(),
@@ -64,6 +72,12 @@ pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     reader: &dyn ContentResidencyVerifier,
     effect: InputEffect,
 ) -> Result<()> {
+    if files
+        .state(CommandFileRoot::Config, "settings.json")?
+        .is_some_and(|value| value["renderer"] == "ratatui")
+    {
+        crate::tui::catalog::configure(files).await?;
+    }
     let messages = match apply_tui_input(files, reader, effect).await {
         Ok(()) => Vec::new(),
         Err(error @ (Error::Invalid(_) | Error::NotFound(_) | Error::Unsupported(_))) => {

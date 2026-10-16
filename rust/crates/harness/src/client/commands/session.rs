@@ -12,6 +12,8 @@ mod activity;
 mod archive;
 #[path = "session_confirmation.rs"]
 mod confirmation;
+#[path = "session_consume.rs"]
+mod consumption;
 #[path = "session_init.rs"]
 mod init;
 #[cfg(all(test, acyclic_harness_loom))]
@@ -625,114 +627,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
             self.advance().await?;
         }
-    }
-
-    /// Claim an immutable request before dispatch. A second process must win the
-    /// same generation CAS and immutable claim key; it cannot execute a duplicate.
-    /// A crash after claiming leaves an explicit uncertain effect, never a resend.
-    pub async fn consume<F, Fut>(
-        &mut self,
-        request: &files::FileValue,
-        execute: F,
-    ) -> Result<Option<Value>>
-    where
-        F: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Fut,
-        Fut: std::future::Future<Output = Result<Value>>,
-    {
-        if self.read_file(&request.key).await?.as_ref() != Some(request) {
-            return Err(Error::Unauthorized(
-                "command request differs from its observed immutable file".into(),
-            ));
-        }
-        let (task_id, id) = match &request.key {
-            files::FileKey::Task {
-                task,
-                file: files::TaskFile::Request(id),
-            } => (Some(TaskId::parse(task.as_str())?), id),
-            files::FileKey::Session {
-                session,
-                file: files::TaskFile::Request(id),
-            } if session.as_str() == self.session.to_string() => (None, id),
-            _ => {
-                return Err(Error::Invalid(
-                    "expected this session's command request file".into(),
-                ));
-            }
-        };
-        let (owner, operation) = files::command_query::identity(id)
-            .ok_or_else(|| Error::Invalid("not a command request identity".into()))?;
-        if owner.is_some_and(|owner| owner != self.session) {
-            return Err(Error::Invalid(
-                "command belongs to another UI session".into(),
-            ));
-        }
-        let key = |file| match &request.key {
-            files::FileKey::Task { task, .. } => files::FileKey::Task {
-                task: task.clone(),
-                file,
-            },
-            files::FileKey::Session { session, .. } => files::FileKey::Session {
-                session: session.clone(),
-                file,
-            },
-            _ => unreachable!(),
-        };
-        let claim = key(files::TaskFile::ExecutionClaim(id.clone()));
-        if self.read_file(&claim).await?.is_some() {
-            return if self
-                .read_file(&key(files::TaskFile::ExecutionResult(id.clone())))
-                .await?
-                .is_some()
-            {
-                Ok(None)
-            } else {
-                Err(Error::Indeterminate(operation))
-            };
-        }
-        let resolution: CommandResolution = serde_json::from_slice(&request.bytes)
-            .or_else(|_| {
-                serde_json::from_slice(&request.bytes)
-                    .map(|request| CommandResolution::Submit { request })
-            })
-            .map_err(codec)?;
-        let bytes = request.bytes.to_vec();
-        self.make_room(3)?;
-        if let Err(error) = self.publish(claim, bytes, true).await {
-            if matches!(error, Error::Conflict(_)) {
-                self.pending.push_front(request.clone());
-            }
-            return Err(error);
-        }
-        let result = execute(operation, task_id, resolution).await;
-        loop {
-            let previous = self.generation;
-            let sequence = self.generation.position;
-            let bytes = archive::output_bytes(sequence, &result, self.maximum_bytes)?;
-            match self
-                .publish(
-                    key(files::TaskFile::ExecutionResult(id.clone())),
-                    bytes,
-                    true,
-                )
-                .await
-            {
-                Ok(()) => break,
-                // The effect has already finished. Only retry its outcome file,
-                // after following the competing publication; never run it again.
-                Err(Error::Conflict(_))
-                    if self.generation.position > previous.position
-                        && self.next_change.is_none() =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        self.persist_activity().await?;
-        if let Ok(value) = &result {
-            self.apply_outcome(value).await?;
-        }
-        result.map(Some)
     }
 
     /// Query-derived exit flag used by native and renderer clients alike.

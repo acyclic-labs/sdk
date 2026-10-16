@@ -413,12 +413,12 @@ impl<S: ClientStateStore> ClientSession<S> {
         &self.views
     }
 
-    pub(super) fn project_commands<P: acyclic_stream::StreamProvider + ?Sized>(
+    pub(super) fn project_commands(
         &mut self,
-        files: &super::CommandSession<P>,
-        owner: &wire::Authority,
-    ) -> Result<()> {
-        super::command_output::project(&mut self.views, files, owner)
+        projection: &super::command_output::Projection,
+        active: Option<crate::TaskId>,
+    ) {
+        projection.apply(&mut self.views, active);
     }
 
     /// Returns storage after transport shutdown, for reopening or explicit disposal.

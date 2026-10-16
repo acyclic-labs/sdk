@@ -322,6 +322,7 @@ where
             policy,
             interaction_owner: None,
             recursive_source: None,
+            task_files: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_configuration_custody,
         })

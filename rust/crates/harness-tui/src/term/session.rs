@@ -19,7 +19,36 @@ pub struct Tty {
     capabilities: Option<Capabilities>,
 }
 
+/// Output half retaining the same terminal lifecycle as its decoded input.
+pub struct Output {
+    state: Arc<Mutex<State<RawTty>>>,
+    owner: &'static Owner<RawTty>,
+}
+
+impl Write for Output {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        lifecycle::active(&self.state, |guard| guard.writer().write(bytes))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.writer().flush())
+    }
+}
+impl Drop for Output {
+    fn drop(&mut self) {
+        let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
+    }
+}
+
 impl Tty {
+    /// Separate output from the existing decoder without reopening the terminal.
+    /// Dropping either half restores the owner and wakes any outstanding read.
+    pub fn split(self) -> (Self, Output) {
+        let output = Output {
+            state: Arc::clone(&self.state),
+            owner: self.owner,
+        };
+        (self, output)
+    }
     /// Open the controlling terminal, including when stdout is redirected.
     pub fn open() -> io::Result<Self> {
         Self::from_file(OpenOptions::new().read(true).write(true).open("/dev/tty")?)
@@ -78,7 +107,7 @@ impl Tty {
         let mut events = self.decoder.take_events();
         while events.is_empty() {
             let mut bytes = [0; 1024];
-            let count = self.receive(&mut bytes, deadline)?;
+            let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
             if count == 0 || Instant::now() >= deadline {
@@ -113,16 +142,21 @@ impl ProbeIo for Tty {
             if now >= deadline {
                 return Ok(0);
             }
-            // Release state between bounded nonblocking reads. The signal
-            // worker never waits for the application's input deadline.
+            // Only the nonblocking syscall holds state. Both output and the
+            // signal worker remain runnable while input waits for another byte.
             let result = lifecycle::active(&self.state, |guard| {
                 guard
                     .writer()
                     .receive(bytes, deadline.min(now + Duration::from_millis(1)))
             });
             match result {
-                Ok(0) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(
+                        Duration::from_millis(1)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
         }
@@ -162,13 +196,41 @@ mod tests {
         let observer = File::from(pty.user);
         let original = tcgetattr(&observer)?;
         let flags = fcntl_getfl(&observer)?;
-        let old = Tty::from_file(observer.try_clone()?)?;
+        let mut old = Tty::from_file(observer.try_clone()?)?;
+        let mut master = File::from(pty.controller);
+        master.write_all(b"/delegate say hello\r\n\x1b[?1;2c")?;
+        old.negotiate(&Environment([("TERM".into(), "xterm".into())].into()))?;
         // Keep the old descriptor alive past detach, exactly as a concurrent
         // signal callback can. No scheduling or timing assumptions are needed.
         let retained = Arc::clone(&old.state);
-        drop(old);
+        let (mut old, output) = old.split();
+        let events = old.read_events(Instant::now())?;
+        let typed: String = events
+            .iter()
+            .filter_map(|event| match event {
+                InputEvent::Key(key) => match key.code {
+                    KeyCode::Char(character) => Some(character),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, "/delegate say hello");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event,
+            InputEvent::Key(key) if key.code == KeyCode::Enter))
+                .count(),
+            1
+        );
+        drop(output);
         let new = Tty::from_file(observer.try_clone()?)?;
+        drop(old);
         drop(retained);
+        assert!(
+            matches!(Tty::from_file(observer.try_clone()?), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+        );
         lifecycle::active(&new.state, |_| Ok(()))?;
         assert!(
             !tcgetattr(&observer)?

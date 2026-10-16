@@ -116,12 +116,12 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
         InputEffect::Submit {
             text: "replacement".into(),
             queued: false,
-            edit: Some("prior-message".into()),
+            edit: Some(OperationId::new().to_string()),
         },
     )
     .await
     .unwrap();
-    assert!(painted(&mut renderer, &files).contains("This action is unavailable in this session"));
+    assert!(painted(&mut renderer, &files).contains("editable prompt request"));
     assert!(files.take_request().is_none());
     handle_tui_input(&mut files, &NoFiles, submit("ordinary chat"))
         .await
@@ -199,4 +199,82 @@ proptest::proptest! {
             Ok(())
         })?;
     }
+}
+
+#[tokio::test]
+async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt() {
+    let volume = volume().await;
+    let mut files = session(volume, 44).await;
+    files
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"renderer":"ratatui"}),
+        )
+        .await
+        .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"open_view":"find","view_input":"find"}),
+        )
+        .await
+        .unwrap();
+    handle_tui_input(&mut files, &NoFiles, submit("/find"))
+        .await
+        .unwrap();
+    for name in [
+        "find", "theme", "feedback", "bug", "report", "tree", "terminal",
+    ] {
+        assert!(
+            !files
+                .catalog()
+                .commands()
+                .any(|spec| spec.name == name || spec.aliases.iter().any(|alias| alias == name)),
+            "{name}"
+        );
+    }
+    assert!(files.take_request().is_none());
+    assert!(
+        files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap()["view_input"]
+            .is_null()
+    );
+    handle_tui_input(&mut files, &NoFiles, submit("visible next prompt"))
+        .await
+        .unwrap();
+    let request = files.take_request().expect("ordinary next submission");
+    let resolution: acyclic_harness::client::CommandResolution =
+        serde_json::from_slice(&request.bytes).unwrap();
+    assert!(
+        matches!(resolution, acyclic_harness::client::CommandResolution::Prompt { text, .. } if text == "visible next prompt")
+    );
+    // A closed view may retain an old form pointer from another frontend.
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"view_input":"find"}),
+        )
+        .await
+        .unwrap();
+    handle_tui_input(&mut files, &NoFiles, submit("another visible prompt"))
+        .await
+        .unwrap();
+    let request = files
+        .take_request()
+        .expect("stale form cannot intercept chat");
+    assert!(
+        matches!(serde_json::from_slice::<acyclic_harness::client::CommandResolution>(&request.bytes).unwrap(),
+        acyclic_harness::client::CommandResolution::Prompt { text, .. } if text == "another visible prompt")
+    );
+    assert!(
+        files
+            .state(CommandFileRoot::Session, "search.json")
+            .unwrap()
+            .is_none()
+    );
 }

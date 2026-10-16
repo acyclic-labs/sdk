@@ -11,7 +11,7 @@ use crate::{
 use futures::{FutureExt, Stream, StreamExt};
 use std::{future::Future, io::Write, pin::Pin, sync::Arc};
 
-const MAXIMUM_BYTES: usize = 65_536;
+const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
 const MAXIMUM_FILES: usize = 4096;
 
 fn session(operation: OperationId) -> Result<Component> {
@@ -72,8 +72,7 @@ pub fn parse_local_request(line: &str, operation: OperationId) -> Result<FileVal
     if line.len() > MAXIMUM_BYTES {
         return Err(Error::Invalid("stdin line exceeds byte bound".into()));
     }
-    let file: FileValue =
-        serde_json::from_str(line).map_err(|error| Error::Invalid(error.to_string()))?;
+    let file = super::jsonl::parse_request(line)?;
     validate(&file, operation)?;
     Ok(file)
 }
@@ -324,8 +323,6 @@ fn publish(output: &mut impl Write, change: &Change) -> Result<()> {
 }
 
 impl HeadlessClient for LocalFileClient {
-    type Command = FileValue;
-    type Target = OperationId;
     async fn prompt<W: Write>(
         &mut self,
         command: FileValue,

@@ -1,6 +1,10 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(crate) fn first_output_sequence(&self) -> Option<u64> {
+        self.outputs.keys().next().copied()
+    }
+
     pub(crate) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
     }
@@ -64,6 +68,22 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Whether this exact error is stored in the request's immutable outcome.
+    /// A claim, successful result or different storage failure is insufficient.
+    pub async fn failure_is_saved(
+        &mut self,
+        request: &files::FileValue,
+        failure: &Error,
+    ) -> Result<bool> {
+        let key = related(&request.key, files::TaskFile::ExecutionResult)
+            .ok_or_else(|| Error::Invalid("not a command request".into()))?;
+        let Some(file) = self.read_file(&key).await? else {
+            return Ok(false);
+        };
+        let outcome: Value = serde_json::from_slice(&file.bytes).map_err(codec)?;
+        Ok(outcome["error"].as_str() == Some(failure.to_string().as_str()))
     }
 
     pub(super) async fn read_file(
