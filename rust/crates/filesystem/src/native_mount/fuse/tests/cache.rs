@@ -407,14 +407,24 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
         let invalidator = std::thread::spawn({
             let core = Arc::clone(&core);
             move || {
-                let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let (state, waited) = core
-                    .invalidation
-                    .wait_timeout_while(state, std::time::Duration::from_secs(20), |state| {
-                        state.invalidation.deferred.is_empty()
-                    })
-                    .unwrap_or_else(PoisonError::into_inner);
-                (state.invalidation.deferred.len(), waited.timed_out())
+                let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let started = std::time::Instant::now();
+                while state.invalidation.deferred.is_empty() {
+                    let remaining =
+                        std::time::Duration::from_secs(20).saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    state = core
+                        .invalidation
+                        .wait_timeout(state, remaining)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+                (
+                    state.invalidation.deferred.len(),
+                    state.invalidation.deferred.is_empty(),
+                )
             }
         });
         drop(waiting);
