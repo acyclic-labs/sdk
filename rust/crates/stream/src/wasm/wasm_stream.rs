@@ -57,7 +57,11 @@ impl WasmStream {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
                 let tail = self.provider.tail(path).await.map_err(js_error)?;
-                wire::TailResponse { tail }.encode_to_vec()
+                wire::TailResponse {
+                    tail,
+                    ..Default::default()
+                }
+                .encode_to_vec()
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;

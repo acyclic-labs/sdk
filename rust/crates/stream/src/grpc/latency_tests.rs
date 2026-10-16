@@ -13,10 +13,20 @@ async fn append_follow_latency() -> TestResult {
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
     let server = tokio::spawn(async move {
+        let provider = Arc::new(crate::MemoryStream::default());
         tonic::transport::Server::builder()
             .add_service(wire::stream_service_server::StreamServiceServer::new(
-                Service::new(Arc::new(crate::MemoryStream::default())),
+                Service::new(Arc::clone(&provider)),
             ))
+            .add_service(
+                wire::stream_session_service_server::StreamSessionServiceServer::new(
+                    crate::session::Service::new(
+                        provider,
+                        "latency-node".into(),
+                        crate::session::Limits::default(),
+                    ),
+                ),
+            )
             .serve_with_incoming(incoming)
             .await
     });

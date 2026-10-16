@@ -1,0 +1,2 @@
+{"seed":{".claude/commands/x.md":"before\u0000after"},"prompt":"/x","maximum_bytes":64,"expect":{"error":
+  "command body contains NUL","files":{".claude/commands/x.md":"before\u0000after"}}}

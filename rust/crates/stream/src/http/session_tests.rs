@@ -64,14 +64,23 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         ),
         sessions: Arc::clone(&sessions),
     };
+    let unary = crate::grpc::Service::new(Arc::clone(&provider));
     let server = tokio::spawn(
         tonic::transport::Server::builder()
+            .add_service(wire::stream_service_server::StreamServiceServer::new(unary))
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming),
     );
     let result: TestResult = async {
         let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
         let path = StreamPath::new("events")?;
+        assert_eq!(
+            client.watermarks(path.clone()).await?,
+            StreamWatermarks {
+                accepted: 1,
+                durable: 0
+            }
+        );
         let clones: Vec<_> = (0..64).map(|_| client.clone()).collect();
         let mut follows =
             futures::future::try_join_all(clones.iter().map(|clone| clone.follow(path.clone(), 1)))

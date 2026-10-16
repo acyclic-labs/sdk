@@ -1,3 +1,4 @@
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
@@ -5,6 +6,7 @@ import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor, type Client, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
@@ -15,9 +17,8 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
-export interface StreamGrpcOptions {
+export interface StreamGrpcOptions extends CredentialOptions {
   readonly endpoint: string;
-  readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
@@ -69,15 +70,14 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   return { ...client, follow, children };
 }
 
-function createStreamGrpcTransport(options: StreamGrpcOptions) {
+function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || /[\r\n]/.test(options.token)) throw new TypeError("invalid bearer token");
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
   return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
@@ -93,16 +93,28 @@ function createStreamGrpcTransport(options: StreamGrpcOptions) {
 }
 
 function streamGrpc(options: StreamGrpcOptions) {
-    const home = createStreamGrpcTransport(options);
-    const transports = new Map([[new URL(options.endpoint).href, home]]);
+    const credential = credentialProvider(options);
+    const endpoint = options.endpoint;
+    const caCertificate = options.caCertificate;
+    const maximumMessageBytes = options.maximumMessageBytes;
+    const observer = options.observer;
+    const acknowledgeDeliveries = options.acknowledgeDeliveries;
+    const transportOptions = {
+      endpoint,
+      ...(caCertificate === undefined ? {} : { caCertificate }),
+      ...(maximumMessageBytes === undefined ? {} : { maximumMessageBytes }),
+      ...(observer === undefined ? {} : { observer }),
+    };
+    const home = createStreamGrpcTransport(transportOptions, credential);
+    const transports = new Map([[new URL(endpoint).href, home]]);
     const client = createClient(StreamService, home);
 
     const sessions = new StreamSessions(async (node, signal) => {
-      const endpoint = new URL(node?.endpoint ?? options.endpoint).href;
-      let transport = transports.get(endpoint);
+      const nodeEndpoint = new URL(node?.endpoint ?? endpoint).href;
+      let transport = transports.get(nodeEndpoint);
       if (transport === undefined) {
-        transport = createStreamGrpcTransport({ ...options, endpoint });
-        transports.set(endpoint, transport);
+        transport = createStreamGrpcTransport({ ...transportOptions, endpoint: nodeEndpoint }, credential);
+        transports.set(nodeEndpoint, transport);
       }
       const input = new SessionQueue<SessionFrame>(wire.StreamLimit.MAX_ITEMS);
       const client = createClient(StreamSessionService, transport);
@@ -111,7 +123,7 @@ function streamGrpc(options: StreamGrpcOptions) {
         catch (error) { throw providerError(error, "session"); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
-    }, options.acknowledgeDeliveries !== false);
+    }, acknowledgeDeliveries !== false);
     return { client, sessions };
 }
 

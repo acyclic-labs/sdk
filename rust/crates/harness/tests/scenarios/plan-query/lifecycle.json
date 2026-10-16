@@ -1,0 +1,7 @@
+{
+  "writes": [
+    {"path":"plans/release.md","text":"- [ ] Design\n- [ ] Ship\n","files":{"plans/release.md":"- [ ] Design\n- [ ] Ship\n"},"panel":["plans/release.md","[ ] Design","[ ] Ship"]},
+    {"path":"plans/release.md","text":"- [x] Design\n- [~] Ship\n","files":{"plans/release.md":"- [x] Design\n- [~] Ship\n"},"panel":["plans/release.md","[x] Design","[~] Ship"]},
+    {"path":"plans/release.md","text":"- [x] Design\n- [x] Ship\n","files":{"plans/release.md":"- [x] Design\n- [x] Ship\n"},"panel":["plans/release.md","[x] Design","[x] Ship"]}
+  ]
+}

@@ -15,6 +15,7 @@ pub(super) struct Progress {
     // lock or hold it across an await; sequence, opaque cursor and checked
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
     state: Mutex<State>,
+    cancelled: AtomicU64,
 }
 impl Progress {
     pub(super) fn new(from: u64) -> Self {
@@ -30,7 +31,14 @@ impl Progress {
                 },
                 generation: 1,
             }),
+            cancelled: AtomicU64::new(0),
         }
+    }
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(1, Ordering::Release);
+    }
+    pub(super) fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire) != 0
     }
     pub(super) fn next(&self) -> Result<u64, StreamError> {
         Ok(self

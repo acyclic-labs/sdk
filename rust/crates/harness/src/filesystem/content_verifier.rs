@@ -315,7 +315,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn verify_creation(
+    pub(in crate::filesystem) async fn verify_creation(
         &self,
         volume: &VolumeRef,
         file: Option<&FileRef>,

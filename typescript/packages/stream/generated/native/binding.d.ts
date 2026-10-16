@@ -21,6 +21,12 @@ export declare class NativeStreamCancellation {
 
 /** Native Stream client and its authenticated gRPC transport. */
 export declare class NativeStreamClient {
+  /** Resolves JavaScript credentials inside each Rust retry and reconnect. */
+  withCredentialProvider(callback: (() => Promise<string>)): NativeStreamClient
+  /** Establishes TLS without calling the provider until a physical RPC starts. */
+  static connectWithCredentialResult(endpoint: string, callback: (() => Promise<string>), caCertificatePem?: Buffer | undefined | null, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamConnectResult>
+  /** Uses a request-local credential while retaining the existing TLS channel. */
+  withCredential(token: string): NativeStreamClient
   /** Connects using the canonical Rust native gRPC transport. */
   static connect(endpoint: string, token: string, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamClient>
   /** Connects and returns a structured success/error envelope. */

@@ -10,15 +10,19 @@ use tonic::{
 };
 
 mod credit;
+mod outbound;
 use credit::{Credit, Released};
+use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
+#[cfg(acyclic_stream_loom)]
+pub use pool::model::verify_link_isolation;
 mod progress;
 use progress::Progress;
 #[cfg(test)]
 mod tests;
-type Connect = Arc<
+type Connect = std::sync::Arc<
     dyn Fn(wire::SessionNode) -> BoxFuture<'static, Result<TransportChannel, StreamError>>
         + Send
         + Sync,
@@ -30,6 +34,7 @@ type Read = BoxFuture<
     'static,
     (
         String,
+        u64,
         Response,
         Option<Result<wire::SessionFrame, tonic::Status>>,
     ),
@@ -84,14 +89,15 @@ struct Link {
     epoch: u64,
     credit: wire::SessionWindow,
     channel: TransportChannel,
-    sender: mpsc::Sender<wire::SessionFrame>,
+    sender: Arc<Outbound<wire::SessionFrame>>,
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
 }
 struct Pool {
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
     connect: Connect,
     home: String,
     routes: BTreeMap<u64, Route>,
@@ -107,14 +113,20 @@ struct Pool {
     released: ReleaseSender,
     release_sender: ReleaseSender,
 }
+impl Drop for Link {
+    fn drop(&mut self) {
+        let _ = self.sender.close();
+    }
+}
 impl Client {
     pub(crate) async fn open(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
-        ca: Option<Arc<[u8]>>,
-        verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
+        ca: Option<std::sync::Arc<[u8]>>,
+        verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     ) -> Result<Self, StreamError> {
-        let connect: Connect = Arc::new(move |node| {
+        let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
             let verifier = verifier.clone();
             Box::pin(async move {
@@ -125,11 +137,12 @@ impl Client {
                 .map_err(|_| StreamError::Unavailable)
             })
         });
-        Self::with_connector(channel, authorization, connect).await
+        Self::with_connector(channel, authorization, credential, connect).await
     }
     async fn with_connector(
         channel: TransportChannel,
-        authorization: MetadataValue<Ascii>,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
         connect: Connect,
     ) -> Result<Self, StreamError> {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
@@ -139,6 +152,7 @@ impl Client {
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
+            credential,
             connect,
             home: String::new(),
             routes: BTreeMap::new(),
@@ -313,6 +327,8 @@ struct Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
+        self.progress.cancel();
+        self.receiver.close();
         let _ = self.client.removed.send(self.id);
     }
 }

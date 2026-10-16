@@ -2,6 +2,7 @@
 
 use std::{future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
 
+pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};
@@ -34,10 +35,12 @@ pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 mod children_tests;
 mod client;
 #[cfg(test)]
+mod credential_tests;
+#[cfg(test)]
 mod latency_tests;
 mod server;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -67,7 +70,8 @@ pub enum ConnectError {
 #[derive(Clone)]
 pub struct Client {
     channel: Channel,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
     sessions: Arc<tokio::sync::OnceCell<crate::session::Client>>,
     session_ca: Option<Arc<[u8]>>,
@@ -104,6 +108,38 @@ impl<P> Clone for Service<P> {
 }
 
 impl Client {
+    /// Uses a request-local credential while retaining this client's TLS channel.
+    pub fn with_credential(&self, bearer_token: &str) -> Result<Self, ConnectError> {
+        let mut client = self.clone();
+        client.authorization = Some(authorization(bearer_token)?);
+        client.credential = None;
+        client.sessions = Arc::new(tokio::sync::OnceCell::new());
+        Ok(client)
+    }
+
+    /// Resolve a new credential for every physical RPC, including retries.
+    pub fn with_credential_provider(&self, credential: CredentialProvider) -> Self {
+        let mut client = self.clone();
+        client.authorization = None;
+        client.credential = Some(credential);
+        client.sessions = Arc::new(tokio::sync::OnceCell::new());
+        client
+    }
+
+    /// Connect without resolving a credential until the first RPC attempt.
+    pub async fn connect_eager_with_credential(
+        endpoint: impl AsRef<str>,
+        credential: CredentialProvider,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Self, ConnectError> {
+        let mut client = Self::from_channel_with_credential(
+            Self::connect_channel(endpoint.as_ref(), certificate_pem).await?,
+            credential,
+        );
+        client.session_ca = certificate_pem.map(Arc::from);
+        Ok(client)
+    }
+
     /// Connects eagerly through TLS and HTTP/2 trusting the platform roots.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
@@ -131,16 +167,43 @@ impl Client {
         certificate_pem: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token)?;
-        let channel = channel_tls(endpoint, certificate_pem).await?;
+        let channel = Self::connect_channel(endpoint, certificate_pem).await?;
         let mut client = Self::from_channel(channel, authorization);
         client.session_ca = certificate_pem.map(Arc::from);
         Ok(client)
     }
 
+    async fn connect_channel(
+        endpoint: &str,
+        certificate_pem: Option<&[u8]>,
+    ) -> Result<Channel, ConnectError> {
+        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES)
+        {
+            return Err(ConnectError::InvalidCaCertificate);
+        }
+        channel_tls(endpoint, certificate_pem).await
+    }
+
     pub(crate) fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             channel,
-            authorization,
+            authorization: Some(authorization),
+            credential: None,
+            acknowledge_deliveries: true,
+            sessions: Arc::new(tokio::sync::OnceCell::new()),
+            session_ca: None,
+            session_verifier: None,
+        }
+    }
+
+    pub(crate) fn from_channel_with_credential(
+        channel: Channel,
+        credential: CredentialProvider,
+    ) -> Self {
+        Self {
+            channel,
+            authorization: None,
+            credential: Some(credential),
             acknowledge_deliveries: true,
             sessions: Arc::new(tokio::sync::OnceCell::new()),
             session_ca: None,
@@ -161,12 +224,14 @@ impl Client {
         wire::stream_service_client::StreamServiceClient::new(self.channel.clone())
     }
 
-    fn request<T>(&self, body: T) -> Request<T> {
+    async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
+        let authorization =
+            request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);
         request
             .metadata_mut()
-            .insert("authorization", self.authorization.clone());
-        request
+            .insert("authorization", authorization);
+        Ok(request)
     }
 
     /// Retries transport uncertainty with the same request until the operation deadline.
@@ -199,10 +264,9 @@ impl Client {
             let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
             let result = completion
                 .span
-                .scope(tokio::time::timeout_at(
-                    attempt_deadline,
-                    call(self.service(), self.request(body.clone())),
-                ))
+                .scope(tokio::time::timeout_at(attempt_deadline, async {
+                    call(self.service(), self.request(body.clone()).await?).await
+                }))
                 .await;
             let error = match result {
                 Ok(Ok(response)) => return Ok((response.into_inner(), completion)),
@@ -262,13 +326,25 @@ pub(crate) async fn channel_with_verifier(
         .await?)
 }
 
+pub(crate) async fn request_authorization(
+    fixed: Option<&MetadataValue<Ascii>>,
+    credential: Option<&CredentialProvider>,
+) -> Result<MetadataValue<Ascii>, Status> {
+    if let Some(provider) = credential {
+        let token = provider
+            .resolve()
+            .await
+            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
+        authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))
+    } else {
+        fixed
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing credential"))
+    }
+}
+
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-    if bearer_token.trim().is_empty()
-        || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
-        || bearer_token
-            .bytes()
-            .any(|byte| matches!(byte, b'\r' | b'\n'))
-    {
+    if !acyclic_auth::credential::valid_credential(bearer_token) {
         return Err(ConnectError::InvalidCredential);
     }
     let mut value = format!("Bearer {bearer_token}")

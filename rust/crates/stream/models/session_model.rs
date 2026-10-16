@@ -7,11 +7,16 @@ pub use error::StreamError;
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
+mod cancellation;
 mod checked;
 #[path = "../src/session/policy.rs"]
 mod policy;
 #[path = "../src/session/client/progress.rs"]
 mod progress;
+mod outbound {
+    include!("../src/session/client/outbound.rs");
+    include!("outbound.rs");
+}
 mod gate {
     include!("../src/session/gate.rs");
     include!("gate.rs");

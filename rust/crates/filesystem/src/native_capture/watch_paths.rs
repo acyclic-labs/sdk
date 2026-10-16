@@ -28,40 +28,36 @@ pub(super) fn watch_ancestor_candidates<'a>(
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, ())>, CaptureError> {
     let mut ancestors = Vec::new();
+    let mut additional_paths = 0;
     for path in paths {
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
-            if capture_position(ordinary, &parent, meter)?.is_err()
-                && match capture_position(rename_records, &parent, meter)? {
-                    Ok(index) => rename_records
-                        .get(index)
-                        .ok_or(WorkError::Overflow)?
-                        .1
-                        .is_none(),
-                    Err(_) => true,
-                }
-                && !capture_excludes(policy, &parent, meter)?
+            let ordinary_parent = capture_position(ordinary, &parent, meter)?.is_ok();
+            if match capture_position(rename_records, &parent, meter)? {
+                Ok(index) => rename_records
+                    .get(index)
+                    .ok_or(WorkError::Overflow)?
+                    .1
+                    .is_none(),
+                Err(_) => true,
+            } && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
-                if combined_path_count_exceeds(ancestors.len() + ordinary.len(), 1, maximum_paths) {
+                let additional = usize::from(!ordinary_parent);
+                let selected = ordinary
+                    .len()
+                    .checked_add(additional_paths)
+                    .ok_or(WorkError::Overflow)?;
+                if combined_path_count_exceeds(selected, additional, maximum_paths) {
                     return Err(CaptureError::InvalidOptions);
                 }
+                additional_paths += additional;
                 capture_replace(&mut ancestors, parent, (), meter)?;
             } else {
                 capture_drop_path(parent, meter)?;
             }
         }
     }
-    capture_sort_by(
-        &mut ancestors,
-        |left, right| {
-            left.0
-                .depth()
-                .cmp(&right.0.depth())
-                .then_with(|| left.0.cmp(&right.0))
-        },
-        meter,
-    )?;
     Ok(ancestors)
 }
 
@@ -87,36 +83,106 @@ pub(super) fn release_host_links(
     meter.clone().release(bytes).map_err(capture_demand_error)
 }
 
+// Parents are indexed in canonical component order. Probe only the path's
+// proper prefixes, without allocating prefix paths or scanning siblings.
 fn below_replaced_parent(
     path: &NamespacePath,
     parents: &[(NamespacePath, Option<FileRecord>)],
     meter: &NativeMaterializationWork,
 ) -> Result<bool, CaptureError> {
-    for (parent, record) in parents {
-        capture_charge(
-            meter,
-            crate::materializer::NativeResourceCredit::Items.delta(1),
-        )?;
-        if record.is_some() {
+    for depth in 1..path.depth() {
+        let prefix = &path.components()[..depth];
+        let (mut low, mut high) = (0, parents.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let (parent, record) = &parents[middle];
             capture_charge(
                 meter,
                 WorkCounters {
                     items_examined: 1,
-                    source_path_components: path.depth().min(parent.depth()) as u64,
+                    source_path_components: depth.min(parent.depth()) as u64,
                     ..WorkCounters::UNCHARGED
                 },
             )?;
-            if path != parent && path.is_within(parent) {
-                return Ok(true);
+            match parent.components().cmp(prefix) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => {
+                    if record.is_some() {
+                        return Ok(true);
+                    }
+                    break;
+                }
             }
         }
     }
     Ok(false)
 }
 
+fn retire_hydrated(
+    ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    missing: &[(NamespacePath, Option<FileRecord>)],
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    let mut next = 0;
+    let mut removed = false;
+    let mut failure = None;
+    let empty = NamespacePath::new(Vec::new(), crate::model::VolumeLimits::default())?;
+    ordinary.retain_mut(|(path, (current, _))| {
+        if failure.is_some() {
+            // Discard the failed private candidate without moving survivors
+            // after its work admission has failed. Capture custody retires them.
+            return false;
+        }
+        let result = (|| {
+            capture_charge(
+                meter,
+                crate::materializer::NativeResourceCredit::Items.delta(1),
+            )?;
+            while next < missing.len() && missing[next].0 < *path {
+                capture_charge(
+                    meter,
+                    crate::materializer::NativeResourceCredit::Items.delta(1),
+                )?;
+                next += 1;
+            }
+            if missing.get(next).is_some_and(|(parent, _)| parent == path) {
+                capture_drop_path(std::mem::replace(path, empty.clone()), meter)?;
+                removed = true;
+                return Ok(false);
+            }
+            if matches!(current, CurrentRecord::Lookup)
+                && below_replaced_parent(path, missing, meter)?
+            {
+                *current = CurrentRecord::Known(None);
+            }
+            if removed {
+                // retain_mut moves each survivor into the first gap once.
+                capture_charge(
+                    meter,
+                    crate::materializer::NativeResourceCredit::Copy.delta(std::mem::size_of::<(
+                        NamespacePath,
+                        (CurrentRecord, CaptureIntent),
+                    )>()
+                        as u64),
+                )?;
+            }
+            Ok(true)
+        })();
+        match result {
+            Ok(retain) => retain,
+            Err(error) => {
+                failure = Some(error);
+                false
+            }
+        }
+    });
+    failure.map_or(Ok(()), Err)
+}
+
 pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
-    ordinary: &mut [(NamespacePath, (CurrentRecord, CaptureIntent))],
+    ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,
@@ -124,6 +190,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
     let mut missing = Vec::new();
+    let mut retired = 0;
     let ancestors_bytes = vector_bytes(&ancestors);
     for (path, ()) in ancestors {
         let current = if below_replaced_parent(&path, &missing, meter)? {
@@ -146,7 +213,15 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         if current.is_some_and(|record| record.kind == FileKind::Directory) {
             capture_drop_path(path, meter)?;
         } else {
-            if combined_path_count_exceeds(ordinary.len(), missing.len() + 1, maximum_paths) {
+            // A create hint does not make the directory exist in the candidate.
+            // Hydrate it before renames, and retire its ordinary entry so it is
+            // created exactly once in the same transaction.
+            retired += usize::from(capture_position(ordinary, &path, meter)?.is_ok());
+            if combined_path_count_exceeds(
+                ordinary.len() - retired,
+                missing.len() + 1,
+                maximum_paths,
+            ) {
                 return Err(CaptureError::InvalidOptions);
             }
             capture_reserve(&mut missing, 1, meter)?;
@@ -157,13 +232,8 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         .clone()
         .release(ancestors_bytes)
         .map_err(capture_demand_error)?;
-    // Descendants of a replaced file or symlink were absent in the old view.
-    for (path, (current, _)) in ordinary.iter_mut() {
-        if matches!(current, CurrentRecord::Lookup) && below_replaced_parent(path, &missing, meter)?
-        {
-            *current = CurrentRecord::Known(None);
-        }
-    }
+    // One stable compaction retires hydrated entries and classifies descendants.
+    retire_hydrated(ordinary, &missing, meter)?;
     Ok(missing)
 }
 
@@ -209,6 +279,7 @@ pub(super) fn remap_renamed_directory_path(
 pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     source_root: &HostRoot,
     maximum_paths: u32,
     policy: &CapturePolicy,
@@ -268,12 +339,8 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     }
     let paths_bytes = vector_bytes(&paths);
     for (path, ()) in paths {
-        capture_entry(
-            ordinary,
-            path,
-            (CurrentRecord::Lookup, CaptureIntent::Complete),
-            meter,
-        )?;
+        let current = current_record(rename_records, &path, meter)?;
+        capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
     }
     meter
         .clone()
@@ -281,3 +348,7 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
         .map_err(capture_demand_error)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "watch_paths_tests.rs"]
+mod tests;

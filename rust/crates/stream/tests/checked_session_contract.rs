@@ -32,7 +32,14 @@ proptest! {
     fn malformed_guards_are_rejected(length in 0_usize..65, next in 0_u64..3, latest in any::<bool>(), opaque in any::<bool>()) {
         let follow = wire::SessionFollow { path: "events".into(), delivery: if latest { wire::SessionDelivery::Latest } else { wire::SessionDelivery::All } as i32, preceding_commit_id: vec![7;length].into() };
         let resume = wire::SessionCursor { next, opaque: if opaque { vec![1].into() } else { Default::default() } };
-        prop_assert_eq!(preceding_follow(&follow, &resume).is_ok(), length == 0 || length == 32 && next > 0 && !latest && !opaque);
+        let expected = if length == 0 {
+            Ok(None)
+        } else if length == 32 && next > 0 && !latest && !opaque {
+            Ok(Some(CommitId::from_bytes([7; 32])))
+        } else {
+            Err(StreamError::InvalidArgument)
+        };
+        prop_assert_eq!(preceding_follow(&follow, &resume), expected);
     }
 }
 

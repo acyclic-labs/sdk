@@ -99,6 +99,28 @@ fn local_children_observes_acceptance_during_a_device_flush()
                 let replay = later.next().await.ok_or("replay ended")??;
                 assert_eq!(first.path.as_str(), "agents/new");
                 assert_eq!(first.path, replay.path);
+                #[cfg(feature = "grpc")]
+                {
+                    resumed_children_session(provider.clone(), &first.path).await?;
+                    let relay = crate::grpc::tests::client(provider.clone())?;
+                    assert_eq!(
+                        relay.watermarks(first.path.clone()).await?,
+                        crate::StreamWatermarks {
+                            accepted: 1,
+                            durable: 0
+                        }
+                    );
+                    resumed_children_session(relay.clone(), &first.path).await?;
+                    let second = crate::grpc::tests::client(relay)?;
+                    assert_eq!(
+                        second.watermarks(first.path.clone()).await?,
+                        crate::StreamWatermarks {
+                            accepted: 1,
+                            durable: 0
+                        }
+                    );
+                    resumed_children_session(second, &first.path).await?;
+                }
                 assert!(!writing.is_finished());
                 assert_eq!(provider.watermarks(first.path).await?.durable, 0);
                 Ok::<_, Box<dyn std::error::Error>>(())
@@ -109,6 +131,70 @@ fn local_children_observes_acceptance_during_a_device_flush()
             observed??;
             Ok::<_, Box<dyn std::error::Error>>(())
         })
+}
+
+#[cfg(feature = "grpc")]
+async fn resumed_children_session<P: StreamProvider>(
+    provider: P,
+    anchor: &StreamPath,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::wire::{self, session_frame::Body, session_subscription::Kind};
+    let (mut commands, input) = futures::channel::mpsc::channel(2);
+    let resume = wire::SessionCursor {
+        next: 1,
+        opaque: anchor.as_str().as_bytes().to_vec().into(),
+    };
+    for body in [
+        Body::Hello(wire::SessionHello {
+            version: 1,
+            client_id: bytes::Bytes::from_static(b"held-flush-client"),
+            destination_node: String::new(),
+            receive_bytes: crate::MAX_COMMAND_BYTES as u64,
+            receive_frames: u32::try_from(crate::MAX_ITEMS)?,
+        }),
+        Body::Interest(wire::SessionInterest {
+            revision: 1,
+            upsert: vec![wire::SessionSubscription {
+                channel: Some(wire::SessionChannel {
+                    channel_id: 1,
+                    generation: 1,
+                }),
+                resume: Some(resume.clone()),
+                kind: Some(Kind::Children(wire::ChildrenRequest {
+                    parent: Some("agents".into()),
+                    limit: 1,
+                })),
+            }],
+            remove: Vec::new(),
+        }),
+    ] {
+        commands.try_send(Ok(wire::SessionFrame {
+            channel_id: 0,
+            generation: 0,
+            body: Some(body),
+        }))?;
+    }
+    // A fresh session resumes the accepted cursor while its flush is still held.
+    let mut output = crate::session::serve(
+        Arc::new(provider),
+        "local".into(),
+        crate::session::Limits::default(),
+        input.boxed(),
+    )?;
+    while let Some(frame) = output.next().await {
+        let frame = frame?;
+        match frame.body {
+            Some(Body::Opened(opened)) => {
+                assert_eq!(opened.resume, Some(resume));
+                return Ok(());
+            }
+            Some(Body::Closed(_)) => {
+                return Err("resumed child channel closed before Opened".into());
+            }
+            _ => {}
+        }
+    }
+    Err("resumed child session ended before Opened".into())
 }
 
 #[tokio::test]

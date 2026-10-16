@@ -30,8 +30,19 @@ fuzz_target!(|input: &[u8]| {
         for subscription in interest.upsert {
             if let (Some(wire::session_subscription::Kind::Follow(follow)), Some(resume)) =
                 (subscription.kind, subscription.resume)
-                && let Ok(Some(anchor)) = preceding_follow(&follow, &resume)
             {
+                let decoded = preceding_follow(&follow, &resume);
+                if !follow.preceding_commit_id.is_empty()
+                    && (follow.preceding_commit_id.len() != 32
+                        || follow.delivery != wire::SessionDelivery::All as i32
+                        || resume.next == 0
+                        || !resume.opaque.is_empty())
+                {
+                    assert_eq!(decoded, Err(acyclic_stream::StreamError::InvalidArgument));
+                }
+                let Ok(Some(anchor)) = decoded else {
+                    continue;
+                };
                 assert_eq!(follow.preceding_commit_id.as_ref(), anchor.as_bytes());
                 assert!(confirm_follow(Some(anchor), &wire::SessionOpened::default()).is_err());
                 let opened = wire::SessionOpened {

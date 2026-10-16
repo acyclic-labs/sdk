@@ -78,8 +78,13 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
         let channel = destination.clone();
         Box::pin(async move { Ok(channel) })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    )
+    .await?;
     let path = StreamPath::new("events")?;
     let mut records = client
         .follow_checked(path, 1, anchor(&provider, "events", 0).await?)

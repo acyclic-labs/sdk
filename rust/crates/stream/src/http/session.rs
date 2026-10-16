@@ -5,16 +5,20 @@ use tonic::transport::{ClientTlsConfig, Endpoint};
 impl HttpStream {
     pub(super) fn session_client(&self) -> Result<crate::grpc::Client, StreamError> {
         shared::shared(&self.sessions, || {
-            let authorization = self
-                .authorization
-                .to_str()
-                .map_err(|_| StreamError::Unavailable)?
-                .parse()
-                .map_err(|_| StreamError::Unavailable)?;
-            let client = crate::grpc::Client::from_channel(
-                self.session_endpoint.connect_lazy(),
-                authorization,
-            );
+            let channel = self.session_endpoint.connect_lazy();
+            let client = if let Some(credential) = &self.credential {
+                crate::grpc::Client::from_channel_with_credential(channel, credential.clone())
+            } else {
+                let authorization = self
+                    .authorization
+                    .as_ref()
+                    .ok_or(StreamError::AccessDenied)?
+                    .to_str()
+                    .map_err(|_| StreamError::Unavailable)?
+                    .parse()
+                    .map_err(|_| StreamError::Unavailable)?;
+                crate::grpc::Client::from_channel(channel, authorization)
+            };
             Ok(client.with_session_verifier(Arc::clone(&self.session_verifier)))
         })
     }

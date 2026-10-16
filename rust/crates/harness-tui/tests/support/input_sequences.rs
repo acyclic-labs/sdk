@@ -21,9 +21,9 @@ pub fn exercise_broken(data: &[u8]) {
 fn exercise_variant(data: &[u8], broken: bool) {
     let json = String::from_utf8_lossy(data);
     let mut parsed_map = None;
-    if let Ok(map) = InputKeymap::from_json(&json) {
-        let encoded = map.to_json().expect("validated keymap serializes");
-        assert_eq!(InputKeymap::from_json(&encoded).ok(), Some(map.clone()));
+    if let Ok(map) = InputKeymap::parse(&json) {
+        let encoded = map.encode();
+        assert_eq!(InputKeymap::parse(&encoded).ok(), Some(map.clone()));
         parsed_map = Some(map);
     }
     let mut parsed_history = None;
@@ -213,7 +213,8 @@ fn dispatch(
 
 fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
     let mut input = PromptInput::new(Editor::default());
-    input.keymap = InputKeymap::from_json(r#"{"Super+k":"Home"}"#).expect("valid keymap fixture");
+    input.keymap = InputKeymap::parse(r#"{"bindings":{"Super+k":"cursor.line-start"}}"#)
+        .expect("valid keymap fixture");
     input.replace_history(
         parse_history(r#"["older\r\nprompt","newer\rhistory"]"#).expect("valid history fixture"),
     );

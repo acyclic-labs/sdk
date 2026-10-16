@@ -1,0 +1,6 @@
+{"turns":[[{"type":"event","kind":"content","delta":"- first\n"},{"type":"event","kind":"content","delta":"  - child"},{
+  "type":"event","kind":"content","delta":"\n"},{"type":"event","kind":"content","delta":"- last"},{"type":"event",
+  "kind":"completed","metadata":null}]],"expect":{"text":"- first\n  - child\n- last","events":[{"kind":"model","event":
+  {"kind":"content","delta":"- first\n"}},{"kind":"model","event":{"kind":"content","delta":"  - child"}},{"kind":
+  "model","event":{"kind":"content","delta":"\n"}},{"kind":"model","event":{"kind":"content","delta":"- last"}},{"kind":
+  "model","event":{"kind":"completed","metadata":null}}]}}

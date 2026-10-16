@@ -14,10 +14,15 @@ export class DefaultStreamProvider implements StreamProvider {
   #selection: ProviderSelection | undefined;
 
   constructor(options: StreamEnvironment) {
+    const endpoint = options.endpoint;
+    const token = options.token;
+    const credential = options.credential;
+    const caCertificate = options.caCertificate;
     this.#options = {
-      endpoint: options.endpoint,
-      token: options.token,
-      ...(options.caCertificate === undefined ? {} : { caCertificate: options.caCertificate.slice() }),
+      endpoint,
+      ...(token === undefined ? {} : { token }),
+      ...(credential === undefined ? {} : { credential }),
+      ...(caCertificate === undefined ? {} : { caCertificate: caCertificate.slice() }),
     };
   }
 
@@ -89,7 +94,7 @@ export class DefaultStreamProvider implements StreamProvider {
     if (!await native.nativeStreamAvailable()) return new HttpStreamProvider(this.#options);
     const cancellation = await native.createNativeStreamCancellation();
     registerCancel(() => cancellation.cancel());
-    return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate, cancellation);
+    return native.NativeStreamProvider.connect(this.#options.endpoint, this.#options.token, this.#options.caCertificate, cancellation, this.#options.credential);
   }
 
   inspectIdempotency(key: Parameters<StreamProvider["inspectIdempotency"]>[0]) {

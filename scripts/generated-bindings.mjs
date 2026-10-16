@@ -119,7 +119,7 @@ export const normalizeGeneratedTypeScript = source => {
   let normalized = `${source.trimEnd()}\n`;
   // Preserve documentation while keeping large generated projections within
   // the source-file bound. Repeated normalization is byte-idempotent.
-  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto")) && normalized.split("\n").length > 800) {
+  if ((normalized.includes("fileDesc(") || normalized.includes("from file auth/v1/auth.proto") || normalized.includes("from file stream/v1/stream.proto")) && normalized.split("\n").length > 800) {
     normalized = normalized.replaceAll("\n\n", "\n");
     if (normalized.split("\n").length > 800) {
       normalized = normalized.replace(/\/\*\*([\s\S]*?)\*\//g, (_, body) =>

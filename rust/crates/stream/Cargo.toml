@@ -30,6 +30,7 @@ serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures", "dep:web-sys"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 base64 = "0.23.1"
 bytes.workspace = true

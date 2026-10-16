@@ -7,6 +7,9 @@ use std::{
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 mod checked;
+mod credentials;
+mod isolation;
+mod outbound;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 #[derive(Default)]
@@ -17,6 +20,7 @@ struct Counts {
     follows: AtomicUsize,
     actors: AtomicUsize,
     acknowledgements: AtomicUsize,
+    windows: AtomicUsize,
     changed: tokio::sync::Notify,
     // Fixture-only lock: never nested, and never held across an await.
     resumes: Mutex<Vec<(u64, u64, u64)>>,
@@ -114,6 +118,13 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                     })
                 ) {
                     counts.acknowledgements.fetch_add(1, Ordering::Relaxed);
+                }
+                if matches!(&input, Ok(wire::SessionFrame {
+                    channel_id, body: Some(Body::Window(_)), ..
+                }) if *channel_id != 0)
+                {
+                    counts.windows.fetch_add(1, Ordering::Relaxed);
+                    counts.changed.notify_one();
                 }
                 input.map_err(|_| StreamError::Unavailable)
             })
@@ -344,8 +355,13 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
             Ok(channel)
         })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    )
+    .await?;
     let mut moving = client.follow(StreamPath::new("move")?, 1).await?;
     let mut staying = client.follow(StreamPath::new("stay")?, 1).await?;
     append(&provider, "move", 4).await?;
@@ -508,7 +524,8 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = Client::open(
         fixture.channel.clone(),
-        "Bearer fixture".parse()?,
+        Some("Bearer fixture".parse()?),
+        None,
         None,
         None,
     )
@@ -685,8 +702,13 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
         let channel = channel.clone();
         Box::pin(async move { Ok(channel) })
     });
-    let client =
-        Client::with_connector(old.channel.clone(), "Bearer fixture".parse()?, connect).await?;
+    let client = Client::with_connector(
+        old.channel.clone(),
+        Some("Bearer fixture".parse()?),
+        None,
+        connect,
+    )
+    .await?;
     let mut children = client
         .children(crate::ChildrenRequest {
             parent: Some(StreamPath::new("agents")?),
