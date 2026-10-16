@@ -28,6 +28,51 @@ fn json_value() -> impl Strategy<Value = Value> {
 }
 
 proptest! {
+    // Property: once an earlier hook supplies approval, a block-plus-ask reply
+    // moves its denial reason without allocating beyond JSON decoding.
+    #[test]
+    fn prior_approval_avoids_copying_later_denial_reason(
+        first_reason in ".{0,48}",
+        reason in ".{1,128}",
+    ) {
+        let first = serde_json::to_vec(&json!({ "hookSpecificOutput": {
+            "permissionDecision": "ask", "permissionDecisionReason": first_reason,
+        }})).unwrap();
+        let second = serde_json::to_string(&json!({
+            "decision": "block",
+            "hookSpecificOutput": {
+                "permissionDecision": "ask", "permissionDecisionReason": reason,
+            },
+        })).unwrap();
+        let mut decoded = None;
+        let decoding = allocation_counter::measure(|| {
+            decoded = Some(serde_json::from_str::<Value>(&second).unwrap());
+        });
+        let decoded = decoded.unwrap();
+        prop_assert_eq!(decoded["hookSpecificOutput"]["permissionDecisionReason"].as_str(), Some(reason.as_str()));
+        for extra_copy in [false, true] {
+            let mut output = HookOutput::default();
+            output.observe(HookEvent::PreToolUse, Some(0), &first, b"").unwrap();
+            let mut result = None;
+            let merging = allocation_counter::measure(|| {
+                result = Some(output.observe(HookEvent::PreToolUse, Some(0), second.as_bytes(), b""));
+                if extra_copy {
+                    // Negative control: restore the unnecessary reason-sized copy.
+                    std::hint::black_box(output.blocked.clone());
+                }
+            });
+            result.unwrap().unwrap();
+            prop_assert_eq!(output.approval.as_deref(), Some(first_reason.as_str()));
+            prop_assert_eq!(output.blocked.as_deref(), Some(reason.as_str()));
+            prop_assert!(output.diagnostics.is_empty());
+            prop_assert_eq!(
+                (merging.count_total, merging.bytes_total) == (decoding.count_total, decoding.bytes_total),
+                !extra_copy,
+                "allocation detector must reject an extra denial-reason copy"
+            );
+        }
+    }
+
     // Property: semantically identical JSON encodings have identical decisions,
     // including strings requiring escaping and nested replacement tool arguments.
     #[test]

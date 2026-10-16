@@ -105,7 +105,7 @@ impl HookOutput {
                 || specific.get("permissionDecision").and_then(Value::as_str) == Some("deny"))
         {
             self.blocked.get_or_insert_with(|| {
-                let reason = if asks {
+                let reason = if asks && self.approval.is_none() {
                     specific
                         .get("permissionDecisionReason")
                         .and_then(Value::as_str)

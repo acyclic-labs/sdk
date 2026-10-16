@@ -29,6 +29,17 @@ fuzz_target!(|bytes: &[u8]| {
             HookFailure::Report,
             Ok((Some(0), bytes.to_vec(), vec![])),
         );
+        let mut merged = HookOutput {
+            approval: Some("earlier approval".into()),
+            ..HookOutput::default()
+        };
+        merged.apply(
+            event,
+            HookFailure::Report,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        );
+        assert_eq!(merged.approval.as_deref(), Some("earlier approval"));
+        assert_eq!(merged.blocked, reports.blocked);
         let mut blocks = HookOutput::default();
         blocks.apply(
             event,
