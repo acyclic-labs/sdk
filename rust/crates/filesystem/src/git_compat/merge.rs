@@ -90,12 +90,17 @@ mod tests {
                 .await
                 .unwrap();
             transaction
-                .commit(
+                .commit::<WorkspaceError, _, _>(
                     None,
                     crate::PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &stop,
-                    |_| async { Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) },
+                    |_| async {
+                        Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        })
+                    },
                 )
                 .await
                 .unwrap();
