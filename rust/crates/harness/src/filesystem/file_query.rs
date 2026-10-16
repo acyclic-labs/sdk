@@ -250,25 +250,9 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
                     if diff.changes().truncated {
                         return Err(task_volume::Error::LimitExceeded);
                     }
-                    let mut files = Vec::new();
-                    let mut removed = Vec::new();
-                    if selection.affected(diff.changes()) {
-                        let replacement =
-                            Selection::read(&next, &query, bounds.0, bounds.1, &io).await?;
-                        for (key, value) in &replacement.files {
-                            if selection.files.get(key) != Some(value) {
-                                files.push(value.clone());
-                            }
-                        }
-                        removed.extend(
-                            selection
-                                .files
-                                .keys()
-                                .filter(|key| !replacement.files.contains_key(*key))
-                                .cloned(),
-                        );
-                        selection = replacement;
-                    }
+                    let (files, removed) = selection
+                        .apply(&next, diff.changes(), &query, bounds, &io)
+                        .await?;
                     cursor.position = cursor
                         .position
                         .checked_add(1)

@@ -46,6 +46,16 @@ def until(marker):
     del pending[:end]
     return result
 
+def mutate(index):
+    with open(trigger, "w", encoding="utf-8") as output:
+        output.write(str(index))
+    while True:
+        with open(trigger, encoding="utf-8") as source:
+            if source.read() == f"{index}-done":
+                return
+        assert time.monotonic() < deadline, "writer did not commit the requested revision"
+        time.sleep(0.002)
+
 try:
     until(b"graphcoder> ")
     # The first revision is committed before selection: it must arrive in snapshot.
@@ -63,6 +73,19 @@ try:
         assert actual == [line.rstrip() for line in revision["panel"]], (actual, revision["panel"], frame)
     os.write(master, b"/reopen\n")
     until(b"native providers reopened; no admission or effect resent")
+    os.write(master, b"/plan\n")
+    frame = until(("\u2514" + "\u2500" * 78 + "\u2518").encode("utf-8")).decode("utf-8")
+    rows = [line.strip("\r")[1:-1].rstrip() for line in frame.split("\n") if line.startswith("\u2502")]
+    while rows and not rows[-1]:
+        rows.pop()
+    assert rows == [line.rstrip() for line in writes[-1]["panel"]], (rows, frame)
+    # Both follow-time and snapshot-time errors stay inside the selected view.
+    mutate(len(writes))
+    until(b"plans:")
+    os.write(master, b"/plan\n")
+    until(b"plans:")
+    until(b"graphcoder> ")
+    mutate(len(writes) + 1)
     os.write(master, b"/plan\n")
     frame = until(("\u2514" + "\u2500" * 78 + "\u2518").encode("utf-8")).decode("utf-8")
     rows = [line.strip("\r")[1:-1].rstrip() for line in frame.split("\n") if line.startswith("\u2502")]

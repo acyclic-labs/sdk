@@ -159,6 +159,17 @@ async fn default_manifest_survives_restart_of_an_unfinished_native_turn() -> Res
 }
 
 #[cfg(all(unix, feature = "tui"))]
+async fn plan_write_trigger(trigger: &Path, index: usize) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while tokio::fs::read_to_string(trigger).await.unwrap_or_default() != index.to_string() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .map_err(storage)
+}
+
+#[cfg(all(unix, feature = "tui"))]
 #[tokio::test]
 async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -186,6 +197,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
             None,
         )?;
         let case: Scenario = serde_json::from_slice(&std::fs::read(scenario)?)?;
+        let overflow = case.writes.len();
         let mut revisions = case.writes.into_iter();
         let first = revisions.next().ok_or("missing initial plan")?;
         publisher
@@ -198,23 +210,51 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                 None,
             )?
             .await?;
+        let workspace = acyclic_harness::filesystem::workspace_ref(
+            config.private_volume.provider().clone(),
+            &config.private_volume.storage_name(&mut None)?,
+        )?;
+        native
+            .files
+            .apply(
+                &workspace,
+                None,
+                &[
+                    acyclic_harness::filesystem::WorkspaceMutation::CreateDirectory {
+                        path: "/plans/archive.md".into(),
+                    },
+                    acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                        path: "/plans/archive.md/ignored.txt".into(),
+                        bytes: bytes::Bytes::from_static(b"ignored").into(),
+                    },
+                ],
+                &acyclic_harness::IdempotencyKey::new("plan-pty-directory")?,
+            )
+            .await?;
         let trigger = config.stream_root.join("pty-write");
+        let files = native.files.clone();
         let writer = tokio::spawn(async move {
             for (offset, revision) in revisions.enumerate() {
                 let index = offset + 1;
-                {
-                    tokio::time::timeout(Duration::from_secs(5), async {
-                        while tokio::fs::read_to_string(&trigger)
-                            .await
-                            .unwrap_or_default()
-                            != index.to_string()
-                        {
-                            tokio::time::sleep(Duration::from_millis(2)).await;
-                        }
-                    })
-                    .await
-                    .map_err(storage)?;
-                }
+                plan_write_trigger(&trigger, index).await?;
+                files
+                    .apply(
+                        &workspace,
+                        None,
+                        &[
+                            acyclic_harness::filesystem::WorkspaceMutation::CreateDirectory {
+                                path: format!("/plans/live-{index}.md"),
+                            },
+                            acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                                path: format!("/plans/live-{index}.md/ignored.txt"),
+                                bytes: bytes::Bytes::from_static(b"ignored").into(),
+                            },
+                        ],
+                        &acyclic_harness::IdempotencyKey::new(format!(
+                            "plan-pty-live-directory-{index}"
+                        ))?,
+                    )
+                    .await?;
                 publisher
                     .stage_once(
                         OperationId::new(),
@@ -225,6 +265,33 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
                         None,
                     )?
                     .await?;
+            }
+            for (index, remove) in [(overflow, false), (overflow + 1, true)] {
+                plan_write_trigger(&trigger, index).await?;
+                let mutations: Vec<_> = (0..crate::terminal::MAX_PAGE_EVENTS)
+                    .map(|file| {
+                        let path = format!("/plans/limit-{file}.md");
+                        if remove {
+                            acyclic_harness::filesystem::WorkspaceMutation::Remove { path }
+                        } else {
+                            acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                                path,
+                                bytes: bytes::Bytes::from_static(b"- [ ] Limit").into(),
+                            }
+                        }
+                    })
+                    .collect();
+                files
+                    .apply(
+                        &workspace,
+                        None,
+                        &mutations,
+                        &acyclic_harness::IdempotencyKey::new(format!("plan-pty-limit-{index}"))?,
+                    )
+                    .await?;
+                tokio::fs::write(&trigger, format!("{index}-done"))
+                    .await
+                    .map_err(storage)?;
             }
             Ok::<_, Error>(())
         });

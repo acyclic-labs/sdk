@@ -6,10 +6,11 @@ use crate::{
 use acyclic_harness::{
     Error, Result,
     client::{
-        ClientSession, CommandCatalog, CommandResolution, FileClientState, HarnessClient, PlanPanel,
+        ClientSession, CommandCatalog, CommandResolution, FileClientState, HarnessClient,
+        PlanPanel, ViewUpdate,
     },
     filesystem::FilesystemContentVerifier,
-    task_volume::{ChangeStream, Query},
+    task_volume::Query,
     tui::ratatui::{buffer::Buffer, layout::Rect, widgets::Widget},
 };
 use futures::StreamExt as _;
@@ -17,11 +18,15 @@ use std::{io::Write, sync::Arc};
 
 pub(super) struct Plans {
     client: HarnessClient<FileClientState>,
-    changes: ChangeStream,
 }
 
 impl Plans {
-    pub(super) async fn open(native: Arc<NativeSession>) -> Result<Self> {
+    pub(super) async fn open(
+        native: Arc<NativeSession>,
+    ) -> Result<(
+        Self,
+        acyclic_stream::BoxProviderStream<'static, Result<ViewUpdate>>,
+    )> {
         let config = native.config();
         let reader = FilesystemContentVerifier::new(
             native.files.clone(),
@@ -47,17 +52,24 @@ impl Plans {
                 terminal::MAX_FRAME_BYTES,
             )
             .await?;
-        Ok(Self { client, changes })
+        let updates = Box::pin(
+            changes
+                .map(|change| {
+                    change
+                        .map(ViewUpdate::File)
+                        .map_err(|error| Error::Storage(error.to_string()))
+                })
+                .chain(futures::stream::iter([Err(Error::Conflict(
+                    "plan query ended; reopen the view".into(),
+                ))])),
+        );
+        Ok((Self { client }, updates))
     }
 
-    pub(super) async fn next(&mut self) -> Result<bool> {
-        let change = self
-            .changes
-            .next()
-            .await
-            .ok_or_else(|| Error::Conflict("plan query ended; reopen the view".into()))?
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        self.client.query_change(change)
+    pub(super) fn update(&mut self, update: ViewUpdate) -> Result<bool> {
+        let redraw = matches!(&update, ViewUpdate::File(change) if change.file.is_some() || !change.files.is_empty() || !change.removed.is_empty());
+        self.client.apply_update(update)?;
+        Ok(redraw)
     }
 
     pub(super) fn render(&self, output: &mut impl Write) -> Result<()> {

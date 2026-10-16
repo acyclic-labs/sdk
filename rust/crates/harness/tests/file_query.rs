@@ -1,4 +1,6 @@
-use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET};
+use acyclic_fs::{
+    AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET,
+};
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, Result,
     client::FileQueryView,
@@ -13,6 +15,9 @@ use acyclic_harness::{
 use acyclic_stream::MemoryStream;
 use futures::StreamExt as _;
 use std::sync::Arc;
+#[path = "file_query/objects.rs"]
+mod objects;
+use objects::CountingObjects;
 
 async fn next(changes: &mut acyclic_harness::task_volume::ChangeStream) -> Change {
     tokio::time::timeout(std::time::Duration::from_secs(5), changes.next())
@@ -112,9 +117,11 @@ async fn one_matching_plan_with_unrelated_entries_stays_live()
     Ok(())
 }
 
-struct Fixture {
-    host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    source: FilesystemFileQuery<MemoryStream, MemoryObjectBackend>,
+struct Fixture<O = MemoryObjectBackend> {
+    host: Arc<FilesystemHost<MemoryAuthorityBackend, O>>,
+    source: FilesystemFileQuery<MemoryStream, O>,
+    filesystem: Fs<MemoryAuthorityBackend, O>,
+    reads: Arc<std::sync::atomic::AtomicUsize>,
     volume: VolumeRef,
     issuer: AuthorityIssuer,
     agent: AgentId,
@@ -123,9 +130,31 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Result<Self> {
+        Self::with_filesystem(Fs::memory(), Arc::default()).await
+    }
+}
+
+impl Fixture<CountingObjects> {
+    async fn counted() -> Result<Self> {
+        let objects = CountingObjects::default();
+        let reads = objects.reads.clone();
+        let filesystem = Fs::new(
+            acyclic_fs::StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+            objects,
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        Self::with_filesystem(filesystem, reads).await
+    }
+}
+
+impl<O: AsyncObjectStore + 'static> Fixture<O> {
+    async fn with_filesystem(
+        filesystem: Fs<MemoryAuthorityBackend, O>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Result<Self> {
         let provider =
             ProviderRef::new("query".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             provider,
@@ -168,6 +197,8 @@ impl Fixture {
             issuer,
             agent,
             workspace,
+            filesystem,
+            reads,
         })
     }
 
@@ -194,6 +225,191 @@ impl Fixture {
             .await?;
         Ok(())
     }
+
+    async fn ignored(
+        &self,
+        entries: &[(u8, String, bool)],
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let name = self.volume.storage_name(&mut None)?;
+        let workspace = self
+            .filesystem
+            .open_workspace(name, BOUNDARY_BUDGET, &cancellation)
+            .await?
+            .value;
+        let mut transaction = workspace
+            .begin_transaction(
+                acyclic_fs::IdempotencyKey::new(),
+                BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .await?
+            .value;
+        for (index, (kind, name, markdown)) in entries.iter().enumerate() {
+            let path = format!(
+                "/plans/{index}-{name}.{}",
+                if *markdown { "md" } else { "txt" }
+            );
+            match kind {
+                0 => {
+                    transaction
+                        .create_directory(&path, BOUNDARY_BUDGET, &cancellation)
+                        .await?;
+                    transaction
+                        .write_text(&format!("{path}/ignored.txt"), "ignored")
+                        .await?;
+                }
+                1 => {
+                    transaction
+                        .create_symbolic_link(
+                            &path,
+                            bytes::Bytes::from_static(b"/missing.md"),
+                            BOUNDARY_BUDGET,
+                            &cancellation,
+                        )
+                        .await?;
+                }
+                _ => {
+                    transaction
+                        .write_text(&format!("{path}.txt"), "ignored")
+                        .await?;
+                }
+            }
+        }
+        let commit = transaction
+            .commit(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                BOUNDARY_BUDGET,
+                &cancellation,
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                        acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await?
+            .value;
+        assert!(matches!(
+            commit,
+            acyclic_fs::TransactionCommit::Committed(_)
+        ));
+        Ok(())
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #[test]
+    fn ignored_plan_entries_never_fail_snapshot_or_follow(
+        entries in proptest::collection::vec((0u8..3, "[a-z]{1,12}", proptest::bool::ANY), 1..9)
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let fixture = Fixture::new().await?;
+            fixture.write(&[("plans/release.md", Some("- [ ] Build"))]).await?;
+            let observation = fixture.source.observe_files(Query::Plans, None, 1, 64).await?;
+            let mut changes = observation.changes;
+            fixture.ignored(&entries).await?;
+            let change = next(&mut changes).await;
+            assert!(change.files.is_empty() && change.removed.is_empty());
+            let snapshot = fixture.source.observe_files(Query::Plans, None, 1, 64).await?.snapshot.unwrap();
+            assert_eq!(snapshot.files.len(), 1);
+            fixture.write(&[("plans/release.md", Some("- [x] Build"))]).await?;
+            assert_eq!(next(&mut changes).await.files.len(), 1);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn editing_one_of_a_hundred_files_reads_only_its_content()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering;
+    let fixture = Fixture::<CountingObjects>::counted().await?;
+    let paths: Vec<_> = (0..100).map(|i| format!("plans/{i:03}.md")).collect();
+    // Use chunk-backed content so the backend counts actual file-body reads.
+    let text = "- [ ] Build\n".repeat(8);
+    assert!(text.len() > acyclic_fs::kernel::MAXIMUM_INLINE_FILE_BYTES);
+    let maximum_bytes = paths.len() * text.len();
+    let writes: Vec<_> = paths
+        .iter()
+        .map(|path| (path.as_str(), Some(text.as_str())))
+        .collect();
+    fixture.write(&writes).await?;
+    fixture.reads.store(0, Ordering::SeqCst);
+    let observation = fixture
+        .source
+        .observe_files(Query::Plans, None, 100, maximum_bytes)
+        .await?;
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 100);
+    let mut changes = observation.changes;
+    let mut view = FileQueryView::from_snapshot(
+        Query::Plans,
+        observation.snapshot.unwrap(),
+        100,
+        maximum_bytes,
+    )?;
+    let before = view.clone();
+    for changed in [1, 3] {
+        let updated = text.replace("[ ]", if changed == 1 { "[~]" } else { "[x]" });
+        let writes: Vec<_> = paths[..changed]
+            .iter()
+            .map(|path| (path.as_str(), Some(updated.as_str())))
+            .collect();
+        fixture.write(&writes).await?;
+        fixture.reads.store(0, Ordering::SeqCst);
+        let change = next(&mut changes).await;
+        assert_eq!(fixture.reads.load(Ordering::SeqCst), changed);
+        assert_eq!(change.files.len(), changed);
+        view.apply(change)?;
+        for key in view.files().keys().skip(changed) {
+            assert_eq!(
+                view.files()[key].bytes.as_ptr(),
+                before.files()[key].bytes.as_ptr()
+            );
+        }
+    }
+    fixture
+        .write(&[("plans/ignored.txt", Some("ignored"))])
+        .await?;
+    fixture.reads.store(0, Ordering::SeqCst);
+    assert!(next(&mut changes).await.files.is_empty());
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn single_file_query_retains_its_value_across_unrelated_revisions()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness::task_volume::FileKey;
+    use std::sync::atomic::Ordering;
+    let fixture = Fixture::<CountingObjects>::counted().await?;
+    let first = "First ".repeat(16);
+    let second = "Second".repeat(16);
+    assert!(first.len() > acyclic_fs::kernel::MAXIMUM_INLINE_FILE_BYTES);
+    fixture.write(&[("GOAL.md", Some(&first))]).await?;
+    let observation = fixture
+        .source
+        .observe_files(Query::File(FileKey::Goal), None, 1, first.len())
+        .await?;
+    let mut changes = observation.changes;
+    fixture
+        .write(&[("plans/other.md", Some("- [ ] Other"))])
+        .await?;
+    fixture.reads.store(0, Ordering::SeqCst);
+    assert!(next(&mut changes).await.files.is_empty());
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 0);
+    fixture.write(&[("GOAL.md", Some(&second))]).await?;
+    fixture.reads.store(0, Ordering::SeqCst);
+    assert_eq!(
+        next(&mut changes).await.files[0].bytes.as_ref(),
+        second.as_bytes()
+    );
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 1);
+    Ok(())
 }
 
 #[tokio::test]

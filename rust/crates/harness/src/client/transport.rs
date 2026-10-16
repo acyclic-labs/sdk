@@ -304,6 +304,13 @@ impl<S: ClientStateStore> HarnessClient<S> {
         let Some(update) = source.next().await.transpose()? else {
             return Ok(false);
         };
+        self.apply_update(update)?;
+        Ok(true)
+    }
+
+    /// Folds an input already selected by the host's existing event source.
+    /// Publication is synchronous so input selection cannot cancel half a fold.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
         match update {
             super::ViewUpdate::File(change) => {
                 self.query_change(change)?;
@@ -319,7 +326,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
                 delta,
             } => self.tool_output(&authority, &call_id, &delta)?,
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Shared renderer state and outbox.

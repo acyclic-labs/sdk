@@ -55,16 +55,12 @@ pub(super) async fn generation<P: StreamProvider + 'static, O: AsyncObjectStore 
 /// Disposable selection metadata; payloads are the original immutable FS slices.
 pub(super) struct Selection {
     pub(super) files: BTreeMap<FileKey, FileValue>,
-    watched: BTreeSet<FileId>,
+    entries: BTreeMap<FileKey, FileId>,
+    root: FileId,
+    directory: Option<FileId>,
 }
 
 impl Selection {
-    pub(super) fn affected(&self, diff: &acyclic_fs::GenerationDiff) -> bool {
-        diff.files
-            .iter()
-            .any(|change| self.watched.contains(&change.file_id))
-    }
-
     pub(super) async fn read<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
         generation: &Generation<Authority<P>, O>,
         query: &Query,
@@ -72,12 +68,27 @@ impl Selection {
         maximum_bytes: usize,
         io: &PreparationIo,
     ) -> task_volume::Result<Self> {
+        let root = io.sdk(generation.stat("/", io, io.cancellation()).await)?;
         let mut selection = Self {
             files: BTreeMap::new(),
-            watched: BTreeSet::new(),
+            entries: BTreeMap::new(),
+            root: root.file_id,
+            directory: None,
         };
-        let root = io.sdk(generation.stat("/", io, io.cancellation()).await)?;
-        selection.watched.insert(root.file_id);
+        let entries = selection.list(generation, query, maximum_files, io).await?;
+        selection
+            .replace(generation, entries, &BTreeSet::new(), maximum_bytes, io)
+            .await?;
+        Ok(selection)
+    }
+
+    async fn list<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        generation: &Generation<Authority<P>, O>,
+        query: &Query,
+        maximum_files: usize,
+        io: &PreparationIo,
+    ) -> task_volume::Result<BTreeMap<FileKey, FileId>> {
         let directory = match query {
             Query::Plans => "/plans",
             Query::File(FileKey::Goal) => "/GOAL.md",
@@ -87,25 +98,136 @@ impl Selection {
         recorded.map_err(crate::Error::from)?;
         let stat = match stat {
             Ok(stat) => stat,
-            Err(WorkspaceError::NotFound) => return Ok(selection),
+            Err(WorkspaceError::NotFound) => {
+                self.directory = None;
+                return Ok(BTreeMap::new());
+            }
             Err(error) => return Err(crate::Error::from(error).into()),
         };
-        selection.watched.insert(stat.file_id);
-        let mut entries = Vec::new();
+        self.directory = Some(stat.file_id);
         if query == &Query::File(FileKey::Goal) {
-            entries.push((FileKey::Goal, stat.file_id, stat.kind));
+            Ok(if stat.kind == FileKind::Regular {
+                BTreeMap::from([(FileKey::Goal, stat.file_id)])
+            } else {
+                BTreeMap::new()
+            })
         } else {
             if stat.kind != FileKind::Directory {
                 return Err(task_volume::Error::InvalidPath);
             }
-            entries = plan_entries(generation, directory, maximum_files, io).await?;
+            Ok(plan_entries(generation, directory, maximum_files, io)
+                .await?
+                .into_iter()
+                .map(|(key, id, _)| (key, id))
+                .collect())
         }
-        let mut remaining = maximum_bytes;
-        for (key, id, kind) in entries {
-            if kind != FileKind::Regular {
-                return Err(task_volume::Error::InvalidPath);
+    }
+
+    pub(super) async fn apply<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        generation: &Generation<Authority<P>, O>,
+        diff: &acyclic_fs::GenerationDiff,
+        query: &Query,
+        bounds: (usize, usize),
+        io: &PreparationIo,
+    ) -> task_volume::Result<(Vec<FileValue>, Vec<FileKey>)> {
+        let root_name = match query {
+            Query::Plans => "plans",
+            Query::File(FileKey::Goal) => "GOAL.md",
+            _ => return Err(task_volume::Error::InvalidPath),
+        };
+        let mut root_changed = false;
+        for binding in &diff.bindings {
+            if binding.directory_id == self.root && name(&binding.name, io)? == root_name {
+                root_changed = true;
             }
-            selection.watched.insert(id);
+        }
+        let changed: BTreeSet<_> = diff.files.iter().map(|file| file.file_id).collect();
+        let mut dirty: BTreeSet<_> = self
+            .entries
+            .iter()
+            .filter(|(_, id)| changed.contains(*id))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut entries = if root_changed {
+            let entries = self.list(generation, query, bounds.0, io).await?;
+            dirty.extend(
+                entries
+                    .iter()
+                    .filter(|(key, id)| self.entries.get(*key) != Some(*id))
+                    .map(|(key, _)| key.clone()),
+            );
+            entries
+        } else {
+            std::mem::take(&mut self.entries)
+        };
+        if !root_changed && query == &Query::Plans {
+            for binding in &diff.bindings {
+                if Some(binding.directory_id) != self.directory {
+                    continue;
+                }
+                if !binding
+                    .before
+                    .as_ref()
+                    .is_some_and(|entry| entry.kind == FileKind::Regular)
+                    && !binding
+                        .after
+                        .as_ref()
+                        .is_some_and(|entry| entry.kind == FileKind::Regular)
+                {
+                    continue;
+                }
+                let decoded = name(&binding.name, io)?;
+                if !decoded.ends_with(".md") {
+                    continue;
+                }
+                let key = FileKey::parse(&format!("plans/{decoded}"))?;
+                dirty.insert(key.clone());
+                entries.remove(&key);
+                if let Some(after) = &binding.after
+                    && after.kind == FileKind::Regular
+                {
+                    entries.insert(key, after.file_id);
+                }
+            }
+        }
+        if entries.len() > bounds.0 {
+            return Err(task_volume::Error::LimitExceeded);
+        }
+        self.replace(generation, entries, &dirty, bounds.1, io)
+            .await
+    }
+
+    async fn replace<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        generation: &Generation<Authority<P>, O>,
+        entries: BTreeMap<FileKey, FileId>,
+        changed: &BTreeSet<FileKey>,
+        maximum_bytes: usize,
+        io: &PreparationIo,
+    ) -> task_volume::Result<(Vec<FileValue>, Vec<FileKey>)> {
+        let mut removed = Vec::new();
+        self.files.retain(|key, _| {
+            if !entries.contains_key(key) {
+                removed.push(key.clone());
+                false
+            } else {
+                !changed.contains(key)
+            }
+        });
+        let mut remaining = maximum_bytes;
+        for value in self.files.values() {
+            remaining = remaining
+                .checked_sub(value.bytes.len())
+                .ok_or(task_volume::Error::LimitExceeded)?;
+        }
+        let mut files = Vec::new();
+        for key in entries
+            .keys()
+            .filter(|key| !self.files.contains_key(*key))
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             let path = format!("/{}", key.path());
             let bytes = io.sdk(
                 generation
@@ -115,12 +237,27 @@ impl Selection {
             remaining = remaining
                 .checked_sub(bytes.len())
                 .ok_or(task_volume::Error::LimitExceeded)?;
-            selection
-                .files
-                .insert(key.clone(), FileValue::new(key, bytes));
+            let value = FileValue::new(key.clone(), bytes);
+            files.push(value.clone());
+            self.files.insert(key, value);
         }
-        Ok(selection)
+        self.entries = entries;
+        Ok((files, removed))
     }
+}
+
+fn name(
+    value: &acyclic_fs::kernel::LogicalName,
+    io: &PreparationIo,
+) -> task_volume::Result<String> {
+    let decoded = value
+        .unicode_text(
+            io.remaining().map_err(crate::Error::from)?,
+            io.cancellation(),
+        )
+        .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
+    io.charge(decoded.work).map_err(crate::Error::from)?;
+    Ok(decoded.value)
 }
 
 async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
@@ -153,6 +290,9 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
         drop(previous.take());
         let page = &current.0;
         for entry in &page.entries {
+            if entry.kind != FileKind::Regular {
+                continue;
+            }
             let decoded = entry
                 .name
                 .unicode_text(
