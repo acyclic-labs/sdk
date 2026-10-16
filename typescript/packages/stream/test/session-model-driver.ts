@@ -102,7 +102,7 @@ async function command(action: string, hex?: string, path?: string,
   switch (action) {
     case "latency": {
       if (work === undefined || path === undefined) throw new Error("latency work missing");
-      const { measure } = await import("./session-latency.mjs");
+      const { measure } = await import("./session-latency-measure.mjs");
       const { MemoryStreamProvider } = await import("../src/memory.js");
       const memory = new MemoryStreamProvider();
       const accepted = new Map<string, number>();
