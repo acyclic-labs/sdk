@@ -18,6 +18,14 @@
 #![doc = include_str!("../README.md")]
 
 mod sync;
+#[cfg(all(
+    test,
+    debug_assertions,
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[path = "memory_store/retention_scan_trace.rs"]
+mod accounting_trace;
 pub mod agent_loop;
 #[cfg(feature = "tui")]
 pub use acyclic_harness_tui as tui;

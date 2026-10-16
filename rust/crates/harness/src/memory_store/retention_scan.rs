@@ -1,3 +1,16 @@
+// The expression and its trace form one operation, so omitting a preflight
+// also omits its observed invocation. Production builds contain only the call.
+macro_rules! operation {
+    ($phase:ident, $delta:expr, $call:expr) => {{
+        #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+        crate::accounting_trace::before(crate::accounting_trace::Phase::$phase, &$delta);
+        let result = $call;
+        #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+        crate::accounting_trace::after(crate::accounting_trace::Phase::$phase, &$delta, &result);
+        result
+    }};
+}
+
 use crate::sync::SyncMutex;
 use acyclic_fs::kernel::{KernelAccounting, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, FsError, WorkBudget, WorkCounters, WorkError};
@@ -35,8 +48,8 @@ pub(super) fn conflict<V>(
             peak_allocation_bytes: live,
             ..Default::default()
         };
-        accounting.admit(examine)?;
-        accounting.charge(examine)?;
+        operation!(Preflight, examine, accounting.admit(examine))?;
+        operation!(Charge, examine, accounting.charge(examine))?;
         if conflicts(existing, path) {
             return Ok(true);
         }

@@ -6,6 +6,9 @@ mod primitives;
 mod sync {
     pub(crate) use crate::primitives::Mutex as SyncMutex;
 }
+#[cfg(debug_assertions)]
+#[path = "../src/memory_store/retention_scan_trace.rs"]
+mod accounting_trace;
 #[path = "../src/memory_store/retention_scan.rs"]
 mod owned_scan;
 

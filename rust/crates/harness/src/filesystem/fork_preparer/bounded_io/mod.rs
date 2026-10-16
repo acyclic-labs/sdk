@@ -291,7 +291,16 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            accounting.admit(next)
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::before(crate::accounting_trace::Phase::Preflight, &next);
+            let result = accounting.admit(next);
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::after(
+                crate::accounting_trace::Phase::Preflight,
+                &next,
+                &result,
+            );
+            result
         })
     }
     pub(crate) fn spent(
@@ -326,7 +335,12 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            accounting.charge(next)
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
+            let result = accounting.charge(next);
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::after(crate::accounting_trace::Phase::Charge, &next, &result);
+            result
         })
     }
     pub(crate) fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {

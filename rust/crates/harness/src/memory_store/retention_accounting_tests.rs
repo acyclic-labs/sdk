@@ -42,16 +42,27 @@ proptest! {
         allowed_items in 0..64_u64, allowed_source in 0..4096_u64,
         allowed_hashed in 0..24_u64, allowed_peak in 0..128_u64,
         cancelled in any::<bool>(),
+        cancel_at in prop::option::of(0..64_usize),
     ) {
         let store = fixture(rows)?;
-        let cancellation = CancellationToken::default();
+        let cancellations = [CancellationToken::default(), CancellationToken::default()];
         let initial = WorkCounters { items_examined: prior_items, source_bytes_read: prior_source, bytes_hashed: prior_hashed, ..Default::default() };
         let budget = WorkBudget { bytes_hashed: allowed_hashed, peak_allocation_bytes: allowed_peak, ..budget(allowed_items,allowed_source) };
-        let before = seeded_io(budget,live,initial,&cancellation)?;
-        let after = seeded_io(budget,live,initial,&cancellation)?;
-        if cancelled { cancellation.cancel(); }
-        let original = scan(&store,&query,&before);
-        let actual = store.validate_retained_path(&query,Some(&after));
+        let before = seeded_io(budget,live,initial,&cancellations[0])?;
+        let after = seeded_io(budget,live,initial,&cancellations[1])?;
+        if cancelled { for cancellation in &cancellations { cancellation.cancel(); } }
+        #[cfg(debug_assertions)]
+        let (original, actual) = {
+            let (original, original_trace) = crate::accounting_trace::capture(&cancellations[0],cancel_at,||scan(&store,&query,&before));
+            let (actual, actual_trace) = crate::accounting_trace::capture(&cancellations[1],cancel_at,||store.validate_retained_path(&query,Some(&after)));
+            crate::accounting_trace::assert_matches(&original_trace,&actual_trace);
+            (original, actual)
+        };
+        #[cfg(not(debug_assertions))]
+        let (original, actual) = {
+            let _ = cancel_at;
+            (scan(&store,&query,&before),store.validate_retained_path(&query,Some(&after)))
+        };
         prop_assert_eq!(original.is_ok(),actual.is_ok());
         prop_assert_eq!(original.as_ref().err().map(std::mem::discriminant),actual.as_ref().err().map(std::mem::discriminant));
         prop_assert_eq!(original.err().map(|error|error.to_string()),actual.err().map(|error|error.to_string()));
@@ -306,3 +317,7 @@ fn contended_retained_path_accounting() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(debug_assertions)]
+#[path = "retention_scan_trace_tests.rs"]
+mod trace_tests;
