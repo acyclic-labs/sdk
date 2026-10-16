@@ -35,6 +35,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "hook_output"
+path = "fuzz_targets/hook_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "goal_parser"
 path = "fuzz_targets/goal_parser.rs"
 test = false

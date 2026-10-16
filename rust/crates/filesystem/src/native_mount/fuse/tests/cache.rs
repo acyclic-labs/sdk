@@ -5,18 +5,23 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::fuse::Errno;
     #[derive(Clone, Copy)]
-    struct Reply<'a>(&'a std::cell::Cell<bool>);
+    struct Reply<'a>(&'a std::cell::Cell<u32>);
     impl Reply<'_> {
         fn error(self, error: Errno) {
             assert_eq!(error, Errno::from_i32(libc::EIO));
-            self.0.set(true);
+            self.0.set(self.0.get() + 1);
         }
     }
     let (source, _) = shared_sources(posix_config())?;
+    let cancellation = crate::CancellationToken::new();
+    let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, &cancellation)?;
     let mut policy = FINITE_HANDLER_POLICY;
     policy.bytes_copied = 0;
-    let core = projection_core(Arc::new(source), policy, &crate::CancellationToken::new())?;
-    let replied = std::cell::Cell::new(false);
+    let denied =
+        crate::NativeMaterializationWork::new(policy, &cancellation).map_err(|(cause, _)| cause)?;
+    let _active = crate::native_mount::fuse::NativeMountWorkScope::new(&core, &denied)?;
+    let attempted = std::cell::Cell::new(0);
+    let replied = std::cell::Cell::new(0);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {
         respond!(
@@ -24,14 +29,20 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
             reply,
             span,
             work,
-            crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ()),
+            {
+                assert!(work.shares_ledger(&denied));
+                attempted.set(attempted.get() + 1);
+                crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
+            },
             |()| {
                 let _ = reply;
             }
         );
         libc::EIO
     });
-    assert!(replied.get());
+    assert_eq!(attempted.get(), 2);
+    assert_eq!(replied.get(), 2);
+    assert_eq!(denied.receipt().bytes_copied, 0);
     Ok(())
 }
 #[test]
@@ -212,9 +223,12 @@ pub(super) fn cache_work(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> crate::NativeMaterializationWork {
-    crate::NativeMaterializationWork::from_meter(Arc::new(crate::demand::NativeDemandReadMeter(
-        Mutex::new(crate::demand::DemandWork::new(budget, cancellation)),
-    )))
+    crate::NativeMaterializationWork::from_meter(Arc::new(
+        crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+            budget,
+            cancellation,
+        )),
+    ))
 }
 
 #[test]

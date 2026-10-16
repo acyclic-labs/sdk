@@ -53,9 +53,7 @@ impl NativeMaterializationWork {
             })?;
         Ok(Self {
             cancellation: cancellation.clone(),
-            state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-                state,
-            ))),
+            state: Arc::new(crate::demand::NativeDemandReadMeter::new(state)),
             resource: None,
             recheck_items: false,
             capture_origin: None,
