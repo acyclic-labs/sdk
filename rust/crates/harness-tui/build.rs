@@ -10,6 +10,7 @@ fn variant(name: &str) -> String {
         .collect()
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo::rustc-check-cfg=cfg(acyclic_harness_tui_loom)");
     println!("cargo:rerun-if-changed=data");
     let out = PathBuf::from(env::var("OUT_DIR")?);
     let actions: Vec<Value> = serde_json::from_str(&fs::read_to_string("data/actions.json")?)?;

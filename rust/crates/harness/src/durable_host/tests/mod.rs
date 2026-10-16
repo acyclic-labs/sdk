@@ -22,6 +22,8 @@ mod journal;
 mod mail;
 #[cfg(feature = "filesystem")]
 mod recovery;
+#[cfg(feature = "filesystem")]
+mod timers;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod release;

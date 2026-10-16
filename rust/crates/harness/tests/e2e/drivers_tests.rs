@@ -4,6 +4,44 @@ use serde_json::json;
 use std::path::Path;
 
 #[tokio::test]
+async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for name in [
+        "lifecycle",
+        "multiple-raw-and-code",
+        "filenames-and-paragraphs",
+    ] {
+        let mut baseline =
+            crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plan_query::PlanQuery::parse(baseline)?
+            .negative_oracles()
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    for name in ["lifecycle", "multiple-files", "malformed-raw"] {
+        let mut baseline =
+            crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plans::Plans::parse(baseline)?
+            .negative_oracles()
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn unbound_tool_oracles_reject_corrupted_names_and_arguments() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     for path in [

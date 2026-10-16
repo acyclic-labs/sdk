@@ -348,7 +348,11 @@ impl ControlPlane {
             }
         }
         if pending.mount_path.exists() {
-            NativeDirectory(&self.workspace_mount_root()).remove(&pending.mount_path)?;
+            acyclic_native_runtime::remove_child_directory(
+                &self.workspace_mount_root(),
+                &pending.mount_path,
+            )
+            .map_err(display)?;
         }
         self.state
             .pending

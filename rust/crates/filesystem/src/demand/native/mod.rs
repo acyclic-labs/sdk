@@ -1,5 +1,6 @@
 use super::*;
 use crate::facade::FsWork;
+use crate::lock_order::{CURSOR, Mutex as RankedMutex};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::native_host::HostListedEntry;
 use crate::native_host::NativeHostWork;
@@ -9,8 +10,8 @@ use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
 const MAXIMUM_NATIVE_REQUESTS: usize = 64;

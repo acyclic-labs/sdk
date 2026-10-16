@@ -1,4 +1,5 @@
 import { create } from "@bufbuild/protobuf";
+import type { CredentialOptions } from "@acyclic-labs/actors/credential";
 import { RequestIdentitySchema, type RequestIdentity } from "../generated/proto/inference/v1/inference_pb.js";
 import type { InferenceClient } from "./index.js";
 import { InferenceProtocolError } from "./contract.js";
@@ -20,7 +21,15 @@ export function executionProfile(value: Uint8Array): ExecutionProfile { return b
 export class Inference {
   readonly #clientInstance = randomIdentity();
   constructor(readonly client: InferenceClient) {}
-  static async fromEnv(environment: Readonly<Record<string, string | undefined>> = runtimeEnvironment()): Promise<Inference> { const endpoint = requiredEnvironment(environment, "ACYCLIC_INFERENCE_ENDPOINT"); const token = requiredEnvironment(environment, "ACYCLIC_API_KEY"); const { HttpInferenceTransport, InferenceClient } = await import("./index.js"); return new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` })))); }
+  static async fromEnv(environment: Readonly<Record<string, string | undefined>> = runtimeEnvironment(), options: CredentialOptions = {}): Promise<Inference> {
+    const endpoint = requiredEnvironment(environment, "ACYCLIC_INFERENCE_ENDPOINT");
+    const callback = options.credential;
+    const credentials = callback === undefined
+      ? { token: options.token ?? requiredEnvironment(environment, "ACYCLIC_API_KEY") }
+      : { credential: callback };
+    const { HttpInferenceTransport, InferenceClient } = await import("./index.js");
+    return new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, credentials)));
+  }
   identity(): RequestIdentity { return create(RequestIdentitySchema, { clientInstance: this.#clientInstance.slice(), requestId: randomIdentity() }); }
 }
 

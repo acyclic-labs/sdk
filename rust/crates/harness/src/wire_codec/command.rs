@@ -27,7 +27,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
         .ok_or_else(|| Error::Invalid("missing command operation".into()))?;
     let action: Action = crate::contract::json_from_slice(&envelope.canonical_action_json)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    if canonical_json_bytes(&action)? != envelope.canonical_action_json
+    if !crate::contract::canonical_json_matches(&action, &envelope.canonical_action_json)?
         || envelope.action_type != action.tag()
     {
         return Err(Error::Invalid("noncanonical command action".into()));

@@ -67,3 +67,6 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
+
+#[cfg(feature = "tui")]
+pub mod term;

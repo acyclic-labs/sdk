@@ -1,4 +1,4 @@
-use super::{Error, Result};
+use super::{Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -211,7 +211,7 @@ pub enum FileKey {
     /// Editable command definitions and workspace files followed by UI queries.
     Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
-    Plan(Component),
+    Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
     /// Protected task namespace.
@@ -299,9 +299,9 @@ impl FileKey {
             }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
-                return Ok(Self::Plan(id(name
-                    .strip_suffix(".md")
-                    .ok_or(Error::InvalidPath)?)?));
+                return Ok(Self::Plan(PlanName::new(
+                    name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
+                )?));
             }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
@@ -459,7 +459,7 @@ pub enum Query {
 
 impl Query {
     pub(super) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
-        use std::ops::Bound::{Included, Unbounded};
+        use std::ops::Bound::{Excluded, Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
             let bound = |file| {
                 Included(FileKey::Task {
@@ -506,8 +506,8 @@ impl Query {
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
             ),
             Self::Plans => (
-                Included(FileKey::Plan(minimum)),
-                Included(FileKey::Plan(maximum)),
+                Included(FileKey::Plan(PlanName(Arc::from("")))),
+                Excluded(FileKey::Agent(minimum)),
             ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -90,29 +91,52 @@ export async function nativeStreamAvailable(): Promise<boolean> {
 
 /** Thin provider over the Rust-owned Stream N-API bridge. */
 export class NativeStreamProvider implements StreamProvider {
-  private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative) {}
+  private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative, private readonly credential?: CredentialProvider) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string | undefined, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, credential?: CredentialProvider): Promise<NativeStreamProvider> {
+    const certificate = caCertificate === undefined ? undefined : Buffer.from(caCertificate);
+    const resolve = credential === undefined ? undefined : credentialProvider({ credential });
+    if (resolve === undefined) validateCredential(token);
     const module = await loadNativeModule();
-    const result = caCertificate === undefined
-      ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
-      : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
+    let result: GeneratedNative.NativeStreamConnectResult;
+    if (resolve !== undefined) {
+      const binding = module.NativeStreamClient as typeof GeneratedNative.NativeStreamClient & {
+        connectWithCredentialResult(endpoint: string, callback: () => Promise<string>, ca?: Buffer, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<GeneratedNative.NativeStreamConnectResult>;
+      };
+      if (typeof binding.connectWithCredentialResult !== "function") throw new StreamError("configuration", "Stream native companion does not support credential providers");
+      result = await binding.connectWithCredentialResult(endpoint, async () => await resolve(), certificate, cancellation);
+    } else {
+      validateCredential(token);
+      result = certificate === undefined
+        ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
+        : await module.NativeStreamClient.connectWithCaResult(endpoint, token, certificate, cancellation);
+    }
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
-    return new NativeStreamProvider(result.client, module);
+    return new NativeStreamProvider(result.client, module, resolve);
+  }
+
+  private async requestClient(signal?: AbortSignal): Promise<GeneratedNative.NativeStreamClient> {
+    if (this.credential === undefined || signal === undefined) return this.client;
+    signal.throwIfAborted();
+    const resolve = this.credential;
+    const client = this.client as GeneratedNative.NativeStreamClient & { withCredentialProvider(callback: () => Promise<string>): GeneratedNative.NativeStreamClient };
+    if (typeof client.withCredentialProvider !== "function") throw new StreamError("configuration", "Stream native companion does not support credential providers");
+    return client.withCredentialProvider(async () => await resolve(signal));
   }
 
   get transport(): string { return this.client.transport(); }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    const value = await this.operation("inspect_idempotency", this.client.inspectIdempotencyResult(Buffer.from(wireInspectIdempotencyRequest(key))));
+    const bytes = Buffer.from(wireInspectIdempotencyRequest(key));
+    const value = await this.operation("inspect_idempotency", (await this.requestClient()).inspectIdempotencyResult(bytes));
     return this.project("inspect_idempotency", value) as IdempotencyObservation | undefined;
   }
 
   async tail(path: string): Promise<Sequence> {
     const request = { kind: "tail" as const, path };
     await validateWireRequest(request);
-    const value = await this.operation("tail", this.client.tailResult(Buffer.from(wireRequest(request))));
+    const value = await this.operation("tail", (await this.requestClient()).tailResult(Buffer.from(wireRequest(request))));
     try { return fromBinary(wire.TailResponseSchema, value).tail; }
     catch (error) { throw invalidResponse("tail", error); }
   }
@@ -121,21 +145,21 @@ export class NativeStreamProvider implements StreamProvider {
     const records = values.map(value => value.slice());
     const authored = options === undefined ? undefined : structuredClone(options);
     await validateAppend(path, records, authored);
-    const value = await this.operation("append", this.client.appendResult(Buffer.from(wireAppendRequest(path, records, authored))));
+    const value = await this.operation("append", (await this.requestClient()).appendResult(Buffer.from(wireAppendRequest(path, records, authored))));
     return this.project("append", value) as AppendResult;
   }
 
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
     await validateWireRequest(request);
-    const value = await this.operation("fork", this.client.forkResult(Buffer.from(wireRequest(request))));
+    const value = await this.operation("fork", (await this.requestClient()).forkResult(Buffer.from(wireRequest(request))));
     return this.project("fork", value) as ForkReceipt;
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    const result = await this.sequence("read", this.client.readResult(Buffer.from(wireRequest(request))));
+    const result = await this.sequence("read", (await this.requestClient()).readResult(Buffer.from(wireRequest(request))));
     let next = request.from;
     let count = 0;
     for (const value of result) {
@@ -168,7 +192,7 @@ export class NativeStreamProvider implements StreamProvider {
     try {
       let opened: GeneratedNative.NativeStreamFollowResult;
       try {
-        opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
+        opened = await (await this.requestClient(options.signal)).openFollowResult(Buffer.from(wireRequest(request)), cancellation);
       } catch (error) {
         if (options.signal?.aborted) return;
         throw nativeError(error, "follow");
@@ -212,17 +236,19 @@ export class NativeStreamProvider implements StreamProvider {
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
     };
     await validateWireRequest(authored);
-    const value = await this.operation("children_page", this.client.childrenPageResult(Buffer.from(wireRequest(authored))));
+    const value = await this.operation("children_page", (await this.requestClient()).childrenPageResult(Buffer.from(wireRequest(authored))));
     return this.project("children_page", value) as ChildrenPage;
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const value = await this.operation("commit", this.client.commitResult(Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)))));
+    const bytes = Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)));
+    const value = await this.operation("commit", (await this.requestClient()).commitResult(bytes));
     return this.project("commit", value) as CommitResult;
   }
 
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
-    const value = await this.operation("read_commit", this.client.readCommitResult(Buffer.from(wireReadCommitRequest(id))));
+    const bytes = Buffer.from(wireReadCommitRequest(id));
+    const value = await this.operation("read_commit", (await this.requestClient()).readCommitResult(bytes));
     return this.project("read_commit", value) as CommittedEnvelope;
   }
 

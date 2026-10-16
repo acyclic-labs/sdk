@@ -4,7 +4,6 @@ use super::*;
 pub(in crate::tool) enum FileTool {
     Read,
     Write,
-    Plan,
     Edit,
     Patch {
         maximum_work: u64,
@@ -79,26 +78,6 @@ impl FileTool {
             }
 
             Self::Read => return self.read(context, invocation, work, io).await,
-
-            Self::Plan => {
-                let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-                let input =
-                    super::super::plan::PlanView::borrow(&invocation.arguments, &allocation)?;
-                let text = input.markdown(
-                    context.effective_scope().limits().file_bytes,
-                    &mut allocation,
-                )?;
-                context
-                    .stage_file_once(
-                        invocation.operation_id,
-                        super::super::plan::PLAN_PATH,
-                        text.as_bytes(),
-                        "text/markdown",
-                        super::super::plan::PLAN_PATH,
-                        io,
-                    )
-                    .await?
-            }
 
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
