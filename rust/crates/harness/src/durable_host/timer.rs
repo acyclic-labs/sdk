@@ -39,6 +39,32 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         .await
     }
 
+    /// Retains an absolute wait under the caller's lease, then waits once for its deadline.
+    #[cfg(feature = "filesystem")]
+    pub async fn wait_until(
+        self: &Arc<Self>,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        operation: OperationId,
+        deadline_unix_ms: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        if !self
+            .poll_timer(task, fence, operation, deadline_unix_ms, io)
+            .await?
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                deadline_unix_ms.saturating_sub(self.now_unix_millis()),
+            ))
+            .await;
+        }
+        let mut history = io.map(|io| io.history_io());
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::HistoryIo);
+        self.verify_owner(task, fence, false, &mut work).await
+    }
+
     /// Retains the exact timer identity under the current task fence.
     #[cfg(feature = "filesystem")]
     pub async fn poll_timer(
@@ -109,11 +135,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         let (_, retained) = self.timer_state(task, operation, deadline, work).await?;
         Ok(retained && self.now_unix_millis() >= deadline)
-    }
-
-    pub(super) fn timer_stream(&self, task: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/timers/{task}"))
-            .map_err(Into::into)
     }
 
     pub(super) async fn timer_state(

@@ -903,12 +903,12 @@ pub(super) async fn worker_restart_with_options(
                         runtime
                             .task_host()
                             .poll_timer(task, &fence, probe, 1, None),
-                        runtime.task_host().wait_until(task, probe, 1)
+                        runtime.task_host().wait_until(task, &fence, probe, 1, None)
                     );
                     assert!(stock?);
                     legacy?;
                     assert!(matches!(
-                        runtime.task_host().wait_until(task, probe, 2).await,
+                        runtime.task_host().wait_until(task, &fence, probe, 2, None).await,
                         Err(Error::Conflict(_))
                     ));
                     assert!(matches!(

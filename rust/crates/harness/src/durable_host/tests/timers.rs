@@ -23,11 +23,11 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
         } else if first == 1 {
             assert!(f.host.poll_timer(task, &fence, operation, 1, None).await?);
         } else {
-            f.host.wait_until(task, operation, 1).await?;
+            f.host.wait_until(task, &fence, operation, 1, None).await?;
         }
         assert!(f.host.schedule_timer(task, &fence, &record, None).await?);
         assert!(f.host.poll_timer(task, &fence, operation, 1, None).await?);
-        f.host.wait_until(task, operation, 1).await?;
+        f.host.wait_until(task, &fence, operation, 1, None).await?;
         let (tail, found) = f.host.timer_state(task, operation, 1, &mut None).await?;
         assert!(found);
         assert_eq!(tail, u64::from(index - 1));
@@ -45,13 +45,39 @@ async fn sdk_and_native_timer_retries_share_fenced_retention() -> Result<()> {
         OperationId::from_bytes([2; 16]).to_string(),
         1,
     )?;
-    let _replacement = f.replace(1).await?;
-    assert!(
-        f.host
-            .schedule_timer(task, &fence, &record, None)
-            .await
-            .is_err()
-    );
+    let replacement = f.replace(1).await?;
+    let replacement_fence = replacement.task_binding().1;
+    for (index, entry) in [(5, 0), (6, 1), (7, 2)] {
+        let operation = OperationId::from_bytes([index; 16]);
+        let fresh =
+            acyclic_actors::timers::TimerRecord::new(task.to_string(), operation.to_string(), 1)?;
+        let rejected = match entry {
+            0 => f
+                .host
+                .schedule_timer(task, &fence, &fresh, None)
+                .await
+                .map(|_| ()),
+            1 => f
+                .host
+                .poll_timer(task, &fence, operation, 1, None)
+                .await
+                .map(|_| ()),
+            _ => f.host.wait_until(task, &fence, operation, 1, None).await,
+        };
+        assert!(
+            rejected.is_err(),
+            "stale entry point {entry} retained a timer"
+        );
+        let (tail, found) = f.host.timer_state(task, operation, 1, &mut None).await?;
+        assert!(!found);
+        assert_eq!(tail, u64::from(index - 2));
+        // A rejected stale deadline must not conflict with the new owner's deadline.
+        assert!(
+            f.host
+                .poll_timer(task, replacement_fence, operation, 2, None)
+                .await?
+        );
+    }
     let other = acyclic_actors::timers::TimerRecord {
         task_id: TaskId::from_bytes([9; 16]).to_string(),
         ..record
