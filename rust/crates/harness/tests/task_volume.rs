@@ -22,6 +22,8 @@ mod acceptance;
 mod heads;
 #[path = "task_volume/history_loss.rs"]
 mod history_loss;
+#[path = "task_volume/plan_name.rs"]
+mod plan_name;
 #[path = "task_volume/properties.rs"]
 mod properties;
 #[path = "task_volume/recovery.rs"]
