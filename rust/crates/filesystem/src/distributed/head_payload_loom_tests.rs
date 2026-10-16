@@ -181,10 +181,14 @@ fn model(change: Change, recheck: bool) {
             let store = StreamAuthorityStore::new(reader_provider);
             let mut work = AuthorityWork::new(BUDGET, &reader_cancel);
             let result = if recheck {
-                ready(store.head_payload(ID, 32, &mut work))
+                ready(crate::heap_future::in_heap(|| {
+                    store.head_payload(ID, 32, &mut work)
+                }))
             } else {
                 // Deliberate broken variant of the same production function.
-                ready(store.head_payload_checked::<false>(ID, 32, &mut work))
+                ready(crate::heap_future::in_heap(|| {
+                    store.head_payload_checked::<false>(ID, 32, &mut work)
+                }))
             };
             work.spent().verify(BUDGET).unwrap();
             result
