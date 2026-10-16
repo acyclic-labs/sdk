@@ -11,6 +11,18 @@ fn streaming_seed_corpus() {
 }
 
 #[test]
+fn control_before_unicode_punctuation_keeps_literal_delimiters() {
+    let bytes = include_bytes!("../fuzz/corpus/streaming/control-delimiter-context");
+    input::check(bytes);
+    let mut variant = *bytes;
+    let control = bytes.iter().position(|&byte| byte == 0x0e).unwrap();
+    for before in 0..=127 {
+        variant[control] = before;
+        input::check(&variant);
+    }
+}
+
+#[test]
 #[should_panic(expected = "changed Markdown rows were not replaced")]
 fn negative_control_detects_append_only_rows() {
     input::check_without_row_replacement(b"|a", true);
