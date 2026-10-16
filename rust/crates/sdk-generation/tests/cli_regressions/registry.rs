@@ -150,6 +150,15 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                     fs::remove_file(config_directory.join("config.toml")).unwrap();
                 }
                 assert_eq!(discovery.len(), 2);
+                let (recorded, replayed_compilers) = queries.compiler_counts();
+                assert!(
+                    recorded > 0,
+                    "the original compiler matrix must really execute"
+                );
+                assert_eq!(
+                    recorded, replayed_compilers,
+                    "each identical policy profile must replay its real JSON"
+                );
                 let (executed, replayed) = queries.counts();
                 assert!(
                     executed > 0 && replayed > 0,

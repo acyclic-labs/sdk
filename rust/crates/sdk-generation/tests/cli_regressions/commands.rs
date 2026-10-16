@@ -18,6 +18,7 @@ struct State {
     outputs: RefCell<BTreeMap<Key, (Output, Vec<(PathBuf, Vec<u8>)>)>>,
     executed: Cell<usize>,
     replayed: Cell<usize>,
+    replayed_compilers: Cell<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -144,6 +145,11 @@ impl Queries {
                         fs::write(path, bytes)?;
                     }
                     state.replayed.set(state.replayed.get() + 1);
+                    if !artifacts.is_empty() {
+                        state
+                            .replayed_compilers
+                            .set(state.replayed_compilers.get() + 1);
+                    }
                     return Ok(output.clone());
                 }
                 let output = command.output()?;
@@ -160,6 +166,18 @@ impl Queries {
                 Ok(output)
             },
             operation,
+        )
+    }
+
+    pub(super) fn compiler_counts(&self) -> (usize, usize) {
+        (
+            self.0
+                .outputs
+                .borrow()
+                .values()
+                .filter(|(_, artifacts)| !artifacts.is_empty())
+                .count(),
+            self.0.replayed_compilers.get(),
         )
     }
 

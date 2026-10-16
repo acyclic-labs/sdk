@@ -166,7 +166,8 @@ fn closed_owner_metadata_rechecks_both_concrete_tools_context_and_wrappers() {
                 owner_metadata(&cargo, context, || {
                     calls.set(calls.get() + 1);
                     Ok(calls.get().to_string())
-                }).unwrap()
+                })
+                .unwrap()
             })
         };
         assert_eq!(query("source/config/environment-a"), "1");
@@ -432,4 +433,36 @@ fn unchanged_wrapper_refreshes_the_selected_toolchain() {
 #[should_panic(expected = "stale toolchain version")]
 fn negative_control_detects_retained_proxy_versions() {
     wrapper_probe(true);
+}
+
+#[test]
+fn operation_boundaries_retire_metadata_on_error_and_unwind() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("input");
+    fs::write(&file, b"input").unwrap();
+    let stamp = sdk_file_identity::stamp(&file).unwrap();
+    for unwind in [false, true] {
+        with_run(|| {
+            METADATA.with(|values| {
+                METADATA_OBSERVED.with(|recent| {
+                    observed_metadata(
+                        values,
+                        recent,
+                        (file.clone(), "closed inventory".into()),
+                        || Ok((stamp.clone(), stamp.clone())),
+                        || Ok("metadata".into()),
+                    )
+                    .unwrap();
+                })
+            })
+        });
+        assert_eq!(METADATA.with_borrow(|values| values.borrow().len()), 1);
+        if unwind {
+            assert!(std::panic::catch_unwind(|| with_run(|| panic!("operation unwind"))).is_err());
+        } else {
+            assert!(with_run(|| Err::<(), _>(CliError("operation error".into()))).is_err());
+        }
+        assert!(METADATA.with_borrow(|values| values.borrow().is_empty()));
+        assert!(METADATA_OBSERVED.with_borrow(|values| values.borrow().is_empty()));
+    }
 }
