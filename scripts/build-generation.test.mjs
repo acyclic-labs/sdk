@@ -89,3 +89,56 @@ test("every TypeScript package prepares generation for build, test and prepack",
     for (const operation of ["build", "check", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);
   }
 });
+
+test("native source roots cover the generators' transitive script imports", () => {
+  // Node's module parser enumerates static imports without executing generators.
+  execFileSync(process.execPath, ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
+    import assert from "node:assert/strict";
+    import { readFileSync } from "node:fs";
+    import { posix } from "node:path";
+    import { SourceTextModule, runInNewContext } from "node:vm";
+    import { packageClosure } from "./scripts/package-closure.mjs";
+
+    function check(roots, generators, changes = new Map()) {
+      const pending = [...generators, ...roots.filter(path => path.startsWith("scripts/") && path.endsWith(".mjs"))];
+      const visited = new Set();
+      while (pending.length) {
+        const path = pending.pop();
+        if (visited.has(path)) continue;
+        assert.ok(roots.some(root => path === root || path.startsWith(root + "/")), "imports unattested " + path);
+        visited.add(path);
+        const source = changes.get(path) ?? readFileSync(path, "utf8");
+        const imports = new SourceTextModule(source).dependencySpecifiers;
+        // Literal dynamic imports are not in SourceTextModule's static graph.
+        const dynamic = [];
+        for (const call of source.matchAll(/\bimport\s*\(\s*([^)]*?)\s*\)/g)) {
+          const literal = /^(["'])([^"']+)\1$/.exec(call[1]);
+          if (literal) dynamic.push(literal[2]);
+          else assert.ok(path === "scripts/generate-contracts.mjs" && call[1] === String.fromCharCode(96) + "./$" + "{name}" + String.fromCharCode(96), "uncovered computed import in " + path);
+        }
+        for (const specifier of [...imports, ...dynamic]) {
+          if (!specifier.startsWith(".")) continue;
+          const imported = posix.normalize(posix.join(posix.dirname(path), specifier));
+          assert.ok(roots.some(root => imported === root || imported.startsWith(root + "/")), path + " imports unattested " + imported);
+          if (imported.endsWith(".mjs")) pending.push(imported);
+        }
+      }
+    }
+    const contracts = readFileSync("scripts/generate-contracts.mjs", "utf8");
+    const selection = contracts.slice(contracts.indexOf("const modules ="), contracts.indexOf("const root ="));
+    for (const family of ["actors", "stream"]) {
+      const { sourceRoots } = JSON.parse(readFileSync("compatibility/native-families/" + family + ".json", "utf8"));
+      // Use the real selector for the computed import in generate-contracts.
+      const modules = runInNewContext(selection + "modules", { process: { argv: ["node", "generate-contracts", "write", ...packageClosure(process.cwd(), family)] } });
+      const generators = modules.map(name => "scripts/" + name);
+      check(sourceRoots, generators);
+      assert.throws(() => check(sourceRoots.filter(path => path !== "scripts/package-closure.mjs"), generators), /imports unattested scripts\/package-closure\.mjs/);
+      const changed = new Map([["scripts/package-closure.mjs", 'import "./unattested-generator-helper.mjs";']]);
+      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
+      changed.set("scripts/package-closure.mjs", 'await import("./unattested-generator-helper.mjs");');
+      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
+      changed.set("scripts/package-closure.mjs", 'const name = "./unattested-generator-helper.mjs"; await import(name);');
+      assert.throws(() => check(sourceRoots, generators, changed), /uncovered computed import/);
+    }
+  `], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+});
