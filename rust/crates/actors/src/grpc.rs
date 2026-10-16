@@ -88,7 +88,11 @@ pub async fn connect(
     connect_authorized(endpoint, authorization, ca).await
 }
 
-pub(crate) async fn connect_authorized(endpoint: &str, authorization: BearerAuth, ca: Option<&[u8]>) -> Result<Client, ConnectError> {
+pub(crate) async fn connect_authorized(
+    endpoint: &str,
+    authorization: BearerAuth,
+    ca: Option<&[u8]>,
+) -> Result<Client, ConnectError> {
     let channel = connect_channel(endpoint, ca).await?;
     Ok(
         wire::actors_service_client::ActorsServiceClient::with_interceptor(

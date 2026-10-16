@@ -1,11 +1,17 @@
 use super::{BearerAuth, Client, CredentialProvider};
 use proptest::prelude::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tonic::service::Interceptor;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 #[test]
 fn credential_callbacks_are_fresh_sensitive_and_fail_closed() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
         .run(&prop::collection::vec("[a-zA-Z0-9_-]{1,64}", 2..8), |tokens| {
             runtime.block_on(async {

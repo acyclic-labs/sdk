@@ -1,10 +1,16 @@
 use super::*;
 use proptest::prelude::*;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[test]
 fn credential_failure_covers_publication_and_every_lifecycle_operation() {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
         .run(&prop::collection::vec(0..4u8, 1..16), |operations| {
             runtime.block_on(async {

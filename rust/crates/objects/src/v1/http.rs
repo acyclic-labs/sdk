@@ -1,10 +1,10 @@
 //! Authenticated logical Objects HTTP gateway with bounded Protobuf JSON/NDJSON.
-pub use acyclic_auth::credential::CredentialProvider;
 use super::{
     Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json, request, response,
     upload, wire,
 };
 use crate::obs;
+pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -16,7 +16,9 @@ use reqwest::{
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
-    if !acyclic_auth::credential::valid_credential(token) { return Err(invalid()); }
+    if !acyclic_auth::credential::valid_credential(token) {
+        return Err(invalid());
+    }
     let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
     value.set_sensitive(true);
     Ok(value)
@@ -178,11 +180,22 @@ impl HttpObjects {
     }
 
     /// Resolve the callback for every physical request, including streamed transfers.
-    pub fn with_credential_provider(endpoint: &str, credential: CredentialProvider, maximum: usize, ca: Option<&[u8]>) -> Result<Self, Error> {
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, Error> {
         Self::build(endpoint, None, Some(credential), maximum, ca)
     }
 
-    fn build(endpoint: &str, token: Option<&str>, credential: Option<CredentialProvider>, maximum_response_bytes: usize, ca: Option<&[u8]>) -> Result<Self, Error> {
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
+        maximum_response_bytes: usize,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
         let mut endpoint = Url::parse(endpoint).map_err(|_| invalid())?;
         let loopback = endpoint.host_str().is_some_and(|host| {
@@ -226,10 +239,15 @@ impl HttpObjects {
     }
     async fn authorization(&self) -> Result<HeaderValue, Error> {
         if let Some(provider) = &self.credential {
-            let token = provider.resolve().await.map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            let token = provider
+                .resolve()
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))
         } else {
-            self.authorization.clone().ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
+            self.authorization
+                .clone()
+                .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
         }
     }
 

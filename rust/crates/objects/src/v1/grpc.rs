@@ -1,10 +1,10 @@
 //! Authenticated, bounded gRPC client for logical Objects v1.
-pub use acyclic_auth::credential::CredentialProvider;
 use super::response::object_info as info;
 use super::{
     Download, Error, Object, ObjectsProvider, UploadBody, request, response, upload, wire,
 };
 use crate::obs;
+pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::OwnedBytes;
 use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
@@ -37,8 +37,12 @@ fn part_frame(chunk: Result<OwnedBytes, Error>) -> wire::UploadPartRequest {
 }
 
 fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-    if !acyclic_auth::credential::valid_credential(token) { return Err(ConnectError::InvalidConfiguration); }
-    let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ConnectError::InvalidConfiguration)?;
+    if !acyclic_auth::credential::valid_credential(token) {
+        return Err(ConnectError::InvalidConfiguration);
+    }
+    let mut value: MetadataValue<Ascii> = format!("Bearer {token}")
+        .parse()
+        .map_err(|_| ConnectError::InvalidConfiguration)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -98,7 +102,13 @@ impl GrpcObjects {
         Self::connect_inner(endpoint, None, Some(credential), ca, identity).await
     }
 
-    async fn connect_inner(endpoint: &str, token: Option<&str>, credential: Option<CredentialProvider>, ca: Option<&[u8]>, identity: Option<(&[u8], &[u8])>) -> Result<Self, ConnectError> {
+    async fn connect_inner(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
+        ca: Option<&[u8]>,
+        identity: Option<(&[u8], &[u8])>,
+    ) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
                 if certificate.is_empty()
@@ -156,16 +166,27 @@ impl GrpcObjects {
         })
     }
 
-    async fn authenticated<T>(&self, value: T, timeout: std::time::Duration) -> Result<Request<T>, Error> {
+    async fn authenticated<T>(
+        &self,
+        value: T,
+        timeout: std::time::Duration,
+    ) -> Result<Request<T>, Error> {
         let authorization = if let Some(provider) = &self.credential {
-            let token = provider.resolve().await.map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            let token = provider
+                .resolve()
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?
         } else {
-            self.authorization.clone().ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?
+            self.authorization
+                .clone()
+                .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?
         };
         let mut request = Request::new(value);
         request.set_timeout(timeout);
-        request.metadata_mut().insert("authorization", authorization);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
         Ok(request)
     }
 
@@ -233,12 +254,14 @@ impl GrpcObjects {
                     let complete = wire::PutObjectRequest {
                         frame: Some(wire::put_object_request::Frame::Complete(true)),
                     };
-                    let mut input = owner.authenticated(
-                        stream::iter([header])
-                            .chain(frames)
-                            .chain(stream::iter([complete])),
-                        owner.transfer_timeout,
-                    ).await?;
+                    let mut input = owner
+                        .authenticated(
+                            stream::iter([header])
+                                .chain(frames)
+                                .chain(stream::iter([complete])),
+                            owner.transfer_timeout,
+                        )
+                        .await?;
                     input.extensions_mut().insert(tonic::GrpcMethod::new(
                         "acyclic.objects.v1.ObjectsService",
                         "PutObject",
@@ -296,13 +319,15 @@ impl GrpcObjects {
                     let complete = wire::UploadPartRequest {
                         frame: Some(wire::upload_part_request::Frame::Complete(true)),
                     };
-                    let input = owner.authenticated(
-                        stream::iter([header])
-                            .chain(frames)
-                            .chain(stream::iter([complete]))
-                            .boxed(),
-                        owner.transfer_timeout,
-                    ).await?;
+                    let input = owner
+                        .authenticated(
+                            stream::iter([header])
+                                .chain(frames)
+                                .chain(stream::iter([complete]))
+                                .boxed(),
+                            owner.transfer_timeout,
+                        )
+                        .await?;
                     let result = upload::run(
                         owner
                             .multipart()

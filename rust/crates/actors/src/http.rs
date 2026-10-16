@@ -1,6 +1,6 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
-pub use acyclic_auth::credential::CredentialProvider;
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
+pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
@@ -54,8 +54,11 @@ impl Error {
 }
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
-    if !crate::valid_token(token) { return Err(Error::InvalidArgument); }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    if !crate::valid_token(token) {
+        return Err(Error::InvalidArgument);
+    }
+    let mut value =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -181,12 +184,22 @@ impl Client {
     }
 
     /// Resolve the current callback before each operation without caching its result.
-    pub fn with_credential_provider(endpoint: &str, credential: CredentialProvider, maximum: usize) -> Result<Self, Error> {
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+    ) -> Result<Self, Error> {
         Self::build(endpoint, None, Some(credential), maximum)
     }
 
-    fn build(endpoint: &str, token: Option<&str>, credential: Option<CredentialProvider>, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let (transport, endpoint, authorization) = configure(endpoint, token, maximum_response_bytes)?;
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
+        maximum_response_bytes: usize,
+    ) -> Result<Self, Error> {
+        let (transport, endpoint, authorization) =
+            configure(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
             transport,
             endpoint,

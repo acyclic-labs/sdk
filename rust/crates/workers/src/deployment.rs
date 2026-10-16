@@ -1,8 +1,8 @@
 //! Cloud Workers deploy as stateless Actors, with module bytes retained in Objects.
+pub use acyclic_actors::client::CredentialProvider;
 use acyclic_actors::{http, wire};
 use acyclic_objects::{ObjectsProvider, wire as objects};
 use sha2::{Digest, Sha256};
-pub use acyclic_actors::client::CredentialProvider;
 
 /// Publication or lifecycle failure from the existing canonical service clients.
 #[derive(Debug, thiserror::Error)]
@@ -32,10 +32,15 @@ impl Client<acyclic_objects::v1::http::HttpObjects> {
         maximum_response_bytes: usize,
     ) -> Result<Self, Error> {
         let actors = http::Client::with_credential_provider(
-            actors_endpoint, credential.clone(), maximum_response_bytes,
+            actors_endpoint,
+            credential.clone(),
+            maximum_response_bytes,
         )?;
         let objects = acyclic_objects::v1::http::HttpObjects::with_credential_provider(
-            objects_endpoint, credential, maximum_response_bytes, None,
+            objects_endpoint,
+            credential,
+            maximum_response_bytes,
+            None,
         )?;
         Ok(Self::new(actors, objects, code_bucket))
     }

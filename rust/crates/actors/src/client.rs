@@ -1,8 +1,8 @@
 //! Shared authenticated Actors client over a tonic transport.
 
-pub use acyclic_auth::credential::CredentialProvider;
 use crate::domain;
 use crate::wire;
+pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
@@ -33,8 +33,12 @@ impl tonic::service::Interceptor for BearerAuth {
             .extensions_mut()
             .remove::<Self>()
             .unwrap_or_else(|| self.clone());
-        let authorization = authorization.0.ok_or_else(|| tonic::Status::unauthenticated("missing request credential"))?;
-        request.metadata_mut().insert("authorization", authorization);
+        let authorization = authorization
+            .0
+            .ok_or_else(|| tonic::Status::unauthenticated("missing request credential"))?;
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
         Ok(request)
     }
 }
@@ -223,13 +227,23 @@ impl Client {
         self
     }
 
-    async fn request<T>(&self, body: T, authorization: Option<BearerAuth>) -> Result<tonic::Request<T>, Error> {
-        let authorization = if authorization.is_some() { authorization } else if let Some(provider) = &self.credential {
+    async fn request<T>(
+        &self,
+        body: T,
+        authorization: Option<BearerAuth>,
+    ) -> Result<tonic::Request<T>, Error> {
+        let authorization = if authorization.is_some() {
+            authorization
+        } else if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
             Some(BearerAuth::new(&token)?)
-        } else { None };
+        } else {
+            None
+        };
         let mut request = tonic::Request::new(body);
-        if let Some(authorization) = authorization { request.extensions_mut().insert(authorization); }
+        if let Some(authorization) = authorization {
+            request.extensions_mut().insert(authorization);
+        }
         Ok(request)
     }
 
@@ -250,34 +264,46 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
 }
 
 /// Connect with no static bearer; each operation must resolve its callback first.
-pub async fn connect_with_credential(endpoint: &str, credential: CredentialProvider, ca: Option<&[u8]>) -> Result<Client, Error> {
-    Ok(connect_authorized(endpoint, BearerAuth(None), ca).await?.with_credential_provider(credential))
+pub async fn connect_with_credential(
+    endpoint: &str,
+    credential: CredentialProvider,
+    ca: Option<&[u8]>,
+) -> Result<Client, Error> {
+    Ok(connect_authorized(endpoint, BearerAuth(None), ca)
+        .await?
+        .with_credential_provider(credential))
 }
 
-async fn connect_authorized(endpoint: &str, authorization: BearerAuth, ca: Option<&[u8]>) -> Result<Client, Error> {
+async fn connect_authorized(
+    endpoint: &str,
+    authorization: BearerAuth,
+    ca: Option<&[u8]>,
+) -> Result<Client, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let inner =
-            crate::grpc::connect_authorized(endpoint, authorization, ca)
-                .await
-                .map_err(|error| match error {
-                    crate::grpc::ConnectError::InsecureEndpoint => {
-                        Error::Configuration("Actors endpoints must use https".into())
-                    }
-                    crate::grpc::ConnectError::InvalidCredential => {
-                        Error::Configuration("invalid Actors bearer credential".into())
-                    }
-                    crate::grpc::ConnectError::InvalidCaCertificate => {
-                        Error::Configuration("invalid Actors private CA certificate".into())
-                    }
-                    crate::grpc::ConnectError::PlatformVerifier(error) => {
-                        Error::Transport(error.to_string())
-                    }
-                    crate::grpc::ConnectError::Transport(error) => {
-                        Error::Transport(format!("{error:?}"))
-                    }
-                })?;
-        Ok(Client { inner, credential: None })
+        let inner = crate::grpc::connect_authorized(endpoint, authorization, ca)
+            .await
+            .map_err(|error| match error {
+                crate::grpc::ConnectError::InsecureEndpoint => {
+                    Error::Configuration("Actors endpoints must use https".into())
+                }
+                crate::grpc::ConnectError::InvalidCredential => {
+                    Error::Configuration("invalid Actors bearer credential".into())
+                }
+                crate::grpc::ConnectError::InvalidCaCertificate => {
+                    Error::Configuration("invalid Actors private CA certificate".into())
+                }
+                crate::grpc::ConnectError::PlatformVerifier(error) => {
+                    Error::Transport(error.to_string())
+                }
+                crate::grpc::ConnectError::Transport(error) => {
+                    Error::Transport(format!("{error:?}"))
+                }
+            })?;
+        Ok(Client {
+            inner,
+            credential: None,
+        })
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -334,7 +360,10 @@ async fn connect_authorized(endpoint: &str, authorization: BearerAuth, ca: Optio
         )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        Ok(Client { inner, credential: None })
+        Ok(Client {
+            inner,
+            credential: None,
+        })
     }
 }
 
