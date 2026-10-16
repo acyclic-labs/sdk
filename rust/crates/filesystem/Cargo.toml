@@ -37,6 +37,10 @@ path = "tests/cloud_contract.rs"
 required-features = ["memory"]
 
 [[test]]
+name = "native_custody_accounting"
+path = "tests/native_custody_accounting.rs"
+
+[[test]]
 name = "native_owner_registry"
 path = "tests/native_owner_registry.rs"
 required-features = ["native-watch"]
@@ -65,6 +69,11 @@ required-features = ["memory"]
 name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]
+
+[[test]]
+name = "native_source_watch_custody"
+path = "tests/native_source_watch_custody.rs"
+required-features = ["local", "native-mount"]
 
 [dependencies]
 async-trait.workspace = true
@@ -107,6 +116,7 @@ tonic-prost-build.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
+loom = { version = "0.7.2", optional = true }
 tempfile = { version = "3.27.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

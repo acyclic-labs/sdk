@@ -50,7 +50,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         now_seconds: i64,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let command = parse_argv(argv, default_author, now_seconds)?;
+        let command = parse_git_argv(argv, default_author, now_seconds)?;
         self.run(command, workspace_tree, executor).await
     }
 
@@ -183,7 +183,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         default_author: &str,
         now_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        let command = parse_argv(argv, default_author, now_seconds)?;
+        let command = parse_git_argv(argv, default_author, now_seconds)?;
         self.execute(command, workspace_tree).await
     }
 

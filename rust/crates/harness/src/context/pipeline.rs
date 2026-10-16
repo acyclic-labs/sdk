@@ -57,6 +57,10 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
+    pub(crate) fn contains_stage(&self, name: &str) -> bool {
+        self.0.iter().any(|stage| stage.name() == name)
+    }
+
     /// Validates stage identities on the optional preparation ledger.
     pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

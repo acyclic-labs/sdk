@@ -2,6 +2,7 @@
 //! the tonic service glue under the `grpc` feature.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(acyclic_harness_loom)");
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
     println!("cargo:rustc-check-cfg=cfg(loom)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;

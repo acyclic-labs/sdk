@@ -98,7 +98,13 @@ async fn retirement_followed_by_new_admission_keeps_its_initial_snapshot() -> Te
         let retired = work.live_allocation_bytes();
         assert!(retired < live);
         work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.live_allocation_bytes(), retired);
+        // Pruning also destroys the retired owner's inert Arc gauge.
+        let gauge_bytes = std::alloc::Layout::array::<usize>(2)?
+            .extend(std::alloc::Layout::new::<std::sync::atomic::AtomicU64>())?
+            .0
+            .pad_to_align()
+            .size() as u64;
+        assert_eq!(work.live_allocation_bytes(), retired - gauge_bytes);
         assert_eq!(work.receipt(), before);
         drop(first);
         // Admission must consume pending retirement and initialize the new owner,
