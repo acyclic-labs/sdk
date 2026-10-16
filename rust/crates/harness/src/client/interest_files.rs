@@ -54,7 +54,10 @@ impl InterestFiles {
     ) -> Result<ClientInterests> {
         let mut documents = [InterestDocument::default(), InterestDocument::default()];
         let mut remaining = maximum_bytes as u64;
-        for (name, document) in ["layout.json", "open-views.json"].into_iter().zip(&mut documents) {
+        for (name, document) in ["layout.json", "open-views.json"]
+            .into_iter()
+            .zip(&mut documents)
+        {
             let path = if self.root.directory.is_empty() {
                 name.into()
             } else {
