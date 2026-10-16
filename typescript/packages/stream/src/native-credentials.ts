@@ -1,7 +1,7 @@
 import type { CredentialProvider } from "@acyclic-labs/actors/credential";
 
 /** Physical RPCs share authentication; cancelling a cursor releases only its interest. */
-export function nativeCredentials(credential: CredentialProvider) {
+export function nativeCredentials(credential: CredentialProvider, abandon: () => void = () => {}) {
   const active = new Set<object>();
   const pending = new Set<AbortController>();
   return {
@@ -20,6 +20,8 @@ export function nativeCredentials(credential: CredentialProvider) {
         signal?.removeEventListener("abort", release);
         if (!active.delete(interest)) return;
         if (active.size === 0) {
+          // Fence the Rust dial before abort can synchronously start a new cursor.
+          abandon();
           // Snapshot before invoking abort callbacks, which may open a new cursor.
           for (const controller of [...pending]) controller.abort();
         }

@@ -18,6 +18,9 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
         home_channel: channel.clone(),
         next_link: 3,
         active: Arc::new(AtomicU64::new(0)),
+        attempt_epoch: Arc::new(AtomicU64::new(0)),
+        abandoned: Arc::new(gate::Gate::new()),
+        dial_epoch: 0,
         commands,
         removed: Arc::new(signal::Signal::new()),
         released: Arc::clone(&released),
@@ -67,6 +70,7 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
             id,
             Route {
                 node: node.into(),
+                attempt_epoch: 0,
                 kind,
                 generation: 1,
                 placement_epoch: 0,
@@ -88,6 +92,109 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
     (pool, healthy.unwrap())
 }
 
+/// Models the real abandonment fence, wake registration, new Open and late error.
+pub fn verify_abandoned_reconnect(broken: bool) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
+    for old_first in [true, false] {
+        let channel = channel.clone();
+        loom::model(move || {
+            let (mut pool, _) = fixture(channel.clone());
+            pool.routes.clear();
+            let mut links = std::mem::take(&mut pool.links);
+            let (commands, _) = mpsc::channel(2);
+            let client = Client {
+                commands,
+                removed: Arc::clone(&pool.removed),
+                next_id: Arc::new(AtomicU64::new(1)),
+                active: Arc::clone(&pool.active),
+                attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                abandoned: Arc::clone(&pool.abandoned),
+            };
+            let prepare = |client: &Client, id| {
+                let progress = Arc::new(Progress::new(0));
+                let (records, receiver) = mpsc::channel(2);
+                let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
+                let (ready, opened) = oneshot::channel();
+                (
+                    cursor,
+                    Command::Open {
+                        id,
+                        attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
+                        acknowledge: false,
+                        kind: Kind::Follow(wire::SessionFollow {
+                            path: "healthy".into(),
+                            ..Default::default()
+                        }),
+                        progress,
+                        records,
+                        ready,
+                    },
+                    opened,
+                )
+            };
+            let (first, command, _first_opened) = prepare(&client, 1);
+            pool.command(command).unwrap();
+            assert_eq!(pool.dials.len(), 1);
+            let events = Arc::new(signal::Signal::new());
+            let opening = Arc::clone(&events);
+            let cancel = loom::thread::spawn(move || {
+                client.abandon_pending().unwrap();
+                drop(first);
+                let (second, command, opened) = prepare(&client, 3);
+                opening.send(command).unwrap();
+                (second, opened)
+            });
+            // Abandonment must wake dispatch regardless of wait registration order.
+            loom::future::block_on(pool.abandoned.changed(false)).unwrap();
+            for index in 0..2 {
+                if (index == 0) == old_first {
+                    if broken {
+                        pool.fail_node("good", &StreamError::AccessDenied);
+                    } else {
+                        pool.dial_ready("good".into(), 0, Err(StreamError::AccessDenied))
+                            .unwrap();
+                    }
+                } else {
+                    pool.command(loom::future::block_on(events.next()).unwrap())
+                        .unwrap();
+                }
+            }
+            let (second, mut opened) = cancel.join().unwrap();
+            assert!(
+                pool.routes.contains_key(&3),
+                "an abandoned dial must not fail a new interest"
+            );
+            assert_eq!(pool.dial_epoch, 1);
+            assert_eq!(
+                pool.dials.len(),
+                1,
+                "new interest must own a fresh pending dial"
+            );
+            assert!(pool.connecting.contains("good"));
+            pool.links
+                .insert("good".into(), links.remove("good").unwrap());
+            assert!(pool.receive_frame(
+                "good",
+                frame(
+                    3,
+                    1,
+                    Body::Opened(wire::SessionOpened {
+                        resume: Some(wire::SessionCursor::default()),
+                        ..Default::default()
+                    })
+                )
+            ));
+            assert_eq!(opened.try_recv().unwrap().unwrap(), 3);
+            drop(second);
+        });
+    }
+}
+
 /// Uses the real cursor reservation/drop, dispatcher, idle cleanup and link locks.
 pub fn verify_pool_lifetime(fault: u8) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -106,6 +213,8 @@ pub fn verify_pool_lifetime(fault: u8) {
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
             active: Arc::clone(&pool.active),
+            attempt_epoch: Arc::clone(&pool.attempt_epoch),
+            abandoned: Arc::clone(&pool.abandoned),
         };
         let prepare = |id| {
             let progress = Arc::new(Progress::new(0));
@@ -114,6 +223,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             let (ready, opened) = oneshot::channel();
             let command = Command::Open {
                 id,
+                attempt_epoch: 0,
                 acknowledge: false,
                 kind: Kind::Follow(wire::SessionFollow {
                     path: "healthy".into(),
@@ -199,6 +309,8 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
             active: Arc::new(AtomicU64::new(0)),
+            attempt_epoch: Arc::new(AtomicU64::new(0)),
+            abandoned: Arc::new(gate::Gate::new()),
         };
         let mut live = BTreeMap::new();
         for &(key, open) in &operations {
@@ -322,6 +434,7 @@ pub fn verify_link_isolation(broken: bool) {
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open {
             id: 5,
+            attempt_epoch: 0,
             acknowledge: false,
             kind: Kind::Follow(wire::SessionFollow {
                 path: "later".into(),

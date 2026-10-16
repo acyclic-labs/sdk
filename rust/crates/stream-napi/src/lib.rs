@@ -496,6 +496,14 @@ impl NativeStreamClient {
             .map_err(|error| napi_error(&connect_error(&error)))
     }
 
+    /// Abandons pending handshakes before cancelling their credential work.
+    #[napi]
+    pub fn abandon_session_attempts(&self) -> Result<()> {
+        self.provider
+            .abandon_session_attempts()
+            .map_err(|error| napi_error(&stream_error(&error)))
+    }
+
     /// Connects using the canonical Rust native gRPC transport.
     #[napi(factory)]
     pub async fn connect(

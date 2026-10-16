@@ -7,7 +7,10 @@ if (fault) plugin({ name: "native-credential-negative-control", setup(build) {
     let source = await Bun.file(args.path).text();
     const condition = "if (active.size === 0) {";
     assert(source.includes(condition));
-    if (fault === "live-abort-set") {
+    if (fault === "no-abandon") {
+      assert(source.includes("abandon();"));
+      source = source.replace("abandon();", "void 0;");
+    } else if (fault === "live-abort-set") {
       assert(source.includes("[...pending]"));
       source = source.replace("[...pending]", "pending");
     } else {
@@ -40,7 +43,9 @@ for (const events of schedules()) for (let aborts = 0; aborts < 4; aborts++) {
   let expected = "cancelled";
   let settled = false;
   let called = 0;
+  let fenced = 0, resolvedEpoch = 0;
   const credentials = nativeCredentials(observed => {
+    resolvedEpoch = fenced;
     signal = observed;
     called++;
     assert(observed);
@@ -49,7 +54,7 @@ for (const events of schedules()) for (let aborts = 0; aborts < 4; aborts++) {
       observed.addEventListener("abort", abort, { once: true });
       finish = value => { observed.removeEventListener("abort", abort); resolve(value); };
     });
-  });
+  }, () => { fenced++; });
   for (const event of events) {
     const id = event.endsWith("A") ? "A" : "B";
     if (event.startsWith("open")) {
@@ -64,6 +69,7 @@ for (const events of schedules()) for (let aborts = 0; aborts < 4; aborts++) {
       if (signal && !settled && !alreadyCancelled) {
         assert.equal(signal.aborted, active.size === 0,
           active.size === 0 ? "last request leaked credentials" : "healthy request cancelled");
+        if (active.size === 0) assert(fenced > resolvedEpoch, "abandoned credential must be fenced before abort");
       }
     } else if (event === "resolve") {
       outcome = credentials.resolve().then(value => value, () => "cancelled");
