@@ -122,6 +122,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> Result<(), ObjectStoreError> {
         // Preserve the default method's native boundary; native blob batches
         // use put_many and its original request custody.
+        #[cfg(not(target_arch = "wasm32"))]
         if context.is_native() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
