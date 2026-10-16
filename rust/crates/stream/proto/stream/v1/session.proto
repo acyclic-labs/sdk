@@ -69,6 +69,11 @@ enum SessionDelivery {
 message SessionFollow {
   string path = 1;
   SessionDelivery delivery = 2;
+  // Optional 32-byte commit at resume.next - 1; requires ALL and next > 0.
+  // The provider must check this anchor and register the follow atomically,
+  // reject an absent/changed anchor without waiting for future appends, and
+  // reject history replacement during delivery. No read-then-follow fallback.
+  bytes preceding_commit_id = 3;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -76,6 +81,11 @@ message SessionCursor {
 }
 message SessionOpened {
   SessionCursor resume = 1;
+  // Echo only after the provider has enforced SessionFollow.preceding_commit_id.
+  // A checked client must match this confirmation before granting data credit.
+  // Empty/mismatched confirmation means Unsupported for that logical channel;
+  // an older peer must never silently downgrade a checked follow to unchecked.
+  bytes preceding_commit_id = 2;
 }
 message SessionData {
   SessionCursor after = 1;

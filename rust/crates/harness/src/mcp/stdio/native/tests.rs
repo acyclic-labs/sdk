@@ -381,7 +381,7 @@ async fn lost_invalid_oversize_and_late_responses_never_redispatch() -> Result<(
 
 #[test]
 fn frame_limits_apply_both_directions_without_retaining_a_partial_request() -> Result<()> {
-    let mut codec = BoundedCodec::<Value>::new(Arc::new(AtomicU32::new(16)));
+    let mut codec = BoundedCodec::<Value>::new(crate::sync::Arc::new(AtomicU32::new(16)));
     let mut bytes = BytesMut::from(b"prior\n".as_slice());
     assert!(codec.encode(json!("x".repeat(32)), &mut bytes).is_err());
     assert_eq!(bytes.as_ref(), b"prior\n");
@@ -408,8 +408,8 @@ proptest::proptest! {
     ) {
         let value = json!({"text":text,"number":number});
         let size = serde_json::to_vec(&value).unwrap().len() as u32;
-        let bound = Arc::new(AtomicU32::new(1));
-        let mut codec = BoundedCodec::<Value>::new(Arc::clone(&bound));
+        let bound = crate::sync::Arc::new(AtomicU32::new(1));
+        let mut codec = BoundedCodec::<Value>::new(crate::sync::Arc::clone(&bound));
         bound.store(size, Ordering::Release);
         let mut encoded = BytesMut::new();
         codec.encode(value.clone(), &mut encoded).unwrap();

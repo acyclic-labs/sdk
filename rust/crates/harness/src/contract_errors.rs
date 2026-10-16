@@ -28,6 +28,14 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A task reached a terminal failed outcome.
+    #[error("task {task} failed: {message}")]
+    TaskFailed {
+        /// The failed durable task.
+        task: crate::TaskId,
+        /// The task's retained failure diagnostic.
+        message: String,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -249,6 +257,18 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// An SDK git operation failure retaining the complete typed cause.
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    #[error("{source}")]
+    NativeGit {
+        /// Original capture, coordination, patch, lineage or durable-state cause.
+        #[source]
+        source: Box<crate::tools::git::Failure>,
+    },
     /// An actual native process timeout, without a new boxed IO error.
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -322,7 +342,7 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) => ErrorCode::Storage,
+            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process { .. } => ErrorCode::Invalid,
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -350,7 +370,7 @@ impl Error {
                 feature = "native-execution",
                 not(target_arch = "wasm32")
             ))]
-            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            Self::NativeWorkspacePublication { .. } | Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
@@ -374,6 +394,7 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::TaskFailed { .. }
         )
     }
 }
@@ -385,6 +406,23 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
         Self::NativeWork {
             cause,
             custody: None,
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
+    fn from(source: acyclic_fs::NativeWorkspacePublicationError) -> Self {
+        match source {
+            acyclic_fs::NativeWorkspacePublicationError::Native(cause) => cause.into(),
+            source => Self::NativeWorkspacePublication {
+                source: Box::new(source),
+                custody: None,
+            },
         }
     }
 }

@@ -26,18 +26,26 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
-    let length = wide_units(path.as_os_str(), work)?;
+    with_wide_units(path.as_os_str().encode_wide(), work, operation)
+}
+
+pub(crate) fn with_wide_units<W: NativeHostWork, T>(
+    units: impl Iterator<Item = u16> + Clone,
+    work: &mut W,
+    operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
+) -> Result<T, W::Error> {
+    let mut length = 0usize;
+    for _ in units.clone() {
+        work.started_io(ITEM)?;
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
     let encoded = WorkCounters {
         bytes_encoded: length.checked_mul(2).ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
     };
     work.admit(encoded)?;
     let (mut name, allocation) = buffer(length, work)?;
-    name.extend(
-        path.as_os_str()
-            .encode_wide()
-            .map(|u| if u == 47 { 92 } else { u }),
-    );
+    name.extend(units.map(|u| if u == 47 { 92 } else { u }));
     let result = work.record(encoded).and_then(|()| operation(&name, work));
     drop(name);
     work.release(allocation)?;

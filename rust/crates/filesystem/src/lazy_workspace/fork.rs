@@ -7,6 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         destination: &str,
         key: IdempotencyKey,
+        permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
         let (name, id) =
@@ -19,7 +20,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             Some(state) => self.fork_origin(&state, id, key.operation_id())?.snapshot,
             None => self.snapshot(ctx).await?,
         };
-        self.fork_snapshot(destination, cut, key, ctx).await
+        self.fork_snapshot(destination, cut, key, permit, ctx).await
     }
     /// Forks the authenticated immutable cut under its original creation operation.
     pub async fn fork_snapshot(
@@ -27,6 +28,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         destination: &str,
         cut: LazySnapshotRef,
         key: IdempotencyKey,
+        permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
         let cut = self
@@ -42,7 +44,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .fork::<_, _, WorkspaceError>(
                 destination,
                 ForkOptions::from_generation(generation, key),
-                crate::PublicationPermit::Unrestricted,
+                permit,
                 work,
                 cancel,
                 (),

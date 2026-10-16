@@ -238,6 +238,7 @@ pub async fn capture_watch_batch<
         expand_directory_hints(
             checkout,
             &mut ordinary,
+            &rename_records,
             &source_root,
             options.maximum_paths,
             policy,

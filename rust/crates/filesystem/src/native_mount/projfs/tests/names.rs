@@ -1,6 +1,6 @@
 use super::*;
 
-fn callback_runtime(
+pub(super) fn callback_runtime(
     source: Arc<MemorySource>,
     root: &std::path::Path,
     work: &crate::NativeMaterializationWork,
