@@ -140,7 +140,7 @@ fn check_once(journal: &Checks, expected: &[ModelContent]) -> bool {
         && journal.files.4.load(Ordering::SeqCst) == expected.len()
 }
 
-fn rejected_parent(result: &Result<crate::context::ContextSummary>) -> bool {
+fn rejected_parent<T>(result: &Result<T>) -> bool {
     matches!(result, Err(Error::Invalid(reason))
         if reason == "selected context must end with the current user input")
 }
