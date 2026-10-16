@@ -286,6 +286,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
+ "pulldown-cmark",
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
