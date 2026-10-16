@@ -1,22 +1,26 @@
 struct LocalInner {
     provider: MemoryStream,
     commit_clock: Arc<PinnedCommitClock>,
-    // Lock order: visibility -> journal -> synced watch; never acquire provider state while holding journal.
+    // Lock order: visibility -> publication -> journal -> synced watch; never acquire provider state while holding journal.
     journal: Arc<Mutex<Journal>>,
-    /// Held exclusively while a mutation applies and writes its frame, and
+    // Serializes mutations and their snapshot/journal cut, including compaction.
+    // Lock order: visibility -> publication -> provider state -> journal/watch.
     visibility: RwLock<()>,
+    // Accepted readers use only this fence. It ends after the frame is written,
+    // before compaction performs device work under the outer visibility fence.
+    publication: RwLock<()>,
     /// The journal's `synced` sequence, published under the journal lock so
     synced: watch::Sender<u64>,
-    // Lock order: visibility -> journal -> failure watch. No failure borrow
-    // crosses a visibility wait or provider call. Only poison wakes this watch.
+    // Lock order: visibility -> publication -> journal -> failure watch. No failure borrow
+    // crosses a visibility/publication wait or provider call. Only poison wakes this watch.
     failed: watch::Sender<bool>,
-    // Lock order: visibility -> revision watch; no borrow crosses provider work.
+    // Lock order: visibility -> publication -> revision watch; no borrow crosses provider work.
     // Borrow-only admission fence: record/discovery cursors never subscribe.
     revision: watch::Sender<u64>,
     // Model-only control: omit the accepted-path wait registration.
     #[cfg(acyclic_loom)]
     omit_follow_wake: bool,
-    // Lock order: visibility -> durable_tails, after releasing provider state and journal.
+    // Lock order: publication -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
 }
 

@@ -47,3 +47,19 @@ fn failure_borrows_end_before_visibility_waits() {
 fn negative_control_holds_failure_borrow_across_visibility_wait() {
     acyclic_stream::verification::local_failure_lock_order(true);
 }
+
+#[test]
+fn accepted_reads_and_cancellation_progress_during_compaction_without_tearing_the_cut() {
+    acyclic_stream::verification::local_compaction_visibility(false);
+}
+#[test]
+#[should_panic(expected = "compaction must preserve accepted reads and the snapshot cut")]
+fn negative_control_compaction_retains_the_publication_fence() {
+    acyclic_stream::verification::local_compaction_visibility(true);
+}
+
+#[test]
+#[should_panic(expected = "compaction must preserve accepted reads and the snapshot cut")]
+fn negative_control_compaction_releases_mutation_serialization_early() {
+    acyclic_stream::verification::local_compaction_cut();
+}

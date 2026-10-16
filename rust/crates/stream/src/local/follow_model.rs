@@ -3,11 +3,12 @@ use crate::OwnedBytes as Bytes;
 use crate::verification::block_on;
 use std::{mem::ManuallyDrop, task::Context};
 
-// The writer executes the production accepted publication under its real
-// visibility fence. Journal/device work does not register or wake record
+// The writer executes accepted publication under its real publication fence.
+// Its outer mutation fence has no competing writer here; compaction_model
+// covers that fence with a waiting mutation. Journal/device work does not register or wake record
 // waiters; acceptance/durability separation is also covered by held-flush tests.
-// Lock order: visibility -> memory state -> path watch. Failure-watch borrows
-// are released before visibility acquisition; cancellation owns no lock.
+// Lock order: visibility -> publication -> memory state -> path watch.
+// Failure-watch borrows end before publication; cancellation owns no lock.
 pub(crate) fn registration(omit_wake: bool) {
     loom::model(move || {
         let provider = query_model::fixture(omit_wake).unwrap();
@@ -28,7 +29,7 @@ pub(crate) fn registration(omit_wake: bool) {
             let path = path.clone();
             move || {
                 block_on(async {
-                    let _visibility = provider.inner.visibility.write().await;
+                    let _publication = provider.inner.publication.write().await;
                     provider
                         .inner
                         .provider
@@ -91,7 +92,7 @@ pub(crate) fn cancellation(retain: bool) {
             }
         });
         block_on(async {
-            let _visibility = provider.inner.visibility.write().await;
+            let _publication = provider.inner.publication.write().await;
             provider
                 .inner
                 .provider
@@ -120,7 +121,7 @@ pub(crate) fn cancellation(retain: bool) {
 
 // Keep the executor's parker outside Loom-managed allocations so a deliberately
 // deadlocked negative control can unwind without dropping a Loom Notify guard.
-fn park<F: Future>(future: F) -> F::Output {
+pub(super) fn park<F: Future>(future: F) -> F::Output {
     struct Wake(loom::thread::Thread);
     impl std::task::Wake for Wake {
         fn wake(self: Arc<Self>) {
@@ -144,8 +145,8 @@ fn park<F: Future>(future: F) -> F::Output {
 }
 
 // Exercise the real visibility/failure lock ordering in both directions.
-// The mutant holds the real failure-watch read borrow across follow's await;
-// a writer holding visibility while poisoning must expose that cycle.
+// The mutant retains the real failure-watch borrow across publication's await;
+// a writer holding publication while poisoning must expose that cycle.
 pub(crate) fn failure_lock_order(hold_borrow: bool) {
     loom::model(move || {
         let provider = query_model::fixture(false).unwrap();
@@ -167,7 +168,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
                 // Preserve guards during a deliberately deadlocked model's
                 // unwind; releasing them after Loom aborts would double-panic.
                 let mut operation = ManuallyDrop::new(Box::pin(async {
-                    let _visibility = provider.inner.visibility.write().await;
+                    let _publication = provider.inner.publication.write().await;
                     provider.inner.poison();
                 }));
                 park(operation.as_mut());
@@ -176,9 +177,9 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
         });
         if hold_borrow {
             // Mutate the exact check_available -> visibility sequence by
-            // retaining its real watch borrow across the visibility await.
+            // retaining its real watch borrow across the publication await.
             let held = ManuallyDrop::new(provider.inner.failed.borrow());
-            let visibility = park(provider.inner.visibility.read());
+            let visibility = park(provider.inner.publication.read());
             drop(visibility);
             drop(ManuallyDrop::into_inner(held));
         } else {

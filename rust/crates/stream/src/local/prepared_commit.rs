@@ -120,6 +120,7 @@ impl LocalStream {
             .admit(&frame)
             .map_err(|error| self.frame_error(error))?;
         self.inner.commit_clock.pin(time);
+        let publication = self.inner.publication.write().await;
         let result = plan.settle(body).await;
         self.inner.commit_clock.unpin();
         let result = match result {
@@ -129,6 +130,10 @@ impl LocalStream {
             }
             Err(error) => Err(error),
         };
+        let _retained = self.release_publication(publication);
+        if result.is_ok() {
+            self.compact_if_due().await?;
+        }
         let required = self.inner.required()?;
         drop(visibility);
         self.await_durable(required).await?;

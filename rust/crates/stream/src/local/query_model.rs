@@ -53,6 +53,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
             commit_clock,
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
+            publication: RwLock::new(()),
             synced: watch::channel(0).0,
             failed: watch::channel(false).0,
             revision: watch::channel(0).0,
