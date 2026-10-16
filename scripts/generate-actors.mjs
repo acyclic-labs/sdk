@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeGeneratedTypeScript } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageGenerated = join(root, "typescript/packages/actors/src/generated");
@@ -66,6 +67,8 @@ async function bufActorOutput(protoFile) {
   try {
     await mkdir(join(temporary, "proto/actors/v1"), { recursive: true });
     await cp(protoFile, join(temporary, "proto/actors/v1/actors.proto"));
+    await mkdir(join(temporary, "proto/validation/v1"), { recursive: true });
+    await cp(join(root, "proto/validation/v1/options.proto"), join(temporary, "proto/validation/v1/options.proto"));
     await writeFile(join(temporary, "buf.yaml"), "version: v2\nmodules:\n  - path: proto\n");
     const plugin = process.env.ACYCLIC_PROTOC_GEN_ES
       ? [process.env.ACYCLIC_PROTOC_GEN_ES.replaceAll("\\", "/")]
@@ -84,7 +87,7 @@ async function bufActorOutput(protoFile) {
     run(buf, ["generate"], temporary);
     for (const relativePath of ["generated/typescript/actors/v1/actors_pb.js", "generated/typescript/actors/v1/actors_pb.d.ts"]) {
       const path = join(temporary, relativePath);
-      await writeFile(path, (await readFile(path, "utf8")).replace(/\n+$/u, "\n"));
+      await writeFile(path, normalizeGeneratedTypeScript(await readFile(path, "utf8")));
     }
     return temporary;
   } catch (error) {

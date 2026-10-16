@@ -68,6 +68,61 @@ pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<V
     serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+pub(crate) fn canonical_json_matches<T: Serialize + ?Sized>(
+    value: &T,
+    bytes: &[u8],
+) -> Result<bool> {
+    struct Compare<'a> {
+        remaining: &'a [u8],
+        matches: bool,
+    }
+    impl std::io::Write for Compare<'_> {
+        #[inline]
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.write_all(bytes)?;
+            Ok(bytes.len())
+        }
+
+        #[inline]
+        fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+            if self.matches {
+                if let Some((prefix, remaining)) = self.remaining.split_at_checked(bytes.len()) {
+                    self.matches = match (prefix, bytes) {
+                        ([], []) => true,
+                        ([a], [b]) => a == b,
+                        ([a, b], [c, d]) => (a == c) & (b == d),
+                        ([a, b, c, d, e, f], [g, h, i, j, k, l]) => {
+                            (a == g) & (b == h) & (c == i) & (d == j) & (e == k) & (f == l)
+                        }
+                        _ => prefix == bytes,
+                    };
+                    self.remaining = remaining;
+                } else {
+                    self.matches = false;
+                }
+            }
+            Ok(())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut value =
+        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    value.sort_all_objects();
+    let mut writer = Compare {
+        remaining: bytes,
+        matches: true,
+    };
+    serde_json::to_writer(&mut writer, &value)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(writer.matches && writer.remaining.is_empty())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod json_match_tests;
+
 /// Decodes a complete JSON value without an unrelated nesting policy ceiling.
 pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
@@ -301,7 +356,19 @@ impl Capabilities {
     /// Returns whether this set attenuates an ancestor set.
     #[must_use]
     pub fn is_subset_of(&self, ancestor: &Self) -> bool {
-        self.0.is_subset(&ancestor.0)
+        self.0.iter().all(|value| {
+            if ancestor.0.contains(value) {
+                return true;
+            }
+            let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
+                return false;
+            };
+            ancestor.0.iter().any(|value| {
+                acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
+                    parent.is_some_and(|parent| child.is_attenuation_of(&parent))
+                })
+            })
+        })
     }
 
     /// Iterates in canonical lexical order.

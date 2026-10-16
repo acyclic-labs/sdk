@@ -147,12 +147,24 @@ pub(crate) fn canonical_json_digest<T: Serialize + ?Sized>(
         value.sort_all_objects();
         return serialized_json_digest(&value);
     }
-    let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let bytes =
-        crate::store::history::canonical_bytes_with_work(value, maximum_bytes, custody.work())?;
-    custody.adopt(bytes.capacity() as u64)?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.hashed_bytes(bytes.len() as u64)?;
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        return Err(crate::store::guarded_boundary(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "canonical encoder allowance must be finite and positive",
+        ));
     }
-    Ok(*blake3::hash(&bytes).as_bytes())
+    let observer = work.as_deref_mut().expect("observed canonical digest");
+    let code = crate::store::operations::original_native_decode_mode(observer)
+        .then_some(crate::wire::ErrorCode::Invalid);
+    serialization::canonical_digest_with_work(
+        value,
+        JsonBounds {
+            maximum_bytes,
+            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_depth: 256,
+        },
+        code,
+        observer,
+    )
 }

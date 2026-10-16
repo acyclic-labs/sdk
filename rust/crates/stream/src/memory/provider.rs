@@ -113,54 +113,49 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let (receiver, cursor) = {
-            let state = self.state.read().await;
-            let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-            if from > stream.tail {
-                return Err(StreamError::OutOfRange);
-            }
-            (
-                stream.changed.subscribe(),
-                HistoryCursor::new(stream, stream.tail, from),
-            )
-        };
-        let provider = self.clone();
-        Ok(stream::unfold(
-            (provider, path, receiver, cursor),
-            |(provider, path, mut receiver, mut cursor)| async move {
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
+    }
+
+    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        validate_limit(request.limit)?;
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        Ok(stream::try_unfold(
+            (self.clone(), request.parent, changed, None),
+            |(provider, parent, mut changed, mut previous)| async move {
                 loop {
-                    let record = provider.next_follow_record(&path, &mut cursor).await;
-                    let Some(record) = (match record {
-                        Ok(record) => record,
-                        Err(error) => {
-                            return Some((Err(error), (provider, path, receiver, cursor)));
+                    let next = {
+                        let state = provider.state.read().await;
+                        // Switch from the creation wakeup to this parent's own index.
+                        if let Some(index) = state.child_index(parent.as_ref()) {
+                            changed = index.changed.subscribe();
                         }
-                    }) else {
-                        if receiver.changed().await.is_err() {
-                            return Some((
-                                Err(StreamError::Unavailable),
-                                (provider, path, receiver, cursor),
-                            ));
-                        }
-                        continue;
+                        changed.borrow_and_update();
+                        state.next_child(parent.as_ref(), previous.as_ref())?
                     };
-                    return Some((Ok(record), (provider, path, receiver, cursor)));
+                    if let Some(path) = next {
+                        previous = Some(path.clone());
+                        return Ok(Some((
+                            Child { path },
+                            (provider, parent, changed, previous),
+                        )));
+                    }
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| StreamError::Unavailable)?;
                 }
             },
         )
         .boxed())
-    }
-
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self
-            .children_page(ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await?;
-        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
     }
 
     async fn children_page(

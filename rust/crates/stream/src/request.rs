@@ -87,6 +87,16 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
 pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition]) {
     for condition in conditions {
         match condition {
+            CommitCondition::Head {
+                path,
+                expected,
+                commit_id,
+            } => {
+                hash.update([3]);
+                hash_path(hash, path);
+                hash.update(expected.to_le_bytes());
+                hash.update(commit_id.as_bytes());
+            }
             CommitCondition::Tail { path, expected } => {
                 hash.update([1]);
                 hash_path(hash, path);
@@ -122,7 +132,9 @@ pub(crate) fn hash_records(hash: &mut Sha256, records: &[Bytes]) {
 
 pub(crate) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
-        CommitCondition::Tail { path, .. } | CommitCondition::Absent { path } => path,
+        CommitCondition::Tail { path, .. }
+        | CommitCondition::Head { path, .. }
+        | CommitCondition::Absent { path } => path,
     }
 }
 
@@ -151,6 +163,13 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
         }
     }
     validate_commit_size(request)?;
+    if request
+        .conditions
+        .iter()
+        .any(|condition| matches!(condition, CommitCondition::Head { expected: 0, .. }))
+    {
+        return Err(StreamError::InvalidArgument);
+    }
     request.conditions.sort_unstable_by(|left, right| {
         condition_path(left)
             .cmp(condition_path(right))

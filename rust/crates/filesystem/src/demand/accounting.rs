@@ -5,6 +5,8 @@ use std::sync::{Arc, Weak};
 
 /// Accounting for one bounded source operation.
 pub struct DemandWork {
+    #[cfg(test)]
+    pub(crate) write_probe: Option<super::WriteProbe>,
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
     initial_budget: WorkBudget,
@@ -23,6 +25,8 @@ impl DemandWork {
         #[cfg(test)]
         crate::initialize_test_native_io();
         Self {
+            #[cfg(test)]
+            write_probe: None,
             work: WorkCounters::UNCHARGED,
             budget,
             initial_budget: budget,
@@ -128,10 +132,23 @@ impl DemandWork {
         Ok(self.work.admit(&delta, &self.budget)?)
     }
     pub(crate) fn admit_retained(&mut self, bytes: u64) -> Result<(), DemandError> {
+        self.admit_allocation(bytes, 0)
+    }
+    pub(super) fn admit_allocation(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+    ) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
         if let Some(resource) = self.resource() {
-            resource.admit(WorkCounters::UNCHARGED, bytes)?;
+            resource.admit(
+                WorkCounters {
+                    allocation_operations: operations,
+                    ..WorkCounters::UNCHARGED
+                },
+                bytes,
+            )?;
         }
         let peak = self
             .allocations
@@ -142,6 +159,7 @@ impl DemandWork {
         Ok(self.work.admit(
             &WorkCounters {
                 peak_allocation_bytes: peak,
+                allocation_operations: operations,
                 ..WorkCounters::UNCHARGED
             },
             &self.budget,
@@ -152,6 +170,8 @@ impl DemandWork {
         self.charge_reconciled(delta)
     }
     pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         self.check()?;
         self.admission(delta, 0, |state| {
@@ -159,6 +179,8 @@ impl DemandWork {
         })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         let resource = self
             .resource()

@@ -1,6 +1,12 @@
 //! Task and machine admission for the approved process example.
 use super::*;
 use acyclic_harness::runtime::TaskSpawner as _;
+use acyclic_harness::store::{HistoryIo as _, HistoryWork};
+use std::mem::size_of;
+
+#[cfg(test)]
+#[path = "native_properties.rs"]
+pub(super) mod properties;
 
 struct Machine {
     identity: MachineIdentity,
@@ -9,57 +15,6 @@ struct Machine {
 impl ResumableMachine for Machine {
     fn identity(&self) -> &MachineIdentity {
         &self.identity
-    }
-    fn supports_native_work(&self) -> bool {
-        true
-    }
-    fn identity_with_native_work<'a>(
-        &'a self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<&'a MachineIdentity> {
-        work.remaining()
-            .map_err(|cause| acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        Ok(&self.identity)
-    }
-    fn initialize_with_native_work(
-        &self,
-        input: &Value,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let custody = work.claim(
-            std::mem::size_of::<Value>() as u64,
-            1,
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
-        let Value::Number(number) = input else {
-            return Err(acyclic_harness::Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Invalid,
-                reason: "example state must be an integer",
-            });
-        };
-        Ok((Value::Number(number.clone()), custody))
-    }
-    fn transition_with_native_work(
-        &self,
-        state: &Value,
-        _: Value,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        let (state, mut custody) = self.initialize_with_native_work(state, work)?;
-        custody.grow(
-            (std::mem::size_of::<MachineTransition>() - std::mem::size_of::<Value>()) as u64,
-        )?;
-        Ok((
-            MachineTransition {
-                state,
-                commands: vec![],
-                status: MachineStatus::Suspended,
-            },
-            custody,
-        ))
     }
     fn state_schema(&self) -> &Value {
         &self.schema
@@ -74,6 +29,61 @@ impl ResumableMachine for Machine {
             status: MachineStatus::Suspended,
         })
     }
+    fn supports_native_work(&self) -> bool {
+        true
+    }
+    fn identity_with_native_work<'a>(
+        &'a self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        Ok(&self.identity)
+    }
+    fn initialize_with_native_work(
+        &self,
+        input: &Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        copy_state(input, work, size_of::<Value>())
+    }
+    fn transition_with_native_work(
+        &self,
+        state: &Value,
+        _: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        let (state, custody) = copy_state(state, work, size_of::<MachineTransition>())?;
+        Ok((
+            MachineTransition {
+                state,
+                commands: Vec::new(),
+                status: MachineStatus::Suspended,
+            },
+            custody,
+        ))
+    }
+}
+
+fn copy_state(
+    state: &Value,
+    work: &acyclic_fs::NativeMaterializationWork,
+    header_bytes: usize,
+) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+    let remaining = work.remaining()?;
+    let mut io =
+        HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
+    io.retain_owned(header_bytes as u64)?;
+    let state = acyclic_harness::executor::json::json_value_copy_bounded(
+        state,
+        acyclic_harness::executor::json::JsonBounds {
+            maximum_bytes: remaining.bytes_encoded,
+            maximum_items: remaining.items_examined,
+            maximum_depth: 256,
+        },
+        Some(acyclic_harness::wire::ErrorCode::Invalid),
+        &mut |charge| io.codec_charge(charge),
+    )?;
+    Ok((state, io.into_custody()?))
 }
 
 pub(super) async fn open<P, A, O>(
@@ -112,7 +122,20 @@ where
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine, &mut None)?;
-    let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
+    let (runtime_scope, _scope_custody) = match work {
+        Some(work) => {
+            let (scope, custody) = RuntimeScope::new_with_native_work(
+                Capabilities::copy(scope.capabilities().iter(), work)?,
+                Limits::default(),
+                work,
+            )?;
+            (scope, Some(custody))
+        }
+        None => (
+            RuntimeScope::new(scope.capabilities().clone(), Limits::default())?,
+            None,
+        ),
+    };
     let io = work
         .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
         .transpose()?;
@@ -161,46 +184,4 @@ where
         })
         .await?;
     Ok(runtime)
-}
-
-#[cfg(test)]
-pub(super) fn verify_native_state(work: &acyclic_fs::NativeMaterializationWork) {
-    use proptest::prelude::*;
-    let machine = Machine {
-        identity: MachineIdentity {
-            name: "example.native".into(),
-            version: "1".into(),
-            digest: [7; 32],
-        },
-        schema: json!({"type":"integer"}),
-    };
-    // Every integer state is preserved, with custody for exactly the returned value.
-    let integer = prop_oneof![
-        any::<i64>().prop_map(Value::from),
-        any::<u64>().prop_map(Value::from),
-    ];
-    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
-        cases: 32,
-        failure_persistence: None,
-        ..Default::default()
-    })
-    .run(&(integer.clone(), integer), |(state, input)| {
-        let (initialized, held) = machine.initialize_with_native_work(&state, work).unwrap();
-        prop_assert_eq!(initialized, machine.initialize(&state).unwrap());
-        prop_assert_eq!(held.bytes(), std::mem::size_of::<Value>() as u64);
-        drop(held);
-        let (transition, held) = machine
-            .transition_with_native_work(&state, input.clone(), work)
-            .unwrap();
-        let ordinary = machine.transition(&state, &input).unwrap();
-        prop_assert_eq!(transition.state, ordinary.state);
-        prop_assert_eq!(transition.commands, ordinary.commands);
-        prop_assert_eq!(transition.status, ordinary.status);
-        prop_assert_eq!(
-            held.bytes(),
-            std::mem::size_of::<MachineTransition>() as u64
-        );
-        Ok(())
-    })
-    .unwrap();
 }

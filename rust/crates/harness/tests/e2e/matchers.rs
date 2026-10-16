@@ -6,6 +6,7 @@ mod properties;
 
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
+// Arguments are complete JSON payloads: extra keys or elements are corruption.
 // A sole $json key matches JSON-encoded text; $contains searches text recursively.
 pub fn subset(expected: &Value, actual: &Value) -> bool {
     if let Some(expected) = expected.as_object().filter(|object| object.len() == 1)
@@ -21,9 +22,15 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
                 serde_json::from_str(actual).is_ok_and(|actual| subset(expected, &actual))
             })
         }
-        (Value::Object(expected), Value::Object(actual)) => expected
-            .iter()
-            .all(|(key, value)| actual.get(key).is_some_and(|actual| subset(value, actual))),
+        (Value::Object(expected), Value::Object(actual)) => expected.iter().all(|(key, value)| {
+            actual.get(key).is_some_and(|actual| {
+                if key == "arguments" {
+                    value == actual
+                } else {
+                    subset(value, actual)
+                }
+            })
+        }),
         (Value::Array(expected), Value::Array(actual)) => {
             if expected.is_empty() {
                 return actual.is_empty();

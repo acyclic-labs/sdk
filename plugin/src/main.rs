@@ -16,7 +16,6 @@ mod codex_hook_mcp;
 mod control_plane;
 mod control_protocol;
 mod control_transport;
-mod git;
 mod guidance;
 mod identity;
 mod install;
@@ -65,25 +64,17 @@ use acyclic_fs::model::{
 };
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, DefaultTextMergeDriver,
-    Generation, GitCommand, GitCommandOutput, GitCompatRepository, GitDirtyState,
-    GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy,
-    GitPublicationRecord, GitTreeRef, IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace,
-    LineageMultiRootPublicationAuthorizer, LocalAuthorityBackend, LocalCoreStateStore, LocalFs,
-    LocalObjectBackend, LocalOptions, MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
-    MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
-    MergeDriverRegistry, MountOptions, MultiRootMaterializer, MultiRootMergeCandidate,
-    MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
+    CancellationToken, CaptureOptions, CapturePolicy, Generation, GitCommandOutput, GitDirtyState,
+    GitFilesystemResult, IdempotencyKey, LazyMount, LazyWorkspace, LocalAuthorityBackend,
+    LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
+    MaterializingWorkspaceMultiRootPublisherError, MergeConflict, MountOptions,
+    MultiRootMergeCandidate, MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
     OperationId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease,
-    Publication, PublicationPermit, TransactionCommit, WatchBatch, WatchChange, WorkBudget,
-    Workspace, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot,
-    WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceGraph,
-    WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
-    WorkspaceRestore, WorkspaceRootId, apply_git_patch, blame_git_generations, capture_baseline,
-    capture_git_compatible_generation, capture_git_compatible_generation_at,
-    capture_git_compatible_generation_incremental, capture_watch_batch, git_compatible_diff_counts,
-    grep_git_generation, resolve_merge_plan, walk_git_tree,
+    Publication, PublicationPermit, WatchBatch, WatchChange, WorkBudget, Workspace,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceContextState,
+    WorkspaceDelete, WorkspaceGraph, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish,
+    WorkspaceRootId, capture_baseline, capture_watch_batch,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -112,7 +103,6 @@ use adapter_state::*;
 use cli_output::*;
 use control_plane::*;
 use control_transport::*;
-use git::*;
 use guidance::*;
 use install::*;
 use pi::*;

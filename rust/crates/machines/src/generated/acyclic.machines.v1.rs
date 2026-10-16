@@ -1,4 +1,2 @@
-// @generated
-include!("messages/mod.rs");
-#[cfg(feature = "grpc")]
-include!("acyclic.machines.v1.tonic.rs");
+include!("acyclic.machines.v1.part0.rs");
+include!("acyclic.machines.v1.part1.rs");

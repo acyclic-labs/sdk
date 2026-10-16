@@ -1,0 +1,31 @@
+[package]
+name = "acyclic-guest-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+acyclic-actors = { path = "../rust/crates/actors" }
+serde_json = "1"
+acyclic-objects = { path = "../rust/crates/objects", default-features = false }
+prost = "0.14.4"
+
+[[bin]]
+name = "guest_json"
+path = "fuzz_targets/guest_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "objects_restore"
+path = "fuzz_targets/objects_restore.rs"
+test = false
+doc = false
+bench = false

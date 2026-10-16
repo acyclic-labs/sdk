@@ -69,6 +69,10 @@ pub fn validate_binary(
         "objects/delete" => {
             decode!(DeleteObjectResponse, bytes);
         }
+        "objects/restore" => {
+            request::restore(&decode!(RestoreObjectsRequest, query)).map_err(|_| invalid())?;
+            decode!(RestoreObjectsResponse, bytes);
+        }
         "multipart/abort" => {
             decode!(AbortMultipartResponse, bytes);
         }

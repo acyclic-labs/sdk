@@ -35,10 +35,12 @@ const narrowMachinesDecoder = output => {
 };
 
 const packages = {
+  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
+  manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
@@ -90,6 +92,8 @@ if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
 const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
 if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
+const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
+const profileDirectory = profile === "dev" ? "debug" : profile;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
 
@@ -109,7 +113,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
     source = await producer.sourceSnapshot();
   }
-  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
+  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,
@@ -117,7 +121,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "--remap-path-prefix", `${cargoHome}=/cargo/home`,
   ];
   const buildArgs = [
-    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
+    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
   let compilerInvocation, originalReceipt;
@@ -133,7 +137,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
       }
     }
   } finally { await rustcCapture?.close(); }
-  const module = resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
+  const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
   const bindings = resolve(target, "wasm-bindgen", name);
   const stamp = `${bindings}.sha256`;
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");

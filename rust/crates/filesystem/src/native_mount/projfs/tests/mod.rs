@@ -10,6 +10,7 @@ mod metadata_errors;
 mod read_bindings;
 mod mutations;
 mod names;
+mod empty_callbacks;
 mod notifications;
 mod projection;
 mod recovery;

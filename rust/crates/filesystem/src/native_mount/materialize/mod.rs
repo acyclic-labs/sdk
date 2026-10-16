@@ -58,6 +58,9 @@ mod model;
 pub use model::*;
 mod api;
 pub use api::*;
+mod selection;
+#[cfg(fuzzing)]
+pub use selection::verify_native_staging_selection;
 mod restore;
 use restore::*;
 mod entries;

@@ -2,8 +2,5 @@
 
 /**
  * A strictly positive unsigned 64-bit value.
- *
- * The wire contract remains a raw `u64`; this nominal type is used only at
- * semantic boundaries where zero is not admitted.
  */
 export type PositiveU64 = bigint & { readonly __brand: unique symbol };

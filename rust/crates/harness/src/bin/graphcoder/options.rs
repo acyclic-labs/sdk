@@ -6,7 +6,6 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     TEXT        Queue a stock root/selected-parent task, without starting it\n\
     /parent TASK|root  Select an actual retained task as parent, or root\n\
     /command FILE Run/reconcile an explicitly configured approved native effect\n\
-    /context FILE Capture discovery and replace typed attributes for later requests\n\
     /fork-selection FILE Select full/fresh/summary from an authenticated original cut\n\
     /prepare FILE Admit exact typed fork ResourcePreparationRequest JSON under its caller\n\
     /publish-fork FILE Publish actual report/admit exact child: caller,lease,preparation\n\
@@ -30,6 +29,7 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\
+    /plan       Follow private plans/ files in the live plan panel\n\
     /next       Display one bounded activity delivery\n\
     /cursor FILE Select a protobuf Resume ClientFrame for bounded archival paging\n\
     /back N     Show a retained display page (0 newest; 64 pages/256 KiB max)\n\

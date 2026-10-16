@@ -1,4 +1,29 @@
-use super::*;
+use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
+
+/// Lifecycle points with command-hook support.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HookEvent {
+    /// A session was opened, resumed, forked, or compacted.
+    SessionStart,
+    /// A tool is about to execute.
+    PreToolUse,
+    /// A tool returned successfully.
+    PostToolUse,
+    /// The model is about to finish its turn.
+    Stop,
+}
+
+impl HookEvent {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::SessionStart => "SessionStart",
+            Self::PreToolUse => "PreToolUse",
+            Self::PostToolUse => "PostToolUse",
+            Self::Stop => "Stop",
+        }
+    }
+}
 
 /// An event selector and its commands, sharing one compiled matcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -83,3 +108,7 @@ impl HookSpec {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "spec/properties.rs"]
+mod properties;

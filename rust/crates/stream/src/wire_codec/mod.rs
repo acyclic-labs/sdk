@@ -21,3 +21,6 @@ include!("records.rs");
 pub(crate) mod requests;
 
 pub mod session;
+
+mod watermarks;
+pub use watermarks::watermarks_from_wire;

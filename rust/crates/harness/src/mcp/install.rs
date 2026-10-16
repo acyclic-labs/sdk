@@ -17,7 +17,7 @@ mod cancellation;
 #[cfg(feature = "mcp-stdio")]
 mod executable;
 mod native;
-use cancellation::{CancelFlag as _, CancelOnDrop};
+use cancellation::CancelOnDrop;
 
 /// Positive discovery and tool-exchange bounds, independent of task allowances.
 #[derive(Clone, Copy)]
@@ -139,7 +139,7 @@ impl McpConfig {
         for (server, required, result) in results {
             match result {
                 Ok((additional, grants)) => {
-                    tools = tools.extend(additional)?;
+                    tools.extend(additional)?;
                     capabilities.0.extend(grants.0);
                 }
                 Err(error) if required => return Err(error),
@@ -168,7 +168,7 @@ async fn register_before<T: Send + 'static>(
     deadline: tokio::time::Instant,
     register: impl FnOnce(&dyn Fn() -> Result<()>) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    use std::sync::atomic::AtomicBool;
+    use super::sync::{Arc, atomic::AtomicBool};
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let guard = CancelOnDrop(Arc::new(AtomicBool::new(false)));
     let flag = Arc::clone(&guard.0);
@@ -180,7 +180,7 @@ async fn register_before<T: Send + 'static>(
             result.map_err(Error::process_io)?
         }
         result => {
-            guard.0.cancel();
+            guard.cancel();
             // Cancellation is cooperative at schema boundaries. Never return a timeout
             // while its registration still owns a connection or a worker job.
             if result.is_err() {

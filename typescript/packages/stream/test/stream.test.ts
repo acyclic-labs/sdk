@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { SessionSocket } from "./session-socket.js";
+import { checkpoint } from "./session-node.js";
+import { SessionClosedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -478,9 +481,7 @@ describe("website Stream contract", () => {
     const provider = new MemoryStreamProvider();
     const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
-    const children = [];
-    for await (const child of new StreamClient(provider).children("parent", 10)) children.push(child);
-    expect(children).toEqual([]);
+    expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
   });
 
@@ -516,6 +517,27 @@ describe("website Stream contract", () => {
     const next = pending.next();
     pending.close();
     expect(await next).toBeNull();
+  });
+
+  test("memory children remain live, exclude rejected writes and cancel a parked read", async () => {
+    const provider = new MemoryStreamProvider();
+    const cancel = new AbortController();
+    const children = new StreamClient(provider).children("agents", 1, cancel.signal)[Symbol.asyncIterator]();
+    let delivered = false;
+    const first = children.next().then(value => { delivered = true; return value; });
+    await checkpoint();
+    await provider.append("agents/rejected", [new Uint8Array([1])], { ifTail: 1n });
+    await checkpoint();
+    expect(delivered).toBe(false);
+    await provider.append("agents/m", [new Uint8Array([1])]);
+    expect((await first).value?.path).toBe("agents/m");
+    const later = children.next();
+    await provider.append("agents/a/deep", [new Uint8Array([1])]);
+    expect((await later).value?.path).toBe("agents/a");
+    const parked = children.next();
+    await checkpoint(); cancel.abort();
+    expect((await parked).done).toBe(true);
+    await children.return?.();
   });
 
   test("rejects a failed multi-stream commit atomically", async () => {
@@ -836,119 +858,81 @@ describe("website Stream contract", () => {
     const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
-    let observedSignal: AbortSignal | null | undefined;
-    let requestStarted!: () => void;
-    const requested = new Promise<void>(resolve => { requestStarted = resolve; });
-    const hanging = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
-      observedSignal = init?.signal;
-      requestStarted();
-      return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
-    } });
-    const next = hanging.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next();
-    await requested; controller.abort(new Error("stop"));
-    await expect(next).rejects.toThrow();
-    expect(observedSignal).toBe(controller.signal);
-
+    const socket = new SessionSocket();
+    try {
+      const hanging = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+        fetcher: async () => { throw new Error("follow must not fetch"); } });
+      const next = hanging.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next();
+      await socket.node.until(() => socket.node.active === 1);
+      controller.abort(new Error("stop"));
+      await expect(next).resolves.toEqual({ done: true, value: undefined });
+      expect(socket.node.active).toBe(0);
+    } finally { socket.close(); }
   });
 
-  test("hosted follow bounds idle polling, resets after activity, and clears cancellation resources", async () => {
-    // Every step waits for the actual timer scheduling barrier, without
-    // sleeping or guessing async continuation counts.
-    await ensureStreamWasm();
-    const timeoutDescriptor = Object.getOwnPropertyDescriptor(globalThis, "setTimeout")!;
-    const clearDescriptor = Object.getOwnPropertyDescriptor(globalThis, "clearTimeout")!;
-    type Scheduled = { readonly handle: number; readonly milliseconds: number; readonly finish: () => void };
-    const timers = new Map<number, Scheduled>();
-    const scheduled: Scheduled[] = [];
-    let waiting: ((timer: Scheduled) => void) | undefined;
-    let handle = 0;
-    const nextTimer = () => {
-      const timer = scheduled.shift();
-      return timer === undefined ? new Promise<Scheduled>(resolve => { waiting = resolve; }) : Promise.resolve(timer);
-    };
-    const fire = (timer: Scheduled) => {
-      expect(timers.delete(timer.handle)).toBeTrue();
-      timer.finish();
-    };
-    const polling = new AbortController();
-    let reads = 0; let tails = 0; let added = 0; let removed = 0;
-    const listeners = new Set<Parameters<AbortSignal["addEventListener"]>[1]>();
-    const cursors: unknown[] = [];
-    const add = polling.signal.addEventListener.bind(polling.signal);
-    const remove = polling.signal.removeEventListener.bind(polling.signal);
-    polling.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { added += 1; listeners.add(args[1]); return add(...args); }) as AbortSignal["addEventListener"];
-    polling.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; listeners.delete(args[1]); return remove(...args); }) as AbortSignal["removeEventListener"];
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (input, init) => {
-      expect(init?.signal).toBe(polling.signal);
-      const route = new URL(String(input)).pathname.split("/").pop();
-      if (route === "tail") { tails += 1; return new Response('"0"'); }
-      expect(route).toBe("read");
-      cursors.push(JSON.parse(String(init?.body)).from);
-      reads += 1;
-      return new Response(reads === 9 ? JSON.stringify([{ sequence: "0", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "0" }]) : "[]");
-    } });
+  test("hosted follow has no idle timers and clears cancellation resources", async () => {
+    const socket = new SessionSocket();
+    const controller = new AbortController();
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const originalTimeout = globalThis.setTimeout;
+    const originalClear = globalThis.clearTimeout;
+    let created = 0; let added = 0; let removed = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { added += 1; return add(...args); }) as AbortSignal["addEventListener"];
+    controller.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; return remove(...args); }) as AbortSignal["removeEventListener"];
     try {
-      Object.defineProperty(globalThis, "setTimeout", { ...timeoutDescriptor, value: (finish: () => void, milliseconds: number) => {
-        const timer = { handle: ++handle, milliseconds, finish };
-        timers.set(timer.handle, timer);
-        if (waiting === undefined) scheduled.push(timer);
-        else { const resolve = waiting; waiting = undefined; resolve(timer); }
-        return timer.handle;
-      } });
-      Object.defineProperty(globalThis, "clearTimeout", { ...clearDescriptor, value: (timerHandle: number) => { timers.delete(timerHandle); } });
-      const iterator = provider.follow("events", { from: 0n, signal: polling.signal })[Symbol.asyncIterator]();
-      const record = iterator.next();
-      const delays = [25, 50, 100, 200, 400, 800, 1000, 1000];
-      for (const [index, milliseconds] of delays.entries()) {
-        const timer = await nextTimer();
-        expect(timer.milliseconds).toBe(milliseconds);
-        expect(reads).toBe(index + 1);
-        expect(tails).toBe(1);
-        expect(timers.size).toBe(1);
-        expect(listeners.size).toBe(1);
-        expect(added - removed).toBe(1);
-        fire(timer);
-        expect(timers.size).toBe(0);
-        expect(listeners.size).toBe(0);
-        expect(added).toBe(removed);
-      }
-      await expect(record).resolves.toMatchObject({ done: false, value: { sequence: 0n, value: new Uint8Array([1]) } });
-      const pending = iterator.next();
-      const reset = await nextTimer();
-      expect(reset.milliseconds).toBe(25);
-      expect(reads).toBe(10);
-      expect(cursors).toEqual([...Array(9).fill("0"), "1"]);
-      polling.abort();
-      await expect(pending).resolves.toEqual({ done: true, value: undefined });
+      globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+        created += 1;
+        const timer = originalTimeout(...args); timers.add(timer); return timer;
+      }) as typeof setTimeout;
+      globalThis.clearTimeout = ((timer: ReturnType<typeof setTimeout>) => { timers.delete(timer); originalClear(timer); }) as typeof clearTimeout;
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+        fetcher: async () => { throw new Error("follow must not fetch"); } });
+      const iterator = provider.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]();
+      const first = iterator.next();
+      await socket.node.until(() => socket.node.active === 1);
+      socket.node.append("events");
+      await expect(first).resolves.toMatchObject({ done: false, value: { sequence: 0n } });
+      const next = iterator.next();
+      await checkpoint();
       expect(timers.size).toBe(0);
-      expect(listeners.size).toBe(0);
-      expect(added).toBe(removed);
+      expect(created).toBe(1); // Only the cleared Welcome deadline.
+      socket.node.append("events");
+      await expect(next).resolves.toMatchObject({ done: false, value: { sequence: 1n } });
+      controller.abort();
       expect(await iterator.next()).toEqual({ done: true, value: undefined });
-      expect(reads).toBe(10);
-      expect(tails).toBe(1);
+      expect(added).toBe(removed);
+      expect(socket.node.active).toBe(0);
+      expect(timers.size).toBe(0);
+      expect(created).toBe(1);
     } finally {
-      polling.abort();
-      Object.defineProperty(globalThis, "setTimeout", timeoutDescriptor);
-      Object.defineProperty(globalThis, "clearTimeout", clearDescriptor);
+      controller.abort(); socket.close();
+      globalThis.setTimeout = originalTimeout;
+      globalThis.clearTimeout = originalClear;
     }
   });
 
-  test("hosted follow stops on malformed pages and canonical hosted errors", async () => {
-    for (const failure of [
-      { body: "{}", status: 200, code: "invalid_response" },
-      { body: JSON.stringify([{ sequence: "1", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "0" }]), status: 200, code: "invalid_response" },
-      { body: JSON.stringify({ code: "access_denied", message: "revoked" }), status: 403, code: "access_denied" },
-    ]) {
-      const routes: string[] = [];
-      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
-        const route = new URL(String(input)).pathname.split("/").pop()!;
-        routes.push(route);
-        return route === "tail" ? new Response('"0"') : new Response(failure.body, { status: failure.status });
-      } });
-      const iterator = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
-      await expect(iterator.next()).rejects.toMatchObject({ code: failure.code });
-      expect(await iterator.next()).toEqual({ done: true, value: undefined });
-      expect(routes).toEqual(["tail", "read"]);
+  test("hosted follow stops on malformed frames and canonical channel errors", async () => {
+    for (const mode of ["protobuf", "item", "cursor", "denied"] as const) {
+      const socket = new SessionSocket();
+      socket.node.append("events");
+      socket.transform = output => {
+        if (mode === "denied" && output.body.case === "opened") return { ...output, body: { case: "closed", value: create(SessionClosedSchema, { code: "access_denied", message: "revoked" }) } };
+        if (output.body.case !== "data") return output;
+        if (mode === "protobuf") return new Uint8Array([255]);
+        if (mode === "item") output.body.value.item = { case: undefined };
+        if (mode === "cursor" && output.body.value.item.case === "record") output.body.value.item.value.sequence = 1n;
+        return output;
+      };
+      try {
+        const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
+          fetcher: async () => { throw new Error("follow must not fetch"); } });
+        const iterator = provider.follow("events", { from: 0n })[Symbol.asyncIterator]();
+        await expect(iterator.next()).rejects.toMatchObject({ code: mode === "denied" ? "access_denied" : "invalid_response" });
+        expect(await iterator.next()).toEqual({ done: true, value: undefined });
+        expect(socket.sockets.length).toBe(1);
+      } finally { socket.close(); }
     }
   });
 

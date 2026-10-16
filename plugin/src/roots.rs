@@ -448,14 +448,12 @@ impl LocalMount {
         permit: PublicationPermit,
     ) -> Result<(), String> {
         let name = std::str::from_utf8(name).map_err(display)?;
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| display(cause))?;
-        self.routes
+        let mount = self
+            .routes
             .get(name)
-            .ok_or_else(|| "mounted root route is missing".to_owned())?
+            .ok_or_else(|| "mounted root route is missing".to_owned())?;
+        let work = mount.native_work().map_err(display)?;
+        mount
             .sync_with_permit(permit, &work, |_| {
                 std::future::ready(Ok::<(), acyclic_fs::native_mount::MountLifecycleError>(()))
             })
@@ -466,14 +464,22 @@ impl LocalMount {
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.sync().await.map_err(display)?;
+            if let Err(error) = mount.sync().await {
+                return Err(mount
+                    .take_callback_failure()
+                    .map_or_else(|| display(error), |(cause, _work)| display(cause)));
+            }
         }
         Ok(())
     }
 
     pub(crate) async fn advance_to_head(&self) -> Result<(), String> {
         for mount in self.routes.values() {
-            mount.advance_to_head().await.map_err(display)?;
+            if let Err(error) = mount.advance_to_head().await {
+                return Err(mount
+                    .take_callback_failure()
+                    .map_or_else(|| display(error), |(cause, _work)| display(cause)));
+            }
         }
         Ok(())
     }
@@ -505,159 +511,5 @@ impl LocalMount {
                 .map_err(display)?;
         }
         Ok(())
-    }
-}
-pub(crate) type LocalPublicationPublisher = MaterializingWorkspaceMultiRootPublisher<
-    LocalAuthorityBackend,
-    LocalObjectBackend,
-    (LocalFs, WorkspaceGraph<LocalCoreStateStore>),
-    PluginRootMaterializer,
->;
-pub(crate) type LocalPublicationCoordinator = MultiRootPublicationCoordinator<
-    LocalCoreStateStore,
-    LocalPublicationPublisher,
-    LineageMultiRootPublicationAuthorizer<LocalCoreStateStore>,
->;
-
-#[derive(Clone)]
-pub(crate) struct PluginRootMaterializer {
-    pub(crate) state: LocalCoreStateStore,
-    pub(crate) physical_roots: BTreeMap<WorkspaceRootId, PhysicalRoot>,
-}
-
-#[derive(Clone)]
-pub(crate) struct PhysicalRoot {
-    pub(crate) workspace_id: acyclic_fs::WorkspaceId,
-    pub(crate) path: PathBuf,
-    pub(crate) source_root_identity: acyclic_fs::NativeRootIdentity,
-}
-
-#[derive(Debug)]
-pub(crate) struct PluginRootMaterializerError(pub(crate) String);
-
-impl std::fmt::Display for PluginRootMaterializerError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for PluginRootMaterializerError {}
-
-impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for PluginRootMaterializer {
-    type Error = PluginRootMaterializerError;
-
-    async fn materialize(
-        &self,
-        operation_id: OperationId,
-        root_id: WorkspaceRootId,
-        workspace: &LocalWorkspace,
-        from: acyclic_fs::GenerationId,
-        to: acyclic_fs::GenerationId,
-    ) -> Result<(), Self::Error> {
-        let physical = self.physical_roots.get(&root_id).ok_or_else(|| {
-            PluginRootMaterializerError(
-                "publication selected a root not configured for physical materialization"
-                    .to_owned(),
-            )
-        })?;
-        // Non-root parents are projected directly from their SDK workspace;
-        // advancing that mount is the complete materialization operation.
-        if workspace.id() != physical.workspace_id {
-            return Ok(());
-        }
-        let directory = root_materialization_directory(&physical.path, operation_id)
-            .map_err(PluginRootMaterializerError)?;
-        let options = MaterializeOptions {
-            destination: directory.join("target"),
-            expected_root_identity: None,
-            maximum_directory_entries: 4_096,
-            maximum_extent_spans: 65_536,
-            transfer_bytes: 8 * 1024 * 1024,
-        };
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
-        let from_generation = workspace
-            .generation(from, &work, &cancellation)
-            .await
-            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        let to_generation = workspace
-            .generation(to, &work, &cancellation)
-            .await
-            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        acyclic_fs::publish_native_generation_transition(
-            &from_generation,
-            &to_generation,
-            &self.state,
-            acyclic_fs::NativeWorkspacePublication {
-                root: &physical.path,
-                source_root_identity: physical.source_root_identity,
-                operation_directory: &directory,
-                operation_id,
-                from,
-                to,
-                excluded_names: &[".git"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
-            work,
-            || std::future::ready(Ok(())),
-        )
-        .await
-        .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
-        Ok(())
-    }
-
-    async fn finalize(
-        &self,
-        operation_id: OperationId,
-        root_id: WorkspaceRootId,
-    ) -> Result<(), Self::Error> {
-        let physical = self.physical_roots.get(&root_id).ok_or_else(|| {
-            PluginRootMaterializerError(
-                "publication selected a root not configured for finalization".to_owned(),
-            )
-        })?;
-        self.state
-            .remove_materialization_async(operation_id)
-            .await
-            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        let directory = root_materialization_directory(&physical.path, operation_id)
-            .map_err(PluginRootMaterializerError)?;
-        match fs::remove_dir_all(&directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(PluginRootMaterializerError(error.to_string())),
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn existing_tracked_paths<'a>(
-    generation: &'a LocalGeneration,
-    candidates: &'a BTreeSet<String>,
-) -> impl std::future::Future<Output = Result<BTreeSet<String>, PluginGitError>> + Send + 'a {
-    async move {
-        let mut tracked = BTreeSet::new();
-        for path in candidates {
-            match generation
-                .stat(
-                    &format!("/{path}"),
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-            {
-                Ok(stat) if stat.kind != FileKind::Directory => {
-                    tracked.insert(path.clone());
-                }
-                Ok(_) | Err(WorkspaceError::NotFound) => {}
-                Err(error) => return Err(PluginGitError(display(error))),
-            }
-        }
-        Ok(tracked)
     }
 }

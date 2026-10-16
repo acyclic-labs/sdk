@@ -1,6 +1,8 @@
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod completion_edit;
+
 use crate::{
     Layout, PromptHistory,
     buffer::{Buffer, normalize},
@@ -40,6 +42,7 @@ pub enum Motion {
 #[derive(Clone, Debug, Default)]
 pub struct Editor {
     buffer: Buffer,
+    settings: crate::UiSettings,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
     group_open: bool,
@@ -47,7 +50,6 @@ pub struct Editor {
     kills: Vec<String>,
     kill_active: bool,
     yank: Option<(Buffer, usize)>,
-    history: PromptHistory,
     layout: RefCell<(usize, Rc<Layout>)>,
 }
 
@@ -59,6 +61,25 @@ impl Editor {
             buffer: Buffer::new(text),
             ..Self::default()
         }
+    }
+
+    /// Current view/editor preferences, folded from configuration files.
+    pub fn settings(&self) -> &crate::UiSettings {
+        &self.settings
+    }
+
+    /// Apply followed preferences without replacing the prompt or its undo history.
+    pub fn set_settings(&mut self, settings: crate::UiSettings) -> bool {
+        if !settings.valid() {
+            return false;
+        }
+        if self.settings != settings {
+            self.settings = settings;
+            self.invalidate_layout();
+            self.break_group();
+            self.sticky = None;
+        }
+        true
     }
 
     /// Full text, including collapsed pastes.
@@ -85,13 +106,8 @@ impl Editor {
     pub fn collapsed_pastes(&self) -> &[Range<usize>] {
         &self.buffer.folds
     }
-    /// Mutable submitted-prompt history for the host to load or save.
-    pub fn history(&mut self) -> &mut PromptHistory {
-        &mut self.history
-    }
-
     /// Heap bytes retained by undo and redo, including edit and fold metadata.
-    /// Working text, wrapping, prompt history and the kill ring are excluded.
+    /// Working text, wrapping and the kill ring are excluded.
     pub fn retained_undo_bytes(&self) -> usize {
         (self.undo.capacity() + self.redo.capacity()) * size_of::<Edit>()
             + self
@@ -104,7 +120,11 @@ impl Editor {
 
     /// Memoized display layout; changing selection does not rebuild wrapping.
     pub fn layout(&self, width: usize) -> Rc<Layout> {
-        let width = width.max(1);
+        let width = if self.settings.wrap {
+            width.max(1)
+        } else {
+            usize::MAX
+        };
         if self.layout.borrow().0 != width {
             *self.layout.borrow_mut() = (width, Rc::new(Layout::new(self, width)));
         }
@@ -217,7 +237,8 @@ impl Editor {
     /// Insert a paste as one undo step, collapsing past the byte or line threshold.
     pub fn paste(&mut self, text: &str, now_ms: u64) {
         let text = normalize(text);
-        let fold = text.len() > 1024 || text.lines().count() > 8;
+        let fold = text.len() > self.settings.paste_collapse_bytes
+            || text.lines().count() > self.settings.paste_collapse_lines;
         self.replace(self.selection(), &text, now_ms, 1, true, fold);
     }
 
@@ -381,9 +402,9 @@ impl Editor {
                 edit.kind == kind
                     && !boundary
                     && !edit.boundary
-                    && edit.size + size <= 20
+                    && edit.size + size <= self.settings.undo_group_graphemes
                     && at >= edit.at
-                    && at - edit.at <= 300
+                    && at - edit.at <= self.settings.undo_group_ms as u64
                     && edit
                         .changes
                         .last()
@@ -449,16 +470,16 @@ impl Editor {
     }
 
     /// Recall history only at the corresponding buffer edge.
-    pub fn recall(&mut self, previous: bool, now_ms: u64) -> bool {
+    pub fn recall(&mut self, history: &mut PromptHistory, previous: bool, now_ms: u64) -> bool {
         if !self.selection().is_empty()
             || self.cursor() != if previous { 0 } else { self.text().len() }
         {
             return false;
         }
         let text = if previous {
-            self.history.previous(&self.buffer.text)
+            history.previous(&self.buffer.text)
         } else {
-            self.history.next_entry()
+            history.next_entry()
         };
         if let Some(text) = text {
             let text = normalize(&text);
@@ -483,6 +504,7 @@ impl Editor {
     }
 
     /// Enter returns a submitted prompt, or inserts a newline when modified.
+    /// The caller appends submissions to the shared input history.
     /// A trailing backslash continues only at buffer end with no selection.
     pub fn enter(&mut self, modified: bool, now_ms: u64) -> Option<String> {
         if modified {
@@ -507,7 +529,6 @@ impl Editor {
             return None;
         }
         let text = self.text().to_owned();
-        self.history.push(text.clone());
         self.replace(0..self.text().len(), "", now_ms, 2, true, false);
         Some(text)
     }

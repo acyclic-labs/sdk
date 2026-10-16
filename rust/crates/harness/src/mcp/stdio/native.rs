@@ -1,3 +1,7 @@
+use crate::mcp::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
 use acyclic_native_runtime::{ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
@@ -15,10 +19,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::{
     process::{Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncWrite};

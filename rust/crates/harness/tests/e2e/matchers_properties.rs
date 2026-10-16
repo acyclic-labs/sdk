@@ -2,6 +2,21 @@ use super::{ordered, subset};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
+#[test]
+fn expectation_codec_replays_fuzz_seeds() -> crate::TestResult {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../harness-fuzz/corpus/e2e_expectations");
+    for entry in std::fs::read_dir(root)? {
+        let bytes = std::fs::read(entry?.path())?;
+        if let Ok(expected) = serde_json::from_slice::<crate::expectations::Expectations>(&bytes) {
+            let actual: crate::expectations::Expectations =
+                serde_json::from_slice(&serde_json::to_vec(&expected)?)?;
+            assert_eq!(actual, expected);
+        }
+    }
+    Ok(())
+}
+
 fn text() -> impl Strategy<Value = String> {
     proptest::collection::vec(any::<char>(), 0..32)
         .prop_map(|characters| characters.into_iter().collect())
@@ -43,6 +58,48 @@ fn subsequence(expected: &[Value], actual: &[Value]) -> bool {
 }
 
 proptest! {
+    // Model payloads are a complete ordered list. Lifecycle frames can interleave;
+    // an inserted payload, including an empty delta, always changes that list.
+    #[test]
+    fn exact_model_events_reject_insertions_and_preserve_the_expectation_codec(
+        payloads in proptest::collection::vec(value(), 0..6), extra in value(),
+    ) {
+        let expected: crate::expectations::Expectations =
+            serde_json::from_value(json!({"model_events":payloads}))?;
+        let encoded = serde_json::to_vec(&expected)?;
+        let decoded: crate::expectations::Expectations = serde_json::from_slice(&encoded)?;
+        prop_assert_eq!(&decoded, &expected);
+        let mut frames: Vec<_> = payloads.iter()
+            .flat_map(|event| [json!({"kind":"status", "extra":extra}), json!({"kind":"model", "event":event})])
+            .collect();
+        prop_assert!(expected.matches_model_events(&frames));
+        for position in 0..=frames.len() {
+            for event in [extra.clone(), json!({"kind":"content","delta":""}), json!({"kind":"reasoning","delta":""})] {
+                frames.insert(position, json!({"kind":"model","event":event}));
+                prop_assert!(!expected.matches_model_events(&frames));
+                frames.remove(position);
+            }
+        }
+        for index in (1..frames.len()).step_by(2) {
+            let frame = frames.remove(index);
+            prop_assert!(!expected.matches_model_events(&frames));
+            frames.insert(index, frame);
+        }
+    }
+
+    // Complete argument payloads match iff their JSON values are equal, at any
+    // nesting depth; observation metadata outside the payload remains a subset.
+    #[test]
+    fn tool_arguments_match_exactly(expected in value(), actual in value()) {
+        let matcher = json!({"kind":"tool_call", "arguments":expected});
+        let event = json!({"kind":"tool_call", "arguments":actual, "call_id":"call"});
+        prop_assert_eq!(subset(&matcher, &event), expected == actual);
+        let array = json!({"arguments":[expected]});
+        prop_assert!(!subset(&array, &json!({"arguments":[expected, "injected"]})), "array insertion");
+        let nested = json!({"arguments":[{"payload":expected}]});
+        prop_assert!(!subset(&nested, &json!({"arguments":[{"payload":expected,"injected":actual}]})), "nested key insertion");
+    }
+
     // Ordinary JSON is reflexive. Extra object fields are harmless, while absent
     // keys and different scalar/container types can never satisfy an assertion.
     #[test]

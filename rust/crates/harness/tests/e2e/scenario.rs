@@ -1,3 +1,4 @@
+use super::expectations::Expectations;
 use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
 use acyclic_harness::{
     context::{CompactionPolicy, ModelContextCapacity},
@@ -42,25 +43,6 @@ pub enum Kind {
     #[default]
     Turn,
     Summary,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Expectations {
-    pub text: Option<String>,
-    pub error: Option<String>,
-    pub result: Option<Value>,
-    pub request_count: Option<usize>,
-    pub reconciliation_count: Option<usize>,
-    pub events: Option<Vec<Value>>,
-    #[serde(default)]
-    pub not_events: Vec<Value>,
-    pub requests: Option<Vec<Value>>,
-    #[serde(default)]
-    pub not_requests: Vec<Value>,
-    pub request_files: Option<Vec<Vec<String>>>,
-    #[serde(default)]
-    pub files: BTreeMap<String, Option<String>>,
 }
 
 impl Scenario {

@@ -66,53 +66,62 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             )
             .await?
             {
-                let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
-                if let Some(work) = quota.work().as_deref_mut() {
-                    work.check_cancellation()?;
-                }
-                let (revision, key, _, committed_at_ms, event) = decode(&record, quota.work())?;
-                let event_bytes = if quota.work().is_some() {
-                    event.logical_owned_bytes()? + key.capacity() as u64
-                } else {
-                    0
-                };
-                quota.adopt(event_bytes)?;
-                if let SchedulerEvent::Declared { spec } = &event {
-                    self.verify_content(&spec.state, quota.work()).await?;
-                }
-                self.verify_published_result(&event, quota.work()).await?;
-                if let Some((_, existing, ..)) =
-                    read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
-                {
-                    if quota.work().is_some() {
-                        quota.adopt(existing.logical_owned_bytes()?)?;
-                    }
-                    return Err(guarded_boundary(
-                        quota.work(),
-                        wire::ErrorCode::Conflict,
-                        "coordinator history repeats an idempotency key",
-                    ));
-                }
-                if let Some(work) = quota.work().as_deref_mut() {
-                    work.check_cancellation()?;
-                }
-                if committed_at_ms <= self.last_committed_at_ms {
-                    return Err(guarded_boundary(
-                        quota.work(),
-                        wire::ErrorCode::Storage,
-                        "coordinator commit time is not increasing",
-                    ));
-                }
-                self.scheduler.apply(&event, quota.work())?;
-                self.revision = revision;
-                self.last_committed_at_ms = committed_at_ms;
-                drop((key, event, record));
-                quota.relinquish(event_bytes + raw_bytes)?;
+                self.apply_record(record, &mut quota).await?;
             }
             if next == from {
                 break;
             }
         }
+        Ok(())
+    }
+
+    pub(super) async fn apply_record(
+        &mut self,
+        record: operations::ObservedRecord,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<()> {
+        let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
+        if let Some(work) = quota.work().as_deref_mut() {
+            work.check_cancellation()?;
+        }
+        let (revision, key, _, committed_at_ms, event) = decode(&record, quota.work())?;
+        let event_bytes = if quota.work().is_some() {
+            event.logical_owned_bytes()? + key.capacity() as u64
+        } else {
+            0
+        };
+        quota.adopt(event_bytes)?;
+        if let SchedulerEvent::Declared { spec } = &event {
+            self.verify_content(&spec.state, quota.work()).await?;
+        }
+        self.verify_published_result(&event, quota.work()).await?;
+        if let Some((_, existing, ..)) =
+            read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
+        {
+            if quota.work().is_some() {
+                quota.adopt(existing.logical_owned_bytes()?)?;
+            }
+            return Err(guarded_boundary(
+                quota.work(),
+                wire::ErrorCode::Conflict,
+                "coordinator history repeats an idempotency key",
+            ));
+        }
+        if let Some(work) = quota.work().as_deref_mut() {
+            work.check_cancellation()?;
+        }
+        if committed_at_ms <= self.last_committed_at_ms {
+            return Err(guarded_boundary(
+                quota.work(),
+                wire::ErrorCode::Storage,
+                "coordinator commit time is not increasing",
+            ));
+        }
+        self.scheduler.apply(&event, quota.work())?;
+        self.revision = revision;
+        self.last_committed_at_ms = committed_at_ms;
+        drop((key, event, record));
+        quota.relinquish(event_bytes + raw_bytes)?;
         Ok(())
     }
 

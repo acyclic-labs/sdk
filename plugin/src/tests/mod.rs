@@ -8,6 +8,7 @@ pub(crate) use support::configured_test_service_bootstrap;
 use support::native_hook_request;
 use support::*;
 
+mod git;
 mod hosts;
 mod installation;
 mod paths;

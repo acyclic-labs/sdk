@@ -1,0 +1,3 @@
+{"folder":".volumes/agents/a","writes":[{"path":".volumes/agents/b","text":"other"},{"path":".volumes/agents/a","text":
+  "child"},{"path":".tasks/t/status.json","text":"running"}],"expect":{"files":{".volumes/agents/a":"child"},"changes":
+  [null,{"path":".volumes/agents/a","text":"child"},null]}}

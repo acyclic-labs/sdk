@@ -180,6 +180,10 @@ pinned_pi() {
 
 case "$lane" in
   gate)
+    node scripts/qualify-mcp-loom.mjs --all-features
+    node scripts/qualify-mcp-loom.mjs --timer
+    node scripts/qualify-mcp-loom.mjs --guest
+    node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
@@ -353,7 +357,7 @@ case "$lane" in
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs
+    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check

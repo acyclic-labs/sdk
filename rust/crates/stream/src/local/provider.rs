@@ -16,6 +16,33 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.bounds(path)).await?
     }
 
+    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.visibility.read().await;
+        let accepted = self.inner.provider.tail(path.clone()).await?;
+        let synced = {
+            let journal = self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            journal.synced >= journal.appended
+        };
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path).or_default();
+        if synced {
+            *durable = (*durable).max(accepted);
+        }
+        Ok(crate::StreamWatermarks {
+            accepted,
+            durable: *durable,
+        })
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
@@ -85,63 +112,49 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.follow",
-            rev = from,
-            terminal = Empty,
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            let mut state = FollowState {
-                provider: self.clone(),
-                path,
-                cursor: crate::memory::HistoryCursor::at(from),
-                changed: self.inner.changed.subscribe(),
-                done: false,
-                span: span.clone(),
-            };
-            if let Err(error) = self.tail(state.path.clone()).await {
-                state.failed(&error);
-                return Err(error);
-            }
-            Ok(span
-                .scope(stream::try_unfold(state, |mut state| async move {
-                    let result = async {
-                        loop {
-                            if let Some(record) = state
-                                .provider
-                                .visible(
-                                    state
-                                        .provider
-                                        .inner
-                                        .provider
-                                        .next_follow_record(&state.path, &mut state.cursor),
-                                )
-                                .await??
-                            {
-                                return Ok(record);
-                            }
-                            state
-                                .changed
-                                .changed()
-                                .await
-                                .map_err(|_| StreamError::Unavailable)?;
-                        }
-                    }
-                    .await;
-                    if let Err(error) = &result {
-                        state.failed(error);
-                    }
-                    Ok(Some((result?, state)))
-                }))
-                .boxed())
-        })
-        .await
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: crate::CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await?
+        let changed = self.inner.changed.subscribe();
+        let children = self
+            .accepted(self.inner.provider.children(request))
+            .await??;
+        Ok(stream::try_unfold(
+            (self.clone(), children, changed),
+            |(provider, mut children, mut changed)| async move {
+                let unavailable = Box::pin(async {
+                    loop {
+                        if changed.borrow_and_update().is_none() {
+                            return StreamError::Unavailable;
+                        }
+                        if changed.changed().await.is_err() {
+                            return StreamError::Unavailable;
+                        }
+                    }
+                });
+                // No visibility guard is held while either subscription parks.
+                let child = match futures::future::select(unavailable, children.next()).await {
+                    futures::future::Either::Left((error, _)) => return Err(error),
+                    futures::future::Either::Right((child, _)) => child,
+                };
+                let Some(child) = child.transpose()? else {
+                    return Ok(None);
+                };
+                provider.accepted(async {}).await?;
+                Ok(Some((child, (provider, children, changed))))
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(

@@ -1,9 +1,12 @@
 use super::*;
+use crate::sync::Mutex;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
 
+// Lock order: observer registry (35), source cursors (40), original leaf (50),
+// gate counters (60). Resource allowances follow the leaf, ancestors first.
 pub(crate) struct NativeDemandReadMeter(pub(crate) Mutex<DemandWork>);
 impl std::fmt::Debug for NativeDemandReadMeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -12,13 +15,20 @@ impl std::fmt::Debug for NativeDemandReadMeter {
     }
 }
 impl NativeDemandReadMeter {
-    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, DemandWork> {
-        self.0.lock().unwrap_or_else(|poisoned| {
-            let mut state = poisoned.into_inner();
-            state.poison_native_original_work();
-            state
-        })
+    pub(crate) fn new(work: DemandWork) -> Self {
+        Self(Mutex::new(work))
     }
+    #[track_caller]
+    pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+        crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
+            |poisoned| {
+                let mut state = poisoned.into_inner();
+                state.poison_native_original_work();
+                state
+            },
+        )
+    }
+    #[track_caller]
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }

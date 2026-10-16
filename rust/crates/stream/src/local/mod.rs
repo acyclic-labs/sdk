@@ -4,18 +4,22 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;
+use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
+#[cfg(acyclic_loom)]
+use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::mpsc;
+#[cfg(not(acyclic_loom))]
+use tokio::{spawn, task::spawn_blocking};
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -45,6 +49,11 @@ const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
+
+#[cfg(acyclic_loom)]
+pub(crate) mod query_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod discovery_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
@@ -84,6 +93,7 @@ include!("provider.rs");
 include!("read_observation.rs");
 
 include!("follow_state.rs");
+include!("follow.rs");
 
 include!("journal_type.rs");
 

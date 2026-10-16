@@ -29,6 +29,11 @@ mod remote;
 mod rpc;
 pub mod services;
 pub mod stdio;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+use crate::sync;
 pub use catalog::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure};
 pub use protocol::{McpToolDefinition, McpToolTransport, PROTOCOL_VERSION};
 #[cfg(test)]

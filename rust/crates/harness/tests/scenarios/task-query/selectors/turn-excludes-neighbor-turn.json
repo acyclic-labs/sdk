@@ -1,0 +1,5 @@
+{"folder":".tasks/t/turns/1","writes":[{"path":".tasks/t/turns/0/request.json","text":"old"},{"path":
+  ".tasks/t/turns/1/request.json","text":"new"},{"path":".tasks/t/turns/1/tools/c/result.json","text":"ok"},{"path":
+  ".tasks/t/turns/2/tools/c/result.json","text":"later"}],"expect":{"files":{".tasks/t/turns/1/request.json":"new",
+  ".tasks/t/turns/1/tools/c/result.json":"ok"},"changes":[null,{"path":".tasks/t/turns/1/request.json","text":"new"},{
+  "path":".tasks/t/turns/1/tools/c/result.json","text":"ok"},null]}}

@@ -63,7 +63,7 @@ pub(super) fn fuse_open_file(
 pub(super) struct FileHandle {
     pub(super) inode: u64,
     pub(super) open_file: FuseOpenFile,
-    pub(super) operation: Arc<(Mutex<()>, crate::NativeAllocation)>,
+    pub(super) operation: Arc<(RankedMutex<(), OPERATION>, crate::NativeAllocation)>,
     pub(super) dirty: bool,
     pub(super) writes: bool,
     pub(super) _storage: crate::NativeAllocation,
@@ -73,7 +73,7 @@ pub(super) struct DeferredOpenFile {
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) path: FuseOwned<MountPath>,
     pub(super) file_id: crate::FileId,
-    pub(super) file: Mutex<Option<FuseFile>>,
+    pub(super) file: RankedMutex<Option<FuseFile>, FILE>,
     pub(super) _allocation: crate::NativeAllocation,
 }
 
@@ -132,11 +132,11 @@ impl ProjectionState {
             crate::WorkCounters::UNCHARGED,
         )?;
         let operation = work.claim(
-            std::mem::size_of::<(Mutex<()>, crate::NativeAllocation)>() as u64,
+            std::mem::size_of::<(RankedMutex<(), OPERATION>, crate::NativeAllocation)>() as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        let operation = Arc::new((Mutex::new(()), operation));
+        let operation = Arc::new((RankedMutex::new(()), operation));
         self.files
             .try_reserve(1)
             .map_err(NativeMountError::Allocation)?;
@@ -321,7 +321,7 @@ impl FuseProjection {
                     source: Arc::clone(&self.core.source),
                     path: fuse_clone_path(&path, work)?,
                     file_id: lookup.node.file_id,
-                    file: Mutex::new(None),
+                    file: RankedMutex::new(None),
                     _allocation: allocation,
                 }));
                 (deferred, lookup, Some(facts))
@@ -432,7 +432,9 @@ impl FuseProjection {
         let path = &child.spelled;
         let stamp = source.view_stamp_with_meter(work)?;
         let (existing, proof) = match absent_since {
-            Some(held) if source.unchanged_since_with_meter(child.key(), None, held, work)? => {
+            Some(held)
+                if source.unchanged_since_with_meter(&child.spelled, None, held, work)? =>
+            {
                 (None, Some(held))
             }
             _ => (source.lookup_with_meter(path, work)?, stamp),
@@ -446,7 +448,7 @@ impl FuseProjection {
                 if existing.node.kind != MountNodeKind::Regular {
                     return Err(libc::EISDIR.into());
                 }
-                self.confirm_names(child.key(), existing.node, &mut confirmed, work)?;
+                self.confirm_names(&child.spelled, existing.node, &mut confirmed, work)?;
                 let (open_file, lookup, _) =
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
@@ -476,7 +478,7 @@ impl FuseProjection {
             let (handle, open_flags) = state.admit_file_handle(
                 source,
                 inode,
-                child.key(),
+                &child.spelled,
                 &lookup,
                 stamp,
                 flags,
@@ -489,7 +491,7 @@ impl FuseProjection {
         let (attr, handle, open_flags) = created.inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, &child, stamp, work)?;
+        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 }

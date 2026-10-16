@@ -233,8 +233,11 @@ impl ControlPlane {
                     .mount_detached = true;
                 self.persist()?;
             }
-            remove_tree_checked(&self.workspace_mount_root(), &agent.path)
-                .map_err(|error| format!("cannot remove discarded mount path: {error}"))?;
+            acyclic_native_runtime::remove_child_directory(
+                &self.workspace_mount_root(),
+                &agent.path,
+            )
+            .map_err(|error| format!("cannot remove discarded mount path: {error}"))?;
             for repository_id in agent.repository_workspace_ids {
                 let repository_id = acyclic_fs::WorkspaceId::from_bytes(repository_id);
                 if let Some(state) = <LocalCoreStateStore as acyclic_fs::GitCompatStore>::load(

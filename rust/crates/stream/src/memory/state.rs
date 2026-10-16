@@ -10,9 +10,14 @@ struct State {
     decision: u64,
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
+    hierarchy_changed: Option<watch::Sender<()>>,
+    roots: ChildIndex,
+    #[cfg(test)]
+    child_visits: std::sync::atomic::AtomicUsize,
     retained_allocation: Allocation,
     #[cfg(not(target_arch = "wasm32"))]
-    reserved: Arc<std::sync::Mutex<(usize, usize)>>,
+    // Lock order: provider state -> reserved counters; counter release takes no other lock.
+    reserved: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,
 }
 
 impl State {

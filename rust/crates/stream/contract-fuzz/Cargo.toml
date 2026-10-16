@@ -1,0 +1,30 @@
+[package]
+name = "acyclic-stream-contract-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-stream = { path = "..", default-features = false }
+libfuzzer-sys = "0.4"
+prost = "0.14.4"
+
+[[bin]]
+name = "checked_follow"
+path = "fuzz_targets/checked_follow.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "watermarks"
+path = "fuzz_targets/watermarks.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
