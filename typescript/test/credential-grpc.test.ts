@@ -15,15 +15,17 @@ import { ActorsService } from "../packages/actors/generated/proto/actors/v1/acto
 import { ActorsClient } from "../packages/actors/src/client.js";
 
 test("every product gRPC client resolves current credentials and stops on failure", async () => {
-  const sent: string[] = [];
-  const observe = (context: { requestHeader: Headers }) => { sent.push(context.requestHeader.get("authorization") ?? ""); return {}; };
+  const sent = new Map<string, string[]>();
+  const observe = (product: string, context: { requestHeader: Headers }) => { sent.get(product)!.push(context.requestHeader.get("authorization") ?? ""); return {}; };
   const { endpoint, certificate, close } = await credentialTlsFixture(router => {
-    router.service(StreamService, { tail(_request, context) { observe(context); return { tail: 0n }; } });
-    router.service(FilesystemService, { handshake(_request, context) { return observe(context); } });
-    router.service(BucketsService, { headBucket(_request, context) { return observe(context); } });
-    router.service(MachinesService, { listMachines(_request, context) { return observe(context); } });
+    router.service(StreamService, { tail(_request, context) { observe("streams", context); return { tail: 0n }; } });
+    router.service(FilesystemService, { handshake(_request, context) { return observe("fs", context); } });
+    router.service(BucketsService, { headBucket(_request, context) { return observe("objects", context); } });
+    router.service(MachinesService, { listMachines(_request, context) { return observe("machines", context); } });
   });
   const clients = ["streams", "fs", "objects", "machines"].map(product => {
+    const observed: string[] = [];
+    sent.set(product, observed);
     let calls = 0;
     let values: readonly string[] = [];
     let reads = 0;
@@ -39,20 +41,20 @@ test("every product gRPC client resolves current credentials and stops on failur
       case "machines": { const client = createMachinesGrpcClient(options); invoke = () => client.machines.listMachines({}); release = client.close; break; }
       default: throw new Error("unknown fixture product");
     }
-    return { invoke, release, setValues(next: readonly string[]) { values = next; calls = 0; },
+    return { invoke, release, observed, setValues(next: readonly string[]) { values = next; calls = 0; },
       check(count: number) { expect(calls).toBe(count); expect(reads).toBe(1); } };
   });
   try {
     await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), async values => {
-      for (const client of clients) {
+      await Promise.all(clients.map(async client => {
         client.setValues(values);
-        const start = sent.length;
-          for (const _value of values) await client.invoke();
-          expect(sent.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
-          client.check(values.length);
-          await expect(client.invoke()).rejects.toThrow();
-          expect(sent.length).toBe(start + values.length);
-      }
+        const start = client.observed.length;
+        for (const _value of values) await client.invoke();
+        expect(client.observed.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
+        client.check(values.length);
+        await expect(client.invoke()).rejects.toThrow();
+        expect(client.observed.length).toBe(start + values.length);
+      }));
     }), { numRuns: 16 });
   } finally { for (const client of clients) client.release?.(); await close(); }
 });
