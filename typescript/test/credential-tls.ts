@@ -15,7 +15,7 @@ export async function credentialTlsFixture(routes: (router: ConnectRouter) => vo
   if (certificates === undefined) {
     const directory = mkdtempSync(join(tmpdir(), "client-credential-"));
     const keyPath = join(directory, "key.pem"), certPath = join(directory, "cert.pem");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth", "-keyout", keyPath, "-out", certPath], { stdio: "ignore" });
     certificates = { directory, key: readFileSync(keyPath, "utf8"), cert: readFileSync(certPath, "utf8") };
   }
   const server = createSecureServer(certificates, connectNodeAdapter({ routes }));
