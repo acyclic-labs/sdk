@@ -1,6 +1,6 @@
-{"turns":[[{"type":"event","kind":"reasoning","delta":"private **thought**"},{"type":"event","kind":"content","delta":
-  "# "},{"type":"event","kind":"reasoning","delta":"never render"},{"type":"event","kind":"content","delta":"Answer\n"},
-  {"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"# Answer\n","events":[{"kind":"model","event":
-  {"kind":"reasoning","delta":"private **thought**"}},{"kind":"model","event":{"kind":"content","delta":"# "}},{"kind":
-  "model","event":{"kind":"reasoning","delta":"never render"}},{"kind":"model","event":{"kind":"content","delta":
-  "Answer\n"}},{"kind":"model","event":{"kind":"completed","metadata":null}}]}}
+{"turns":[[{"type":"event","kind":"reasoning","delta":"private **thought**"},{"type":"event","kind":
+  "content","delta":"# "},{"type":"event","kind":"reasoning","delta":"never render"},{"type":"event",
+  "kind":"content","delta":"Answer\n"},{"type":"event","kind":"completed","metadata":null}]],"expect":
+  {"text":"# Answer\n","model_events":[{"kind":"reasoning","delta":"private **thought**"},{"kind":"content",
+  "delta":"# "},{"kind":"reasoning","delta":"never render"},{"kind":"content","delta":"Answer\n"},{"kind":
+  "completed","metadata":null}]}}

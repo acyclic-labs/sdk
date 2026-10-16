@@ -299,8 +299,7 @@ pub(crate) fn native_work_error_code(
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::AllocationFailed(_)
-        | Native::IndeterminatePreparation => ErrorCode::Storage,
+        | Native::AllocationFailed(_) => ErrorCode::Storage,
     }
 }
 

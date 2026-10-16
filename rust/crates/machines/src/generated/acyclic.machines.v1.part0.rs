@@ -1,0 +1,688 @@
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProtocolVersion {
+    #[prost(uint32, tag = "1")]
+    pub major: u32,
+    #[prost(uint32, tag = "2")]
+    pub minor: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationId {
+    #[prost(bytes = "vec", tag = "1")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IdempotencyKey {
+    #[prost(bytes = "vec", tag = "1")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineId {
+    #[prost(bytes = "vec", tag = "1")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointId {
+    #[prost(bytes = "vec", tag = "1")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Image {
+    #[prost(enumeration = "ImageKind", tag = "1")]
+    pub kind: i32,
+    #[prost(oneof = "image::ImmutableReference", tags = "2, 3, 4")]
+    pub immutable_reference: ::core::option::Option<image::ImmutableReference>,
+}
+/// Nested message and enum types in `Image`.
+pub mod image {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum ImmutableReference {
+        #[prost(bytes, tag = "2")]
+        ManagedDigest(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "3")]
+        CustomDigest(::prost::alloc::vec::Vec<u8>),
+        #[prost(message, tag = "4")]
+        Checkpoint(super::CheckpointId),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompatibilityPolicy {
+    #[prost(enumeration = "CompatibilityMode", tag = "1")]
+    pub mode: i32,
+    #[prost(enumeration = "Capability", repeated, tag = "2")]
+    pub required: ::prost::alloc::vec::Vec<i32>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ImageQualification {
+    #[prost(message, optional, tag = "1")]
+    pub image: ::core::option::Option<Image>,
+    #[prost(enumeration = "Capability", repeated, tag = "2")]
+    pub capabilities: ::prost::alloc::vec::Vec<i32>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub compatibility_revision: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SuspensionPolicy {
+    #[prost(oneof = "suspension_policy::Policy", tags = "1, 2")]
+    pub policy: ::core::option::Option<suspension_policy::Policy>,
+}
+/// Nested message and enum types in `SuspensionPolicy`.
+pub mod suspension_policy {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Policy {
+        #[prost(bool, tag = "1")]
+        Manual(bool),
+        #[prost(uint64, tag = "2")]
+        AfterIdleMs(u64),
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExpirationPolicy {
+    #[prost(enumeration = "ExpirationKind", tag = "1")]
+    pub kind: i32,
+    #[prost(uint64, tag = "2")]
+    pub value_ms: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Budgets {
+    #[prost(uint64, tag = "1")]
+    pub spend_micros: u64,
+    #[prost(uint32, tag = "2")]
+    pub concurrency: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineContract {
+    #[prost(message, optional, tag = "1")]
+    pub image: ::core::option::Option<Image>,
+    #[prost(enumeration = "Capability", repeated, tag = "2")]
+    pub capabilities: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "3")]
+    pub compatibility: ::core::option::Option<CompatibilityPolicy>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub compatibility_revision: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "6")]
+    pub suspension: ::core::option::Option<SuspensionPolicy>,
+    #[prost(message, optional, tag = "7")]
+    pub expiration: ::core::option::Option<ExpirationPolicy>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub network_policy_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "9")]
+    pub budgets: ::core::option::Option<Budgets>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct QualifyImageRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub image: ::core::option::Option<Image>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateMachineRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub image: ::core::option::Option<Image>,
+    #[prost(message, optional, tag = "4")]
+    pub compatibility: ::core::option::Option<CompatibilityPolicy>,
+    #[prost(message, optional, tag = "6")]
+    pub suspension: ::core::option::Option<SuspensionPolicy>,
+    #[prost(message, optional, tag = "7")]
+    pub expiration: ::core::option::Option<ExpirationPolicy>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub network_policy_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "9")]
+    pub budgets: ::core::option::Option<Budgets>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineMutationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointMachineRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ForkCheckpointRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+    #[prost(uint32, tag = "4")]
+    pub count: u32,
+}
+/// Forks a running machine, without an intermediate checkpoint, into `count` fresh
+/// children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
+/// machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
+/// callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
+/// what the children inherited. Children inherit the source's exact MachineContract and
+/// receive fresh MachineIds and endpoints; open network connections are never carried over.
+/// See the acyclic-machines crate documentation for the complete semantics.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ForkMachineRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint32, tag = "4")]
+    pub count: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetSuspensionPolicyRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "4")]
+    pub policy: ::core::option::Option<SuspensionPolicy>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointMutationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+    #[prost(message, optional, tag = "3")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RecoverRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub idempotency_key: ::core::option::Option<IdempotencyKey>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectMachineRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InspectCheckpointRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListMachinesRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub after: ::core::option::Option<MachineId>,
+    #[prost(uint32, tag = "3")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OperationId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationState {
+    #[prost(message, optional, tag = "1")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(enumeration = "OperationStatus", tag = "2")]
+    pub status: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Endpoint {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub uri: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MachineState {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(enumeration = "MachineStatus", tag = "2")]
+    pub status: i32,
+    #[prost(message, optional, tag = "3")]
+    pub contract: ::core::option::Option<MachineContract>,
+    #[prost(message, repeated, tag = "4")]
+    pub endpoints: ::prost::alloc::vec::Vec<Endpoint>,
+    #[prost(message, optional, tag = "5")]
+    pub last_checkpoint: ::core::option::Option<CheckpointId>,
+    #[prost(uint64, tag = "6")]
+    pub created_at_unix_ms: u64,
+    #[prost(uint64, tag = "7")]
+    pub changed_at_unix_ms: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MachinePage {
+    #[prost(message, repeated, tag = "1")]
+    pub machines: ::prost::alloc::vec::Vec<MachineState>,
+    #[prost(message, optional, tag = "2")]
+    pub next: ::core::option::Option<MachineId>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointState {
+    #[prost(message, optional, tag = "1")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+    #[prost(message, optional, tag = "2")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub contract: ::core::option::Option<MachineContract>,
+    #[prost(bool, tag = "4")]
+    pub forkable: bool,
+    #[prost(uint64, tag = "5")]
+    pub created_at_unix_ms: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "3")]
+    pub contract: ::core::option::Option<MachineContract>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckpointAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+    #[prost(message, optional, tag = "2")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "4")]
+    pub contract: ::core::option::Option<MachineContract>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+    #[prost(message, repeated, tag = "2")]
+    pub children: ::prost::alloc::vec::Vec<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "4")]
+    pub contract: ::core::option::Option<MachineContract>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkMachineAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(message, repeated, tag = "2")]
+    pub children: ::prost::alloc::vec::Vec<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "4")]
+    pub contract: ::core::option::Option<MachineContract>,
+    #[prost(enumeration = "ForkFidelity", tag = "5")]
+    pub fidelity: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicyAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "2")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "3")]
+    pub policy: ::core::option::Option<SuspensionPolicy>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MutationAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "3")]
+    pub checkpoint: ::core::option::Option<CheckpointId>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RecoveredAdmission {
+    #[prost(message, optional, tag = "1")]
+    pub operation: ::core::option::Option<OperationId>,
+    #[prost(oneof = "recovered_admission::Result", tags = "2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    pub result: ::core::option::Option<recovered_admission::Result>,
+}
+/// Nested message and enum types in `RecoveredAdmission`.
+pub mod recovered_admission {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "2")]
+        Create(super::MachineAdmission),
+        #[prost(message, tag = "3")]
+        Checkpoint(super::CheckpointAdmission),
+        #[prost(message, tag = "4")]
+        Fork(super::ForkAdmission),
+        #[prost(message, tag = "5")]
+        Suspend(super::MutationAdmission),
+        #[prost(message, tag = "6")]
+        Wake(super::MutationAdmission),
+        #[prost(message, tag = "7")]
+        DestroyMachine(super::MutationAdmission),
+        #[prost(message, tag = "8")]
+        SetSuspensionPolicy(super::PolicyAdmission),
+        #[prost(message, tag = "9")]
+        DestroyCheckpoint(super::MutationAdmission),
+        #[prost(message, tag = "10")]
+        ForkMachine(super::ForkMachineAdmission),
+    }
+}
+/// Terminal simulator result. Unlike an admission, this contains the checked
+/// observations produced after the operation has completed.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkedMachines {
+    #[prost(message, repeated, tag = "1")]
+    pub machines: ::prost::alloc::vec::Vec<MachineState>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForkedLiveMachines {
+    #[prost(message, optional, tag = "1")]
+    pub source: ::core::option::Option<MachineId>,
+    #[prost(enumeration = "ForkFidelity", tag = "2")]
+    pub fidelity: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub children: ::prost::alloc::vec::Vec<MachineState>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PolicySet {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(message, optional, tag = "2")]
+    pub policy: ::core::option::Option<SuspensionPolicy>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MutationOutcome {
+    #[prost(oneof = "mutation_outcome::Result", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    pub result: ::core::option::Option<mutation_outcome::Result>,
+}
+/// Nested message and enum types in `MutationOutcome`.
+pub mod mutation_outcome {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Created(super::MachineState),
+        #[prost(message, tag = "2")]
+        Checkpointed(super::CheckpointState),
+        #[prost(message, tag = "3")]
+        Forked(super::ForkedMachines),
+        #[prost(message, tag = "4")]
+        Suspended(super::MachineId),
+        #[prost(message, tag = "5")]
+        Woken(super::MachineId),
+        #[prost(message, tag = "6")]
+        SuspensionPolicySet(super::PolicySet),
+        #[prost(message, tag = "7")]
+        MachineDestroyed(super::MachineId),
+        #[prost(message, tag = "8")]
+        CheckpointDestroyed(super::CheckpointId),
+        #[prost(message, tag = "9")]
+        MachineForked(super::ForkedLiveMachines),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OperationPage {
+    #[prost(message, repeated, tag = "1")]
+    pub operations: ::prost::alloc::vec::Vec<OperationState>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineEvent {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "2")]
+    pub sequence: u64,
+    #[prost(uint64, tag = "3")]
+    pub observed_at_unix_ms: u64,
+    #[prost(enumeration = "EventKind", tag = "4")]
+    pub kind: i32,
+    #[prost(enumeration = "MachineStatus", tag = "5")]
+    pub state: i32,
+    #[prost(enumeration = "PressureKind", tag = "6")]
+    pub pressure: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct EventsRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "3")]
+    pub after_sequence: u64,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventPage {
+    #[prost(message, repeated, tag = "1")]
+    pub events: ::prost::alloc::vec::Vec<MachineEvent>,
+    #[prost(uint64, tag = "2")]
+    pub next_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UsageRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "3")]
+    pub start_unix_ms: u64,
+    #[prost(uint64, tag = "4")]
+    pub end_unix_ms: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UsageReceipt {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "2")]
+    pub start_unix_ms: u64,
+    #[prost(uint64, tag = "3")]
+    pub end_unix_ms: u64,
+    #[prost(uint64, tag = "4")]
+    pub elastic_cpu_ns: u64,
+    #[prost(uint64, tag = "5")]
+    pub dedicated_cpu_ns: u64,
+    #[prost(uint64, tag = "6")]
+    pub private_resident_byte_seconds: u64,
+    #[prost(uint64, tag = "7")]
+    pub durable_private_bytes: u64,
+    #[prost(bytes = "vec", tag = "11")]
+    pub lineage_receipt_sha256: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "9")]
+    pub egress_bytes: u64,
+    #[prost(bytes = "vec", tag = "10")]
+    pub receipt: ::prost::alloc::vec::Vec<u8>,
+}
+/// Executes once in the current admitted guest. A lost reply, cancellation or
+/// timeout does not prove the command did not run; clients must not redispatch.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
+    /// argv\[0\] is nonempty. Shell evaluation requires an explicit shell program.
+    #[prost(string, repeated, tag = "3")]
+    pub argv: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Command deadline in milliseconds, 1..60000.
+    #[prost(uint32, tag = "4")]
+    pub timeout_ms: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExecOutput {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+    /// Exactly one exit-code frame terminates the stream; no frame follows it.
+    #[prost(oneof = "exec_output::Output", tags = "2, 3")]
+    pub output: ::core::option::Option<exec_output::Output>,
+}
+/// Nested message and enum types in `ExecOutput`.
+pub mod exec_output {
+    /// Data is merged stdout/stderr in observed console order, 1..65536 bytes.
+    /// Exactly one exit-code frame terminates the stream; no frame follows it.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Output {
+        #[prost(bytes, tag = "2")]
+        Data(::prost::alloc::vec::Vec<u8>),
+        #[prost(int32, tag = "3")]
+        ExitCode(i32),
+    }
+}
+/// Reads the live retained guest console, without a lifecycle operation identity.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadOutputRequest {
+    #[prost(message, optional, tag = "1")]
+    pub protocol: ::core::option::Option<ProtocolVersion>,
+    #[prost(message, optional, tag = "2")]
+    pub machine: ::core::option::Option<MachineId>,
+    #[prost(uint64, tag = "3")]
+    pub offset: u64,
+    /// Maximum returned bytes, 1..65536.
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MachineOutput {
+    #[prost(message, optional, tag = "1")]
+    pub machine: ::core::option::Option<MachineId>,
+    /// At or after the requested offset; a later offset exposes discarded bytes.
+    /// The next read starts at offset + data length, with overflow rejected.
+    #[prost(uint64, tag = "2")]
+    pub offset: u64,
+    /// Empty data means no newer bytes now, not permanent EOF.
+    #[prost(bytes = "vec", tag = "3")]
+    pub data: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ImageKind {
+    Unspecified = 0,
+    ManagedOci = 1,
+    Custom = 2,
+    Checkpoint = 3,
+}
+impl ImageKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "IMAGE_KIND_UNSPECIFIED",
+            Self::ManagedOci => "IMAGE_KIND_MANAGED_OCI",
+            Self::Custom => "IMAGE_KIND_CUSTOM",
+            Self::Checkpoint => "IMAGE_KIND_CHECKPOINT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "IMAGE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "IMAGE_KIND_MANAGED_OCI" => Some(Self::ManagedOci),
+            "IMAGE_KIND_CUSTOM" => Some(Self::Custom),
+            "IMAGE_KIND_CHECKPOINT" => Some(Self::Checkpoint),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Capability {
+    Unspecified = 0,
+    ElasticCpu = 1,
+    ElasticMemory = 2,
+    LiveCheckpoint = 3,
+    LiveFork = 4,
+    SuspendResume = 5,
+    LiveMovement = 6,
+    /// ForkMachine copies a running machine's persistent disk, but not its memory or processes,
+    /// into fresh children. Which paths are persistent is provider-defined: a provider whose
+    /// machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
+    /// when both are declared.
+    DiskFork = 7,
+}
+impl Capability {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CAPABILITY_UNSPECIFIED",
+            Self::ElasticCpu => "CAPABILITY_ELASTIC_CPU",
+            Self::ElasticMemory => "CAPABILITY_ELASTIC_MEMORY",
+            Self::LiveCheckpoint => "CAPABILITY_LIVE_CHECKPOINT",
+            Self::LiveFork => "CAPABILITY_LIVE_FORK",
+            Self::SuspendResume => "CAPABILITY_SUSPEND_RESUME",
+            Self::LiveMovement => "CAPABILITY_LIVE_MOVEMENT",
+            Self::DiskFork => "CAPABILITY_DISK_FORK",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CAPABILITY_UNSPECIFIED" => Some(Self::Unspecified),
+            "CAPABILITY_ELASTIC_CPU" => Some(Self::ElasticCpu),
+            "CAPABILITY_ELASTIC_MEMORY" => Some(Self::ElasticMemory),
+            "CAPABILITY_LIVE_CHECKPOINT" => Some(Self::LiveCheckpoint),
+            "CAPABILITY_LIVE_FORK" => Some(Self::LiveFork),
+            "CAPABILITY_SUSPEND_RESUME" => Some(Self::SuspendResume),
+            "CAPABILITY_LIVE_MOVEMENT" => Some(Self::LiveMovement),
+            "CAPABILITY_DISK_FORK" => Some(Self::DiskFork),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CompatibilityMode {
+    Unspecified = 0,
+    BestEffort = 1,
+    Require = 2,
+}
+impl CompatibilityMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "COMPATIBILITY_MODE_UNSPECIFIED",
+            Self::BestEffort => "COMPATIBILITY_MODE_BEST_EFFORT",
+            Self::Require => "COMPATIBILITY_MODE_REQUIRE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COMPATIBILITY_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "COMPATIBILITY_MODE_BEST_EFFORT" => Some(Self::BestEffort),
+            "COMPATIBILITY_MODE_REQUIRE" => Some(Self::Require),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExpirationKind {
+    Unspecified = 0,
+    Never = 1,
+    MaxAge = 2,
+    At = 3,
+    Idle = 4,
+}

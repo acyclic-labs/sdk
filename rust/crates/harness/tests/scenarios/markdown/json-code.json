@@ -1,6 +1,6 @@
-{"turns":[[{"type":"event","kind":"content","delta":"```json\n"},{"type":"event","kind":"content","delta":"{\"a\":"},{
-  "type":"event","kind":"content","delta":"[1,2]}"},{"type":"event","kind":"content","delta":"\n```"},{"type":"event",
-  "kind":"completed","metadata":null}]],"expect":{"text":"```json\n{\"a\":[1,2]}\n```","events":[{"kind":"model","event"
-  :{"kind":"content","delta":"```json\n"}},{"kind":"model","event":{"kind":"content","delta":"{\"a\":"}},{"kind":"model"
-  ,"event":{"kind":"content","delta":"[1,2]}"}},{"kind":"model","event":{"kind":"content","delta":"\n```"}},{"kind":
-  "model","event":{"kind":"completed","metadata":null}}]}}
+{"turns":[[{"type":"event","kind":"content","delta":"```json\n"},{"type":"event","kind":"content","delta":
+  "{\"a\":"},{"type":"event","kind":"content","delta":"[1,2]}"},{"type":"event","kind":"content","delta":
+  "\n```"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"```json\n{\"a\":[1,2]}\n```",
+  "model_events":[{"kind":"content","delta":"```json\n"},{"kind":"content","delta":"{\"a\":"},{"kind":
+  "content","delta":"[1,2]}"},{"kind":"content","delta":"\n```"},{"kind":"completed","metadata":null}
+  ]}}
