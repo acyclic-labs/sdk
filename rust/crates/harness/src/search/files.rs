@@ -345,7 +345,7 @@ where
         match dispatch {
             Ok(encoded) => {
                 match publish(volume, result.clone(), encoded, authorize, work).await {
-                    Err(Error::ToolRejected(_)) => break SearchOutcome::Rejected,
+                    Err(Error::ToolRejected(_) | Error::Invalid(_)) => break SearchOutcome::Rejected,
                     other => other?,
                 }
                 return Ok(());
