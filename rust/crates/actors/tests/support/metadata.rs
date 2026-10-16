@@ -2,6 +2,14 @@
 use acyclic_actors::guest::{AdmittedCaller, CallerCapability, RuntimeHandle};
 use serde_json::Value;
 
+// Serde struct decoding accepts both named maps and positional sequences.
+fn field<'a>(value: &'a Value, name: &str, index: usize) -> Option<&'a Value> {
+    match value {
+        Value::Array(items) => items.get(index),
+        _ => value.get(name),
+    }
+}
+
 pub fn text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 1024
@@ -9,21 +17,23 @@ pub fn text(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 fn handle(value: &Value) -> bool {
-    value
-        .get("version")
+    field(value, "version", 0)
         .and_then(Value::as_u64)
         .is_some_and(|v| v > 0 && v <= u64::from(u32::MAX))
-        && value
-            .get("handle")
+        && field(value, "handle", 1)
             .and_then(Value::as_str)
             .is_some_and(text)
 }
 fn caller(value: &Value) -> bool {
     ["accountId", "orgId", "principal", "credentialId", "actorId"]
         .iter()
-        .all(|name| value.get(name).and_then(Value::as_str).is_some_and(text))
-        && value
-            .get("expiresAtMs")
+        .enumerate()
+        .all(|(index, name)| {
+            field(value, name, index)
+                .and_then(Value::as_str)
+                .is_some_and(text)
+        })
+        && field(value, "expiresAtMs", 5)
             .and_then(Value::as_str)
             .is_some_and(|raw| {
                 raw.len() <= 20
@@ -31,9 +41,7 @@ fn caller(value: &Value) -> bool {
                         .parse::<u64>()
                         .is_ok_and(|n| n > 0 && n.to_string() == raw)
             })
-        && value
-            .get("capability")
-            .is_none_or(|v| v.is_null() || handle(v))
+        && field(value, "capability", 6).is_none_or(|v| v.is_null() || handle(v))
 }
 
 pub fn check(input: &[u8]) {
@@ -41,11 +49,10 @@ pub fn check(input: &[u8]) {
         return;
     };
     if let (Some(version), Some(raw)) = (
-        value
-            .get("version")
+        field(&value, "version", 0)
             .and_then(Value::as_u64)
             .and_then(|v| u32::try_from(v).ok()),
-        value.get("handle").and_then(Value::as_str),
+        field(&value, "handle", 1).and_then(Value::as_str),
     ) {
         let expected = version != 0 && text(raw);
         assert_eq!(
@@ -59,8 +66,14 @@ pub fn check(input: &[u8]) {
             "metadata constructor admission"
         );
     }
-    let fields = ["accountId", "orgId", "principal", "credentialId", "actorId"]
-        .map(|name| value.get(name).and_then(Value::as_str));
+    let fields = [
+        ("accountId", 0),
+        ("orgId", 1),
+        ("principal", 2),
+        ("credentialId", 3),
+        ("actorId", 4),
+    ]
+    .map(|(name, index)| field(&value, name, index).and_then(Value::as_str));
     if let [
         Some(account),
         Some(org),
@@ -69,8 +82,7 @@ pub fn check(input: &[u8]) {
         Some(actor),
     ] = fields
     {
-        if let Some(expiry) = value
-            .get("expiresAtMs")
+        if let Some(expiry) = field(&value, "expiresAtMs", 5)
             .and_then(Value::as_str)
             .filter(|raw| raw.len() <= 20)
             .and_then(|raw| raw.parse::<u64>().ok())

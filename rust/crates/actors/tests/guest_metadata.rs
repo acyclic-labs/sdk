@@ -31,6 +31,10 @@ proptest! {
         prop_assert_eq!(serde_json::from_value::<CallerCapability>(handle.clone()).is_ok(), valid && version != 0);
         prop_assert_eq!(serde_json::from_value::<RuntimeHandle>(handle.clone()).is_ok(), valid && version != 0);
         oracle::check(&serde_json::to_vec(&handle)?);
+        let positional = json!([version, text]);
+        prop_assert_eq!(serde_json::from_value::<CallerCapability>(positional.clone()).is_ok(), valid && version != 0);
+        prop_assert_eq!(serde_json::from_value::<RuntimeHandle>(positional.clone()).is_ok(), valid && version != 0);
+        oracle::check(&serde_json::to_vec(&positional)?);
         let names = ["accountId","orgId","principal","credentialId","actorId"];
         let mut raw = json!({"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":"1","capability":null,"future":true});
         raw[names[field]] = text.clone().into();
@@ -41,6 +45,9 @@ proptest! {
             prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&decoded)?)?, decoded);
         }
         oracle::check(&serde_json::to_vec(&raw)?);
+        let positional = json!([raw["accountId"], raw["orgId"], raw["principal"], raw["credentialId"], raw["actorId"], "1", null]);
+        prop_assert_eq!(serde_json::from_value::<AdmittedCaller>(positional.clone()).is_ok(), valid);
+        oracle::check(&serde_json::to_vec(&positional)?);
     }
 
     /// Malformed expiry spellings cannot bypass canonical positive u64 admission.
@@ -51,6 +58,30 @@ proptest! {
         prop_assert_eq!(serde_json::from_value::<AdmittedCaller>(raw.clone()).is_ok(), expected);
         oracle::check(&serde_json::to_vec(&raw)?);
     }
+}
+
+#[test]
+fn positional_metadata_uses_the_same_admission() -> Result<(), Box<dyn std::error::Error>> {
+    for bytes in [
+        br#"[1,"cap"]"#.as_slice(),
+        br#"["a","o","p","c","i","1",[1,"cap"]]"#.as_slice(),
+        br#"["a","o","p","c","i","1",null]"#.as_slice(),
+    ] {
+        oracle::check(bytes);
+        let is_handle = serde_json::from_slice::<CallerCapability>(bytes).is_ok();
+        let is_caller = serde_json::from_slice::<AdmittedCaller>(bytes).is_ok();
+        assert!(is_handle || is_caller);
+    }
+    for bytes in [
+        br#"[0,"cap"]"#.as_slice(),
+        br#"["a","o","p","c","i","01",null]"#.as_slice(),
+        br#"["a","o","p","c","i","1",[0,"cap"]]"#.as_slice(),
+    ] {
+        oracle::check(bytes);
+        assert!(serde_json::from_slice::<CallerCapability>(bytes).is_err());
+        assert!(serde_json::from_slice::<AdmittedCaller>(bytes).is_err());
+    }
+    Ok(())
 }
 
 #[test]
