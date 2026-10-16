@@ -3,6 +3,8 @@ use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fi
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
 use proptest::prelude::*;
+#[path = "support/timer_oracle.rs"]
+mod oracle;
 
 fn timer(task: [u8; 16], operation: [u8; 16], deadline: u64) -> Result<TimerRecord, TimerError> {
     TimerRecord::new(
@@ -19,6 +21,7 @@ proptest! {
     #[test]
     fn timer_codec_round_trips(task in any::<[u8;16]>(), operation in any::<[u8;16]>(), deadline in 1u64..=u64::MAX) {
         let record = timer(task, operation, deadline)?;
+        oracle::check(&record);
         let bytes = record.encode()?;
         prop_assert!(bytes.len() <= MAX_TIMER_RECORD_BYTES);
         prop_assert_eq!(TimerRecord::decode(&bytes)?, record);
@@ -46,6 +49,14 @@ proptest! {
             prop_assert_eq!(TimerRecord::decode(&record.encode()?)?, record);
         }
     }
+}
+
+#[test]
+#[should_panic(expected = "positive timer deadline")]
+fn oracle_detects_bypassed_deadline_admission() {
+    let mut record = timer([1; 16], [2; 16], 1).expect("valid identity");
+    record.deadline_unix_ms = 0;
+    oracle::check(&record);
 }
 
 #[tokio::test]

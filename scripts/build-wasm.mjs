@@ -90,6 +90,8 @@ if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
 const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
 if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
+const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
+const profileDirectory = profile === "dev" ? "debug" : profile;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
 
@@ -117,7 +119,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "--remap-path-prefix", `${cargoHome}=/cargo/home`,
   ];
   const buildArgs = [
-    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
+    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
   let compilerInvocation, originalReceipt;
@@ -133,7 +135,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
       }
     }
   } finally { await rustcCapture?.close(); }
-  const module = resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
+  const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
   const bindings = resolve(target, "wasm-bindgen", name);
   const stamp = `${bindings}.sha256`;
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
