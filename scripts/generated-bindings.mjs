@@ -102,8 +102,13 @@ export const packagedSourceCopies = [
 ];
 
 // Rust splitting and feature gates are emitted by sdk-proto-codegen.
+export const protoCodegenCommand = args => process.env.SDK_PROTO_CODEGEN
+  ? [process.env.SDK_PROTO_CODEGEN, ...args]
+  : ["cargo", "run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", ...args];
+
 export const projectGeneratedRust = (root, directory) => {
-  const result = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "rust-projection", directory], { cwd: root, encoding: "utf8" });
+  const [command, ...args] = protoCodegenCommand(["rust-projection", directory]);
+  const result = spawnSync(command, args, { cwd: root, encoding: "utf8" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Rust projection failed: ${result.stderr}`);
 };

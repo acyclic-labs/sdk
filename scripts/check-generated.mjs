@@ -1,10 +1,10 @@
 import { wasmSurfaceComparison } from "./tracked-wasm-surfaces.mjs";
-import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, projectGeneratedRust, packagedRustDirectories, rustBindingFiles, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, projectGeneratedRust, protoCodegenCommand, packagedRustDirectories, rustBindingFiles, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import YAML from "./vendor/yaml.cjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 import { nativeFamily } from "./native-family.mjs";
 
@@ -14,20 +14,23 @@ if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Erro
 const sourceOnly = args.includes("--source-only");
 const compareWasmSurfaces = wasmSurfaceComparison(root);
 for (const key of ["actors", "stream"]) {
-  const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
+  const [command, ...arguments_] = protoCodegenCommand(["native-family", root, key]);
+  const facts = spawnSync(command, arguments_, { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
   const expected = `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`;
   if (readFileSync(join(root, "scripts/generated/native-families", `${key}.json`), "utf8") !== expected) throw new Error(`Rust native-family ${key} generation drift`);
 }
-const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
-  cwd: root,
-  encoding: "utf8",
-});
-if (actors.status !== 0) {
-  process.stderr.write(actors.stdout ?? "");
-  process.stderr.write(actors.stderr ?? "");
-  throw new Error(`Actors Rust generation drift check failed with status ${actors.status ?? "unknown"}`);
+if (!sourceOnly) {
+  const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (actors.status !== 0) {
+    process.stderr.write(actors.stdout ?? "");
+    process.stderr.write(actors.stderr ?? "");
+    throw new Error(`Actors Rust generation drift check failed with status ${actors.status ?? "unknown"}`);
+  }
 }
 const generatedFiles = directory => {
   const files = [];
@@ -127,7 +130,8 @@ const checkWasmPackage = async ([packageName, basename]) => {
 // through its installed node_modules without copying or inventing codec packages.
 const temporary = mkdtempSync(join(root, "target-sdk-codegen-"));
 try {
-  const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8" });
+  const [command, ...arguments_] = protoCodegenCommand(["readonly"]);
+  const readonly = spawnSync(command, arguments_, { cwd: root, encoding: "utf8" });
   if (readonly.error) throw readonly.error;
   if (readonly.status !== 0) throw new Error(`Rust readonly projection failed: ${readonly.stderr}`);
   for (const family of ["actors"]) if (readFileSync(join(root, `typescript/packages/${family}/src/generated/readonly.ts`), "utf8") !== readonly.stdout) throw new Error(`${family} readonly projection drift`);
@@ -155,9 +159,15 @@ try {
   }
 
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
+  const template = YAML.parse(readFileSync(join(root, "buf.gen.yaml"), "utf8"));
+  for (const plugin of template.plugins) {
+    if (plugin.local.includes("sdk-proto-codegen")) {
+      plugin.local = protoCodegenCommand(plugin.local.slice(plugin.local.indexOf("--") + 1));
+    }
+  }
   const generated = spawnSync(
     executable,
-    ["generate", "--output", temporary],
+    ["generate", "--template", JSON.stringify(template), "--output", temporary],
     { cwd: root, encoding: "utf8" },
   );
   if (generated.status !== 0) {

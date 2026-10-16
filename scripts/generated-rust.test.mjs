@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import YAML from "./vendor/yaml.cjs";
 import fc from "fast-check";
-import { generationTypeScript, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustDirectories, rustBindingFiles } from "./generated-bindings.mjs";
+import { generationTypeScript, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustDirectories, protoCodegenCommand, rustBindingFiles } from "./generated-bindings.mjs";
 
 test("metadata consumers import without installing generator dependencies", () => {
   const module = new URL("./generated-bindings.mjs", import.meta.url).href;
@@ -46,10 +46,17 @@ test("PRs and main pushes check source generation before any rewriting", () => {
   const job = workflow.jobs.generated;
   assert.equal(job.if, undefined);
   assert.equal(job.needs, undefined);
-  assert.ok(job.steps.every(step => step.if === undefined));
+  assert.equal(job["runs-on"], workflow.jobs.static["runs-on"]);
+  assert.equal(job["timeout-minutes"], 1);
+  assert.equal(job.env, undefined);
+  const check = job.steps.find(step => step.name === "Check generated sources without rewriting them");
+  assert.equal(check.if, undefined);
+  assert.equal(check.env.RUSTUP_TOOLCHAIN, "stable");
+  assert.equal(job.steps.filter(step => step.uses?.startsWith("actions/cache/restore@")).length, 2);
   const commands = job.steps.map(step => step.run ?? "").join("\n");
   assert.match(commands, /bun scripts\/check-generated\.mjs --source-only/);
-  assert.doesNotMatch(commands, /(?:sync-generated|scripts\/generate\.mjs|bun run generate)/);
+  assert.doesNotMatch(commands, /(?:sync-generated|scripts\/generate\.mjs|bun run generate|acyclic-actors|cargo fetch|cargo test)/);
+  assert.ok(job.steps.find(step => step.name === "Build descriptor generator only").if.includes("cache-hit"));
 });
 
 test("the actual Rust generation guard rejects every changed, missing or extra fragment", () => {
@@ -93,4 +100,41 @@ test("the actual Rust generation guard rejects every changed, missing or extra f
     inventories.set(packaged, files);
   }
   assert.doesNotThrow(check);
+});
+
+
+test("cached generator dispatch preserves every argument without invoking Cargo", () => {
+  const previous = process.env.SDK_PROTO_CODEGEN;
+  try {
+    fc.assert(fc.property(fc.array(fc.string(), { maxLength: 12 }), args => {
+      process.env.SDK_PROTO_CODEGEN = "/tool cache/sdk-proto-codegen";
+      assert.deepEqual(protoCodegenCommand(args), ["/tool cache/sdk-proto-codegen", ...args]);
+      delete process.env.SDK_PROTO_CODEGEN;
+      assert.deepEqual(protoCodegenCommand(args), ["cargo", "run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", ...args]);
+    }), { numRuns: 32 });
+  } finally {
+    if (previous === undefined) delete process.env.SDK_PROTO_CODEGEN;
+    else process.env.SDK_PROTO_CODEGEN = previous;
+  }
+});
+
+test("source-only never builds Actors while the full guard retains its Rust projection check", () => {
+  const source = readFileSync("scripts/check-generated.mjs", "utf8");
+  const guard = source.slice(source.indexOf("const args ="), source.indexOf("const generatedFiles ="));
+  const verify = (code, sourceOnly) => {
+    const calls = [];
+    runInNewContext(code, {
+      root: ".", join: posix.join, wasmSurfaceComparison: () => undefined,
+      process: { argv: ["node", "guard", ...(sourceOnly ? ["--source-only"] : [])], execPath: "node", stderr: { write() {} } },
+      protoCodegenCommand: args => ["generator", ...args],
+      spawnSync: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: "{}" }; },
+      readFileSync: () => "{}\n",
+    });
+    assert.deepEqual(calls.filter(([command]) => command === "node"),
+      sourceOnly ? [] : [["node", "scripts/generate-actors.mjs", "check"]]);
+    assert.ok(calls.every(([command]) => command !== "cargo"));
+  };
+  for (const sourceOnly of [false, true]) verify(guard, sourceOnly);
+  assert.throws(() => verify(guard.replace("if (!sourceOnly)", "if (true)"), true));
+  assert.throws(() => verify(guard.replace("if (!sourceOnly)", "if (false)"), false));
 });
