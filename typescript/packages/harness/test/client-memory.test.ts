@@ -4,6 +4,30 @@ import { HarnessClient, TaskVolume, WasmStream, initializeClientQueries } from "
 
 beforeAll(initializeClientQueries);
 
+test("a registered idle wait leaves the only command slot available for flush", async () => {
+  const stream = new WasmStream();
+  const outbox = await TaskVolume.create(stream, "client/files");
+  const target = await TaskVolume.create(stream, "agent/files");
+  const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
+  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
+  try {
+    await client.enqueue({ Task: { task: "task", file: { Request: "one.json" } } }, payload);
+    let settled = false;
+    const idle = client.whenIdle().then(() => { settled = true; });
+    // spawn_local polls the wait on the next microtask. This queued barrier lets
+    // registration run before flush without a timer or polling for readiness.
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect(settled).toBe(false);
+    expect(client.pending()).toBe(1);
+    expect(await client.flush()).toBe(1);
+    await idle;
+    expect(settled).toBe(true);
+    expect(client.pending()).toBe(0);
+  } finally {
+    client.free(); outbox.free(); target.free(); stream.free();
+  }
+});
+
 for (const resizable of [false, true]) {
 test(`waiting quotas bound the backing buffer, including growth: ${resizable}`, async () => {
   const stream = new WasmStream();

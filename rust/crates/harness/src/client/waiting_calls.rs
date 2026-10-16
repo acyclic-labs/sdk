@@ -86,12 +86,28 @@ mod tests {
                     _ => return false,
                 }
             }
-            if calls.count.get() != expected.len() || calls.bytes.get() != expected.iter().sum::<u64>() {
+            if calls.count.get() != expected.len()
+                || calls.bytes.get() != expected.iter().sum::<u64>()
+            {
                 return false;
             }
         }
         drop(held);
         calls.count.get() == 0 && calls.bytes.get() == 0
+    }
+
+    fn idle_leaves_flush_capacity(commands: usize, retain_registered_waiter: bool) -> bool {
+        let calls = WaitingCalls::new(FileClientLimits {
+            commands,
+            bytes: 1,
+            durability: super::super::FileClientDurability::Accepted,
+        });
+        let _busy: Vec<_> = (1..commands).map(|_| calls.reserve(0).unwrap()).collect();
+        let mut idle = Some(calls.reserve(0).unwrap());
+        if !retain_registered_waiter {
+            drop(idle.take());
+        }
+        calls.reserve(0).is_ok()
     }
 
     proptest! {
@@ -103,6 +119,29 @@ mod tests {
         ) {
             prop_assert!(check(commands, bytes, &actions, false));
         }
+
+        #[test]
+        fn registered_idle_waiter_leaves_capacity_for_progress(commands in 1_usize..8) {
+            prop_assert!(idle_leaves_flush_capacity(commands, false));
+        }
+    }
+
+    #[test]
+    fn negative_control_retained_idle_reservation_prevents_progress() {
+        use proptest::test_runner::{Config, TestError, TestRunner};
+        let mut runner = TestRunner::new(Config {
+            failure_persistence: None,
+            ..Config::default()
+        });
+        let result = runner.run(&(1_usize..8), |commands| {
+            prop_assert!(idle_leaves_flush_capacity(commands, true));
+            Ok(())
+        });
+        let Err(TestError::Fail(_, commands)) = result else {
+            panic!("retained idle reservation escaped")
+        };
+        assert_eq!(commands, 1);
+        assert!(idle_leaves_flush_capacity(commands, false));
     }
 
     #[test]

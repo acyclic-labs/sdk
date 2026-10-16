@@ -99,12 +99,15 @@ impl WasmFileClient {
     /// Waits for automatic remote draining, without transport or retry code in JS.
     #[wasm_bindgen(js_name = whenIdle)]
     pub async fn when_idle(&self) -> Result<(), JsValue> {
-        let _reservation = self.waiting.reserve(0).map_err(admission_error)?;
+        let reservation = self.waiting.reserve(0).map_err(admission_error)?;
         let (reply, result) = mailbox::channel();
         self.commands
             .send(Command::Idle(reply))
             .await
             .map_err(|()| error("client owner stopped"))?;
+        // The owner bounds registered idle waiters separately. Leave capacity for
+        // the flush that makes this wait complete, even at a one-command limit.
+        drop(reservation);
         result.await.map_err(|()| error("client owner stopped"))?
     }
 
