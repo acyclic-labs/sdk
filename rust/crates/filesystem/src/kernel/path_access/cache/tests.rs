@@ -1,4 +1,16 @@
 use super::*;
+
+#[test]
+fn operation_cache_preserves_the_providers_decoded_cache_capability() {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let plain = crate::memory::MemoryObjectStore::default();
+    let cache = OperationReadCache::new(&plain, 1, &mut accounting, None).unwrap();
+    assert!(!crate::AsyncObjectStore::supports_decoded_cache(&cache));
+    let hooks = crate::test_support::OwnedReadObjectStore::default();
+    let cache = OperationReadCache::new(&hooks, 1, &mut accounting, None).unwrap();
+    assert!(crate::AsyncObjectStore::supports_decoded_cache(&cache));
+}
 use proptest::prelude::*;
 
 std::thread_local! {

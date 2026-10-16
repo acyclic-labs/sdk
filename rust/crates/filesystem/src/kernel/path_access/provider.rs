@@ -40,6 +40,10 @@ pub(super) fn compose_backend(
     Ok(())
 }
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
+    fn supports_decoded_cache(&self) -> bool {
+        self.store.supports_decoded_cache()
+    }
+
     fn decoded_cache_get(
         &self,
         key: async_storage::DecodedCacheKey,
