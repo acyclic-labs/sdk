@@ -9,7 +9,7 @@ use std::sync::{
 };
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
-#[path = "../../src/sync.rs"]
+#[path = "../../src/sync/primitives.rs"]
 pub(crate) mod sync;
 mod mcp {
     pub(crate) use crate::sync;
