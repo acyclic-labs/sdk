@@ -24,6 +24,7 @@ pub(crate) fn generate(
         let input_bytes = body.len();
         #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
+        #[cfg(not(target_arch = "wasm32"))]
         let mut recovery = Recovery::default();
         loop {
             let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
@@ -37,7 +38,8 @@ pub(crate) fn generate(
                 while let Some(event) = events.next().await {
                     match event {
                         Ok(event) => {
-                            recovery.output = true;
+                            #[cfg(not(target_arch = "wasm32"))]
+                            { recovery.output = true; }
                             if let ModelEvent::Completed { metadata } = &event {
                                 provider.observe(&request, input_bytes, metadata)?;
                             }
@@ -180,14 +182,14 @@ pub(crate) fn headers(
 
 /// One budget for both HTTP and SSE authentication failures. Once an event has
 /// escaped, replay could repeat a caller's side effects and is forbidden.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub(crate) struct Recovery {
     pub(crate) output: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     retried: bool,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl Recovery {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retry(&mut self, error: &acyclic_harness::Error) -> bool {
         if error.code() != acyclic_harness::wire::ErrorCode::Unauthorized
             || self.output

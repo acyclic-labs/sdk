@@ -125,7 +125,7 @@ pub(crate) async fn count(
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
-        Ok((url, headers, bytes, plan))
+        Ok::<_, Error>((url, headers, bytes, plan))
     }
     .await;
     #[cfg(not(target_arch = "wasm32"))]

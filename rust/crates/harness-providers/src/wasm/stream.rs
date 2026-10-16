@@ -1,4 +1,4 @@
-use super::{error, to_js};
+use super::{error, to_js_json};
 use crate::ResolvedModel;
 use acyclic_harness::model::{ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest};
 use acyclic_stream::BoxProviderStream;
@@ -114,7 +114,7 @@ impl WasmModelStream {
             match event {
                 Some(Ok(event)) => {
                     let tool_call = matches!(event, ModelEvent::ToolCall(_));
-                    let event = to_js(&event)?;
+                    let event = to_js_json(&event)?;
                     // The public facade uses callId; protocol and durable Rust DTOs use call_id.
                     if tool_call {
                         let id = js_sys::Reflect::get(&event, &"call_id".into())?;

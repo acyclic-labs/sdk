@@ -24,6 +24,13 @@ fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue>
 
 fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
     value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(error)
+}
+
+/// Arbitrary model JSON retains every 64-bit integer across the JS boundary.
+fn to_js_json(value: &impl Serialize) -> Result<JsValue, JsValue> {
+    value
         .serialize(
             &serde_wasm_bindgen::Serializer::json_compatible()
                 .serialize_large_number_types_as_bigints(true),
@@ -141,7 +148,7 @@ struct Dispatch {
 impl WasmModelProvider {
     #[wasm_bindgen(getter, unchecked_return_type = "ProviderModel")]
     pub fn model(&self) -> Result<JsValue, JsValue> {
-        to_js(self.provider.model())
+        to_js_json(self.provider.model())
     }
 
     #[wasm_bindgen(js_name = contextCapacity, unchecked_return_type = "ProviderCapacity")]

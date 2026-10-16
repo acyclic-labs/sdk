@@ -30,7 +30,7 @@ export class TerminalModelTurnError extends Error {
   }
 }
 export type RunReceipt =
-  | { readonly kind: "tool"; readonly step: number; readonly operationId: OperationId; readonly metadata: unknown; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
+  | { readonly kind: "tool"; readonly step: number; readonly operationId: ToolInvocation["operationId"]; readonly metadata: unknown; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
   | (Extract<ModelEvent, { kind: "reasoning_block" }> & { readonly step: number })
   | { readonly kind: "model-completed"; readonly metadata: unknown };
 export interface RunOutput { readonly text: string; readonly attachments?: readonly Attachment[]; readonly taskId: TaskId; readonly receipts: readonly RunReceipt[] }

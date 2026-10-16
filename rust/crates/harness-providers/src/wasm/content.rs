@@ -25,22 +25,6 @@ impl ContentResidencyVerifier for Reader {
         BoundedContentFuture::new(io, || async move {
             let encoded =
                 to_js(file).map_err(|_| Error::Invalid("model file encoding failed".into()))?;
-            // FileDescriptor's public byte length is an admitted exact JS Number;
-            // arbitrary JSON in model events retains its 64-bit integers as BigInt.
-            let descriptor = js_sys::Reflect::get(&encoded, &"descriptor".into())
-                .map_err(|_| Error::Invalid("model file encoding failed".into()))?;
-            let length = file.descriptor().byte_length();
-            if length > acyclic_harness::conversation::MAX_EXACT_JS_INTEGER {
-                return Err(Error::Invalid(
-                    "model file length exceeds JS precision".into(),
-                ));
-            }
-            js_sys::Reflect::set(
-                &descriptor,
-                &"byte_length".into(),
-                &JsValue::from_f64(length as f64),
-            )
-            .map_err(|_| Error::Invalid("model file encoding failed".into()))?;
             let file = encoded;
             let promise = self
                 .0

@@ -340,26 +340,61 @@ async fn counting_aborts_pending_headers_and_releases_the_fetch() -> Result<(), 
 }
 
 #[wasm_bindgen_test]
-async fn model_arguments_keep_integers_beyond_js_number_precision() -> Result<(), JsValue> {
-    let fixture = model_fixture(
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":9007199254740993}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
-        "complete",
+async fn model_arguments_keep_the_exact_portable_boundary_and_reject_larger_values()
+-> Result<(), JsValue> {
+    let maximum = acyclic_harness::conversation::MAX_EXACT_JS_INTEGER;
+    for value in [maximum, maximum + 1, maximum + 2] {
+        let data = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{
+            "delta":{"tool_calls":[{"index":0,"id":"call","function":{"name":"echo",
+                "arguments":format!("{{\"value\":{value}}}")}}]},"finish_reason":"tool_calls"}]})
+        );
+        let fixture = model_fixture(&data, "complete");
+        let provider = provider(Adapter::Chat, &fixture)?;
+        let result = JsFuture::from(collect_model(
+            provider.generate(request(&provider, None)?, dispatch()?)?,
+        ))
+        .await;
+        if value > maximum {
+            assert!(
+                result.is_err(),
+                "unsafe tool integers must be rejected before publication"
+            );
+        } else {
+            let events = js_sys::Array::from(&result?);
+            let value = field(&field(&events.get(0), "arguments")?, "value")?;
+            assert!(value.is_bigint());
+            assert_eq!(
+                js_sys::BigInt::from(value)
+                    .to_string(10)?
+                    .as_string()
+                    .as_deref(),
+                Some("9007199254740991")
+            );
+        }
+    }
+    Ok(())
+}
+
+#[wasm_bindgen_test]
+fn typed_numbers_and_arbitrary_model_json_have_distinct_wire_encodings() -> Result<(), JsValue> {
+    let dispatch = json!({"operationId":"00000000-0000-4000-8000-000000000001", "step":2});
+    assert_eq!(from_js::<Dispatch>(to_js(&dispatch)?)?.step, 2);
+    // Negative control: applying the arbitrary-JSON policy to typed fields fails.
+    assert!(from_js::<Dispatch>(to_js_json(&dispatch)?).is_err());
+    let data = json!({"value":u64::MAX});
+    assert!(
+        to_js(&data).is_err(),
+        "typed Number conversion must never round JSON integers"
     );
-    let provider = provider(Adapter::Chat, &fixture)?;
-    let events = JsFuture::from(collect_model(
-        provider.generate(request(&provider, None)?, dispatch()?)?,
-    ))
-    .await?;
-    let events = js_sys::Array::from(&events);
-    let call = events.get(0);
-    let value = field(&field(&call, "arguments")?, "value")?;
-    assert!(value.is_bigint());
+    let exact = field(&to_js_json(&data)?, "value")?;
     assert_eq!(
-        js_sys::BigInt::from(value)
+        js_sys::BigInt::from(exact)
             .to_string(10)?
             .as_string()
             .as_deref(),
-        Some("9007199254740993")
+        Some("18446744073709551615")
     );
     Ok(())
 }
