@@ -97,7 +97,7 @@ required-features = ["local", "memory", "native-watch"]
 [[bench]]
 name = "native_capture"
 harness = false
-required-features = ["memory", "native-watch"]
+required-features = ["memory", "native-watch", "native-mount"]
 
 [[test]]
 name = "native_source_watch_custody"

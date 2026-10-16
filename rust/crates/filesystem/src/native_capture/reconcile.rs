@@ -411,7 +411,6 @@ impl CaptureBatch<'_> {
             && existing.0.is_some_and(|record| record.link_count == 1)
             && existing.0.is_some_and(|record| match record.payload {
                 crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
-                crate::kernel::FilePayload::Regular { logical_bytes, .. } => logical_bytes == 0,
                 _ => false,
             }) {
             true
