@@ -3,14 +3,18 @@ import { create } from "@bufbuild/protobuf";
 import { credentialTlsFixture } from "../../../test/credential-tls.js";
 import { NativeStreamProvider } from "../src/native.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { SessionNode } from "./session-node.js";
+import { SessionNode, checkpoint } from "./session-node.js";
 
-async function fixture(node: SessionNode, name: string, movedEndpoint: () => string) {
+async function fixture(node: SessionNode, name: string, movedEndpoint: () => string,
+  welcome?: { arrived: () => void; released: Promise<void> }) {
   let sessions = 0;
+  let live = 0;
+  const changed = new Set<() => void>();
   const host = await credentialTlsFixture(router => {
     router.service(wire.StreamSessionService, { async *session(input, context) {
       expect(context.requestHeader.get("authorization")).toBe("Bearer fixture");
       sessions++;
+      live++;
       const transport = await node.connect(name === "home" ? undefined : create(wire.SessionNodeSchema, { nodeId: name }), context.signal);
       const close = () => transport.close();
       context.signal.addEventListener("abort", close, { once: true });
@@ -18,13 +22,29 @@ async function fixture(node: SessionNode, name: string, movedEndpoint: () => str
       void pump().catch(close);
       try {
         for await (const frame of transport.incoming) {
+          if (welcome && frame.body.case === "welcome" && sessions === 1) {
+            welcome.arrived();
+            await Promise.race([welcome.released, new Promise<void>(resolve => {
+              if (context.signal.aborted) resolve();
+              else context.signal.addEventListener("abort", () => resolve(), { once: true });
+            })]);
+            if (context.signal.aborted) return;
+          }
           if (frame.body.case === "moved" && frame.body.value.node) frame.body.value.node.endpoint = movedEndpoint();
           yield frame;
         }
-      } finally { context.signal.removeEventListener("abort", close); close(); }
+      } finally {
+        context.signal.removeEventListener("abort", close); close();
+        live--; for (const notify of changed) notify();
+      }
     } });
   });
-  return { host, get sessions() { return sessions; } };
+  return { host, get sessions() { return sessions; }, get live() { return live; },
+    closed: () => new Promise<void>(resolve => {
+      const check = () => { if (live === 0) { changed.delete(check); resolve(); } };
+      changed.add(check); check();
+    }),
+  };
 }
 
 test("native concurrent discovery and follows share one Session per node with local cancellation", async () => {
@@ -69,6 +89,8 @@ test("native concurrent discovery and follows share one Session per node with lo
       controllers.forEach(controller => controller.abort()); healthy.abort();
       await Promise.all(children.map(child => child.return?.()));
       await records.return?.();
+      await Promise.all([edge.closed(), target.closed()]);
+      expect(edge.live + target.live).toBe(0);
     }
   } finally {
     await Promise.all([edge.host.close(), target.host.close()]);
@@ -99,6 +121,37 @@ test("cancelling a discovery during shared initialization preserves its sibling"
     } finally {
       finish(); cancelled.abort(); healthy.abort();
       await Promise.all([first.return?.(), second.return?.()]);
+      await peer.closed(); expect(peer.live).toBe(0);
+    }
+  } finally { await peer.host.close(); }
+});
+
+test("a cancelled waiter cannot cancel a shared Session paused before Welcome", async () => {
+  const node = new SessionNode(); node.append("agents/a");
+  let arrived!: () => void, finish!: () => void;
+  const paused = new Promise<void>(resolve => { arrived = resolve; });
+  const released = new Promise<void>(resolve => { finish = resolve; });
+  const peer = await fixture(node, "home", () => { throw new Error("unexpected move"); }, { arrived, released });
+  const cancelled = new AbortController(), healthy = new AbortController();
+  try {
+    const provider = await NativeStreamProvider.connect(peer.host.endpoint, undefined, Buffer.from(peer.host.certificate), undefined, () => "fixture");
+    const first = provider.children({ parent: "agents", limit: 1, signal: cancelled.signal })[Symbol.asyncIterator]();
+    const second = provider.children({ parent: "agents", limit: 1, signal: healthy.signal })[Symbol.asyncIterator]();
+    try {
+      const abandoned = first.next();
+      await paused;
+      const surviving = second.next();
+      await checkpoint();
+      cancelled.abort();
+      expect((await abandoned).done).toBe(true);
+      expect(peer.live).toBe(1); expect(peer.sessions).toBe(1);
+      finish();
+      expect((await surviving).value?.path).toBe("agents/a");
+      expect(peer.sessions).toBe(1); expect(peer.host.connections).toBe(1);
+    } finally {
+      finish(); cancelled.abort(); healthy.abort();
+      await Promise.all([first.return?.(), second.return?.()]);
+      await peer.closed(); expect(peer.live).toBe(0);
     }
   } finally { await peer.host.close(); }
 });

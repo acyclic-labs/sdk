@@ -15,8 +15,14 @@ impl Pool {
                     self.connecting.remove(&node);
                     match result {
                         Ok(ready) => {
-                            self.install(ready)?;
-                            self.pending.extend(self.routes.iter().filter(|(_,route)| route.node == node).map(|(id,route)| (*id,route.generation)));
+                            let installed = self.install(ready)?;
+                            if node.is_empty() && self.home.is_empty() {
+                                self.home = installed.clone();
+                                for route in self.routes.values_mut().filter(|route| route.node.is_empty()) {
+                                    route.node = installed.clone();
+                                }
+                            }
+                            self.pending.extend(self.routes.iter().filter(|(_,route)| route.node == installed).map(|(id,route)| (*id,route.generation)));
                         }
                         Err(error) => self.fail_node(&node,&error),
                     }
@@ -38,7 +44,21 @@ impl Pool {
                     None => return Err(StreamError::Unavailable),
                 }
             }
+            self.close_idle();
         }
+    }
+    fn close_idle(&mut self) {
+        if self.active.load(Ordering::Acquire) == 0 {
+            self.close_links();
+        }
+    }
+    fn close_links(&mut self) {
+        self.links.clear();
+        self.reads.clear();
+        self.dials.clear();
+        self.connecting.clear();
+        self.pending.clear();
+        self.routes.clear();
     }
     fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
@@ -316,7 +336,7 @@ impl Pool {
         for id in ids {
             if let Some(mut route) = self.routes.remove(&id) {
                 if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Ok(id));
+                    let _ = ready.send(Err(error.clone()));
                 }
                 let error = error.clone();
                 let records = route.records;

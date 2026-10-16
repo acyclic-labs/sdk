@@ -9,7 +9,9 @@ use tonic::{
     transport::Channel as TransportChannel,
 };
 
+mod cache;
 mod credit;
+pub(crate) use cache::Cache;
 mod outbound;
 use credit::{Credit, Released};
 use outbound::Outbound;
@@ -17,7 +19,9 @@ type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
 #[cfg(acyclic_stream_loom)]
-pub use pool::model::verify_link_isolation;
+pub use cache::verify_cache;
+#[cfg(acyclic_stream_loom)]
+pub use pool::model::{verify_interest_accounting, verify_link_isolation, verify_pool_lifetime};
 mod progress;
 use progress::Progress;
 #[cfg(test)]
@@ -48,6 +52,7 @@ pub struct Client {
     commands: mpsc::Sender<Command>,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
+    active: Arc<AtomicU64>,
 }
 struct Delivery {
     item: Received,
@@ -108,6 +113,7 @@ struct Pool {
     pending: VecDeque<(u64, u64)>,
     home_channel: TransportChannel,
     next_link: u64,
+    active: Arc<AtomicU64>,
     commands: mpsc::Receiver<Command>,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
@@ -119,13 +125,13 @@ impl Drop for Link {
     }
 }
 impl Client {
-    pub(crate) async fn open(
+    pub(crate) fn open(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
         credential: Option<grpc::CredentialProvider>,
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
-    ) -> Result<Self, StreamError> {
+    ) -> Self {
         let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
             let verifier = verifier.clone();
@@ -137,18 +143,19 @@ impl Client {
                 .map_err(|_| StreamError::Unavailable)
             })
         });
-        Self::with_connector(channel, authorization, credential, connect).await
+        Self::with_connector(channel, authorization, credential, connect)
     }
-    async fn with_connector(
+    fn with_connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
         credential: Option<grpc::CredentialProvider>,
         connect: Connect,
-    ) -> Result<Self, StreamError> {
+    ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
+        let active = Arc::new(AtomicU64::new(0));
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
@@ -163,22 +170,23 @@ impl Client {
             pending: VecDeque::new(),
             home_channel: channel.clone(),
             next_link: 1,
+            active: Arc::clone(&active),
             commands: receiver,
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
             release_sender,
         };
-        pool.home = pool.add_link(channel, "").await?;
         tokio::spawn(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
         });
-        Ok(Self {
+        Self {
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
-        })
+            active,
+        }
     }
     /// Opens a logical follow on the shared session, without a per-stream RPC.
     pub async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
@@ -235,12 +243,7 @@ impl Client {
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
-        let cursor = Cursor {
-            id,
-            client: self.clone(),
-            progress: Arc::clone(&progress),
-            receiver,
-        };
+        let cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
         self.commands
             .send(Command::Open {
                 id,
@@ -284,6 +287,26 @@ impl Client {
         })
         .boxed())
     }
+    fn cursor(
+        &self,
+        id: u64,
+        progress: Arc<Progress>,
+        receiver: mpsc::Receiver<Result<Delivery, StreamError>>,
+    ) -> Result<Cursor, StreamError> {
+        // Reserve before queueing Open: dispatch may observe a removal before
+        // a concurrent Open, but must retain their shared initialization.
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                active.checked_add(1)
+            })
+            .map_err(|_| StreamError::Capacity)?;
+        Ok(Cursor {
+            id,
+            client: self.clone(),
+            progress,
+            receiver,
+        })
+    }
 }
 struct Cursor {
     id: u64,
@@ -295,6 +318,7 @@ impl Drop for Cursor {
     fn drop(&mut self) {
         self.progress.cancel();
         self.receiver.close();
+        self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }
 }
