@@ -59,11 +59,14 @@ pub(super) struct Selection {
     root: FileId,
     directory: Option<FileId>,
     parent: Option<FileId>,
+    goal_metadata_path: Option<String>,
+    goal_metadata_entry: Option<FileId>,
 }
 
 impl Selection {
     pub(super) async fn read<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
         generation: &Generation<Authority<P>, O>,
+        volume: &crate::conversation::VolumeRef,
         query: &Query,
         maximum_files: usize,
         maximum_bytes: usize,
@@ -76,10 +79,27 @@ impl Selection {
             root: root.file_id,
             directory: None,
             parent: None,
+            goal_metadata_path: if query == &Query::File(FileKey::Goal) {
+                Some(crate::filesystem::content_metadata_path_io(
+                    "GOAL.md",
+                    true,
+                    Some(io),
+                )?)
+            } else {
+                None
+            },
+            goal_metadata_entry: None,
         };
         let entries = selection.list(generation, query, maximum_files, io).await?;
         selection
-            .replace(generation, entries, &BTreeSet::new(), maximum_bytes, io)
+            .replace(
+                generation,
+                volume,
+                entries,
+                &BTreeSet::new(),
+                maximum_bytes,
+                io,
+            )
             .await?;
         Ok(selection)
     }
@@ -139,6 +159,7 @@ impl Selection {
     pub(super) async fn apply<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
         &mut self,
         generation: &Generation<Authority<P>, O>,
+        volume: &crate::conversation::VolumeRef,
         diff: &acyclic_fs::GenerationDiff,
         query: &Query,
         bounds: (usize, usize),
@@ -151,7 +172,14 @@ impl Selection {
             _ => return Err(task_volume::Error::InvalidPath),
         };
         let mut root_changed = false;
+        let mut metadata_changed = false;
         for binding in &diff.bindings {
+            if let Some(path) = &self.goal_metadata_path {
+                let decoded = name(&binding.name, io)?;
+                metadata_changed |= path.rsplit('/').next() == Some(decoded.as_str())
+                    || decoded == "harness-file-metadata"
+                    || (binding.directory_id == self.root && decoded == ".system");
+            }
             if query == &Query::File(FileKey::RequestHead)
                 && Some(binding.directory_id) == self.parent
                 && name(&binding.name, io)? == "current.json"
@@ -169,6 +197,13 @@ impl Selection {
             .filter(|(_, id)| changed.contains(*id))
             .map(|(key, _)| key.clone())
             .collect();
+        if metadata_changed
+            || self
+                .goal_metadata_entry
+                .is_some_and(|id| changed.contains(&id))
+        {
+            dirty.insert(FileKey::Goal);
+        }
         let mut entries = if root_changed {
             let entries = self.list(generation, query, bounds.0, io).await?;
             dirty.extend(
@@ -214,13 +249,14 @@ impl Selection {
         if entries.len() > bounds.0 {
             return Err(task_volume::Error::LimitExceeded);
         }
-        self.replace(generation, entries, &dirty, bounds.1, io)
+        self.replace(generation, volume, entries, &dirty, bounds.1, io)
             .await
     }
 
     async fn replace<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
         &mut self,
         generation: &Generation<Authority<P>, O>,
+        volume: &crate::conversation::VolumeRef,
         entries: BTreeMap<FileKey, FileId>,
         changed: &BTreeSet<FileKey>,
         maximum_bytes: usize,
@@ -257,13 +293,62 @@ impl Selection {
             remaining = remaining
                 .checked_sub(bytes.len())
                 .ok_or(task_volume::Error::LimitExceeded)?;
-            let value = FileValue::new(key.clone(), bytes);
+            let mut value = FileValue::new(key.clone(), bytes);
+            if let Some(path) = &self.goal_metadata_path {
+                let (publication, entry) =
+                    goal_publication(generation, volume, path, &value.bytes, io).await?;
+                value.publication = publication;
+                self.goal_metadata_entry = entry;
+            }
             files.push(value.clone());
             self.files.insert(key, value);
         }
         self.entries = entries;
         Ok((files, removed))
     }
+}
+
+async fn goal_publication<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+    generation: &Generation<Authority<P>, O>,
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+    bytes: &[u8],
+    io: &PreparationIo,
+) -> task_volume::Result<(Option<crate::OperationId>, Option<FileId>)> {
+    let (stat, recorded) = generation.stat(path, io, io.cancellation()).await;
+    recorded.map_err(crate::Error::from)?;
+    let stat = match stat {
+        Ok(stat) => stat,
+        Err(WorkspaceError::NotFound) => return Ok((None, None)),
+        Err(error) => return Err(crate::Error::from(error).into()),
+    };
+    let metadata = io.sdk(
+        generation
+            .read(
+                path,
+                io.remaining()
+                    .map_err(crate::Error::from)?
+                    .source_bytes_read,
+                io,
+                io.cancellation(),
+            )
+            .await,
+    )?;
+    let reference: crate::conversation::FileRef = io.decode_json(&metadata)?;
+    if reference.volume() != volume || reference.path() != "GOAL.md" {
+        return Err(task_volume::Error::InvalidSegment);
+    }
+    // An unindexed writer may leave an old descriptor. Only its provenance is
+    // unknown; the readable goal remains observable. IO failures still propagate.
+    if !crate::executor::with_history_io(Some(io), |work| {
+        reference.descriptor().matches_bytes(bytes, work)
+    })? {
+        return Ok((None, Some(stat.file_id)));
+    }
+    Ok((
+        Some(crate::filesystem::file_publication(&reference, Some(io))?),
+        Some(stat.file_id),
+    ))
 }
 
 fn name(

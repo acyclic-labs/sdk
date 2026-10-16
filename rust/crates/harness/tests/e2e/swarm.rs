@@ -221,9 +221,10 @@ pub(super) async fn run_with_fault(
     measured.sort_unstable();
     if !measured.is_empty() {
         println!(
-            "swarm agents={} sessions=1 samples={} tier1_p99_ns={} wire={wire}",
+            "swarm agents={} sessions=1 samples={} tier1_p50_ns={} tier1_p99_ns={} wire={wire}",
             case.agents,
             measured.len(),
+            measured[measured.len() / 2],
             measured[(measured.len() * 99 / 100).min(measured.len() - 1)]
         );
     }

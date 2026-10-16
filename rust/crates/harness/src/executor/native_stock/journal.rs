@@ -5,6 +5,7 @@ pub(in crate::executor) async fn stage_bytes(
     operation: OperationId,
     key: &str,
     bytes: &[u8],
+    bind_content: bool,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
     validate_journal(journal, io)?;
@@ -13,31 +14,45 @@ pub(in crate::executor) async fn stage_bytes(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.preflight(acyclic_fs::WorkCounters {
-            bytes_hashed: bytes.len() as u64 * 2,
+            bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
             ..Default::default()
         })?;
     }
     use sha2::Digest as _;
     let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
-    let identity = blake3::hash(bytes);
+    let identity = bind_content.then(|| blake3::hash(bytes));
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.spent(acyclic_fs::WorkCounters {
-            bytes_hashed: bytes.len() as u64 * 2,
+            bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
             ..Default::default()
         })?;
     }
-    let copied = with_history_io(io, |work| {
-        crate::executor::preparation_format(format_args!("{key}:{}", identity.to_hex()), work)
-    })?;
+    let copied = identity
+        .map(|identity| {
+            with_history_io(io, |work| {
+                crate::executor::preparation_format(
+                    format_args!("{key}:{}", identity.to_hex()),
+                    work,
+                )
+            })
+        })
+        .transpose()?;
     #[cfg(feature = "filesystem")]
     {
         _key_hold = io
-            .map(|io| io.guard_owned(copied.capacity() as u64))
+            .zip(copied.as_ref())
+            .map(|(io, copied)| io.guard_owned(copied.capacity() as u64))
             .transpose()?;
     }
     let reference = journal
-        .stage(operation, &copied, bytes, "application/json", io)?
+        .stage(
+            operation,
+            copied.as_deref().unwrap_or(key),
+            bytes,
+            "application/json",
+            io,
+        )?
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
@@ -66,13 +81,13 @@ pub(crate) async fn stage_json<T: Serialize>(
         let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_bytes(&bytes)?;
-        let result = stage_bytes(journal, operation, key, &bytes, Some(io)).await;
+        let result = stage_bytes(journal, operation, key, &bytes, true, Some(io)).await;
         drop(bytes);
         drop(hold);
         return result;
     }
     let bytes = crate::contract::canonical_json_bytes(value)?;
-    stage_bytes(journal, operation, key, &bytes, None).await
+    stage_bytes(journal, operation, key, &bytes, true, None).await
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

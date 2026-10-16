@@ -1,6 +1,9 @@
 use super::fixture::fixture;
 use super::*;
 
+mod follow_data;
+pub use follow_data::verify_follow_data;
+
 /// Models the real abandonment fence, wake registration, new Open and late error.
 pub fn verify_abandoned_reconnect(broken: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -17,6 +20,8 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -34,12 +39,13 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 (
                     cursor,
                     Command::Open {
+                        raw: false,
                         id,
                         attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
                         acknowledge: false,
                         kind: Kind::Follow(wire::SessionFollow {
-                            path: "healthy".into(),
                             delivery: wire::SessionDelivery::All as i32,
+                            path: "healthy".into(),
                             ..Default::default()
                         }),
                         progress,
@@ -122,6 +128,8 @@ pub fn verify_pool_lifetime(fault: u8) {
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -136,12 +144,13 @@ pub fn verify_pool_lifetime(fault: u8) {
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
             let command = Command::Open {
+                raw: false,
                 id,
                 attempt_epoch: 0,
                 acknowledge: false,
                 kind: Kind::Follow(wire::SessionFollow {
-                    path: "healthy".into(),
                     delivery: wire::SessionDelivery::All as i32,
+                    path: "healthy".into(),
                     ..Default::default()
                 }),
                 progress,
@@ -221,6 +230,8 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands,
             removed: Arc::new(signal::Signal::new()),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -360,10 +371,12 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open {
+            raw: false,
             id: 5,
             attempt_epoch: 0,
             acknowledge: false,
             kind: Kind::Follow(wire::SessionFollow {
+                delivery: wire::SessionDelivery::All as i32,
                 path: "later".into(),
                 ..Default::default()
             }),
@@ -396,6 +409,8 @@ pub fn verify_registration_deadline(broken: bool) {
         loom::model(move || {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -494,6 +509,8 @@ pub fn verify_node_dials(fault: u8) {
                 pool.routes.get_mut(&1).unwrap().node = "good".into();
             }
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands: mpsc::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
@@ -605,6 +622,8 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.routes.get_mut(&1).unwrap().records = records;
         pool.routes.get_mut(&1).unwrap().node = "good".into();
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),

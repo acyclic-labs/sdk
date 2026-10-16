@@ -31,10 +31,20 @@ mod rendering;
 
 #[tokio::test]
 async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {
+    futures::future::try_join_all(cases()?.into_iter().map(run)).await?;
+    Ok(())
+}
+
+fn cases() -> Result<Vec<Case>> {
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("goals.json")).map_err(super::super::storage)?;
-    futures::future::try_join_all(cases.into_iter().map(run)).await?;
-    Ok(())
+    #[cfg(feature = "native-execution")]
+    let cases = {
+        let mounted: Vec<Case> = serde_json::from_str(include_str!("goals/mounted.json"))
+            .map_err(super::super::storage)?;
+        cases.into_iter().chain(mounted).collect()
+    };
+    Ok(cases)
 }
 
 async fn run(case: Case) -> Result<()> {
@@ -104,6 +114,7 @@ async fn run(case: Case) -> Result<()> {
     )
     .await
     .expect("goal scenario stalled")?;
+    #[cfg(feature = "native-execution")]
     if case.tasks > 1 {
         let requests =
             serde_json::to_string(&provider.requests()).map_err(super::super::storage)?;

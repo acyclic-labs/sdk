@@ -21,10 +21,7 @@ impl Constraint {
                 .is_some_and(|text| !nonempty || !text.is_empty()),
             Self::Array => value.is_array(),
             Self::Name(rule) => value.as_str().is_some_and(|text| rule.accepts(text)),
-            Self::ObjectJson => value
-                .as_str()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok())
-                .is_some_and(|value| value.is_object()),
+            Self::ObjectJson => value.as_str().is_some_and(super::strict::object),
         }
     }
     /// The enclosing payload must already have passed `strict::valid`.

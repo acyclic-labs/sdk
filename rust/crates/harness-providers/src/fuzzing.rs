@@ -88,6 +88,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
         assert_alloy_invariants(input);
         return;
     }
+    if kind == b'P' {
+        if let Ok(value) = crate::projection::arguments::literal(input) {
+            crate::projection::arguments::assert_normalization(&value);
+        }
+        return;
+    }
     if kind == b'K' {
         use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
         for field in [

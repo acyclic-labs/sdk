@@ -15,9 +15,14 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
     if (fault === "write") {
-      const cancellation = "const signals = [signal, other].filter((value): value is AbortSignal => value !== undefined);";
+      const cancellation = "const abort = (): void => cursor?.close();";
       if (!source.includes(cancellation)) throw new Error("blocked-write negative control no longer matches");
-      source = source.replace(cancellation, "const signals: AbortSignal[] = [];");
+      source = source.replace(cancellation, "const abort = (): void => {}; ");
+    }
+    if (fault === "writeSignal") {
+      const forwarding = "transport.send(fromBinary(wire.SessionFrameSchema, bytes), writeSignal)";
+      if (!source.includes(forwarding)) throw new Error("write signal negative control no longer matches");
+      source = source.replace(forwarding, "transport.send(fromBinary(wire.SessionFrameSchema, bytes))");
     }
     return { contents: source, loader: "ts" };
   });
@@ -27,9 +32,9 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
     if (!source.includes(factory)) throw new Error("raw-follow factory probe no longer matches");
     source = source.replace(factory, "const { client, sessions } = { client: {}, sessions: globalThis.sessionDeadlineSessions };");
     if (fault === "deadline") {
-      const forwarding = "const timeoutMs = callOptions?.timeoutMs;";
+      const forwarding = "const { signal, timeoutMs } = callOptions ?? {};";
       if (fault !== "deadline" || !source.includes(forwarding)) throw new Error("deadline negative control no longer matches");
-      source = source.replaceAll(forwarding, "const timeoutMs = undefined;");
+      source = source.replaceAll(forwarding, "const { signal } = callOptions ?? {}; const timeoutMs = undefined;");
     }
     return { contents: source, loader: "ts" };
   });
@@ -38,13 +43,23 @@ const { StreamSessions } = await import("../src/session.js");
 let releaseWrite: (() => void) | undefined;
 let blocked = false;
 let writesReleased = false;
+let readData = 0;
+let resumeConsumer: (() => void) | undefined;
+let consumerPaused = false;
 const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
-  return { ...transport, async send(input, writeSignal) {
+  return { ...transport, incoming: { async *[Symbol.asyncIterator]() {
+    for await (const frame of transport.incoming) {
+      if (frame.body.case === "data") readData += 1;
+      for (const notify of peer.changed) notify();
+      yield frame;
+    }
+  } }, async send(input, writeSignal) {
     const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.path === "events" || value.kind.case === "children" && value.kind.value.parent === "events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
       blocked = true;
+      for (const notify of peer.changed) notify();
       await new Promise<void>(resolve => { releaseWrite = resolve; });
     }
     writeSignal?.throwIfAborted();
@@ -97,7 +112,14 @@ const records = (children ? client.children({ parent: "events", limit: 1 }, { ti
   : client.follow({ path: "events", from: 0n }, { timeoutMs: duration, signal: cancel.signal }))[Symbol.asyncIterator]();
 const follow = (async () => {
   try {
-    for await (const _ of { [Symbol.asyncIterator]: () => records }) seen += 1;
+    for await (const _ of { [Symbol.asyncIterator]: () => records }) {
+      seen += 1;
+      if (scenario === "deadline-ack" && seen === 1) {
+        consumerPaused = true;
+        for (const notify of peer.changed) notify();
+        await new Promise<void>(resolve => { resumeConsumer = resolve; });
+      }
+    }
   } catch (error) { code = error instanceof ConnectError ? error.code : -1; }
   finally { settled = true; }
 })();
@@ -107,9 +129,17 @@ let connecting = false;
 async function command(action: string): Promise<unknown> {
   switch (action) {
     case "ready":
-      if (scenario === "deadline-ack") peer.append(children ? "events/child" : "events");
-      if (scenario.startsWith("deadline-")) {
+      if (scenario === "deadline-ack") {
+        if (children) { peer.append("events/child"); peer.append("events/other"); peer.append("events/third"); }
+        else peer.append("events", 3);
+        // The first yield releases one frame; fill both remaining slots while
+        // its JS consumer is paused, then consume to force the real Ack path.
+        await peer.until(() => readData === 3 && consumerPaused);
         await checkpoint();
+        resumeConsumer!();
+      }
+      if (scenario.startsWith("deadline-")) {
+        await peer.until(() => blocked);
         if (!blocked) throw new Error("model did not park the actual channel write");
       } else await peer.until(() => peer.active === 2);
       break;
@@ -144,8 +174,7 @@ async function command(action: string): Promise<unknown> {
     default: throw new Error(`unknown deadline action ${action}`);
   }
   await checkpoint();
-  if (siblingError !== undefined) throw siblingError;
-  return { settled, returned, blocked, code, cleanup, expired, seen, stoppedAt, siblingSeen,
+  return { settled, returned, blocked, siblingError: siblingError === undefined ? null : String(siblingError), code, cleanup, expired, seen, stoppedAt, siblingSeen,
     active: peer.active, outstanding: peer.outstandingFrames, connections: peer.connections.length, connecting,
     timerActive, timerCreated, timerCleaned, deadlineCode: Code.DeadlineExceeded };
 }
