@@ -217,6 +217,13 @@ proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[[bin]]
+name = "swarm_case"
+path = "fuzz_targets/swarm_case.rs"
+test = false
+doc = false
+bench = false
+
 [[bench]]
 name = "memory_directory_page"
 path = "benches/memory_directory_page.rs"

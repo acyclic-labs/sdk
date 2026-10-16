@@ -14,9 +14,17 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+#[path = "../support/quiescent.rs"]
+mod quiescent;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+mod swarm;
+mod swarm_case;
+mod swarm_publish;
+mod swarm_tests;
+mod swarm_views;
+mod swarm_wire;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;

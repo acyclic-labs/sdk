@@ -61,6 +61,13 @@ impl Driver for super::diff_case::DiffCase {
     }
 }
 
+impl Driver for super::swarm_case::SwarmCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::swarm::run(case).await
+    }
+}
+
 pub(super) async fn run_execution(case: scenario::Scenario) -> TestResult {
     TaskDriver::execute(case).await
 }
@@ -77,6 +84,9 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("notifications") => Notifications::execute(Notifications::parse(value)?).await,
         Some("task_query") => TaskQueryCase::execute(serde_json::from_value(value)?).await,
         Some("diff") => super::diff_case::DiffCase::execute(serde_json::from_value(value)?).await,
+        Some("swarm") => {
+            super::swarm_case::SwarmCase::execute(serde_json::from_value(value)?).await
+        }
         Some("plans") => super::plans::Plans::execute(super::plans::Plans::parse(value)?).await,
         Some("plan-query") => {
             super::plan_query::PlanQuery::execute(super::plan_query::PlanQuery::parse(value)?).await
