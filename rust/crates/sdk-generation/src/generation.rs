@@ -470,7 +470,7 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
                 version: package.version.to_string(),
             }],
             generated_sources: if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
-                input.generated_sources.clone()
+                profile_generated_sources(&input.generated_sources, receipt)?
             } else {
                 scope_generated_sources(
                     materialize_generated_sources(&root, std::slice::from_ref(receipt))?,
@@ -508,6 +508,7 @@ pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(),
         write_bundle_files(&data, &catalog_output, input.mark_latest)
     }
     .map_err(docs_error)?;
+    crate::source_selection::deduplicate(&mut generated_source_artifacts);
     for source in generated_source_artifacts {
         let bytes = fs::read(&source.physical_path).map_err(io_error)?;
         if sha256_bytes(&bytes).trim_start_matches("sha256:")

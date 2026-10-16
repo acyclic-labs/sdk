@@ -709,5 +709,19 @@ pub(super) fn retain_profile_generated_sources(
     Ok(())
 }
 
+fn profile_generated_sources(
+    sources: &[GeneratedSource],
+    receipt: &Path,
+) -> Result<Vec<GeneratedSource>, CliError> {
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
+    let mut filenames = BTreeSet::new();
+    collect_span_filenames(&value, &mut filenames);
+    Ok(crate::source_selection::referenced(
+        sources,
+        &filenames,
+        cfg!(windows),
+    ))
+}
+
 #[cfg(test)]
 mod tests;

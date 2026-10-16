@@ -34,6 +34,7 @@ mod cache_record;
 mod concrete_versions;
 mod file_cache;
 mod shared_cache;
+mod source_selection;
 pub use artifacts::materialize_generated_sources;
 use artifacts::*;
 use file_cache::rustdoc_digest;
