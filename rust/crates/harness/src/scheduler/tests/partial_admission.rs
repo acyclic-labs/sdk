@@ -101,6 +101,13 @@ impl Expected {
     }
 }
 
+fn assert_cpu_capacity(actual: u64, expected: u64) {
+    assert_eq!(
+        actual, expected,
+        "available capacity differs from independent ledger"
+    );
+}
+
 fn assert_expected(scheduler: &Scheduler, expected: &Expected, fault: Fault) {
     for placement in 0..3_u8 {
         for advertised in [
@@ -129,10 +136,7 @@ fn assert_expected(scheduler: &Scheduler, expected: &Expected, fault: Fault) {
                     &mut None,
                 )
                 .unwrap();
-            assert_eq!(
-                actual.0["cpu"], available[0],
-                "available capacity differs from independent ledger"
-            );
+            assert_cpu_capacity(actual.0["cpu"], available[0]);
             assert_eq!(
                 actual.0["memory"], available[1],
                 "available capacity differs from independent ledger"
@@ -198,7 +202,12 @@ fn assert_expected(scheduler: &Scheduler, expected: &Expected, fault: Fault) {
     );
 }
 
-fn apply(scheduler: &mut Scheduler, expected: &mut Expected, input: Allocation, fault: Fault) {
+fn apply(
+    scheduler: &mut Scheduler,
+    expected: &mut Expected,
+    input: Allocation,
+    fault: Fault,
+) -> bool {
     assert_expected(scheduler, expected, fault);
     let refusal = expected.record(input);
     let before = scheduler.clone();
@@ -227,16 +236,24 @@ fn apply(scheduler: &mut Scheduler, expected: &mut Expected, input: Allocation, 
         }
         _ => {}
     }
+    let substituted = *scheduler != before;
+    let accepted = scheduler.apply(&event(input), &mut None).is_ok();
     assert_eq!(
-        scheduler.apply(&event(input), &mut None).is_ok(),
+        accepted,
         refusal.is_none(),
         "{}: {input:?}",
         refusal.unwrap_or("valid partial history was rejected")
     );
+    // A mutant's acceptance assertion is its terminal observation. Production
+    // histories still check rejection atomicity and the complete resource ledger.
+    if substituted {
+        return true;
+    }
     if refusal.is_some() {
         assert_eq!(*scheduler, before, "rejected allocation changed state");
     }
     assert_expected(scheduler, expected, fault);
+    false
 }
 
 fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, fault: Fault) {
@@ -267,17 +284,35 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
         revision: 1,
         sibling,
     };
+    if fault == Fault::DuplicateHeld {
+        let advertised = [request[0] + 3, request[1] + 3];
+        let actual = scheduler
+            .available_for(
+                &format!("worker-{sibling}"),
+                &resources(advertised),
+                &mut None,
+            )
+            .unwrap();
+        // The input ledger contains exactly one sibling reservation of one CPU.
+        // Observe only CPU here: removing this assertion must let the mutant finish.
+        assert_cpu_capacity(actual.0["cpu"], u64::from(advertised[0]) - 1);
+        return;
+    }
     let first = Allocation {
         lease: 0,
         amounts: [0, 0],
         full: false,
     };
-    apply(&mut scheduler, &mut expected, first, fault);
+    if apply(&mut scheduler, &mut expected, first, fault) {
+        return;
+    }
     let first = Allocation {
         amounts: [1, 0],
         ..first
     };
-    apply(&mut scheduler, &mut expected, first, fault);
+    if apply(&mut scheduler, &mut expected, first, fault) {
+        return;
+    }
     for proposal in [
         Allocation {
             amounts: [0, 0],
@@ -302,10 +337,12 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
     .into_iter()
     .chain(proposals.iter().copied())
     {
-        apply(&mut scheduler, &mut expected, proposal, fault);
+        if apply(&mut scheduler, &mut expected, proposal, fault) {
+            return;
+        }
     }
     if finish {
-        apply(
+        if apply(
             &mut scheduler,
             &mut expected,
             Allocation {
@@ -314,7 +351,9 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
                 ..first
             },
             fault,
-        );
+        ) {
+            return;
+        }
     }
     expected.revision += 1;
     if finish {
@@ -333,7 +372,7 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
         )
         .unwrap();
     assert_expected(&scheduler, &expected, fault);
-    apply(
+    if apply(
         &mut scheduler,
         &mut expected,
         Allocation {
@@ -342,7 +381,9 @@ fn trace(request: [u8; 2], proposals: &[Allocation], sibling: u8, finish: bool, 
             ..first
         },
         fault,
-    );
+    ) {
+        return;
+    }
     if !finish {
         expected.revision += 1;
         expected.held = None;
