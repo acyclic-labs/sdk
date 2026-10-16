@@ -72,7 +72,15 @@ impl Pool {
     }
     pub(super) async fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let (next, opaque) = route.progress.position()?;
+        let progress::Position {
+            next,
+            opaque,
+            preceding,
+        } = route.progress.subscription()?;
+        if let Kind::Follow(follow) = &mut route.kind {
+            follow.preceding_commit_id =
+                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+        }
         route.received = next;
         route.received_opaque = opaque.clone().into();
         route.opened = false;

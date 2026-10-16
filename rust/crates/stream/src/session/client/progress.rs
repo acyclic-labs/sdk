@@ -1,30 +1,68 @@
 use super::{AtomicU64, Mutex, Ordering, StreamError};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Position {
+    pub(super) next: u64,
+    pub(super) opaque: Vec<u8>,
+    pub(super) preceding: Option<[u8; 32]>,
+}
+struct State {
+    position: Position,
+    generation: u64,
+}
 pub(super) struct Progress {
     // Lock order: this is the only cursor lock. Never nest it with another
-    // lock or hold it across an await; position and opaque cursor move together.
-    state: Mutex<(u64, u64, Vec<u8>)>,
+    // lock or hold it across an await; sequence, opaque cursor and checked
+    // preceding commit form one cut. Received-but-unconsumed records never enter it.
+    state: Mutex<State>,
 }
 impl Progress {
     pub(super) fn new(from: u64) -> Self {
+        Self::with_preceding(from, None)
+    }
+    pub(super) fn with_preceding(from: u64, preceding: Option<[u8; 32]>) -> Self {
         Self {
-            state: Mutex::new((from, 1, Vec::new())),
+            state: Mutex::new(State {
+                position: Position {
+                    next: from,
+                    opaque: Vec::new(),
+                    preceding,
+                },
+                generation: 1,
+            }),
         }
     }
     pub(super) fn next(&self) -> Result<u64, StreamError> {
-        Ok(self.state.lock().map_err(|_| StreamError::Unavailable)?.0)
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .position
+            .next)
     }
     pub(super) fn fence(&self) -> Result<u64, StreamError> {
         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-        state.1 = state.1.checked_add(1).ok_or(StreamError::Capacity)?;
-        Ok(state.1)
+        state.generation = state
+            .generation
+            .checked_add(1)
+            .ok_or(StreamError::Capacity)?;
+        Ok(state.generation)
     }
     pub(super) fn position(&self) -> Result<(u64, Vec<u8>), StreamError> {
-        let state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-        Ok((state.0, state.2.clone()))
+        let position = self.subscription()?;
+        Ok((position.next, position.opaque))
     }
-    pub(super) fn consume(&self, generation: u64, sequence: u64) -> Result<bool, StreamError> {
-        self.consume_opaque(generation, sequence, &[])
+    pub(super) fn subscription(&self) -> Result<Position, StreamError> {
+        let state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        Ok(state.position.clone())
+    }
+    pub(super) fn consume_record(
+        &self,
+        generation: u64,
+        sequence: u64,
+        commit: [u8; 32],
+    ) -> Result<bool, StreamError> {
+        self.consume_cut(generation, sequence, &[], Some(commit))
     }
     pub(super) fn consume_opaque(
         &self,
@@ -32,15 +70,34 @@ impl Progress {
         sequence: u64,
         opaque: &[u8],
     ) -> Result<bool, StreamError> {
+        self.consume_cut(generation, sequence, opaque, None)
+    }
+    fn consume_cut(
+        &self,
+        generation: u64,
+        sequence: u64,
+        opaque: &[u8],
+        commit: Option<[u8; 32]>,
+    ) -> Result<bool, StreamError> {
         let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-        if generation != state.1 || sequence < state.0 {
+        if generation != state.generation || sequence < state.position.next {
             return Ok(false);
         }
-        if sequence > state.0 {
+        if sequence > state.position.next {
             return Err(StreamError::Unavailable);
         }
-        state.0 = state.0.checked_add(1).ok_or(StreamError::OutOfRange)?;
-        state.2 = opaque.to_vec();
+        if state.position.preceding.is_some() && commit.is_none() {
+            return Err(StreamError::Unavailable);
+        }
+        state.position.next = state
+            .position
+            .next
+            .checked_add(1)
+            .ok_or(StreamError::OutOfRange)?;
+        state.position.opaque = opaque.to_vec();
+        if state.position.preceding.is_some() {
+            state.position.preceding = commit;
+        }
         Ok(true)
     }
 }
