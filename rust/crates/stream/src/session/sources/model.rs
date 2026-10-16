@@ -1,5 +1,6 @@
 //! Provider publication racing the real runnable-source scheduler parking.
 use super::*;
+mod visibility;
 struct Root(AtomicU64);
 impl ArcWake for Root {
     fn wake_by_ref(root: &Arc<Self>) {
@@ -64,6 +65,12 @@ pub fn verify_source_wakes(omit_signal: bool) {
 /// Repeated/coalesced wakes can be spurious: the provider may recheck Pending.
 /// Both notifications and rechecks use the production source scheduler.
 pub fn verify_source_recheck(fault: u8) {
+    if fault == 2 {
+        return visibility::verify(true);
+    }
+    if fault == 0 {
+        visibility::verify(false);
+    }
     loom::model(move || {
         let identity = wire::SessionChannel {
             channel_id: 1,
@@ -87,7 +94,6 @@ pub fn verify_source_recheck(fault: u8) {
         sources.insert(identity, source, Some(ALL));
         let wake = Arc::get_mut(&mut sources.entries.get_mut(&1).unwrap().wake).unwrap();
         wake.clear_after_recheck = fault == 1;
-        wake.release_only = fault == 2;
         let root = Arc::new(Root(AtomicU64::new(0)));
         let waker = futures::task::waker(root.clone());
         let mut cx = Context::from_waker(&waker);
