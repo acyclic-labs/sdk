@@ -80,8 +80,8 @@ pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
     check_with_bound(None, run);
 }
 
-/// Checks a model with its explicit context bound. `LOOM_MAX_PREEMPTIONS` can
-/// override that bound for diagnostic comparisons; no permutation/time cap applies.
+/// Checks a model at exactly its explicit preemption bound. Environment settings
+/// cannot change the search being certified; no permutation/time cap applies.
 ///
 /// # Panics
 /// Panics on a violated model invariant.
@@ -90,13 +90,34 @@ pub fn check_with_bound(
     run: impl Fn() -> Result + Send + Sync + 'static,
 ) {
     let mut builder = loom::model::Builder::new();
-    builder.preemption_bound = builder.preemption_bound.or(preemptions);
+    builder.preemption_bound = preemptions;
     builder.max_permutations = None;
     builder.max_duration = None;
     builder.check(move || {
         let result = run();
         assert!(result.is_ok(), "{result:?}");
     });
+}
+
+/// Certifies the first failing preemption bound and rejects the fault at the suite bound.
+///
+/// # Panics
+/// Panics if a smaller bound finds the fault, or either requested witness is absent.
+pub fn assert_negative_control(
+    minimum: usize,
+    suite_bound: usize,
+    expected: &str,
+    run: impl Fn(Option<usize>),
+) {
+    assert!(
+        minimum < suite_bound,
+        "negative control requires search margin"
+    );
+    for bound in 0..minimum {
+        run(Some(bound));
+    }
+    expect_model_failure(|| run(Some(minimum)), expected);
+    expect_model_failure(|| run(Some(suite_bound)), expected);
 }
 
 /// Exhausts one producer and checked subscriber through the real provider.
@@ -246,13 +267,10 @@ pub fn head_fence_and_recovery_cannot_publish_an_obsolete_generation() {
 
 /// Checks local visibility, journal sampling and push follow without a device acknowledgement.
 pub fn local_accepted_queries_do_not_wait_for_durability() {
-    crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(false);
-    expect_model_failure(
-        || {
-            crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(true)
-        },
-        "deadlock",
-    );
+    use crate::local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait as run;
+    run(false, Some(4));
+    // Registration can park before the writer runs: no preemption is needed.
+    assert_negative_control(0, 4, "deadlock", |bound| run(true, bound));
 }
 
 /// Checks that a terminal local failure wakes a subscriber already waiting for data.

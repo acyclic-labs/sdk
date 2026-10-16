@@ -64,8 +64,9 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
 
 pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(
     omit_wake: bool,
+    preemptions: Option<usize>,
 ) {
-    check_with_bound(Some(4), move || {
+    check_with_bound(preemptions, move || {
         let stream = fixture(omit_wake)?;
         let keeper = std::mem::ManuallyDrop::new(stream.clone());
         let path = StreamPath::new("model")?;
@@ -101,17 +102,19 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
                 .await?;
             let record = follow.next().await.ok_or("follow ended")??;
             assert_eq!(record.value.as_slice(), b"accepted");
-            let watermarks = stream.watermarks(path).await?;
-            assert_eq!(
-                watermarks,
-                crate::StreamWatermarks {
-                    accepted: 2,
-                    durable: 0
-                }
-            );
             Ok(()) as Result
         })?;
         writer.join().map_err(|_| "writer panicked")??;
+        // Acceptance has already been observed; checking its durable boundary
+        // after join adds no competing publication or durability operation.
+        let watermarks = block_on(stream.watermarks(path))?;
+        assert_eq!(
+            watermarks,
+            crate::StreamWatermarks {
+                accepted: 2,
+                durable: 0
+            }
+        );
         drop(std::mem::ManuallyDrop::into_inner(keeper));
         Ok(())
     });

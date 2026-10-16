@@ -1,10 +1,10 @@
 #![cfg(all(acyclic_loom, acyclic_harness_loom))]
 use acyclic_harness::task_volume::model_checking::{Fault, assert_index_matches, set_fault};
 
-use acyclic_harness::task_volume::{
-    Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
+use acyclic_harness::task_volume::{Error, FileKey, Query, Snapshot, TaskVolume, Write};
+use acyclic_stream::verification::{
+    assert_negative_control, block_on, check as model, check_with_bound,
 };
-use acyclic_stream::verification::{block_on, check as model, check_with_bound};
 use acyclic_stream::{
     AppendRequest, CommitCondition, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamPath, StreamProvider,
@@ -13,19 +13,8 @@ use futures::StreamExt as _;
 use loom::thread;
 use std::future::Future as _;
 use std::mem::ManuallyDrop;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-fn expect_failure(run: impl FnOnce(), expected: &str) {
-    let error = catch_unwind(AssertUnwindSafe(run)).expect_err("broken model must fail");
-    let message = error
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| error.downcast_ref::<&str>().copied())
-        .expect("model failure message");
-    assert!(message.contains(expected), "{message}");
-}
 
 // Control property: one locked increment preserves both updates. Splitting the
 // same operations into separate critical sections must expose a lost update.
@@ -144,23 +133,17 @@ fn initialized(
         provider,
         StreamPath::new("model")?,
     ))?);
-    let mut generation = block_on(volume.snapshot(&Query::Root, 0))?.generation;
-    for key in [
-        FileKey::Goal,
-        FileKey::Task {
-            task: Component::new("t")?,
-            file: TaskFile::Status,
-        },
-    ] {
-        generation =
-            block_on(volume.append(generation, &Write::new(key, OwnedBytes::from_static(bytes))))?;
-    }
-    let snapshot = block_on(volume.snapshot(&Query::Root, 2))?;
+    let generation = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+    block_on(volume.append(
+        generation,
+        &Write::new(FileKey::Goal, OwnedBytes::from_static(bytes)),
+    ))?;
+    let snapshot = block_on(volume.snapshot(&Query::Root, 1))?;
     Ok((volume, snapshot))
 }
 
-fn snapshot_follow_and_publish(fault: Fault) {
-    check_with_bound(Some(4), move || {
+fn snapshot_follow_and_publish(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
@@ -172,7 +155,7 @@ fn snapshot_follow_and_publish(fault: Fault) {
             move || {
                 block_on(volume.append(
                     cut.generation,
-                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"accepted")),
+                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"a")),
                 ))
             }
         });
@@ -196,10 +179,7 @@ fn snapshot_follow_and_publish(fault: Fault) {
             };
             assert_eq!(
                 files,
-                vec![Write::new(
-                    FileKey::Goal,
-                    OwnedBytes::from_static(b"accepted")
-                )]
+                vec![Write::new(FileKey::Goal, OwnedBytes::from_static(b"a"))]
             );
             Ok(()) as Result
         })?;
@@ -208,8 +188,8 @@ fn snapshot_follow_and_publish(fault: Fault) {
     });
 }
 
-fn competing_writers(fault: Fault) {
-    check_with_bound(Some(4), move || {
+fn competing_writers(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
@@ -221,14 +201,14 @@ fn competing_writers(fault: Fault) {
                 set_fault(fault);
                 block_on(volume.append(
                     expected,
-                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"one")),
+                    &Write::new(FileKey::Goal, OwnedBytes::from_static(b"a")),
                 ))
             }
         });
         set_fault(fault);
         let second = block_on(volume.append(
             expected,
-            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"two")),
+            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"b")),
         ));
         let results = [worker.join().map_err(|_| "writer panicked")?, second];
         assert!(
@@ -283,12 +263,12 @@ fn platform_head_recovery() {
     acyclic_stream::verification::head_fence_and_recovery_cannot_publish_an_obsolete_generation();
 }
 
-fn recovery_and_refresh(fault: Fault) {
-    check_with_bound(Some(4), move || {
+fn recovery_and_refresh(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let provider = Arc::new(MemoryStream::default());
-        let (volume, old) = initialized(provider.clone(), b"old")?;
+        let (volume, old) = initialized(provider.clone(), b"a")?;
         let replacement = MemoryStream::default();
-        let (_, new) = initialized(Arc::new(replacement.clone()), b"new")?;
+        let (_, new) = initialized(Arc::new(replacement.clone()), b"b")?;
         let recovery = thread::spawn({
             let provider = provider.clone();
             move || {
@@ -320,13 +300,13 @@ fn recovery_and_refresh(fault: Fault) {
     });
 }
 
-fn recovery_and_acknowledgement(fault: Fault) {
-    check_with_bound(Some(4), move || {
+fn recovery_and_acknowledgement(fault: Fault, preemptions: Option<usize>) {
+    check_with_bound(preemptions, move || {
         let provider = Arc::new(MemoryStream::default());
-        let (volume, old) = initialized(provider.clone(), b"old")?;
+        let (volume, old) = initialized(provider.clone(), b"a")?;
         let expected = old.generation;
         let replacement = MemoryStream::default();
-        let (_, new) = initialized(Arc::new(replacement.clone()), b"new")?;
+        let (_, new) = initialized(Arc::new(replacement.clone()), b"b")?;
         assert_eq!(expected.position, new.generation.position);
         let recovery = thread::spawn({
             let provider = provider.clone();
@@ -342,7 +322,7 @@ fn recovery_and_acknowledgement(fault: Fault) {
         set_fault(fault);
         let result = block_on(volume.append(
             expected,
-            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"obsolete")),
+            &Write::new(FileKey::Goal, OwnedBytes::from_static(b"c")),
         ));
         assert!(matches!(
             result,
@@ -363,7 +343,7 @@ loom::thread_local! {
     static ADVANCE_DEADLINE: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
-fn fenced_publication(expiry: bool, broken: bool) {
+fn fenced_publication(expiry: bool, broken: bool, preemptions: Option<usize>) {
     use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     struct Clock {
         now: AtomicU64,
@@ -381,7 +361,7 @@ fn fenced_publication(expiry: bool, broken: bool) {
             }
         }
     }
-    check_with_bound(Some(4), move || {
+    check_with_bound(preemptions, move || {
         let clock = Arc::new(Clock {
             now: AtomicU64::new(1),
             tick: !expiry,
@@ -466,7 +446,7 @@ fn fenced_publication(expiry: bool, broken: bool) {
                 Fault::OmitAuthorityConditions
             });
         }
-        let file = Write::new(FileKey::Goal, OwnedBytes::from_static(b"publish"));
+        let file = Write::new(FileKey::Goal, OwnedBytes::from_static(b"p"));
         let result = block_on(volume.append_if(
             expected,
             &file,
@@ -523,47 +503,42 @@ fn fenced_publication(expiry: bool, broken: bool) {
 
 #[test]
 fn snapshot_follow_and_publish_are_one_coherent_cut_without_deadlock() {
-    snapshot_follow_and_publish(Fault::None);
-    expect_failure(
-        || snapshot_follow_and_publish(Fault::ResampleFollow),
-        "snapshot follow skipped publication",
-    );
+    snapshot_follow_and_publish(Fault::None, Some(4));
+    assert_negative_control(1, 4, "snapshot follow skipped publication", |bound| {
+        snapshot_follow_and_publish(Fault::ResampleFollow, bound)
+    });
 }
 
 #[test]
 fn competing_writers_cannot_tear_the_shared_projection() {
-    competing_writers(Fault::None);
-    expect_failure(
-        || competing_writers(Fault::ResamplePublicationFence),
-        "competing publication escaped its fence",
-    );
+    competing_writers(Fault::None, Some(4));
+    assert_negative_control(2, 4, "competing publication escaped its fence", |bound| {
+        competing_writers(Fault::ResamplePublicationFence, bound)
+    });
 }
 
 #[test]
 fn recovery_and_refresh_cannot_retain_files_from_the_obsolete_epoch() {
-    recovery_and_refresh(Fault::None);
-    expect_failure(
-        || recovery_and_refresh(Fault::RetainObsoleteIndex),
-        "obsolete projection was not rebuilt",
-    );
+    recovery_and_refresh(Fault::None, Some(4));
+    assert_negative_control(0, 4, "obsolete projection was not rebuilt", |bound| {
+        recovery_and_refresh(Fault::RetainObsoleteIndex, bound)
+    });
 }
 
 #[test]
 fn recovery_and_append_acknowledgement_cannot_corrupt_the_rebuilt_index() {
-    recovery_and_acknowledgement(Fault::None);
-    expect_failure(
-        || recovery_and_acknowledgement(Fault::OverwriteRebuiltIndex),
-        "acknowledgement overwrote rebuilt",
-    );
+    recovery_and_acknowledgement(Fault::None, Some(4));
+    assert_negative_control(1, 4, "acknowledgement overwrote rebuilt", |bound| {
+        recovery_and_acknowledgement(Fault::OverwriteRebuiltIndex, bound)
+    });
 }
 
 #[test]
 fn lease_expiry_and_authority_changes_fence_the_atomic_publication() {
     for expiry in [false, true] {
-        fenced_publication(expiry, false);
-        expect_failure(
-            || fenced_publication(expiry, true),
-            "stale publisher committed",
-        );
+        fenced_publication(expiry, false, Some(4));
+        assert_negative_control(1, 4, "stale publisher committed", |bound| {
+            fenced_publication(expiry, true, bound)
+        });
     }
 }
