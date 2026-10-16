@@ -117,17 +117,13 @@ pub(super) fn publish_until_cut<T>(mut future: Pending<T>, phase: Arc<AtomicU8>)
     future
 }
 
-// Prepare a declaration through the real encoder, append and replay. Calling the
-// command facade here nests acknowledgement replay under its entire async poll
-// chain, exhausting Loom's default Windows coroutine stack before the race.
-pub(super) fn declare_fixture(
-    coordinator: &mut DistributedCoordinator<MemoryStream>,
-    spec: OperationSpec,
+// Fixture transitions use the real encoder, append and replay without nesting
+// acknowledgement replay beneath command or worker-selection poll frames.
+pub(super) fn fixture_event<P: StreamProvider>(
+    coordinator: &mut DistributedCoordinator<P>,
+    event: SchedulerEvent,
     key: &str,
 ) -> Result<()> {
-    let event = SchedulerEvent::Declared {
-        spec: Box::new(spec),
-    };
     let canonical = crate::store::history::canonical_bytes_with_work(
         &event,
         acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -155,4 +151,64 @@ pub(super) fn declare_fixture(
         AppendOutcome::Committed(_)
     ));
     block_on(coordinator.refresh(&mut None))
+}
+
+pub(super) fn declare_fixture(
+    coordinator: &mut DistributedCoordinator<MemoryStream>,
+    spec: OperationSpec,
+    key: &str,
+) -> Result<()> {
+    fixture_event(
+        coordinator,
+        SchedulerEvent::Declared {
+            spec: Box::new(spec),
+        },
+        key,
+    )
+}
+
+pub(super) fn start_fixture<P: StreamProvider>(
+    coordinator: &mut DistributedCoordinator<P>,
+    operation_id: OperationId,
+    worker: &Worker,
+    key: &str,
+) -> Result<Box<WorkLease>> {
+    let available =
+        coordinator
+            .scheduler
+            .available_for(&worker.id, &worker.available, &mut None)?;
+    assert!(
+        coordinator
+            .scheduler
+            .ready(&available, &worker.labels, None)
+            .any(|id| id == operation_id)
+    );
+    let state = coordinator.scheduler.operation(operation_id).unwrap();
+    let lease = Box::new(WorkLease {
+        operation: state.spec.clone(),
+        reservation: Reservation {
+            id: format!("{}:{operation_id}:{}", worker.id, coordinator.revision + 1),
+            placement: worker.id.clone(),
+            admitted: state.spec.resources.clone(),
+        },
+        checkpoint: state.checkpoint.clone(),
+        operation_revision: state.revision + 1,
+    });
+    fixture_event(
+        coordinator,
+        SchedulerEvent::Admitted {
+            operation_id,
+            reservation: lease.reservation.clone(),
+        },
+        &format!("{key}-admit"),
+    )?;
+    fixture_event(
+        coordinator,
+        SchedulerEvent::Started {
+            operation_id,
+            fence: LeaseFence::from(&lease.reservation),
+        },
+        key,
+    )?;
+    Ok(lease)
 }

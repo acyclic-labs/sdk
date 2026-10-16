@@ -1,5 +1,6 @@
 use super::model_provider::{
     Pending, PublicationCut, declare_fixture, pause_before_publish, publish_until_cut,
+    start_fixture,
 };
 use super::*;
 use crate::distributed::JournalWrite;
@@ -137,7 +138,7 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
         let mut original = Box::new(block_on(open(&client)).unwrap());
         let task = OperationId::from_bytes([41; 16]);
         declare_fixture(&mut original, spec(task, 0).unwrap(), "task").unwrap();
-        let lease = block_on(start(&mut original, &worker("worker"), "start")).unwrap();
+        let lease = start_fixture(&mut original, task, &worker("worker"), "start").unwrap();
         let fence = LeaseFence::from(&lease.reservation);
         let (owner, issuer) = owner_issuer();
         let scope = grant(&issuer, "observe", &["operation:observe"]).unwrap();
@@ -205,9 +206,8 @@ fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
             };
             assert!(publish(&mut rival, "revoke", event).await.unwrap());
             if release {
-                let replacement = start(&mut rival, &worker("replacement"), "replace")
-                    .await
-                    .unwrap();
+                let replacement =
+                    start_fixture(&mut rival, task, &worker("replacement"), "replace").unwrap();
                 assert_ne!(replacement.reservation.placement, "worker");
             }
         });

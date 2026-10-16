@@ -1,5 +1,6 @@
 use super::model_provider::{
-    Pending, PublicationCut, block_on, declare_fixture, pause_before_publish, publish_until_cut,
+    Pending, PublicationCut, block_on, declare_fixture, fixture_event, pause_before_publish,
+    publish_until_cut, start_fixture,
 };
 use super::*;
 use crate::{
@@ -95,15 +96,15 @@ fn initialized(client: &Arc<MemoryStream>, contents: &Arc<Contents>, kind: Orche
     let mut root = spec(parent, 0).unwrap();
     root.orchestration = kind;
     declare_fixture(&mut coordinator, root, "parent").unwrap();
-    let lease = block_on(start(&mut coordinator, &worker("parent"), "parent-start")).unwrap();
-    block_on(publish(
+    let lease = start_fixture(&mut coordinator, parent, &worker("parent"), "parent-start").unwrap();
+    fixture_event(
         &mut coordinator,
-        "parent-wait",
         SchedulerEvent::WaitingForChildren {
             operation_id: parent,
             fence: LeaseFence::from(&lease.reservation),
         },
-    ))
+        "parent-wait",
+    )
     .unwrap();
     for (identity, slot, bytes) in [(2, "a", b"11".as_slice()), (3, "b", b"22")] {
         let operation = OperationId::from_bytes([identity; 16]);
@@ -113,22 +114,23 @@ fn initialized(client: &Arc<MemoryStream>, contents: &Arc<Contents>, kind: Orche
             slot: slot.into(),
         });
         declare_fixture(&mut coordinator, child, slot).unwrap();
-        let lease = block_on(start(
+        let lease = start_fixture(
             &mut coordinator,
+            operation,
             &worker(slot),
             &format!("start-{slot}"),
-        ))
+        )
         .unwrap();
-        block_on(publish(
+        fixture_event(
             &mut coordinator,
-            &format!("complete-{slot}"),
             SchedulerEvent::Completed {
                 operation_id: operation,
                 outcome: Outcome::Succeeded(contents.reference(bytes)),
                 fence: Some(LeaseFence::from(&lease.reservation)),
                 execution_duration_ns: None,
             },
-        ))
+            &format!("complete-{slot}"),
+        )
         .unwrap();
     }
 }
