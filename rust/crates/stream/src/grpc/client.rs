@@ -14,12 +14,16 @@ impl Client {
             return Err(StreamError::InvalidArgument);
         }
         let mut service = self.service();
-        tokio::time::timeout(
-            Duration::from_millis(500),
-            service.acknowledge_delivery(self.request(wire::AcknowledgeDeliveryRequest {
-                delivery_token: token,
-            })),
-        )
+        tokio::time::timeout(Duration::from_millis(500), async {
+            service
+                .acknowledge_delivery(
+                    self.request(wire::AcknowledgeDeliveryRequest {
+                        delivery_token: token,
+                    })
+                    .await?,
+                )
+                .await
+        })
         .await
         .map_err(|_| StreamError::Unavailable)?
         .map_err(|error| status(&error))?;

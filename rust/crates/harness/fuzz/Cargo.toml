@@ -18,6 +18,7 @@ notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-loc
 
 [dependencies]
 acyclic-harness = { path = ".." }
+acyclic-stream = { path = "../../stream", default-features = false }
 diffy = "=0.5.2"
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
@@ -47,6 +48,13 @@ bench = false
 [[bin]]
 name = "goal_parser"
 path = "fuzz_targets/goal_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_markdown"
+path = "fuzz_targets/plan_markdown.rs"
 test = false
 doc = false
 bench = false

@@ -3,7 +3,7 @@ use super::*;
 /// Publishes git facade mutations into the ordinary checkout.
 pub(crate) struct RootMaterializingGitExecutor<'a> {
     /// Managed workspace executor.
-    pub inner: WorkspaceGitExecutor<'a>,
+    pub inner: &'a WorkspaceGitExecutor<'a>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
@@ -32,56 +32,30 @@ impl RootMaterializingGitExecutor<'_> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let to = to_generation.id();
         if from.id() == to {
             return Ok(());
         }
-        let operation_directory = NativeDirectory(self.root)
-            .publication_directory(operation_id)
-            .map_err(Error::Storage)?;
-        let options = MaterializeOptions {
-            destination: operation_directory.join("target"),
-            expected_root_identity: None,
-            maximum_directory_entries: 4_096,
-            maximum_extent_spans: 65_536,
-            transfer_bytes: 8 * 1024 * 1024,
-        };
         let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_generation_transition(
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        crate::filesystem::workspace_publication::publish_checkout(
+            self.inner.store,
+            self.root,
+            self.source_root_identity,
+            operation_id,
             &from,
             &to_generation,
+            work,
+        )
+        .await?;
+        crate::filesystem::workspace_publication::finish_checkout(
             self.inner.store,
-            acyclic_fs::NativeWorkspacePublication {
-                root: self.root,
-                source_root_identity: self.source_root_identity,
-                operation_directory: &operation_directory,
-                operation_id,
-                from: from.id(),
-                to,
-                excluded_names: &[".git"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
-            acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, _)| display(cause))?,
-            || std::future::ready(Ok(())),
+            self.root,
+            operation_id,
         )
-        .await
-        .map_err(|(cause, _)| display(cause))?;
-        self.inner
-            .store
-            .remove_materialization_async(operation_id)
-            .await
-            .map_err(display)?;
-        NativeDirectory(
-            &NativeDirectory(self.root)
-                .publication_root()
-                .map_err(Error::Storage)?,
-        )
-        .remove(&operation_directory)
-        .map_err(display)?;
+        .await?;
         Ok(())
     }
 }
@@ -108,7 +82,7 @@ impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let result = self.inner.execute(operation_id, action).await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so

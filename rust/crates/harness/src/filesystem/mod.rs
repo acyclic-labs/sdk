@@ -99,7 +99,7 @@ pub use native_contract::{
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use native_directory::NativeDirectory;
+pub(crate) use native_directory::NativeDirectory;
 mod configured_recursive_tools;
 mod default_tools;
 mod mailbox_machine;
@@ -153,7 +153,9 @@ use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
+mod file_query;
 use content_verifier::*;
+pub use file_query::FilesystemFileQuery;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
 mod project_verifier;
@@ -636,10 +638,46 @@ use crate::executor::{stock_boundary, stock_string_copy};
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-mod workspace_policy;
+pub(crate) mod workspace_policy;
+
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use workspace_policy::{RESERVED_IGNORE_RULES, WorkspacePolicy};
+pub(crate) mod workspace_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use workspace_publication::{
+    CheckoutRoot, WorkspacePublicationCoordinator, WorkspacePublicationPublisher,
+    WorkspaceRootMaterializer, workspace_publication_coordinator,
+};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod agent_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use agent_publication::{plan_agent_merge, record_agent_publication};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod checkout_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use checkout_publication::CheckoutPublication;

@@ -13,7 +13,7 @@ mod tests {
             prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
         )) {
             let mut tools = ToolRegistry::default();
-            tools.register((crate::tool::plan::update_plan()?, None), &mut None, None)?;
+            tools.register((crate::tool::files::write_file()?, None), &mut None, None)?;
             let before = tools.definitions(None)?;
             let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
             let executor = StockExecutor::new(

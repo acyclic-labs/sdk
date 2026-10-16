@@ -196,6 +196,21 @@ impl ActorsClient {
         self.inner.transport().to_owned()
     }
 
+    /// Execute one operation with a request-local credential on the existing connection.
+    pub async fn call_with_credential(
+        &self,
+        method: &str,
+        request: &[u8],
+        token: &str,
+        signal: Option<JsValue>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.run(
+            signal,
+            self.inner.call_with_credential(method, request, token),
+        )
+        .await
+    }
+
     /// Execute `CreateActor` with an encoded protobuf request.
     pub async fn create_actor(
         &self,
