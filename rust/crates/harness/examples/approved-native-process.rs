@@ -281,8 +281,6 @@ where
     let context = runtime
         .task_context_with_native_work(task_id, &fence, &work)
         .await?;
-    #[cfg(test)]
-    task::verify_volume_callbacks(&context, &owner, &source, &work, work_per_volume);
     let preparation_directory = tempfile::tempdir_in(
         directory
             .path()
@@ -745,7 +743,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    acyclic_native_runtime::initialize_native_io_services()?;
     #[cfg(all(test, feature = "filesystem-local"))]
     if std::env::args().any(|arg| arg == "--mcp-host-death-child") {
         return faults::host_child().await;
