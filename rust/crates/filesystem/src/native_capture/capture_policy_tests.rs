@@ -1,5 +1,145 @@
 use super::*;
 
+async fn native_checkout(
+    work: &NativeMaterializationWork,
+) -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let cancellation = work.cancellation();
+    let workspace = crate::Fs::memory()
+        .create_workspace("native-capture-property", work.budget(), cancellation)
+        .await?
+        .value;
+    Ok(workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            work,
+            cancellation,
+        )
+        .await?)
+}
+
+#[tokio::test]
+async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let file = path("/file")?;
+    let mutations = vec![
+        AuthoredMutation::CreateFile {
+            path: file.clone(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
+            metadata: FileMetadata::default(),
+        },
+        AuthoredMutation::Resize {
+            path: file.clone(),
+            logical_bytes: 256,
+        },
+        AuthoredMutation::Write {
+            path: file.clone(),
+            offset: 255,
+            bytes: acyclic_stream::OwnedBytes::from_static(b"z"),
+        },
+    ];
+    let slots = work.claim(
+        (mutations.capacity() * std::mem::size_of::<AuthoredMutation>()) as u64,
+        1,
+        WorkCounters::UNCHARGED,
+    )?;
+    drop(
+        checkout
+            .apply_borrowed_authored_transaction_with_native_work(
+                &mutations,
+                &slots,
+                &work,
+                &cancellation,
+            )
+            .await?,
+    );
+    let range = crate::ByteRange {
+        offset: 0,
+        length: 256,
+    };
+    let (lookup, lookup_custody) = checkout
+        .lookup_batch_no_follow(std::slice::from_ref(&file), &work, &cancellation)
+        .await?;
+    let record = lookup.entries[0].record.unwrap();
+    drop((lookup, lookup_custody));
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, &cancellation);
+    let (prior, allocation) = checkout
+        .plan_record_extents(record, range, 8, &mut accounting, &cancellation)
+        .await?;
+    assert!(prior.as_ref().unwrap().spans.len() > 1);
+    drop((prior, allocation));
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), [b'b'; 256])?;
+    let mut options = options(source.path(), 16)?;
+    options.maximum_extent_spans = 1;
+    let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+    let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
+    let result = capture_subtrees_with_native_work(
+        &mut checkout,
+        &[root],
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        Some(&baseline),
+        &work,
+    )
+    .await?;
+    assert!(result.value.changed_paths > 0);
+    let actual = checkout
+        .read_file_range(&file, range, &work, &cancellation)
+        .await?;
+    assert_eq!(actual.bytes.as_ref(), &[b'b'; 256]);
+    Ok(())
+}
+
+#[cfg(unix)]
+mod unchanged_properties {
+    use super::*;
+    use proptest::prelude::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    proptest! {
+        // Real capture must retain every byte and metadata change, including a
+        // content change with restored timestamps, while exact repeats write no paths.
+        #[test]
+        fn repeated_regular_capture_avoids_unchanged_writes(
+            body in prop::collection::vec(1_u8..=255, 70..96),
+            change_body in any::<bool>(), change_mode in any::<bool>(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let source = tempfile::tempdir().unwrap();
+                let file = source.path().join("file");
+                std::fs::write(&file, &body).unwrap();
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+                let before = std::fs::metadata(&file).unwrap();
+                let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+                let cancellation = CancellationToken::new();
+                let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
+                let mut checkout = native_checkout(&work).await.unwrap();
+                let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
+                let options = options(source.path(), 16).unwrap();
+                capture_subtrees_with_native_work(&mut checkout, &[root.clone()], &options, &CapturePolicy::default(), &cancellation, None, &work).await.unwrap();
+                let mut expected = body;
+                if change_body { expected[0] ^= 1; std::fs::write(&file, &expected).unwrap(); }
+                if change_mode { std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap(); }
+                std::fs::File::open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()).set_accessed(before.accessed().unwrap())).unwrap();
+                let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+                let receipt = capture_subtrees_with_native_work(&mut checkout, &[root], &options, &CapturePolicy::default(), &cancellation, Some(&baseline), &work).await.unwrap();
+                prop_assert_eq!(receipt.value.changed_paths != 0, change_body || change_mode);
+                let content = checkout.read_file_range(&path("/file").unwrap(), crate::ByteRange { offset: 0, length: expected.len() as u64 }, &work, &cancellation).await.unwrap();
+                prop_assert_eq!(content.bytes.as_ref(), expected.as_slice());
+                Ok(())
+            })?;
+        }
+    }
+}
+
 fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     let limits = crate::model::VolumeLimits::default();
     Ok(NamespacePath::from_portable(

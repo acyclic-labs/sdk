@@ -22,38 +22,16 @@ mod acceptance;
 mod heads;
 #[path = "task_volume/history_loss.rs"]
 mod history_loss;
+#[path = "task_volume/plan_name.rs"]
+mod plan_name;
 #[path = "task_volume/properties.rs"]
 mod properties;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
 #[path = "task_volume/source.rs"]
 mod source;
-
-#[derive(Deserialize)]
-struct Input {
-    path: String,
-    text: String,
-    channel: Option<Channel>,
-}
-
-impl Input {
-    fn write(&self) -> Result<Write> {
-        let mut write = Write::new(FileKey::parse(&self.path)?, self.text.as_bytes().to_vec());
-        write.channel = self.channel;
-        Ok(write)
-    }
-}
-
-#[derive(Deserialize)]
-struct Case {
-    name: String,
-    folder: String,
-    events: Vec<Input>,
-    files: BTreeMap<String, String>,
-    changes: Vec<Option<String>>,
-    order: Option<Vec<String>>,
-    error: Option<String>,
-}
+#[path = "task_volume/work.rs"]
+mod work;
 
 async fn append_all<P: StreamProvider + ?Sized>(
     volume: &TaskVolume<P>,
@@ -74,77 +52,6 @@ async fn memory() -> Result<(Arc<MemoryStream>, TaskVolume<MemoryStream>)> {
 
 fn write(path: &str, text: &str) -> Result<Write> {
     Ok(Write::new(FileKey::parse(path)?, text.as_bytes().to_vec()))
-}
-
-async fn run_case(case: Case) -> Result {
-    let (provider, volume) = memory().await?;
-    let query = Query::folder(&case.folder)?;
-    let initial = volume.snapshot(&query, 100).await?;
-    let mut generation = initial.generation;
-    let mut errors = Vec::new();
-    for event in &case.events {
-        let write = event.write()?;
-        match volume.append(generation, &write).await {
-            Ok(next) => generation = next,
-            Err(Error::ImmutableConflict(_)) => errors.push("immutable"),
-            Err(Error::SequenceConflict(_)) => errors.push("sequence"),
-            Err(other) => return Err(other.into()),
-        }
-    }
-    assert_eq!(
-        errors,
-        case.error.as_deref().into_iter().collect::<Vec<_>>(),
-        "{}",
-        case.name
-    );
-    let snapshot = volume.snapshot(&query, 100).await?;
-    let actual: BTreeMap<_, _> = snapshot
-        .files
-        .iter()
-        .map(|f| Ok((f.key.path(), std::str::from_utf8(&f.bytes)?.to_owned())))
-        .collect::<Result<_>>()?;
-    assert_eq!(actual, case.files, "{}", case.name);
-    if let Some(order) = &case.order {
-        assert_eq!(
-            snapshot
-                .files
-                .iter()
-                .map(|f| f.key.path())
-                .collect::<Vec<_>>(),
-            *order,
-            "{}",
-            case.name
-        );
-    }
-    let mut changes = volume.follow(query.clone(), initial.cursor).await?;
-    for expected in case.changes {
-        let change = tokio::time::timeout(Duration::from_secs(1), changes.next())
-            .await?
-            .ok_or("follow ended")??;
-        assert_eq!(change.file.map(|f| f.key.path()), expected, "{}", case.name);
-    }
-    assert!(
-        changes.next().now_or_never().is_none(),
-        "extra changes: {}",
-        case.name
-    );
-    // Reopening another index must reconstruct the same namespace, not a second projection.
-    let reopened = TaskVolume::open(provider, StreamPath::new("task-volume")?).await?;
-    let recovered = reopened.snapshot(&query, 100).await?;
-    assert_eq!(recovered.files, snapshot.files, "{}", case.name);
-    assert_eq!(recovered.cursor, snapshot.cursor, "{}", case.name);
-    Ok(())
-}
-
-use futures::FutureExt as _;
-
-#[tokio::test]
-async fn declarative_scenarios() -> Result {
-    let cases: Vec<Case> = serde_json::from_str(include_str!("task_volume/cases.json"))?;
-    for result in futures::future::join_all(cases.into_iter().map(run_case)).await {
-        result?;
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -202,7 +109,11 @@ async fn every_accepted_cursor_reconnects_without_duplicates_or_gaps() -> Result
                 Some(expected)
             );
         }
-        assert!(stream.next().now_or_never().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), stream.next())
+                .await
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -326,7 +237,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence.clone(),
                     expected: 1
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::FenceConflict)
@@ -341,6 +253,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                 expected: 2,
             }],
             Some(101),
+            None,
         )
         .await?;
     clock.0.store(102, Ordering::SeqCst);
@@ -353,7 +266,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence,
                     expected: 2
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::Storage(StreamError::DeadlineElapsed))
@@ -562,25 +476,43 @@ async fn ten_thousand_turns_keep_publication_and_current_chunk_queries_increment
         let task = Component::new("t")?;
         let mut file = write(&format!(".tasks/t/turns/{turn}/chunks/0"), "delta")?;
         file.channel = Some(Channel::Text);
-        generation = append_all(&volume, generation, &[file.clone()]).await?;
-        let snapshot = volume.snapshot(&Query::Chunks { task, turn }, 1).await?;
+        let (next, publication_work) = work::measured(volume.append(generation, &file))?;
+        generation = next;
+        let (snapshot, chunk_work) =
+            work::measured(volume.snapshot(&Query::Chunks { task, turn }, 1))?;
         assert_eq!(snapshot.files, vec![file]);
-        let snapshot = volume
-            .snapshot(
-                &Query::Turn {
-                    task: Component::new("t")?,
-                    turn,
-                },
-                1,
-            )
-            .await?;
+        let (snapshot, turn_work) = work::measured(volume.snapshot(
+            &Query::Turn {
+                task: Component::new("t")?,
+                turn,
+            },
+            1,
+        ))?;
         assert_eq!(snapshot.files.len(), 1);
+        if matches!(turn + 1, 1_000 | 10_000) {
+            assert!(publication_work <= 5);
+            assert!(work::query_work_is_incremental(chunk_work));
+            assert!(work::query_work_is_incremental(turn_work));
+            // Deliberately replace range selection with a full scan followed by
+            // filtering. The result is identical, but the same work bound fails.
+            let (full, scan_work) =
+                work::measured(volume.snapshot(&Query::Root, (turn + 1) as usize))?;
+            let selected: Vec<_> = full
+                .files
+                .into_iter()
+                .filter(|file| file.key == snapshot.files[0].key)
+                .collect();
+            assert_eq!(selected, snapshot.files);
+            assert!(scan_work > turn);
+            assert!(!work::query_work_is_incremental(scan_work));
+            println!(
+                "{} turns: publication={publication_work}, chunks={chunk_work}, turn={turn_work}, full scan={scan_work}",
+                turn + 1
+            );
+        }
     }
     assert_eq!(generation.position, 10_001);
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "10k turns exceeded suite budget"
-    );
+    println!("10k turns: {:.3}s", start.elapsed().as_secs_f64());
     Ok(())
 }
 

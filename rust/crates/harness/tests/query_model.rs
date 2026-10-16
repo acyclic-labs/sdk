@@ -475,6 +475,7 @@ fn fenced_publication(expiry: bool, broken: bool) {
                 expected: 1,
             }],
             expiry.then_some(2),
+            None,
         ));
         let invalidated_at = worker.join().map_err(|_| "owner panicked")??;
         let committed = result.is_ok();

@@ -1,6 +1,7 @@
 //! Generates the public hierarchical Stream gRPC client and server.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(acyclic_stream_loom)");
     println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let include = protoc_bin_vendored::include_path()?;

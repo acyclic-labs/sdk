@@ -15,6 +15,8 @@ pub(super) enum LocalProject {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    /// Automatic goal admission policy; `None` disables it. Defaults to a finite allowance.
+    pub goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context: ContextPipeline,
@@ -25,6 +27,10 @@ pub struct LocalHarnessConfig {
     pub(super) session_limits: SessionLimits,
     pub(super) concurrency: usize,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) settings: Option<crate::native_settings::SettingsConfig>,
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) mcp_limits: crate::mcp::McpClientLimits,
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
 }
 
@@ -33,6 +39,7 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
         Self {
+            goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             model,
             context: ContextPipeline::default(),
@@ -48,6 +55,10 @@ impl LocalHarnessConfig {
             },
             concurrency: 1,
             compaction: None,
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            settings: None,
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            mcp_limits: crate::mcp::McpClientLimits::default(),
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
         }
     }
@@ -113,6 +124,20 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
         self.compaction = Some(policy);
+        self
+    }
+    /// Selects native settings locations and explicit project trust using the shared loader.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+    /// Selects independent finite MCP discovery and tool-exchange bounds.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {
+        self.mcp_limits = limits;
         self
     }
     /// Selects the clock used by durable admission and leases.

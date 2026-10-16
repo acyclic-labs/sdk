@@ -307,9 +307,9 @@ pub(super) unsafe fn notification(
             if metadata_changed {
                 *retry_path.borrow_mut() = Some(capture_path.clone());
             }
-            if !metadata_changed
-                && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                && crate::native_mount::cached_binding::cached_binding_matches(
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+            {
+                match crate::native_mount::cached_binding::cached_binding_matches(
                     projection,
                     |bindings| {
                         bindings
@@ -317,7 +317,7 @@ pub(super) unsafe fn notification(
                             .copied()
                             .filter(|binding| binding.host == host && host.links == Some(1))
                     },
-                    || source.acquire_view_lease(),
+                    || source.acquire_binding_lease_with_meter(None, &work),
                     |binding| {
                         source.reports_changes_to(binding.file_id)
                             && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
@@ -329,9 +329,20 @@ pub(super) unsafe fn notification(
                             Some(binding.file_id),
                         )
                     },
-                )
-            {
-                return Ok(());
+                ) {
+                    Ok(true) => return Ok(()),
+                    Err(error)
+                        if matches!(
+                            error.semantic_error(),
+                            MountSourceError::Work(_)
+                                | MountSourceError::NativeWork(_)
+                                | MountSourceError::Cancelled
+                        ) =>
+                    {
+                        return Err(error);
+                    }
+                    Ok(false) | Err(_) => {}
+                }
             }
             let basis = ReadBasis::sample(source.as_ref());
             let lookup = source.lookup(&capture_path);

@@ -17,7 +17,7 @@ pub(super) async fn spawn_blocking<T>(
     Ok(work())
 }
 
-fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
+pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     let mut file = tempfile::tempfile()?;
     let header = encode_header(limits, 0)?;

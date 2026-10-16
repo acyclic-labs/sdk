@@ -1,0 +1,8 @@
+[
+  {"name":"unchanged-active-settles-until-agent-done","writes":["Finish the objective",null,null,"---\nstatus: done\n---\nFinish the objective"],"tasks":4,"calls":6,"final_goal":"---\nstatus: done\n---\nFinish the objective"},
+  {"name":"disabled-negative-control","enabled":false,"writes":["Finish the objective"],"tasks":1,"calls":2,"final_goal":"Finish the objective"},
+  {"name":"finite-cap","cap":2,"writes":["Finish the objective",null,null],"tasks":3,"calls":4,"final_goal":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nFinish the objective"},
+  {"name":"zero-cap","cap":0,"writes":["Finish the objective"],"tasks":1,"calls":2,"final_goal":"---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nFinish the objective"},
+  {"name":"agent-blocked","writes":["---\nstatus: blocked\nreason: waiting\n---\nFinish the objective"],"tasks":1,"calls":2,"final_goal":"---\nstatus: blocked\nreason: waiting\n---\nFinish the objective"},
+  {"name":"absent","writes":[null],"tasks":1,"calls":1}
+]

@@ -1,5 +1,5 @@
 //! Shared native/browser command journal codec and Rust replay.
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};

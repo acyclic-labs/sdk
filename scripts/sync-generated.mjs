@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, normalizeGeneratedRust, normalizeGeneratedTypeScript, projectGeneratedRust, packagedRustDirectories, rustBindingFiles, packagedSourceCopies, packagedTypeScriptBindings, writeChanged } from "./generated-bindings.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 for (const [source, packaged] of packagedSourceCopies) {
@@ -13,10 +13,17 @@ for (const [source, packaged] of packagedSourceCopies) {
 
 // Crates own the only copies of the Rust bindings they compile.
 const generatedRust = join(root, "generated/rust");
-for (const [relative, packaged] of packagedRustBindings) {
+projectGeneratedRust(root, generatedRust);
+for (const [relative, packaged] of packagedRustDirectories) {
   const source = join(generatedRust, relative);
   if (!existsSync(source)) throw new Error(`Rust generation path is missing: ${relative}`);
-  writeChanged(join(root, packaged), normalizeGeneratedRust(relative, readFileSync(source, "utf8")));
+  const freshFiles = rustBindingFiles(source);
+  for (const stale of rustBindingFiles(join(root, packaged))) {
+    if (!freshFiles.includes(stale)) rmSync(join(root, packaged, stale));
+  }
+  for (const file of freshFiles) {
+    writeChanged(join(root, packaged, file), normalizeGeneratedRust(file, readFileSync(join(source, file), "utf8")));
+  }
 }
 
 // Buf's TypeScript output is an intermediate: packages own the only copies.

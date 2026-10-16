@@ -11,7 +11,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
@@ -25,7 +24,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const UNAVAILABLE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
@@ -286,9 +284,11 @@ where
     })
 }
 
+type FollowFrames = futures::stream::BoxStream<'static, std::result::Result<Vec<u8>, StreamError>>;
 #[derive(Clone)]
 struct FollowState {
-    records: Arc<Mutex<Option<acyclic_stream::RecordStream>>>,
+    // Lock order: cursor -> provider cursor; cancellation never acquires this lock.
+    records: Arc<Mutex<Option<FollowFrames>>>,
     token: CancellationToken,
     closed: Arc<AtomicBool>,
 }
@@ -336,10 +336,10 @@ pub struct NativeStreamFollow {
 
 #[napi]
 impl NativeStreamFollow {
-    /// Returns the next canonical `ReadResponse`, or an empty result at end/close.
+    /// Returns the next canonical response for this cursor, or an empty result at end/close.
     ///
-    /// Transient `Unavailable` items remain owned by the Rust cursor and are
-    /// retried here. Terminal stream errors are returned in the result envelope.
+    /// Session recovery belongs to the provider. Every terminal error, including
+    /// `Unavailable`, is returned in the result envelope.
     #[napi]
     pub async fn next_result(&self) -> Result<NativeStreamNextResult> {
         if self.state.closed.load(Ordering::Acquire) {
@@ -353,77 +353,39 @@ impl NativeStreamFollow {
         let Some(stream) = records.as_mut() else {
             return Ok(NativeStreamNextResult::end());
         };
-        loop {
-            let next = run_with_cancellation(
-                async { Ok(stream.next().await) },
-                Some(self.state.token.clone()),
-            )
-            .await;
-            match next {
-                Ok(Some(Ok(record))) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    let response =
-                        wire_codec::read_response_wire(vec![wire_codec::record_wire(record)]);
-                    return Ok(NativeStreamNextResult::value(
-                        encode(&response, "follow").map_err(|error| napi_error(&error))?,
-                    ));
-                }
-                Ok(Some(Err(StreamError::Unavailable))) => {
-                    // RecordStream retains its cursor after an unavailable
-                    // item so the next poll can reopen or retry the active
-                    // endpoint. Keep that recovery in Rust: exposing the
-                    // transient error to JavaScript would make the iterator
-                    // throw and close the otherwise retryable cursor.
-                    if self.state.closed.load(Ordering::Acquire) || self.state.token.is_cancelled()
-                    {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    // Keep a persistently unavailable endpoint from turning a
-                    // retryable cursor into a tight loop. This matches the
-                    // retry delay used by the canonical gRPC record cursor.
-                    if let Err(error) = run_with_cancellation(
-                        async {
-                            tokio::time::sleep(UNAVAILABLE_RETRY_DELAY).await;
-                            Ok::<(), NativeStreamErrorMetadata>(())
-                        },
-                        Some(self.state.token.clone()),
-                    )
-                    .await
-                    {
-                        if self.state.closed.load(Ordering::Acquire)
-                            || self.state.token.is_cancelled()
-                        {
-                            records.take();
-                            return Ok(NativeStreamNextResult::end());
-                        }
-                        return Ok(NativeStreamNextResult::failure(error));
-                    }
-                }
-                Ok(Some(Err(error))) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    return Ok(NativeStreamNextResult::failure(stream_error(&error)));
-                }
-                Ok(None) => {
+        let next = run_with_cancellation(
+            async { Ok(stream.next().await) },
+            Some(self.state.token.clone()),
+        )
+        .await;
+        match next {
+            Ok(Some(Ok(bytes))) => {
+                if self.state.closed.load(Ordering::Acquire) {
                     records.take();
                     return Ok(NativeStreamNextResult::end());
                 }
-                Err(error) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    if self.state.token.is_cancelled() {
-                        records.take();
-                    }
-                    return Ok(NativeStreamNextResult::failure(error));
+                Ok(NativeStreamNextResult::value(Buffer::from(bytes)))
+            }
+            Ok(Some(Err(error))) => {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
                 }
+                Ok(NativeStreamNextResult::failure(stream_error(&error)))
+            }
+            Ok(None) => {
+                records.take();
+                Ok(NativeStreamNextResult::end())
+            }
+            Err(error) => {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
+                }
+                if self.state.token.is_cancelled() {
+                    records.take();
+                }
+                Ok(NativeStreamNextResult::failure(error))
             }
         }
     }
@@ -684,6 +646,21 @@ impl NativeStreamClient {
     ) -> Result<NativeStreamFollowResult> {
         Ok(
             match open_follow(&self.provider, request, cancellation).await {
+                Ok(follow) => NativeStreamFollowResult::success(follow),
+                Err(error) => NativeStreamFollowResult::failure(error),
+            },
+        )
+    }
+
+    /// Opens live child discovery using the client's shared Streams session.
+    #[napi(js_name = "openChildrenResult")]
+    pub async fn open_children_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamFollowResult> {
+        Ok(
+            match open_children(&self.provider, request, cancellation).await {
                 Ok(follow) => NativeStreamFollowResult::success(follow),
                 Err(error) => NativeStreamFollowResult::failure(error),
             },

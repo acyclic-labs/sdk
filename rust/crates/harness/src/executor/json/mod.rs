@@ -15,6 +15,8 @@ pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
 pub(crate) use serialization::count_json_bytes_trusted;
+mod copy;
+mod decode;
 mod schema;
 mod serialization;
 #[cfg(feature = "filesystem")]
@@ -22,7 +24,11 @@ pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
 pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
 pub(crate) use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
-pub use serialization::{canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded};
+pub use serialization::{
+    canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
+};
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
 
 /// Finite byte, node and nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +55,7 @@ enum Origin {
 pub struct JsonValueShape {
     input_bytes: u64,
     lexical_items: u64,
+    containers: u64,
     virtual_items: u64,
     raw_bytes: u64,
     raw_frames: u64,
@@ -56,6 +63,16 @@ pub struct JsonValueShape {
     origin: Origin,
 }
 impl JsonValueShape {
+    pub(crate) fn is_slice(self) -> bool {
+        self.origin == Origin::Slice
+    }
+    /// Object and array openings when the original source was bytes.
+    pub const fn lexical_containers(self) -> Option<u64> {
+        match self.origin {
+            Origin::Slice => Some(self.containers),
+            _ => None,
+        }
+    }
     /// Bytes inspected on the original source.
     pub const fn input_bytes(self) -> u64 {
         self.input_bytes
@@ -103,6 +120,11 @@ pub enum JsonCodecCharge {
     AllocationOperation {
         /// Full requested capacity.
         bytes: u64,
+    },
+    /// Atomic conservative node-allocation bound for one complete object.
+    AllocationOperations {
+        /// Maximum number of physical node allocations, from entry count.
+        operations: u64,
     },
     /// Copy into an admitted buffer.
     Copy {

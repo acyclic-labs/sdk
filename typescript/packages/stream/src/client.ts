@@ -100,15 +100,18 @@ export class StreamClient {
     }
     return page;
   }
-  /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
-  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
-    let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
-    for (;;) {
-      const page = await this.childrenPage(request);
-      for (const child of page.children) yield child;
-      if (page.nextAfter === undefined) return;
-      request = { ...(parent === undefined ? {} : { parent }), limit,
-        after: page.nextAfter, hierarchyVersion: page.hierarchyVersion };
+  /** Replays direct children and follows newly created children without a handoff gap. */
+  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS, signal?: AbortSignal): AsyncIterable<{ readonly path: string }> {
+    if (parent !== undefined) validatePathValue(parent);
+    positiveInteger(limit, "limit");
+    if (limit > StreamLimit.MAX_ITEMS) throw new StreamError("limit_exceeded", "child replay limit exceeds the contract maximum");
+    if (this.provider.children === undefined) throw new StreamError("unsupported", "provider does not support live child discovery");
+    const seen = new Set<string>();
+    for await (const child of this.provider.children({ ...(parent === undefined ? {} : { parent }), limit,
+      ...(signal === undefined ? {} : { signal }) })) {
+      validatePathValue(child.path);
+      if (directParent(child.path) !== (parent ?? "")) throw new StreamError("invalid_response", "provider returned a non-direct child");
+      if (!seen.has(child.path)) { seen.add(child.path); yield child; }
     }
   }
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {

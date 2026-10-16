@@ -267,26 +267,33 @@ proptest::proptest! {
         persisted in proptest::prelude::any::<bool>(),
         valid in proptest::prelude::any::<bool>(),
         select_child in proptest::prelude::any::<bool>(),
+        unpublished in proptest::prelude::any::<bool>(),
     ) {
         use acyclic_fs::{GitBranch, GitCompatRepository, GitCompatState, GitCompatStore, MemoryGitCompatStore, WorkspaceId};
         let root = WorkspaceId::from_bytes(root);
         let child = WorkspaceId::from_bytes(child);
+        let marker = (acyclic_fs::OperationId::from_bytes([7;16]), acyclic_fs::GitGenerationRef {
+            workspace_id: if select_child { child } else { root },
+            generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([9;32])),
+        });
         let store = MemoryGitCompatStore::default();
         let result = futures::executor::block_on(async {
             if persisted {
                 let branch = format!("agents/{branch}");
                 let mut state = GitCompatState::new("main", root);
                 state.revision = 1;
+                state.checkout_reconciliation = unpublished.then_some(marker);
                 state.branches.insert(branch.clone(), GitBranch {
                     name: branch.clone(), workspace_id: child, head: None, tracked_paths: Default::default(),
                 });
                 state.current_branch = if !valid { "missing".into() } else if select_child { branch } else { "main".into() };
                 assert!(store.compare_and_swap(root, 0, state).await.unwrap());
             }
-            GitCompatRepository::new(root, store).selected_workspace().await
+            GitCompatRepository::new(root, store).checkout_selection().await
         });
         proptest::prop_assert_eq!(result.is_ok(), !persisted || valid);
-        if let Ok(selected) = result {
+        if let Ok((selected, pending)) = result {
+            proptest::prop_assert_eq!(pending, (persisted && unpublished).then_some(marker));
             proptest::prop_assert_eq!(selected, if persisted && select_child { child } else { root });
         }
     }

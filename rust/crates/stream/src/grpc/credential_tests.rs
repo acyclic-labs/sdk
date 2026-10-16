@@ -68,6 +68,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                             ATTEMPT_TIMEOUT,
                             wire::TailRequest {
                                 path: "same/path".into(),
+                                ..Default::default()
                             },
                             |_, request| {
                                 assert_eq!(request.get_ref().path, "same/path");
@@ -81,7 +82,10 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                                 Box::pin(futures::future::ready(if sent < tokens.len() {
                                     Err(Status::unavailable("retry"))
                                 } else {
-                                    Ok(Response::new(wire::TailResponse { tail: 7 }))
+                                    Ok(Response::new(wire::TailResponse {
+                                        tail: 7,
+                                        ..Default::default()
+                                    }))
                                 }))
                             },
                         )
@@ -99,6 +103,45 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     prop_assert!(matches!(result, Err(StreamError::AccessDenied)));
                     Ok(())
                 })
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback() {
+    proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64))
+        .run(
+            &prop::collection::vec("[a-zA-Z0-9_-]{1,32}", 1..8),
+            |tokens| {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let index = calls.clone();
+                let values = tokens.clone();
+                let provider = CredentialProvider::new(move || {
+                    futures::future::ready(
+                        values
+                            .get(index.fetch_add(1, Ordering::SeqCst))
+                            .cloned()
+                            .ok_or(CredentialError::Invalid),
+                    )
+                });
+                let stale = authorization("stale").unwrap();
+                for (index, token) in tokens.iter().enumerate() {
+                    let value = futures::executor::block_on(request_authorization(
+                        Some(&stale),
+                        Some(&provider),
+                    ))
+                    .unwrap();
+                    prop_assert_eq!(value.to_str().unwrap(), format!("Bearer {token}"));
+                    prop_assert!(value.is_sensitive());
+                    prop_assert_eq!(calls.load(Ordering::SeqCst), index + 1);
+                }
+                let failed = futures::executor::block_on(request_authorization(
+                    Some(&stale),
+                    Some(&provider),
+                ));
+                prop_assert_eq!(failed.unwrap_err().code(), Code::Unauthenticated);
+                Ok(())
             },
         )
         .unwrap();

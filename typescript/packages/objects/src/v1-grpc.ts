@@ -143,6 +143,7 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
         case "buckets/delete": return await unary(wire.DeleteBucketRequestSchema, wire.DeleteBucketResponseSchema, value => this.clients.buckets.deleteBucket(value));
         case "objects/head": return await unary(wire.HeadObjectRequestSchema, wire.HeadObjectResponseSchema, value => this.clients.objects.headObject(value));
         case "objects/delete": return await unary(wire.DeleteObjectRequestSchema, wire.DeleteObjectResponseSchema, value => this.clients.objects.deleteObject(value));
+        case "objects/restore": return await unary(wire.RestoreObjectsRequestSchema, wire.RestoreObjectsResponseSchema, value => this.clients.objects.restoreObjects(value));
         case "objects/list": return await unary(wire.ListObjectsRequestSchema, wire.ListObjectsResponseSchema, value => this.clients.objects.listObjects(value));
         case "multipart/create": return await unary(wire.CreateMultipartRequestSchema, wire.MultipartUploadSchema, value => this.clients.multipart.createMultipart(value));
         case "multipart/list-parts": return await unary(wire.ListPartsRequestSchema, wire.ListPartsResponseSchema, value => this.clients.multipart.listParts(value));
