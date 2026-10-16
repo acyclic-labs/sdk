@@ -89,7 +89,10 @@ test("Actors sends every renewed credential on one reusable connection", async (
         } };
       } },
     });
-    for (const _value of values) await client.inspectActor(actor);
+    for (const _value of values) {
+      await client.inspectActor(actor);
+      expect(await client.transport).toBeUndefined();
+    }
     expect(connected).toEqual([values[0]!]);
     expect(sent).toEqual(values);
     expect(calls).toBe(values.length);

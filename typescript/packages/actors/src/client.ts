@@ -81,7 +81,10 @@ export class ActorsClient {
     installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
   }
 
-  get transport(): Promise<string | undefined> { return Promise.resolve(this.#credential()).then(token => this.#connection(token)).then(client => client.transport); }
+  get transport(): Promise<string | undefined> {
+    if (this.#client !== undefined && this.#connectAbort === undefined) return this.#client.then(client => client.transport);
+    return Promise.resolve(this.#credential()).then(token => this.#connection(token)).then(client => client.transport);
+  }
 
   async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
     const operation = method.localName as Operation;
