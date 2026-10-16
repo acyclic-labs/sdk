@@ -87,6 +87,12 @@ impl NativeAllocation {
             .bytes
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
+        let empty = bytes == 0;
+        #[cfg(all(test, acyclic_fs_loom))]
+        let empty = empty && !model_checking::force_ledger_release();
+        if empty {
+            return Ok(());
+        }
         self.meter
             .state(|state| state.release(bytes))
             .map_err(native_materialization_work_error)
@@ -213,3 +219,10 @@ impl Drop for NativeResourceRetirement {
             }
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "allocation_model.rs"]
+mod model_checking;
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "allocation_tests.rs"]
+mod tests;
