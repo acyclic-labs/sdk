@@ -111,6 +111,33 @@ impl<W: Write + Send + 'static> Owner<W> {
         if Instant::now() >= deadline {
             return Err(io::ErrorKind::TimedOut.into());
         }
+        let result = Self::submit(this, &mut state, restoring, action)?;
+        let generation = state.generation;
+        while !state.acknowledged {
+            if Instant::now() >= deadline {
+                state.phase = Phase::Cancelled;
+                drop(state);
+                Self::cancel_background(this, generation);
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            state = this.wait(state, deadline.saturating_duration_since(Instant::now()))?;
+        }
+        let value = result.lock().map_err(|_| io::ErrorKind::Other)?.take();
+        if state.closed && !restoring {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        if Instant::now() >= deadline || state.phase == Phase::Cancelled {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        value.ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?
+    }
+
+    fn submit<R: Send + 'static>(
+        this: &Arc<Self>,
+        state: &mut State<W>,
+        restoring: bool,
+        action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<R> + Send + 'static,
+    ) -> io::Result<Arc<Mutex<Option<io::Result<R>>>>> {
         let generation = state
             .generation
             .checked_add(1)
@@ -173,23 +200,7 @@ impl<W: Write + Send + 'static> Owner<W> {
                 return Err(error);
             }
         }
-        while !state.acknowledged {
-            if Instant::now() >= deadline {
-                state.phase = Phase::Cancelled;
-                drop(state);
-                Self::cancel_background(this, generation);
-                return Err(io::ErrorKind::TimedOut.into());
-            }
-            state = this.wait(state, deadline.saturating_duration_since(Instant::now()))?;
-        }
-        let value = result.lock().map_err(|_| io::ErrorKind::Other)?.take();
-        if state.closed && !restoring {
-            return Err(io::ErrorKind::NotConnected.into());
-        }
-        if Instant::now() >= deadline || state.phase == Phase::Cancelled {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        value.ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?
+        Ok(result)
     }
 
     fn quiesce(&self, wait_for_ack: bool) -> io::Result<()> {
@@ -289,7 +300,9 @@ mod tests {
     impl Write for Console {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             if let Some(submitting) = self.submitting.take() {
-                submitting.send(()).unwrap_or_else(|error| panic!("{error}"));
+                submitting
+                    .send(())
+                    .unwrap_or_else(|error| panic!("{error}"));
             }
             thread::yield_now();
             if self.restored.load(Ordering::SeqCst) {
@@ -315,14 +328,13 @@ mod tests {
                 &Capabilities::default(),
             );
             let owner = Owner::new(guard, |_| {});
-            let writing = Arc::clone(&owner);
-            let caller = thread::spawn(move || {
-                let _ = Owner::run(
-                    &writing,
-                    Instant::now() + Duration::from_secs(10),
-                    |guard| guard.writer().write_all(b"mode"),
-                );
-            });
+            {
+                let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
+                Owner::submit(&owner, &mut state, false, |guard| {
+                    guard.writer().write_all(b"mode")
+                })
+                .unwrap_or_else(|e| panic!("{e}"));
+            }
             // Start at the reported race: the worker has passed its cancelled
             // check and may pause immediately before the native write. This
             // removes unrelated open/close-before-submit permutations.
@@ -344,9 +356,6 @@ mod tests {
                 })
                 .unwrap_or_else(|error| panic!("{error}"));
             }
-            caller
-                .join()
-                .unwrap_or_else(|error| std::panic::resume_unwind(error));
             assert!(
                 !late.load(Ordering::SeqCst),
                 "write after acknowledged restoration"
