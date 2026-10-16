@@ -109,12 +109,15 @@ mod unchanged_properties {
         #[test]
         fn repeated_regular_capture_avoids_unchanged_writes(
             body in prop::collection::vec(1_u8..=255, 70..96),
+            empty in any::<bool>(),
+            truncate in any::<bool>(),
             change_body in any::<bool>(), change_mode in any::<bool>(),
         ) {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 let source = tempfile::tempdir().unwrap();
                 let file = source.path().join("file");
+                let body = if empty { Vec::new() } else { body };
                 std::fs::write(&file, &body).unwrap();
                 std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
                 let before = std::fs::metadata(&file).unwrap();
@@ -126,12 +129,21 @@ mod unchanged_properties {
                 let options = options(source.path(), 16).unwrap();
                 capture_subtrees_with_native_work(&mut checkout, &[root.clone()], &options, &CapturePolicy::default(), &cancellation, None, &work).await.unwrap();
                 let mut expected = body;
-                if change_body { expected[0] ^= 1; std::fs::write(&file, &expected).unwrap(); }
+                if change_body {
+                    if expected.is_empty() { expected.push(1); }
+                    else if truncate { expected.clear(); }
+                    else { expected[0] ^= 1; }
+                    std::fs::write(&file, &expected).unwrap();
+                }
                 if change_mode { std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap(); }
                 std::fs::File::open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()).set_accessed(before.accessed().unwrap())).unwrap();
                 let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+                let before_capture = work.receipt();
                 let receipt = capture_subtrees_with_native_work(&mut checkout, &[root], &options, &CapturePolicy::default(), &cancellation, Some(&baseline), &work).await.unwrap();
                 prop_assert_eq!(receipt.value.changed_paths != 0, change_body || change_mode);
+                if empty && !change_body && !change_mode {
+                    prop_assert_eq!(receipt.work.backend_write_operations, before_capture.backend_write_operations);
+                }
                 let content = checkout.read_file_range(&path("/file").unwrap(), crate::ByteRange { offset: 0, length: expected.len() as u64 }, &work, &cancellation).await.unwrap();
                 prop_assert_eq!(content.bytes.as_ref(), expected.as_slice());
                 Ok(())
