@@ -80,7 +80,7 @@ impl ExecutionJournal for Checks {
         selected: &'a SelectedModelContext,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || async {
+        crate::conversation::BoundedContentFuture::new(io, move || async move {
             self.selections.fetch_add(1, Ordering::SeqCst);
             for message in &selected.messages {
                 self.verify_model_content(&message.content, io, None)?
@@ -96,7 +96,7 @@ impl ExecutionJournal for Checks {
         io: Option<&'a PreparationIo>,
         _: Option<&'a crate::runtime::TaskContext>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        crate::conversation::BoundedContentFuture::new(io, || async {
+        crate::conversation::BoundedContentFuture::new(io, move || async move {
             self.contents.lock().unwrap().push(content.clone());
             self.files.verify_model_content(content, io, None)?.await
         })
