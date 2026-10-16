@@ -23,34 +23,38 @@ test("every product gRPC client resolves current credentials and stops on failur
     router.service(BucketsService, { headBucket(_request, context) { return observe(context); } });
     router.service(MachinesService, { listMachines(_request, context) { return observe(context); } });
   });
+  const clients = ["streams", "fs", "objects", "machines"].map(product => {
+    let calls = 0;
+    let values: readonly string[] = [];
+    let reads = 0;
+    const callback = async () => values[calls++]!;
+    const options = { endpoint, caCertificate: certificate, token: "stale", credential: callback };
+    Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
+    let invoke: () => Promise<unknown>;
+    let release: (() => void) | undefined;
+    switch (product) {
+      case "streams": { const client = createStreamGrpcClient(options); invoke = () => client.tail({ path: "credential/test" }); break; }
+      case "fs": { const client = createFilesystemGrpcClient(options); invoke = () => client.filesystem.handshake({}); release = client.close; break; }
+      case "objects": { const client = createObjectsV1GrpcClients(options); invoke = () => client.buckets.headBucket({}); release = client.close; break; }
+      case "machines": { const client = createMachinesGrpcClient(options); invoke = () => client.machines.listMachines({}); release = client.close; break; }
+      default: throw new Error("unknown fixture product");
+    }
+    return { invoke, release, setValues(next: readonly string[]) { values = next; calls = 0; },
+      check(count: number) { expect(calls).toBe(count); expect(reads).toBe(1); } };
+  });
   try {
     await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), { minLength: 2, maxLength: 8 }), async values => {
-      for (const product of ["streams", "fs", "objects", "machines"] as const) {
-        let calls = 0;
-        const options = { endpoint, caCertificate: certificate, token: "stale", credential: async () => values[calls++]! };
-        let reads = 0;
-        const callback = options.credential;
-        Object.defineProperty(options, "credential", { enumerable: true, get: () => ++reads === 1 ? callback : undefined });
-        let invoke: () => Promise<unknown>;
-        let release: (() => void) | undefined;
-        switch (product) {
-          case "streams": { const client = createStreamGrpcClient(options); invoke = () => client.tail({ path: "credential/test" }); break; }
-          case "fs": { const client = createFilesystemGrpcClient(options); invoke = () => client.filesystem.handshake({}); release = client.close; break; }
-          case "objects": { const client = createObjectsV1GrpcClients(options); invoke = () => client.buckets.headBucket({}); release = client.close; break; }
-          case "machines": { const client = createMachinesGrpcClient(options); invoke = () => client.machines.listMachines({}); release = client.close; break; }
-        }
+      for (const client of clients) {
+        client.setValues(values);
         const start = sent.length;
-        try {
-          for (const _value of values) await invoke();
+          for (const _value of values) await client.invoke();
           expect(sent.slice(start)).toEqual(values.map(value => `Bearer ${value}`));
-          expect(calls).toBe(values.length);
-          expect(reads).toBe(1);
-          await expect(invoke()).rejects.toThrow();
+          client.check(values.length);
+          await expect(client.invoke()).rejects.toThrow();
           expect(sent.length).toBe(start + values.length);
-        } finally { release?.(); }
       }
     }), { numRuns: 16 });
-  } finally { await close(); }
+  } finally { for (const client of clients) client.release?.(); await close(); }
 });
 
 test("Actors sends renewed credentials through the native Rust bridge", async () => {
