@@ -351,6 +351,15 @@ impl<S: ClientStateStore> HarnessClient<S> {
         self.session.query_change(change)
     }
 
+    /// Associates two ordinary file follows with the same shared goal rendering.
+    pub fn bind_goal_sources(
+        &mut self,
+        goal: ([u8; 32], [u8; 32]),
+        request: ([u8; 32], [u8; 32]),
+    ) -> Result<()> {
+        self.session.bind_goal_sources(goal, request)
+    }
+
     /// Negotiated service response, also emitted by JSONL runners.
     pub fn handshake(&self) -> &wire::HandshakeResponse {
         &self.handshake

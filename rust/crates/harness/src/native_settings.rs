@@ -10,6 +10,7 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
 };
+mod workspace;
 
 /// Native user locations and independent trust for repository-supplied commands.
 pub struct SettingsConfig {
@@ -19,6 +20,8 @@ pub struct SettingsConfig {
     trust_project_hooks: bool,
     trust_project_mcp: bool,
     maximum_file_bytes: u64,
+    #[cfg(feature = "test-support")]
+    _test_home: Option<tempfile::TempDir>,
 }
 
 impl SettingsConfig {
@@ -33,7 +36,21 @@ impl SettingsConfig {
             trust_project_hooks: false,
             trust_project_mcp: false,
             maximum_file_bytes: 1_048_576,
+            #[cfg(feature = "test-support")]
+            _test_home: None,
         }
+    }
+
+    #[cfg(all(
+        feature = "test-support",
+        feature = "filesystem-local",
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    ))]
+    pub(crate) fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
+        let home = tempfile::tempdir().map_err(Error::process_io)?;
+        let mut settings = Self::new(workspace, home.path()).codex_home(home.path().join(".codex"));
+        settings._test_home = Some(home);
+        Ok(settings)
     }
 
     /// Overrides CODEX_HOME or ~/.codex for this snapshot.
@@ -260,8 +277,7 @@ impl NativeSettings {
                 if source.local
                     && let Some(projects) = document.remove("projects")
                     && let Some((_, project)) = object(projects)?.into_iter().find(|(path, _)| {
-                        Path::new(path) == configured_workspace
-                            || Path::new(path) == config.workspace
+                        workspace::matches(path, &configured_workspace, &config.workspace)
                     })
                     && let Some(servers) = object(project)?.remove("mcpServers")
                 {

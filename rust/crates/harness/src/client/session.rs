@@ -325,6 +325,15 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.views.query_change(change)
     }
 
+    /// Joins observed GOAL.md and request-head cuts without persisting file payloads.
+    pub fn bind_goal_sources(
+        &mut self,
+        goal: ([u8; 32], [u8; 32]),
+        request: ([u8; 32], [u8; 32]),
+    ) -> Result<()> {
+        self.views.bind_goal_sources(goal, request)
+    }
+
     /// State shared by every renderer.
     #[must_use]
     pub fn views(&self) -> &ClientViews {
