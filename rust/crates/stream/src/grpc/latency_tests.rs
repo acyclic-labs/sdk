@@ -54,19 +54,27 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();
-        let (written, record, latency) = crate::test_latency::sample(
-            writer.append(AppendRequest {
-                path: path.clone(),
-                records: vec![Bytes::from_static(b"delta").into()],
-                if_tail: None,
-                idempotency_key: None,
-            }),
-            tokio::time::timeout(Duration::from_secs(1), follow.next()),
+        let (_, record, latency) = crate::test_latency::sample(
+            async {
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
+                    writer
+                        .append(AppendRequest {
+                            path: path.clone(),
+                            records: vec![Bytes::from_static(b"delta").into()],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?,
+                )
+            },
+            async {
+                Ok(tokio::time::timeout(Duration::from_secs(1), follow.next())
+                    .await?
+                    .ok_or("follow ended")??)
+            },
             || started.elapsed().as_nanos(),
         )
-        .await;
-        written?;
-        let record = record?.ok_or("follow ended")??;
+        .await?;
         assert_eq!(record.sequence, sequence);
         assert_eq!(record.value.as_slice(), b"delta");
         if sequence > 16 {
