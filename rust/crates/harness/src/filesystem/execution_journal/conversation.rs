@@ -10,6 +10,7 @@ use crate::{
     executor::{TurnInput, TurnOutput},
     filesystem::InternalContentClass,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -367,17 +368,6 @@ where
                 "assistant.txt",
             )
             .await?;
-        let metadata = serde_json::to_vec(&output.metadata)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let metadata = self
-            .stage_conversation(
-                operation_id,
-                &format!("turns/{operation_id}/metadata.json"),
-                &metadata,
-                "application/json",
-                "metadata.json",
-            )
-            .await?;
         let attachments = if output.attachments.len() <= 128 {
             ReferencedAttachments::Inline {
                 items: output.attachments.clone(),
@@ -415,7 +405,19 @@ where
             }
         };
         let mut aggregate = self.conversation_projection(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
+        let usage = self
+            .append_turn_history(&mut aggregate, operation_id, user_id, limits)
+            .await?;
+        let metadata =
+            serde_json::to_vec(&usage).map_err(|error| Error::Invalid(error.to_string()))?;
+        let metadata = self
+            .stage_conversation(
+                operation_id,
+                &format!("turns/{operation_id}/metadata.json"),
+                &metadata,
+                "application/json",
+                "metadata.json",
+            )
             .await?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
@@ -456,17 +458,36 @@ where
         .await
     }
 
-    async fn append_tool_history(
+    async fn append_turn_history(
         &self,
         aggregate: &mut StreamAggregate<P>,
         operation_id: OperationId,
         user_id: Uuid,
         limits: Limits,
-    ) -> Result<()> {
+    ) -> Result<Value> {
+        let mut usage = Value::Null;
         let mut calls = BTreeMap::new();
         let mut replay = crate::executor::ExecutionReplay::new(operation_id);
-        while let Some(page) = replay.next_page(self, None).await? {
-            for record in page {
+        loop {
+            // Reference verification already decodes each model event. Retain that
+            // value for usage instead of discarding and reading its file again.
+            let page = self
+                .replay_page(
+                    operation_id,
+                    replay.tail(),
+                    crate::executor::EXECUTION_REPLAY_PAGE_RECORDS,
+                    true,
+                    None,
+                )
+                .await?;
+            replay.observe_page(page.iter().map(|(record, _)| record), None)?;
+            if page.is_empty() {
+                break;
+            }
+            for (record, model) in page {
+                if let Some(ModelEvent::Completed { metadata }) = model {
+                    crate::model::accumulate_usage(&mut usage, metadata)?;
+                }
                 let (kind, content, attachments, reply_to, call_id, step) = match record.event {
                     ExecutionEvent::ToolStarted {
                         step,
@@ -558,7 +579,7 @@ where
                 .await?;
             }
         }
-        Ok(())
+        Ok(usage)
     }
 }
 

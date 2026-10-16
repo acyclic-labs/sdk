@@ -131,11 +131,9 @@ impl<S: ClientStateStore> HarnessClient<S> {
         }
         for command in pending {
             let admission = self.api.submit(command).await?;
-            self.session.receive(wire::ServerFrame {
-                frame: Some(wire::server_frame::Frame::Admission(admission.clone())),
-            })?;
             let blocked = admission.state == wire::AdmissionState::Indeterminate as i32;
-            admitted(admission)?;
+            self.session
+                .receive_admission(admission, |admission| admitted(admission.clone()))?;
             if blocked {
                 break;
             }

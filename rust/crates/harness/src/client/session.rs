@@ -168,6 +168,29 @@ impl<S: ClientStateStore> ClientSession<S> {
         Ok(acknowledge)
     }
 
+    /// Validates and reserves maintenance before publication. Retry intent is
+    /// removed only after the sink accepts the admission and its record commits.
+    pub(super) fn receive_admission(
+        &mut self,
+        admission: wire::Admission,
+        publish: impl FnOnce(&wire::Admission) -> Result<()>,
+    ) -> Result<()> {
+        let record = SessionRecord {
+            request: None,
+            response: Some(wire::ServerFrame {
+                frame: Some(wire::server_frame::Frame::Admission(admission)),
+            }),
+            checkpoint: None,
+        };
+        let Some(wire::ServerFrame {
+            frame: Some(wire::server_frame::Frame::Admission(admission)),
+        }) = record.response.as_ref()
+        else {
+            return Err(Error::Storage("admission record missing".into()));
+        };
+        self.admit(admission, &record, true, publish)
+    }
+
     /// Resolves canonical files, publishes the complete frame, then commits its cursor.
     /// File and validation failures leave the views and durable cut unchanged.
     pub(super) async fn receive_delivery(
@@ -348,7 +371,7 @@ impl<S: ClientStateStore> ClientSession<S> {
             },
             (None, Some(response)) => match &response.frame {
                 Some(wire::server_frame::Frame::Admission(admission)) => {
-                    self.admit(admission, record, persist)?;
+                    self.admit(admission, record, persist, |_| Ok(()))?;
                 }
                 Some(wire::server_frame::Frame::Delivery(delivery)) => {
                     let messages = delivery
@@ -468,6 +491,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         admission: &wire::Admission,
         record: &SessionRecord,
         persist: bool,
+        publish: impl FnOnce(&wire::Admission) -> Result<()>,
     ) -> Result<()> {
         // Reserve this record before removing retry intent. A maintenance failure
         // must leave the command pending, including when replace committed first.
@@ -489,9 +513,16 @@ impl<S: ClientStateStore> ClientSession<S> {
             .ok_or_else(|| Error::Conflict("pending command disappeared".into()))?;
         validate_admission(command, admission)?;
         match wire::AdmissionState::try_from(admission.state) {
-            Ok(wire::AdmissionState::Accepted | wire::AdmissionState::Rejected) => {}
-            Ok(wire::AdmissionState::Indeterminate) => return Ok(()),
+            Ok(
+                wire::AdmissionState::Accepted
+                | wire::AdmissionState::Rejected
+                | wire::AdmissionState::Indeterminate,
+            ) => {}
             _ => return Err(Error::Invalid("invalid admission state".into())),
+        }
+        publish(admission)?;
+        if admission.state == wire::AdmissionState::Indeterminate as i32 {
+            return Ok(());
         }
         let (_, key) = command_identity(command)?;
         if persist {

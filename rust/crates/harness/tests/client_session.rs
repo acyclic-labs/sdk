@@ -657,6 +657,9 @@ mod headless;
 #[path = "client_session_recovery.rs"]
 mod recovery;
 
+#[path = "client_session_admissions.rs"]
+mod admissions;
+
 #[path = "client_session_lifecycle.rs"]
 mod lifecycle;
 
@@ -675,3 +678,7 @@ mod client_files;
 #[path = "client_session_files.rs"]
 #[cfg(feature = "filesystem")]
 mod files;
+
+#[path = "client_session_usage.rs"]
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+mod usage;
