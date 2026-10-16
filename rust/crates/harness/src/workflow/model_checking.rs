@@ -1,7 +1,20 @@
 use super::*;
-use futures::executor::block_on;
 use loom::{sync::Arc as LoomArc, thread};
 use serde_json::json;
+use std::{
+    future::Future,
+    task::{Context, Poll},
+};
+
+fn ready<F: Future>(future: F) -> F::Output {
+    match Box::pin(future)
+        .as_mut()
+        .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
+    {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("memory workflow journal unexpectedly suspended"),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Fault {
@@ -97,7 +110,7 @@ fn payload() -> FileRef {
 }
 
 fn deliver(journal: &MemoryWorkflowJournal, cursor: &mut u64, seen: &mut Vec<WorkflowRecord>) {
-    let (page, _) = block_on(journal.replay(*cursor, 1, None).unwrap()).unwrap();
+    let (page, _) = ready(journal.replay(*cursor, 1, None).unwrap()).unwrap();
     for entry in page {
         assert_eq!(entry.prior.revision, *cursor, "cursor skipped an outbox");
         assert_eq!(entry.transition.commands.len(), 1);
@@ -109,27 +122,25 @@ fn deliver(journal: &MemoryWorkflowJournal, cursor: &mut u64, seen: &mut Vec<Wor
 fn cursor_model(fault: Fault) {
     loom::model(move || {
         let journal = MemoryWorkflowJournal::default();
-        block_on(journal.admit(admission())).unwrap();
+        ready(journal.admit(admission())).unwrap();
         let journal = LoomArc::new(journal);
         let publisher = {
             let journal = journal.clone();
             thread::spawn(move || {
                 for revision in 0..2 {
                     let entry = record(revision);
-                    {
-                        assert_eq!(
-                            block_on(journal.commit(
-                                u64::from(revision),
-                                entry.idempotency_key.clone(),
-                                entry.clone()
-                            ))
-                            .unwrap(),
-                            entry
-                        );
-                    }
+                    assert_eq!(
+                        ready(journal.commit(
+                            u64::from(revision),
+                            entry.idempotency_key.clone(),
+                            entry.clone()
+                        ))
+                        .unwrap(),
+                        entry
+                    );
                     // Lost acknowledgement: retry after the subscriber may have read it.
                     assert_eq!(
-                        block_on(journal.commit(
+                        ready(journal.commit(
                             u64::from(revision),
                             entry.idempotency_key.clone(),
                             entry.clone()
@@ -167,7 +178,7 @@ fn cursor_model(fault: Fault) {
 fn checkpoint_model(fault: Fault) {
     loom::model(move || {
         let journal = MemoryWorkflowJournal::default();
-        block_on(journal.admit(admission())).unwrap();
+        ready(journal.admit(admission())).unwrap();
         let journal = LoomArc::new(journal);
         let writers: Vec<_> = [false, true]
             .into_iter()
@@ -181,7 +192,7 @@ fn checkpoint_model(fault: Fault) {
                         entry.idempotency_key = IdempotencyKey::new("rival").unwrap();
                         entry.transition.state = json!(90);
                     }
-                    block_on(journal.commit(0, entry.idempotency_key.clone(), entry)).is_ok()
+                    ready(journal.commit(0, entry.idempotency_key.clone(), entry)).is_ok()
                 })
             })
             .collect();
@@ -191,18 +202,15 @@ fn checkpoint_model(fault: Fault) {
             .filter(|committed| *committed)
             .count();
         assert_eq!(committed, 1, "split commit accepted competing checkpoints");
-        let (page, _) = block_on(journal.replay(0, 2, None).unwrap()).unwrap();
+        let (page, _) = ready(journal.replay(0, 2, None).unwrap()).unwrap();
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].transition.commands, record(0).transition.commands);
         assert_eq!(page[0].checkpoint().unwrap().1, 1);
         let mut duplicate = record(1);
         duplicate.prior.state = page[0].transition.state.clone();
         duplicate.transition.commands = record(0).transition.commands;
-        assert!(block_on(journal.commit(1, duplicate.idempotency_key.clone(), duplicate)).is_err());
-        assert_eq!(
-            block_on(journal.replay(0, 2, None).unwrap()).unwrap().0,
-            page
-        );
+        assert!(ready(journal.commit(1, duplicate.idempotency_key.clone(), duplicate)).is_err());
+        assert_eq!(ready(journal.replay(0, 2, None).unwrap()).unwrap().0, page);
     });
 }
 
