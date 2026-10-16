@@ -37,7 +37,7 @@ fn callback_paths_keep_windows_component_rules() {
         ("a\\b/./c/", Some(vec![units("a"), units("b"), units("c")])),
         ("a//b\\\\c", Some(vec![units("a"), units("b"), units("c")])),
         ("1:a", Some(vec![units("1:a")])),
-        ("ÃƒÂ©:a", Some(vec![units("ÃƒÂ©:a")])),
+        ("ÃƒÆ’Ã‚Â©:a", Some(vec![units("ÃƒÆ’Ã‚Â©:a")])),
         ("a/.:", Some(vec![units("a"), units(".:")])),
         (".", None),
         (".\\a", None),
@@ -90,7 +90,8 @@ proptest! {
     fn direct_metadata_paths_round_trip(parts in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..64), 0..8)) {
         if let Some(wide) = callback_path::wide_components(&parts) {
             let wide: Vec<_> = wide.collect();
-            prop_assert_eq!(callback_path::components(&wide).as_ref(), Some(&parts));
+            let decoded = callback_path::components(&wide);
+            prop_assert_eq!(decoded.as_ref(), Some(&parts));
         }
     }
 

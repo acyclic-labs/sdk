@@ -10,7 +10,8 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         .collect();
     if let Some(wide) = callback_path::wide_components(&raw_parts) {
         let wide: Vec<_> = wide.collect();
-        assert_eq!(callback_path::components(&wide).as_ref(), Some(&raw_parts));
+        let decoded = callback_path::components(&wide);
+        assert_eq!(decoded.as_ref(), Some(&raw_parts));
     }
     if input.len() % 2 != 0 {
         return;
