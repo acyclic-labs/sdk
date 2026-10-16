@@ -93,3 +93,10 @@ path = "fuzz_targets/input_paths.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "memory_directory"
+path = "fuzz_targets/memory_directory.rs"
+test = false
+doc = false
+bench = false
