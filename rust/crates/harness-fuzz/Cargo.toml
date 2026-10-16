@@ -7,29 +7,31 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
+
+[features]
+notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
+
 [dependencies]
-acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "grpc", "native-execution", "test-support"] }
+acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support"] }
+diffy.workspace = true
+serde-saphyr = { version = "=1.3.0", features = ["serialize"] }
 libfuzzer-sys = "0.4"
 prost.workspace = true
+acyclic-fs = { path = "../filesystem", default-features = false, features = ["local"] }
 acyclic-stream = { path = "../stream", default-features = false }
 futures.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 tempfile = "3.27.0"
+
 bytes.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
 serde.workspace = true
-serde-saphyr = { version = "=1.3.0", features = ["serialize"] }
-diffy = "=0.5.2"
 tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
 which = "=8.0.6"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
-
-[features]
-notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [[bin]]
 name = "client_recovery"
@@ -101,7 +103,6 @@ required-features = ["notifications"]
 test = false
 doc = false
 bench = false
-
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
@@ -110,8 +111,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_commands"
-path = "fuzz_targets/client_commands.rs"
+name = "client_interests"
+path = "fuzz_targets/client_interests.rs"
 test = false
 doc = false
 bench = false
@@ -126,6 +127,20 @@ bench = false
 [[bin]]
 name = "command_parser"
 path = "fuzz_targets/command_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plan_markdown"
+path = "fuzz_targets/plan_markdown.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_commands"
+path = "fuzz_targets/client_commands.rs"
 test = false
 doc = false
 bench = false

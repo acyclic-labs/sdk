@@ -6,12 +6,18 @@ use acyclic_fs::{
 
 impl CheckoutTools {
     pub(super) async fn select(&self, context: &ToolContext) -> Result<Option<Arc<Self>>> {
-        let owner = context.task().ordinary_journal_owner::<LocalStream>()?;
-        owner.verify(false, &mut None).await?;
-        let task = if owner.admission().task.name == "acyclic.direct_tool" {
-            owner.admission().parent.unwrap_or_else(|| owner.task_id())
+        let (task, _) = context.task().owned_task_binding(None)?;
+        let owner = context
+            .task()
+            .owned_mailbox
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("tool task owner missing".into()))?;
+        owner.verify_owner(None)?.await?;
+        let admission = owner.admission().0;
+        let task = if admission.task.name == "acyclic.direct_tool" {
+            admission.parent.unwrap_or(task)
         } else {
-            owner.task_id()
+            task
         };
         let mut lineage = context.task().lineage(task).await?;
         lineage.reverse();
@@ -54,20 +60,15 @@ impl CheckoutTools {
                         .map_err(storage)?,
                     );
                     let identity = acyclic_fs::capture_root_identity(&path).map_err(storage)?;
-                    let volume = self
-                        .mounts
-                        .mounts()
-                        .next()
-                        .ok_or_else(|| Error::Invalid("project mount missing".into()))?;
                     let workspace = Arc::new(LocalWorkspace {
                         path: path.clone(),
+                        fresh: false,
                         mount_directory: self.workspace.mount_directory.clone(),
                         view,
                         mounted: Some(mounted),
                         identity,
                         filesystem: parent.filesystem.clone(),
                         store: parent.store.clone(),
-                        mounts: Arc::new(workspace::mounts::owner(&path, &volume.1.view.volume)?),
                     });
                     let (capture_options, capture_policy) = capture::configuration(&workspace)?;
                     Ok(Self {
@@ -77,8 +78,6 @@ impl CheckoutTools {
                         capture_options,
                         capture_policy,
                         clock: Arc::clone(&self.clock),
-                        mounts: Arc::clone(&workspace.mounts),
-                        task_files: Arc::clone(&self.task_files),
                         state: StateArc::new(AsyncMutex::new(State {
                             active: None,
                             watcher: None,

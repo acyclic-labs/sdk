@@ -101,17 +101,6 @@ impl FileTool {
                 }
                 (input.0.file, input.1)
             }
-            Self::Plan => {
-                let custody = super::edit::allocation(work, 0)?;
-                super::super::plan::PlanView::borrow(&invocation.arguments, &custody)?;
-                if super::super::plan::PLAN_PATH.len() > scope.limits().path_bytes {
-                    return Err(error(
-                        crate::wire::ErrorCode::Invalid,
-                        "plan path exceeds task path bound",
-                    ));
-                }
-                return Ok((None, custody));
-            }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
@@ -122,6 +111,35 @@ impl FileTool {
                     ));
                 }
                 return Ok((None, input.1));
+            }
+            Self::ReadRange {
+                options,
+                maximum_result_bytes,
+            } => {
+                let input =
+                    decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
+                let length = input
+                    .0
+                    .range
+                    .end
+                    .checked_sub(input.0.range.start)
+                    .ok_or_else(|| {
+                        error(crate::wire::ErrorCode::Invalid, "read range is reversed")
+                    })?;
+                options.validate()?;
+                if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
+                    || input.0.range.end > input.0.file.descriptor().byte_length()
+                    || length
+                        > options
+                            .maximum_text_bytes
+                            .min(maximum_result_bytes.min(scope.limits().file_bytes))
+                {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "read exceeds its admitted byte bounds",
+                    ));
+                }
+                (input.0.file, input.1)
             }
             Self::Search {
                 options,

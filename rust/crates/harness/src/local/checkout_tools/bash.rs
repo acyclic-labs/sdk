@@ -1,69 +1,59 @@
-//! Task shell execution through the shared native process capture engine.
+//! Bounded shell capture in the selected ordinary checkout.
 use super::*;
-use crate::filesystem::native_process::{self, Invocation};
+use std::{process::Stdio, time::Duration};
+
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl CheckoutTools {
     pub(super) async fn bash(
         &self,
-        input: crate::tools::BashInput,
+        command: String,
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
-        files: output::Output,
-    ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
+    ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>)> {
         let workspace = Arc::clone(&self.workspace);
-        let invocation = Invocation {
-            executable: which::which("bash").map_err(|cause| Error::Invalid(cause.to_string()))?,
-            argv: Vec::new(),
-            cwd: workspace.path.clone(),
-            environment: Default::default(),
-            timeout_ms: 300_000,
-            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
-            cancellation_poll_ms: 25,
-            maximum_output_bytes: maximum_output,
-            standard_input: None,
-            mcp_stdio: None,
-        };
-        let check_owner = Arc::clone(&files.owner);
-        let runtime = tokio::runtime::Handle::current();
-        let (output, (state, files)) = native_process::bash::run_with_custody(
-            input,
-            &self.mounts,
-            invocation,
-            self.clock.now_unix_millis() / 1000,
-            |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
-            move || {
-                if acyclic_fs::capture_root_identity(&workspace.path)
-                    .map_err(std::io::Error::other)?
-                    != workspace.identity
-                {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "checkout root was replaced",
-                    ));
-                }
-                runtime.block_on(async {
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(u64::from(output::CONTROL_TIMEOUT_MS)),
-                        check_owner.verify(false, &mut None),
-                    )
-                    .await
-                    .map_err(native_process::capture::control_error)?
-                    .map_err(native_process::capture::control_error)
-                })
-            },
-            (state, files),
+        acyclic_native_runtime::run_blocking_io(
+            move || guarded(state, |_| run(&workspace, &command, maximum_output)),
+            None,
         )
-        .await?;
-        let result = output
-            .ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
-            .map(|output| ToolResult {
-                value: serde_json::json!({
-                    "success": output.success, "exit_code": output.exit_code,
-                    "stdout": String::from_utf8_lossy(&output.stdout),
-                    "stderr": String::from_utf8_lossy(&output.stderr),
-                    "stop": output.stop,
-                }),
-            });
-        Ok((result, state, files))
+        .map_err(Error::process_io)?
+        .await
+        .map_err(Error::process_io)
     }
+}
+
+fn run(workspace: &LocalWorkspace, command: &str, maximum_output: usize) -> Result<ToolResult> {
+    if acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)? != workspace.identity {
+        return Err(Error::Unauthorized("checkout root was replaced".into()));
+    }
+    let mut invocation = acyclic_native_runtime::shell_command(command, None);
+    invocation
+        .current_dir(&workspace.path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut process =
+        acyclic_native_runtime::ProcessTree::spawn(&mut invocation).map_err(Error::process_io)?;
+    let value = match process.wait_with_output(
+        COMMAND_TIMEOUT,
+        maximum_output,
+        None,
+        || Ok(()),
+        |_| Ok(Default::default()),
+        None,
+        None,
+    ) {
+        Ok(output) => serde_json::json!({
+            "success": output.status.success(), "exit_code": output.status.code(),
+            "stdout": String::from_utf8_lossy(&output.stdout),
+            "stderr": String::from_utf8_lossy(&output.stderr)
+        }),
+        Err(failure) => serde_json::json!({
+            "success": false, "exit_code": failure.status.and_then(|status| status.code()),
+            "stdout": String::from_utf8_lossy(&failure.stdout),
+            "stderr": String::from_utf8_lossy(&failure.stderr),
+            "error": failure.error.to_string(), "cleanup_completed": failure.cleanup_completed
+        }),
+    };
+    Ok(ToolResult { value })
 }

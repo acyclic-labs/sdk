@@ -1,4 +1,4 @@
-use super::{Component, Error, FileKey, InputPath, Result, TaskFile, ToolFile};
+use super::{Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -28,6 +28,8 @@ pub enum Query {
     Root,
     /// Command definitions and workspace files used by the input UI.
     Inputs,
+    /// Declarative UI settings, keymap and theme files.
+    Config,
     /// Editable Markdown files in the private volume's plans folder.
     Plans,
     /// All task records.
@@ -163,13 +165,17 @@ impl Query {
                     file: TaskFile::ExecutionResult(maximum),
                 }),
             ),
+            Self::Config => (
+                Included(FileKey::Input(InputPath("config/".into()))),
+                Included(FileKey::Input(InputPath("config/\u{10ffff}".into()))),
+            ),
             Self::Inputs => (
                 Included(FileKey::Input(InputPath(String::new()))),
                 Included(FileKey::Input(InputPath("\u{10ffff}".into()))),
             ),
             Self::Plans => (
-                Included(FileKey::Plan(minimum)),
-                Included(FileKey::Plan(maximum)),
+                Included(FileKey::Plan(PlanName(Arc::from("")))),
+                std::ops::Bound::Excluded(FileKey::Agent(minimum)),
             ),
             Self::Agents => (
                 Included(FileKey::Agent(minimum)),
@@ -264,6 +270,7 @@ impl Query {
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
             (Self::Inputs, FileKey::Input(_)) => true,
+            (Self::Config, FileKey::Input(path)) => path.0.starts_with("config/"),
             (Self::Turns(t), FileKey::Task { task, file }) => t == task && file.turn().is_some(),
             (Self::Turn { task: t, turn }, FileKey::Task { task, file }) => {
                 t == task && file.turn() == Some(*turn)
@@ -369,6 +376,7 @@ impl Query {
             [".ui", directory] => Self::UiDirectory(component(directory)?),
             [""] => Self::Root,
             ["plans"] => Self::Plans,
+            ["config"] => Self::Config,
             [".sessions", session] => Self::Session(component(session)?),
             [".sessions", session, folder] if matches!(*folder, "requests" | "executions") => {
                 Self::SessionFiles {

@@ -32,6 +32,20 @@ impl Driver for Notifications {
     }
 }
 
+impl Driver for super::plans::Plans {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        case.run().await
+    }
+}
+
+impl Driver for super::plan_query::PlanQuery {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        case.run().await
+    }
+}
+
 pub(super) async fn run_execution(case: scenario::Scenario) -> TestResult {
     TaskDriver::execute(case).await
 }
@@ -46,6 +60,10 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         Some("executor") => run_execution(scenario::Scenario::from_value(value)?).await,
         Some("composer") => Composer::execute(Composer::parse(value)?).await,
         Some("notifications") => Notifications::execute(Notifications::parse(value)?).await,
+        Some("plans") => super::plans::Plans::execute(super::plans::Plans::parse(value)?).await,
+        Some("plan-query") => {
+            super::plan_query::PlanQuery::execute(super::plan_query::PlanQuery::parse(value)?).await
+        }
         _ => Err("unknown scenario driver".into()),
     }
 }

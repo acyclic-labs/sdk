@@ -1,4 +1,4 @@
-use super::super::text_files::{SearchInput, SearchResult};
+use super::super::text_files::{ReadInput, ReadResult, SearchInput, SearchResult};
 use super::*;
 use schema::ProjectionMode;
 
@@ -13,15 +13,6 @@ impl FileTool {
             projection_schema,
             projection,
         ) = match self {
-            Self::Plan => (
-                "update_plan",
-                "plan-1",
-                "Replace plan.md in the task volume with ordered pending, in_progress or completed steps; at most one step may be in_progress",
-                schema::input::<super::super::plan::UpdatePlanInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
             Self::Read => (
                 "read",
                 "portable-6",
@@ -58,6 +49,15 @@ impl FileTool {
                 mode.schema::<FileResult>()?,
                 FileProjection::Publication(mode),
             ),
+            Self::ReadRange { .. } => (
+                "acyclic.read_file_range",
+                "portable-text-1",
+                "Read one exact bounded UTF-8 byte interval from an authorized immutable source",
+                schema::input::<ReadInput>()?,
+                schema::output::<ReadResult>()?,
+                mode.schema::<ReadResult>()?,
+                FileProjection::Range(mode),
+            ),
             Self::Search { .. } => (
                 "acyclic.search_file",
                 "portable-text-1",
@@ -80,10 +80,10 @@ impl FileTool {
         definition.validate(&mut None)?;
         Ok(Tool {
             hook_names: match self {
-                Self::Read => &["Read"],
+                Self::Read | Self::ReadRange { .. } => &["Read"],
                 Self::Write => &["Write"],
                 Self::Edit | Self::Patch { .. } => &["Edit"],
-                Self::Search { .. } | Self::Plan => &[],
+                Self::Search { .. } => &[],
             },
             definition,
             executor: Arc::new(self),
@@ -99,6 +99,13 @@ impl FileTool {
             } => Some((
                 "x-harness-patch-limits",
                 json!({"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}),
+            )),
+            Self::ReadRange {
+                options,
+                maximum_result_bytes,
+            } => Some((
+                "x-harness-text-configuration",
+                json!({"read":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
             )),
             Self::Search {
                 options,

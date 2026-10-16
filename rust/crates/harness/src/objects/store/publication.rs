@@ -171,21 +171,13 @@ impl ContentPublisher for ObjectContentStore {
                 ));
             }
             // A retry receipt does not establish continued byte residency.
-            let committed = self
-                .read_representation(&reference, self.maximum_bytes, false)
-                .await?;
-            if committed.body().as_ref() != bytes {
+            let committed = self.read_content(&reference, self.maximum_bytes).await?;
+            if committed.as_slice() != bytes {
                 return Err(Error::Conflict(
                     "upload identity belongs to different content".into(),
                 ));
             }
-            let info = committed
-                .header()
-                .object
-                .as_ref()
-                .ok_or_else(|| Error::Storage("Objects returned no content metadata".into()))?;
-            let version = content::representation_identity(&reference, &info.etag)?;
-            Ok((reference.with_version(version)?, None))
+            Ok((reference, None))
         })
     }
 }

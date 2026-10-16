@@ -23,6 +23,19 @@ pub enum ClipboardContent {
 /// Prepare an RGBA clipboard image without allowing malformed dimensions or
 /// overflowing byte counts to reach the image encoder.
 pub fn prepare_image(width: u32, height: u32, rgba: Vec<u8>) -> io::Result<ClipboardContent> {
+    prepare_image_with_settings(width, height, rgba, crate::DEFAULT_SETTINGS)
+}
+
+/// Prepare an attachment using followed image preferences.
+pub fn prepare_image_with_settings(
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+    settings: crate::UiSettings,
+) -> io::Result<ClipboardContent> {
+    if !settings.valid() {
+        return Err(io::Error::other("invalid image preferences"));
+    }
     let expected = u64::from(width)
         .checked_mul(u64::from(height))
         .and_then(|n| n.checked_mul(4));
@@ -35,15 +48,20 @@ pub fn prepare_image(width: u32, height: u32, rgba: Vec<u8>) -> io::Result<Clipb
     let image = image::RgbaImage::from_raw(width, height, rgba)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid RGBA image"))?;
     let image = image::DynamicImage::ImageRgba8(image);
-    let image = if width > 1568 || height > 1568 {
-        image.thumbnail(1568, 1568)
+    let image = if width > settings.image_max_dimension as u32
+        || height > settings.image_max_dimension as u32
+    {
+        image.thumbnail(
+            settings.image_max_dimension as u32,
+            settings.image_max_dimension as u32,
+        )
     } else {
         image
     };
     let image = image.to_rgb8();
     let (width, height) = image.dimensions();
     let mut jpeg = vec![];
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, settings.image_quality as u8)
         .encode_image(&image)
         .map_err(io::Error::other)?;
     Ok(ClipboardContent::Image {

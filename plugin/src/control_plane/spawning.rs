@@ -118,6 +118,7 @@ impl ControlPlane {
                     .fork(
                         &child_name,
                         derived_idempotency_key(fork_key, *root_id),
+                        acyclic_fs::PublicationPermit::Unrestricted,
                         &mut acyclic_fs::kernel::KernelAccounting::Standalone {
                             allocations: Default::default(),
                             work: acyclic_fs::WorkCounters::UNCHARGED,

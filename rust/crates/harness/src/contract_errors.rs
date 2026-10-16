@@ -22,9 +22,6 @@ pub enum InteractionRejection {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Logical task-file storage or publication failure.
-    #[error(transparent)]
-    TaskFiles(#[from] crate::task_volume::Error),
     /// The requested resource does not exist.
     #[error("resource not found: {0}")]
     NotFound(String),
@@ -330,17 +327,6 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
-            Self::TaskFiles(error) => match error {
-                crate::task_volume::Error::FenceConflict => ErrorCode::Unauthorized,
-                crate::task_volume::Error::Conflict(_)
-                | crate::task_volume::Error::ImmutableConflict(_)
-                | crate::task_volume::Error::SequenceConflict(_)
-                | crate::task_volume::Error::ResetRequired => ErrorCode::Conflict,
-                crate::task_volume::Error::InvalidPath
-                | crate::task_volume::Error::InvalidSegment
-                | crate::task_volume::Error::LimitExceeded => ErrorCode::Invalid,
-                crate::task_volume::Error::Storage(_) => ErrorCode::Storage,
-            },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
             Self::Unsupported(_) => ErrorCode::Unsupported,
@@ -400,8 +386,7 @@ impl Error {
     pub(crate) fn is_native_failure(&self) -> bool {
         !matches!(
             self,
-            Self::TaskFiles(_)
-                | Self::NotFound(_)
+            Self::NotFound(_)
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
@@ -544,6 +529,15 @@ impl From<acyclic_fs::native_mount::NativeMountError> for Error {
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
         Self::Storage(error.to_string())
+    }
+}
+
+impl From<acyclic_actors::timers::TimerError> for Error {
+    fn from(error: acyclic_actors::timers::TimerError) -> Self {
+        match error {
+            acyclic_actors::timers::TimerError::Stream(error) => error.into(),
+            other => Self::Invalid(other.to_string()),
+        }
     }
 }
 

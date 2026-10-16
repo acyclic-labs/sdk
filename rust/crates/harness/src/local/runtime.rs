@@ -2,7 +2,6 @@ use super::*;
 
 pub(super) struct Configuration<'a> {
     pub files: Arc<LocalFilesystem>,
-    pub task_files: Arc<crate::task_volume::TaskVolume<LocalStream>>,
     #[cfg(feature = "native-execution")]
     pub workspace: Option<Arc<workspace::LocalWorkspace>>,
     pub stream: Arc<LocalStream>,
@@ -96,7 +95,7 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     machines.register(preparation, &mut None)?;
     let runtime = LocalTaskRuntime::open(
         config.stream,
-        config.files,
+        config.files.clone(),
         config.journal,
         config.verifier,
         &signed,
@@ -114,14 +113,25 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         None,
     )
     .await?
-    .with_output_volume(config.scratch, None)?;
+    .with_output_volume(config.project, None)?;
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
-        Some(workspace) => runtime.with_workspace_tools(workspace.executor(
-            config.project,
-            config.clock,
-            config.task_files,
-        )?)?,
+        Some(workspace) => {
+            let tools = Arc::new(
+                checkout_tools::CheckoutTools::new(workspace, config.project, config.clock).await?,
+            );
+            let publisher = checkout_tools::publisher::CheckoutPublisher::new(
+                tools.clone(),
+                config.files,
+                config.project,
+                config.verifier,
+                &signed,
+                config.limits.file_bytes,
+            );
+            runtime
+                .with_content_publisher(Arc::new(publisher))?
+                .with_workspace_tools(tools)?
+        }
         None => runtime,
     };
     Ok((Arc::new(runtime), signed))

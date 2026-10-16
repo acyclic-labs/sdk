@@ -21,10 +21,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
-    pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
-        self.admission.run_limits.deadline_epoch_ms
-    }
-
     pub(crate) fn input_limits(&self) -> crate::conversation::Limits {
         self.admission.limits
     }

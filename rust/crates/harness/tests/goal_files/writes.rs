@@ -73,6 +73,7 @@ async fn run(case: Case) -> Result<()> {
             provider.clone(),
         )
         .grant("model:generate")
+        .grant("tool:call:write")
         .compaction(CompactionPolicy::Disabled)
         .build()?;
     let output = storage

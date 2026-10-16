@@ -13,6 +13,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "tui-config"
+path = "tests/tui_config.rs"
+required-features = ["tui"]
+
+[[test]]
 name = "tui-completion"
 path = "tests/tui_completion.rs"
 required-features = ["tui"]
@@ -32,12 +37,13 @@ path = "tests/default_tools.rs"
 required-features = ["filesystem"]
 
 [[test]]
-name = "task_view"
-path = "tests/task_view.rs"
-
-[[test]]
 name = "task-volume"
 path = "tests/task_volume.rs"
+
+[[test]]
+name = "file-query"
+path = "tests/file_query.rs"
+required-features = ["filesystem"]
 
 [[test]]
 name = "mcp-loom"
@@ -100,6 +106,14 @@ name = "client-notifications"
 path = "tests/client_notifications.rs"
 
 [[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown.rs"
+
+[[test]]
+name = "client-interests"
+path = "tests/client_interests.rs"
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
@@ -155,6 +169,8 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true

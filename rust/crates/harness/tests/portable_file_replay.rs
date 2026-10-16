@@ -19,8 +19,10 @@ use acyclic_harness::{
     runtime::{Bindings, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
     scheduler::SessionLimits,
     tool::{
-        ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files, schema::ProjectionMode,
-        text::SearchOptions, text_files,
+        ToolExecutor, ToolInvocation, ToolRegistry, ToolResult, files,
+        schema::ProjectionMode,
+        text::{ReadOptions, SearchOptions},
+        text_files,
     },
     workflow::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
@@ -225,6 +227,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 "operation:cancel".to_owned(),
                 "task:spawn:fixture.file_replay@1".to_owned(),
                 "tool:call:read".to_owned(),
+                "tool:call:acyclic.read_file_range".to_owned(),
                 "tool:call:acyclic.search_file".to_owned(),
                 "tool:call:write".to_owned(),
                 "tool:call:edit".to_owned(),
@@ -267,7 +270,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
     let mut tools = ToolRegistry::default();
-    let bounded_read = tool.clone();
     tools.register((tool, None), &mut None, None)?;
     let mutations = [
         (
@@ -297,7 +299,14 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     }
     let mut bounded_text = [
         (
-            bounded_read,
+            text_files::read_file_range(
+                ReadOptions {
+                    maximum_input_bytes: 4096,
+                    maximum_text_bytes: 32,
+                },
+                4096,
+                ProjectionMode::Reference,
+            )?,
             json!({"file":source,"range":{"start":0,"end":8}}),
         ),
         (
@@ -316,10 +325,6 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     ];
     let mut bounded_executors = Vec::new();
     for (tool, _) in &mut bounded_text {
-        if tool.definition.name == "read" {
-            bounded_executors.push(executor.clone());
-            continue;
-        }
         let executor = Arc::new(FileExecutorSpy {
             inner: tool.executor.clone(),
             executions: AtomicUsize::new(0),
@@ -455,10 +460,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 .0,
             Outcome::Succeeded(json!(text))
         );
-        assert_eq!(
-            executor.executions.load(Ordering::SeqCst),
-            if reopened { 2 } else { 1 }
-        );
+        assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
         assert!(journal.reads.load(Ordering::SeqCst) > 0);
         if reopened {
@@ -509,15 +511,16 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             else {
                 panic!("admitted bounded text must complete")
             };
-            assert_eq!(
-                bounded_executor.executions.load(Ordering::SeqCst),
-                if index == 0 { 2 } else { 1 }
-            );
+            assert_eq!(bounded_executor.executions.load(Ordering::SeqCst), 1);
             assert_eq!(bounded_executor.reconciliations.load(Ordering::SeqCst), 0);
+            assert_eq!(value.get("file"), Some(&json!(source)));
             if index == 0 {
-                assert_eq!(value, json!("original"));
+                assert_eq!(value.pointer("/selection/text"), Some(&json!("original")));
+                assert_eq!(
+                    value.pointer("/selection/range"),
+                    Some(&json!({"start":0,"end":8}))
+                );
             } else {
-                assert_eq!(value.get("file"), Some(&json!(source)));
                 assert_eq!(
                     value.pointer("/matches/matches"),
                     Some(&json!([{"start":15,"end":20}]))
@@ -715,7 +718,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), before_reads);
         assert_eq!(journal.writes.load(Ordering::SeqCst), before_writes);
-        assert_eq!(executor.executions.load(Ordering::SeqCst), 2);
+        assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
         assert_eq!(journal.inner.replay(call, 0, 16, None)?.await?, records);
         assert_eq!(

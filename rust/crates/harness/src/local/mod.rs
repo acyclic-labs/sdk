@@ -24,6 +24,7 @@ use std::{
     sync::Arc,
 };
 
+mod admission;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod command_machine;
@@ -64,11 +65,20 @@ pub struct LocalHarness {
     context: ContextPipeline,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
+    goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
+    // Outermost lock: admission -> filesystem/provider locks. Never held during
+    // model/tool execution, and provider callbacks never acquire admission.
+    admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 impl LocalHarness {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
+        self.runtime.task_host().workflow_stream()
+    }
+
     /// Opens durable local state and assembles the stock host before admitting work.
     pub fn open(config: LocalHarnessConfig) -> impl Future<Output = Result<Self>> {
         Box::pin(async move {
@@ -78,19 +88,12 @@ impl LocalHarness {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
             let (model, provider) = config.model;
-            let context = config.context;
             model.validate()?;
-            let mut tools = ToolRegistry::default();
-            if config.default_tools {
-                crate::tools::bind_defaults(
-                    &mut tools,
-                    &mut Vec::new(),
-                    None,
-                    true,
-                    cfg!(feature = "native-execution")
-                        && matches!(&config.project, LocalProject::Workspace(_)),
-                )?;
-            }
+            let mut tools = if config.default_tools {
+                crate::tools::defaults()?
+            } else {
+                ToolRegistry::default()
+            };
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
@@ -135,17 +138,29 @@ impl LocalHarness {
                         &directory,
                         owner.workspace_identity,
                         workspace::attach_operation(owner.task),
+                        false,
                     )
                     .await?,
                 )),
-                LocalProject::Volume { .. } => None,
-            };
-            #[cfg(feature = "native-execution")]
-            let context = match &workspace {
-                Some(workspace) => context.with(workspace.context_stage()),
-                None => context,
+                LocalProject::Volume { .. } => Some(Arc::new(
+                    workspace::open_volume(
+                        &filesystem,
+                        &owner.project,
+                        &directory,
+                        workspace::attach_operation(owner.task),
+                    )
+                    .await?,
+                )),
             };
             let files = FilesystemHost::new(filesystem, provider_ref, None)?;
+            #[cfg(feature = "native-execution")]
+            let files = match &workspace {
+                Some(workspace) => files.with_project_family(
+                    workspace.view().workspace().id(),
+                    workspace.store.clone(),
+                )?,
+                None => files,
+            };
             // A configured project is opened, never silently replaced by an empty volume.
             files
                 .resolve(
@@ -195,7 +210,6 @@ impl LocalHarness {
             );
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),
-                task_files: Arc::clone(&task_files),
                 #[cfg(feature = "native-execution")]
                 workspace: workspace.as_ref().map(Arc::clone),
                 stream,
@@ -224,9 +238,11 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context,
+                context: config.context,
                 limits: config.limits,
                 compaction,
+                goal_continuations: config.goal_continuations,
+                admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
             })
@@ -275,8 +291,8 @@ impl LocalHarness {
     /// Source-backed checkout view, absent for configured volumes.
     #[cfg(feature = "native-execution")]
     #[must_use]
-    pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
-        self.workspace.as_ref()
+    pub fn workspace(&self) -> Option<&LocalWorkspace> {
+        self.workspace.as_deref()
     }
 }
 

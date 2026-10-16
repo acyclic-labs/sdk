@@ -26,3 +26,16 @@ impl TaskCommandHost for Checked<'_> {
         })
     }
 }
+
+pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::ToolCall {
+            call_id: format!("checkout-{index}"),
+            name: name.into(),
+            arguments: json!({"command":command}),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({}),
+        }),
+    ])
+}

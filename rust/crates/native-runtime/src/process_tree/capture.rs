@@ -1,28 +1,5 @@
 use super::*;
 
-/// A borrowed chunk from one captured process pipe.
-#[derive(Clone, Copy, Debug)]
-pub enum ProcessOutput<'a> {
-    /// Bytes newly read from standard output.
-    Stdout(&'a [u8]),
-    /// Bytes newly read from standard error.
-    Stderr(&'a [u8]),
-}
-
-pub(super) fn observe_output(
-    chunk: ProcessOutput<'_>,
-    observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
-) -> io::Result<()> {
-    let action = observe(chunk)?;
-    if !action.bytes.is_empty() || action.complete {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "process input requires an active exchange",
-        ));
-    }
-    Ok(())
-}
-
 /// A stopped capture, retaining its bounded output and observed cleanup state.
 #[derive(Debug)]
 pub struct ProcessCaptureFailure {

@@ -1,6 +1,4 @@
 //! Standard coding tools and shared host executors.
-mod bash;
-pub use bash::BashInput;
 mod defaults;
 pub use defaults::defaults;
 mod command;
@@ -11,5 +9,3 @@ pub use command::parse_command;
     not(target_arch = "wasm32")
 ))]
 pub mod git;
-
-pub(crate) use defaults::bind_defaults;

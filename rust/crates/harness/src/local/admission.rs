@@ -1,0 +1,384 @@
+use super::*;
+use crate::sync::owned::{Arc as StateArc, Mutex, lock_owned};
+use crate::{
+    conversation::ContentGrant,
+    goal::{GoalContinuation, GoalView},
+    resources::GenerationRef,
+    runtime::TaskStateProvider,
+};
+
+mod record;
+use record::Turn;
+#[cfg(all(test, acyclic_harness_loom))]
+mod model;
+
+const HEAD: &str = "inputs/current.json";
+
+// The same serialization boundary and predicate are exercised by the Loom model.
+async fn serialized<T>(gate: &StateArc<Mutex<()>>, action: impl AsyncFnOnce() -> T) -> T {
+    let _guard = lock_owned(StateArc::clone(gate)).await;
+    action().await
+}
+
+fn can_admit(current: Option<OperationId>, expected: Option<OperationId>, terminal: bool) -> bool {
+    terminal && expected.is_none_or(|expected| current == Some(expected))
+}
+
+impl LocalHarness {
+    fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
+        ContentGrant::verify_directory_read(
+            &self.verifier,
+            &self.signed,
+            volume,
+            if volume == &self.journal {
+                "inputs"
+            } else {
+                ""
+            },
+            &mut None,
+        )
+    }
+
+    async fn current_turn(&self) -> Result<(Option<Turn>, GenerationRef)> {
+        let generation = self
+            .files
+            .resolve(
+                &crate::filesystem::workspace_ref(
+                    self.journal.provider().clone(),
+                    &self.journal.storage_name(&mut None)?,
+                )?,
+                None,
+            )
+            .await?
+            .generation;
+        match self
+            .files
+            .read_private_path(
+                &self.journal,
+                &self.read_grant(&self.journal)?,
+                HEAD,
+                Some(&generation),
+                self.limits.file_bytes,
+                None,
+            )
+            .await
+        {
+            Ok((_, bytes)) => Ok((Some(record::decode(&bytes).map_err(storage)?), generation)),
+            Err(Error::NotFound(_)) => Ok((None, generation)),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn head_is_terminal(&self, head: Option<&Turn>) -> Result<bool> {
+        let Some(head) = head else { return Ok(true) };
+        Ok(matches!(
+            self.runtime
+                .task_host()
+                .outcome(crate::runtime::task_id_for_admission(head.operation))
+                .await?,
+            Some(
+                crate::Outcome::Succeeded(_)
+                    | crate::Outcome::Failed { .. }
+                    | crate::Outcome::Cancelled
+            )
+        ))
+    }
+
+    async fn admit_retained(
+        &self,
+        turn: &Turn,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        let definition = self
+            .runtime
+            .harness()
+            .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
+        self.runtime
+            .harness()
+            .admit(
+                turn.operation,
+                &definition,
+                serde_json::json!({"receive": turn.receive, "model": turn.model}),
+                None,
+            )
+            .await
+    }
+
+    async fn publish_turn(
+        &self,
+        operation: OperationId,
+        inputs: (WorkflowCommand, WorkflowCommand),
+        root: OperationId,
+        automatic_turns: u32,
+        previous: Option<OperationId>,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        let (receive, model) = inputs;
+        let turn = Turn {
+            operation,
+            root,
+            automatic_turns,
+            receive,
+            model,
+        };
+        let bytes = serde_json::to_vec(&turn).map_err(storage)?;
+        let (latest, generation) = self.current_turn().await?;
+        if latest.as_ref().map(|turn| turn.operation) != previous {
+            return Err(Error::Conflict("local admission head changed".into()));
+        }
+        let grant = crate::conversation::ContentGrant::verify(
+            &self.verifier,
+            &self.signed,
+            &self.journal,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        // Request publication precedes admission. Cancellation/lost acknowledgements
+        // retain the exact input so resume can finish admission without re-reading GOAL.md.
+        self.files
+            .put_content(
+                &self.journal,
+                &grant,
+                HEAD,
+                &bytes,
+                "application/json",
+                "current.json",
+                self.limits.file_bytes,
+                &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
+                Some(&generation),
+                None,
+            )
+            .await?;
+        self.admit_retained(&turn).await
+    }
+
+    pub(super) async fn submit_turn(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        serialized(&self.admission, async || {
+            if let Some((task, _)) = self
+                .runtime
+                .harness()
+                .reconcile_admission(operation)
+                .await?
+            {
+                // Ordinary retries retain the same immutable request bytes too.
+                self.stage_turn(operation, prompt).await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, crate::executor::TurnOutput>(
+                        "acyclic.stock_turn@1",
+                    )?;
+                return Ok(Admission::Accepted(
+                    self.runtime.harness().attach(task, &definition).await?,
+                ));
+            }
+            let (current, _) = self.current_turn().await?;
+            if let Some(turn) = &current
+                && turn.operation == operation
+            {
+                return self.admit_retained(turn).await;
+            }
+            if !can_admit(
+                current.as_ref().map(|turn| turn.operation),
+                None,
+                self.head_is_terminal(current.as_ref()).await?,
+            ) {
+                return Ok(Admission::Rejected {
+                    reason: "local agent already has an admitted turn".into(),
+                });
+            }
+            self.publish_turn(
+                operation,
+                self.stage_turn(operation, prompt).await?,
+                operation,
+                0,
+                current.as_ref().map(|turn| turn.operation),
+            )
+            .await
+        })
+        .await
+    }
+
+    pub(super) async fn continue_goal(
+        &self,
+        task: TaskId,
+        root: OperationId,
+    ) -> Result<Option<TaskId>> {
+        serialized(&self.admission, async || {
+            let (current, _) = self.current_turn().await?;
+            let Some(current) = current else {
+                return Ok(None);
+            };
+            let settled = OperationId::from_bytes(task.into_bytes());
+            if current.operation != settled {
+                // Replaying an older settle follows its already-published ordinary
+                // request instead of consuming another continuation allowance.
+                if current.root == root {
+                    return admitted_task(self.admit_retained(&current).await?).map(Some);
+                }
+                return Ok(None);
+            }
+            let Some(policy) = self.goal_continuations else {
+                return Ok(None);
+            };
+            if !can_admit(
+                Some(current.operation),
+                Some(settled),
+                self.head_is_terminal(Some(&current)).await?,
+            ) {
+                return Ok(None);
+            }
+            let operation = crate::goal::continuation_operation(
+                crate::runtime::task_id_for_admission(current.root),
+                settled,
+            );
+            // A staged model input is already an immutable choice. Recover it
+            // before reading a possibly edited, completed or removed GOAL.md.
+            if let Some(inputs) = self.recover_turn_inputs(operation).await? {
+                let count = current
+                    .automatic_turns
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
+                return admitted_task(
+                    self.publish_turn(
+                        operation,
+                        inputs,
+                        current.root,
+                        count,
+                        Some(current.operation),
+                    )
+                    .await?,
+                )
+                .map(Some);
+            }
+            let (source, bytes) = match self
+                .files
+                .read_private_path(
+                    &self.scratch,
+                    &self.read_grant(&self.scratch)?,
+                    "GOAL.md",
+                    None,
+                    self.limits.file_bytes,
+                    None,
+                )
+                .await
+            {
+                Ok(file) => file,
+                Err(Error::NotFound(_)) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
+            match policy.on_settle(
+                &goal,
+                crate::runtime::task_id_for_admission(current.root),
+                settled,
+                current.automatic_turns,
+            ) {
+                None => Ok(None),
+                Some(GoalContinuation::Continue(operation)) => {
+                    let prompt =
+                        format!("Continue the active goal in GOAL.md.\n\n{}", goal.markdown);
+                    let admission = self
+                        .publish_turn(
+                            operation,
+                            self.stage_turn(operation, &prompt).await?,
+                            current.root,
+                            current.automatic_turns + 1,
+                            Some(current.operation),
+                        )
+                        .await?;
+                    admitted_task(admission).map(Some)
+                }
+                Some(GoalContinuation::Block(contents)) => {
+                    let grant = ContentGrant::verify(
+                        &self.verifier,
+                        &self.signed,
+                        &self.scratch,
+                        VolumeOperation::Write,
+                        u64::MAX,
+                        &mut None,
+                    )?;
+                    self.files
+                        .put_content(
+                            &self.scratch,
+                            &grant,
+                            "GOAL.md",
+                            contents.as_bytes(),
+                            "text/markdown",
+                            "GOAL.md",
+                            self.limits.file_bytes,
+                            &crate::IdempotencyKey::new(format!(
+                                "goal-cap:{settled}:{}",
+                                goal.source.version()
+                            ))?,
+                            Some(&self.files.file_generation(&goal.source, None)?),
+                            None,
+                        )
+                        .await?;
+                    Ok(None)
+                }
+            }
+        })
+        .await
+    }
+
+    pub(super) async fn loop_root(&self, task: TaskId) -> Result<OperationId> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let grant = ContentGrant::verify(
+            &self.verifier,
+            &self.signed,
+            &self.journal,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        // Each head publication already retains its immutable generation under
+        // this ordinary file-write identity, even after a successor replaces HEAD.
+        let Some(file) = self
+            .files
+            .content_for_operation(
+                &self.journal,
+                &grant,
+                &crate::IdempotencyKey::new(format!("local-turn:{operation}"))?,
+                HEAD,
+                self.limits.file_bytes,
+                None,
+            )
+            .await?
+        else {
+            return Ok(operation);
+        };
+        let (_, bytes) = self
+            .files
+            .read_private_path(
+                &self.journal,
+                &self.read_grant(&self.journal)?,
+                HEAD,
+                Some(&self.files.file_generation(&file, None)?),
+                self.limits.file_bytes,
+                None,
+            )
+            .await?;
+        let turn = record::decode(&bytes).map_err(storage)?;
+        if turn.operation != operation {
+            return Err(Error::Conflict(
+                "retained turn belongs to another operation".into(),
+            ));
+        }
+        Ok(turn.root)
+    }
+}
+
+fn admitted_task(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>) -> Result<TaskId> {
+    match admission {
+        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => Ok(task_id),
+        Admission::Accepted(RuntimeTask::Live(_)) => {
+            Err(Error::Invalid("local turn is not durable".into()))
+        }
+        Admission::Indeterminate { operation_id } => Err(Error::Indeterminate(operation_id)),
+        Admission::Rejected { reason } => Err(Error::Conflict(reason)),
+    }
+}

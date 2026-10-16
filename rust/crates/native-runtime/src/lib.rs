@@ -19,6 +19,8 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::terminal;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
@@ -28,9 +30,7 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
-pub use process_tree::{
-    CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput, ProcessTree,
-};
+pub use process_tree::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessTree};
 
 mod file;
 #[cfg(windows)]

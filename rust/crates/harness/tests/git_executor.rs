@@ -7,8 +7,7 @@ use acyclic_fs::{
     demand::native::NativeDemandSource,
     model::{Lifecycle, VolumeConfig},
 };
-use acyclic_harness::Error;
-use acyclic_harness::tools::git;
+use acyclic_harness::{Error, tools::git};
 use std::{borrow::Cow, sync::Arc};
 
 #[path = "../src/tools/git/path.rs"]
@@ -387,79 +386,6 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
 }
 
 #[tokio::test]
-async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
-    use acyclic_fs::GitFilesystemResult;
-
-    let (_temp, _root, fs, store, main) = fixture().await?;
-    let repo = main.workspace().id();
-    acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
-    let stop = CancellationToken::new();
-    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
-    main.write(
-        "/.volumes/project.txt",
-        bytes::Bytes::from_static(b"user-owned directory\n").into(),
-        IdempotencyKey::new(),
-        PublicationPermit::Unrestricted,
-        &mut work,
-    )
-    .await?;
-    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = run(
-        &fs,
-        &store,
-        &main,
-        repo,
-        &["check-ignore", ".volumes/project.txt"],
-    )
-    .await?
-    .0
-    else {
-        return Err("expected check-ignore data".into());
-    };
-    assert_eq!(kind, "check-ignore");
-    assert_eq!(value["paths"], serde_json::json!([]));
-    run(&fs, &store, &main, repo, &["commit", "-m", "user files"]).await?;
-    let GitCommandOutput::Paths(paths) = run(&fs, &store, &main, repo, &["ls-files"]).await?.0
-    else {
-        return Err("expected tracked paths".into());
-    };
-    assert!(paths.iter().any(|path| path == ".volumes/project.txt"));
-
-    main.write(
-        "/.volumes/untracked.txt",
-        bytes::Bytes::from_static(b"untracked\n").into(),
-        IdempotencyKey::new(),
-        PublicationPermit::Unrestricted,
-        &mut work,
-    )
-    .await?;
-    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) =
-        run(&fs, &store, &main, repo, &["clean", "-n"]).await?.0
-    else {
-        return Err("expected clean preview".into());
-    };
-    assert_eq!(kind, "clean");
-    assert_eq!(
-        value["paths"],
-        serde_json::json!([".volumes/untracked.txt"])
-    );
-    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
-    assert!(matches!(
-        main.read("/.volumes/untracked.txt", 64, &mut work).await,
-        Err(acyclic_fs::LazyWorkspaceError::NotFound)
-    ));
-    assert_eq!(
-        main.read("/.volumes/project.txt", 64, &mut work)
-            .await?
-            .bytes
-            .as_ref(),
-        b"user-owned directory\n"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<()> {
     let (_temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
@@ -545,5 +471,78 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
             ..
         } if expected == identity && actual != identity
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
+    use acyclic_fs::GitFilesystemResult;
+
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let repo = main.workspace().id();
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    main.write(
+        "/.volumes/project.txt",
+        bytes::Bytes::from_static(b"user-owned directory\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = run(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &["check-ignore", ".volumes/project.txt"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected check-ignore data".into());
+    };
+    assert_eq!(kind, "check-ignore");
+    assert_eq!(value["paths"], serde_json::json!([]));
+    run(&fs, &store, &main, repo, &["commit", "-m", "user files"]).await?;
+    let GitCommandOutput::Paths(paths) = run(&fs, &store, &main, repo, &["ls-files"]).await?.0
+    else {
+        return Err("expected tracked paths".into());
+    };
+    assert!(paths.iter().any(|path| path == ".volumes/project.txt"));
+
+    main.write(
+        "/.volumes/untracked.txt",
+        bytes::Bytes::from_static(b"untracked\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) =
+        run(&fs, &store, &main, repo, &["clean", "-n"]).await?.0
+    else {
+        return Err("expected clean preview".into());
+    };
+    assert_eq!(kind, "clean");
+    assert_eq!(
+        value["paths"],
+        serde_json::json!([".volumes/untracked.txt"])
+    );
+    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
+    assert!(matches!(
+        main.read("/.volumes/untracked.txt", 64, &mut work).await,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    assert_eq!(
+        main.read("/.volumes/project.txt", 64, &mut work)
+            .await?
+            .bytes
+            .as_ref(),
+        b"user-owned directory\n"
+    );
     Ok(())
 }

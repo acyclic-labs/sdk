@@ -128,37 +128,6 @@ where
         })
     }
 
-    fn read_range<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        range: acyclic_fs::ByteRange,
-        io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.verify_creation(reference.volume(), Some(reference), io)
-                .await?;
-            if reference.descriptor().byte_length() > self.maximum_bytes {
-                return Err(stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "range source exceeds provider limit",
-                ));
-            }
-            if self.exact_file.is_none() {
-                let owned;
-                let authority_io = if let Some(io) = io {
-                    io
-                } else {
-                    self.verifier.verify(&self.scope, &mut None)?;
-                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &owned
-                };
-                require_file_read(&self.scope, reference, authority_io)?;
-            }
-            self.host.read_pinned_range(reference, range, io).await
-        })
-    }
-
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
@@ -346,7 +315,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn verify_creation(
+    pub(in crate::filesystem) async fn verify_creation(
         &self,
         volume: &VolumeRef,
         file: Option<&FileRef>,

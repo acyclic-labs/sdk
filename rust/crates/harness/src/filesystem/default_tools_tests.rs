@@ -289,9 +289,9 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution()
 -> Result<()> {
     let ordinary = crate::tools::defaults()?;
-    let registry =
-        recursive_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(None, 65536)?
-            .extend(crate::tools::defaults()?)?;
+    let mut registry =
+        recursive_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(None, 65536)?;
+    registry.extend(crate::tools::defaults()?)?;
     for expected in ["read", "write", "edit", "acyclic.fork", "acyclic.merge"] {
         assert!(registry.get(expected, None, None)?.is_some());
         if let Some(tool) = ordinary.get(expected, None, None)? {

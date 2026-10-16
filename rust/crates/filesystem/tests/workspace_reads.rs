@@ -168,11 +168,18 @@ async fn whole_file_read_preserves_volume_read_limit() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RangeMutation {
+    Unrelated,
+    Metadata,
+    Bytes,
+}
+
 async fn unchanged_range_case(
     body: Vec<u8>,
     left: u16,
     right: u16,
-    mutate: bool,
+    mutation: RangeMutation,
 ) -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = unbounded!(fs, create_workspace("unchanged-range"))?;
@@ -180,19 +187,54 @@ async fn unchanged_range_case(
         .write("/entry", Bytes::copy_from_slice(&body))
         .await?;
     let original = unbounded!(workspace, head())?;
-    workspace
-        .write_text("/unrelated", "later generation")
-        .await?;
-    if mutate {
-        let mut changed = body.clone();
-        if let Some(first) = changed.first_mut() {
-            *first ^= 0xff;
-        } else {
-            changed.push(1);
+    match mutation {
+        RangeMutation::Unrelated => {
+            workspace
+                .write_text("/unrelated", "later generation")
+                .await?;
         }
-        workspace.write("/entry", Bytes::from(changed)).await?;
+        RangeMutation::Metadata => {
+            use acyclic_fs::kernel::{FileMetadata, MetadataField};
+            let before = unbounded!(original, stat("/entry"))?;
+            let mode = before.metadata.posix_mode.unwrap_or(0o100_644) ^ 0o111;
+            let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(
+                transaction,
+                set_metadata(
+                    "/entry",
+                    FileMetadata {
+                        posix_mode: MetadataField::Value(mode),
+                        ..FileMetadata::default()
+                    }
+                )
+            )?;
+            assert!(matches!(
+                commit(&mut transaction).await?,
+                TransactionCommit::Committed(_)
+            ));
+            let after = unbounded!(workspace, stat("/entry"))?;
+            assert_eq!(after.metadata.posix_mode, Some(mode));
+            assert_ne!(before.metadata, after.metadata);
+            assert_eq!(before.file_id, after.file_id);
+            assert_eq!(before.kind, after.kind);
+            assert_eq!(before.logical_bytes, after.logical_bytes);
+            assert_eq!(
+                unbounded!(workspace, read("/entry", body.len() as u64))?.as_ref(),
+                body.as_slice()
+            );
+        }
+        RangeMutation::Bytes => {
+            let mut changed = body.clone();
+            if let Some(first) = changed.first_mut() {
+                *first ^= 0xff;
+            } else {
+                changed.push(1);
+            }
+            workspace.write("/entry", Bytes::from(changed)).await?;
+        }
     }
     let current = unbounded!(workspace, head())?;
+    assert_ne!(original.id(), current.id());
     let left = usize::from(left) % (body.len() + 1);
     let right = usize::from(right) % (body.len() + 1);
     let (start, end) = (left.min(right), left.max(right));
@@ -209,7 +251,7 @@ async fn unchanged_range_case(
             &CancellationToken::new(),
         )
         .await;
-    if mutate {
+    if mutation == RangeMutation::Bytes {
         assert!(
             matches!(selected, Err(failure) if matches!(failure.error, WorkspaceError::StaleIdentity))
         );
@@ -225,18 +267,33 @@ async fn unchanged_range_case(
 }
 
 proptest::proptest! {
-    // Every selected range is exact across unrelated generations; any payload
-    // change is rejected, including empty ranges and changes outside the range.
+    // Metadata-only and unrelated changes preserve every selected range. Any
+    // payload change fails, including empty ranges and changes outside the range.
     #[test]
     fn unchanged_payload_ranges_remain_generation_exact(
         body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4096),
         left in proptest::prelude::any::<u16>(),
         right in proptest::prelude::any::<u16>(),
-        mutate in proptest::prelude::any::<bool>(),
+        mutation in proptest::prop_oneof![
+            proptest::strategy::Just(RangeMutation::Unrelated),
+            proptest::strategy::Just(RangeMutation::Metadata),
+            proptest::strategy::Just(RangeMutation::Bytes),
+        ],
     ) {
-        let result = futures::executor::block_on(unchanged_range_case(body, left, right, mutate));
+        let result = futures::executor::block_on(unchanged_range_case(body, left, right, mutation));
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
+}
+
+#[tokio::test]
+async fn unchanged_range_allows_metadata_updates_and_rejects_changed_bytes()
+-> Result<(), Box<dyn Error>> {
+    for body in [Vec::new(), b"payload".to_vec()] {
+        for mutation in [RangeMutation::Metadata, RangeMutation::Bytes] {
+            unchanged_range_case(body.clone(), 0, u16::MAX, mutation).await?;
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

@@ -410,7 +410,7 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
             definition: example_tool().definition,
             executor: tools.clone(),
             projection: tools.clone(),
-        })
+        })?
         .grant("model:generate")
         .journal(journal.clone())
         .executor(executor.clone())
@@ -558,7 +558,7 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
     let custom = HarnessBuilder::new()
         .executor(Arc::clone(&stock_executor))
         .journal(Arc::new(RecordingTurnJournal::default()))
-        .tool(example_tool())
+        .tool(example_tool())?
         .build()?;
     assert!(matches!(
         custom

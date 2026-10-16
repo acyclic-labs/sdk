@@ -59,6 +59,10 @@ pub struct Snapshot {
 pub struct Change {
     /// Logical file value; `None` advances a filtered query past unrelated records.
     pub file: Option<FileValue>,
+    /// Additional file replacements in the same atomic publication.
+    pub files: Vec<FileValue>,
+    /// File removals in that publication.
+    pub removed: Vec<super::FileKey>,
     /// Resume immediately after this observation, at its accepted commit position.
     pub cursor: Cursor,
 }
@@ -197,6 +201,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 let file = query.matches_file(&file).then_some(file);
                 let change = Change {
                     file,
+                    files: Vec::new(),
+                    removed: Vec::new(),
                     cursor: cursor.clone(),
                 };
                 Ok(Some((change, (records, query, cursor))))

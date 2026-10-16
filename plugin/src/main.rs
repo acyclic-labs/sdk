@@ -99,7 +99,6 @@ use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use acyclic_harness::filesystem::{NativeDirectory, WorkspacePolicy};
 use adapter_state::*;
 use cli_output::*;
 use control_plane::*;

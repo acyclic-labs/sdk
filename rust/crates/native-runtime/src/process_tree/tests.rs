@@ -332,25 +332,6 @@ fn process_tree_helper() {
             std::process::exit(0);
         }
         "stdin-stall" | "stdin-handshake" => stdin_helper(&mode, &root),
-        "stream-notify" => {
-            let mut peer = std::net::TcpStream::connect(root.to_string_lossy().as_ref())
-                .expect("connect stream observer");
-            peer.set_read_timeout(Some(Duration::from_secs(2)))
-                .expect("stream handshake deadline");
-            std::io::stdout()
-                .write_all(b"stream-stdout")
-                .expect("stream stdout");
-            std::io::stdout().flush().expect("flush stream stdout");
-            std::io::stderr()
-                .write_all(b"stream-stderr")
-                .expect("stream stderr");
-            std::io::stderr().flush().expect("flush stream stderr");
-            let mut acknowledgement = [0];
-            peer.read_exact(&mut acknowledgement)
-                .expect("observer acknowledged both pipes before exit");
-            assert_eq!(acknowledgement, [1]);
-            std::process::exit(0);
-        }
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),
     }
@@ -656,9 +637,6 @@ fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
             }),
             || Ok(()),
             |chunk| {
-                let crate::ProcessOutput::Stdout(chunk) = chunk else {
-                    return Ok(ProcessInput::default());
-                };
                 seen.extend_from_slice(chunk);
                 if phase == 0 && seen.ends_with(b"first-ack\n") {
                     seen.clear();
@@ -692,66 +670,6 @@ fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
 }
 
 #[test]
-fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io::Result<()> {
-    for input in [None, Some(crate::CaptureInput::Literal(&[]))] {
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
-        let address = listener.local_addr()?.to_string();
-        let mut command = command("stream-notify", std::path::Path::new(&address));
-        #[cfg(windows)]
-        command.env(
-            "SystemRoot",
-            std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?,
-        );
-        command.stdin(Stdio::piped());
-        let mut tree = ProcessTree::spawn(&mut command)?;
-        let mut observed_stdout = Vec::new();
-        let mut observed_stderr = Vec::new();
-        let mut acknowledged = false;
-        let output = tree
-            .wait_with_output(
-                Duration::from_secs(2),
-                4096,
-                input,
-                || Ok(()),
-                |chunk| {
-                    match chunk {
-                        crate::ProcessOutput::Stdout(bytes) => {
-                            observed_stdout.extend_from_slice(bytes)
-                        }
-                        crate::ProcessOutput::Stderr(bytes) => {
-                            observed_stderr.extend_from_slice(bytes)
-                        }
-                    }
-                    if !acknowledged
-                        && observed_stdout.ends_with(b"stream-stdout")
-                        && observed_stderr.ends_with(b"stream-stderr")
-                    {
-                        let (mut peer, _) = listener.accept()?;
-                        peer.set_write_timeout(Some(Duration::from_secs(2)))?;
-                        peer.write_all(&[1])?;
-                        acknowledged = true;
-                    }
-                    Ok(crate::ProcessInput::default())
-                },
-                None,
-                None,
-            )
-            .map_err(|failure| failure.error)?;
-        assert!(
-            acknowledged && output.status.success(),
-            "status: {}, stdout: {}, stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(output.stdout, observed_stdout);
-        assert_eq!(output.stderr, observed_stderr);
-        assert!(tree.is_reaped());
-    }
-    Ok(())
-}
-
-#[test]
 fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     use super::ProcessInput;
     for parser_failure in [false, true] {
@@ -770,9 +688,6 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
                 }),
                 || Ok(()),
                 |chunk| {
-                    let crate::ProcessOutput::Stdout(chunk) = chunk else {
-                        return Ok(ProcessInput::default());
-                    };
                     seen.extend_from_slice(chunk);
                     if seen.ends_with(b"first-ack\n") {
                         if parser_failure {

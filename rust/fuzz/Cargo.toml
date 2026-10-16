@@ -32,13 +32,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "file_tool_inputs"
-path = "fuzz_targets/file_tool_inputs.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "harness_admission"
 path = "fuzz_targets/harness_admission.rs"
 test = false

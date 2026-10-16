@@ -45,19 +45,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<CreatedResourceReceipt> {
         let allocation =
             authenticate(&self.host, self.issuer.audience(), request, proof, Some(io)).await?;
-        // Verify immutable input bodies once when issuing the reader. Rechecking
-        // its protected allocation identity must not reload those bodies on each read.
-        if allocation.authority.is_some() {
-            for file in &request.input_files {
-                let bytes = self
-                    .host
-                    .read_pinned_io(file, request.maximum_bytes, Some(io))
-                    .await?;
-                let held = io.guard_bytes(&bytes)?;
-                drop(bytes);
-                drop(held);
-            }
-        }
         crate::core::resource_creation_clone_reservation(
             request,
             proof,

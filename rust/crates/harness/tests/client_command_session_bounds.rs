@@ -11,6 +11,45 @@ proptest! {
         prop_assert_eq!(Query::folder(&path).unwrap(), Query::UiDirectory(Component::new(directory).unwrap()));
     }
 
+    // Key/query module splits preserve config inputs and every valid plan name.
+    #[test]
+    fn config_and_plan_queries_preserve_canonical_file_names(
+        stem in prop_oneof!["[a-z]{1,16}", Just("release notes".to_owned()), Just("\u{8abf}\u{67fb}".to_owned()), Just("\u{10ffff}tail".to_owned())],
+        value in any::<u32>(),
+    ) {
+        futures::executor::block_on(async {
+            let volume = volume().await.unwrap();
+            let plan = FileKey::parse(&format!("plans/{stem}.md")).unwrap();
+            let config = FileKey::parse("config/settings.json").unwrap();
+            let mut cut = volume.snapshot(&Query::Root, 0).await.unwrap().generation;
+            for key in [config.clone(), plan.clone(), FileKey::Goal] {
+                cut = volume.append(cut, &FileValue::new(key, value.to_string())).await.unwrap();
+            }
+            for (query, expected) in [(Query::folder("config").unwrap(), config), (Query::Plans, plan)] {
+                prop_assert_eq!(serde_json::from_slice::<Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), query.clone());
+                let files = volume.snapshot(&query, 1).await.unwrap().files;
+                prop_assert_eq!(files.len(), 1);
+                prop_assert_eq!(&files[0].key, &expected);
+            }
+            Ok(())
+        })?;
+    }
+
+    // Followed command and skill inputs keep their exact canonical path through
+    // the production typed and JSON codecs.
+    #[test]
+    fn command_source_paths_round_trip(name in "[a-z]{1,24}", root in 0_usize..3) {
+        let path = match root {
+            0 => format!(".claude/commands/{name}.md"),
+            1 => format!(".codex/prompts/{name}.md"),
+            _ => format!("skills/{name}/SKILL.md"),
+        };
+        let key = FileKey::parse(&path).unwrap();
+        prop_assert!(Query::Inputs.matches(&key));
+        prop_assert_eq!(key.path(), path);
+        prop_assert_eq!(serde_json::from_slice::<FileKey>(&serde_json::to_vec(&key).unwrap()).unwrap(), key);
+    }
+
     // The active bound is independent of completed history length. Historical
     // effects/results remain addressable, and reopening never resends an effect.
     #[test]

@@ -49,7 +49,10 @@ fuzz_target!(|input: &[u8]| {
             volume
                 .append(
                     cut.generation,
-                    &FileValue::new(FileKey::parse(path)?, bytes.to_vec()),
+                    &FileValue::new(
+                        FileKey::parse(path).expect("canonical source path"),
+                        bytes.to_vec(),
+                    ),
                 )
                 .await?;
             let _source = acyclic_harness::client::CommandSources::observe(

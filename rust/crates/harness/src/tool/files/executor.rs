@@ -4,11 +4,14 @@ use super::*;
 pub(in crate::tool) enum FileTool {
     Read,
     Write,
-    Plan,
     Edit,
     Patch {
         maximum_work: u64,
         maximum_hunks: u32,
+    },
+    ReadRange {
+        options: super::text::ReadOptions,
+        maximum_result_bytes: u64,
     },
     Search {
         options: super::text::SearchOptions,
@@ -18,7 +21,10 @@ pub(in crate::tool) enum FileTool {
 
 impl FileTool {
     pub(in crate::tool) fn is_read(&self) -> bool {
-        matches!(self, Self::Read | Self::Search { .. })
+        matches!(
+            self,
+            Self::Read | Self::ReadRange { .. } | Self::Search { .. }
+        )
     }
     async fn run(
         &self,
@@ -42,6 +48,20 @@ impl FileTool {
         )?;
 
         let file = match self {
+            Self::ReadRange {
+                options,
+                maximum_result_bytes,
+            } => {
+                return self
+                    .read_range(
+                        context,
+                        invocation,
+                        (*options, *maximum_result_bytes),
+                        work,
+                        io,
+                    )
+                    .await;
+            }
             Self::Search {
                 options,
                 maximum_result_bytes,
@@ -58,26 +78,6 @@ impl FileTool {
             }
 
             Self::Read => return self.read(context, invocation, work, io).await,
-
-            Self::Plan => {
-                let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-                let input =
-                    super::super::plan::PlanView::borrow(&invocation.arguments, &allocation)?;
-                let text = input.markdown(
-                    context.effective_scope().limits().file_bytes,
-                    &mut allocation,
-                )?;
-                context
-                    .stage_file_once(
-                        invocation.operation_id,
-                        super::super::plan::PLAN_PATH,
-                        text.as_bytes(),
-                        "text/markdown",
-                        super::super::plan::PLAN_PATH,
-                        io,
-                    )
-                    .await?
-            }
 
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
@@ -112,6 +112,41 @@ impl FileTool {
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
+    async fn read_range(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        bounds: (super::text::ReadOptions, u64),
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        let (options, maximum_result_bytes) = bounds;
+        let invalid = |reason: &'static str| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return native::invalid(reason);
+            }
+            Error::Invalid(reason.into())
+        };
+
+        let input = decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
+        let bytes = context.read_file(&input.0.file, io).await?;
+        let source = std::str::from_utf8(bytes.as_ref())
+            .map_err(|_| invalid("text tool requires UTF-8 content"))?;
+        let mut allocation =
+            super::edit::allocation(work, std::mem::size_of::<super::text::TextSelection>())?;
+        let result = super::super::text_files::ReadResult {
+            selection: super::text::read_range(source, input.0.range, options, &mut allocation)?,
+            file: input.0.file,
+        };
+        let encoded = super::value(
+            &result,
+            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
+            work,
+        )?;
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
+    }
+
     async fn search(
         &self,
         context: &ToolContext,
@@ -208,42 +243,18 @@ impl FileTool {
         };
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let length = input.0.file.descriptor().byte_length();
-        let empty = input.0.range.is_some_and(|range| range.start == range.end);
-        let bytes = if let Some(range) = input.0.range {
-            let count = range
-                .end
-                .checked_sub(range.start)
-                .ok_or_else(|| invalid("read range is reversed"))?;
-            if range.end > length {
-                return Err(invalid("read range exceeds the file"));
-            }
-            context
-                .read_file_range(
-                    &input.0.file,
-                    acyclic_fs::ByteRange {
-                        offset: range.start,
-                        // An empty interval still has to lie on a UTF-8 boundary.
-                        length: if empty && range.start < length {
-                            1
-                        } else {
-                            count
-                        },
-                    },
-                    io,
-                )
-                .await?
+        let bytes = context.read_file(&input.0.file, io).await?;
+        let source = std::str::from_utf8(bytes.as_ref())
+            .map_err(|_| invalid("file read requires UTF-8 content"))?;
+        let source = if let Some(range) = input.0.range {
+            let start =
+                usize::try_from(range.start).map_err(|_| invalid("read start is too large"))?;
+            let end = usize::try_from(range.end).map_err(|_| invalid("read end is too large"))?;
+            source
+                .get(start..end)
+                .ok_or_else(|| invalid("read range is outside the file or splits UTF-8"))?
         } else {
-            context.read_file(&input.0.file, io).await?
-        };
-        let source = if empty {
-            if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-                return Err(invalid("read range splits UTF-8"));
-            }
-            ""
-        } else {
-            std::str::from_utf8(bytes.as_ref())
-                .map_err(|_| invalid("file read requires UTF-8 content"))?
+            source
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {

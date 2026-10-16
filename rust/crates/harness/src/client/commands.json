@@ -2,7 +2,7 @@
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
   {"name":"model","description":"Select or inspect the model","arguments":"word","action":{"kind":"builtin","command":"model"}},
   {"name":"diff","description":"Cycle the captured workspace diff view","arguments":"none","action":{"kind":"builtin","command":"diff"},"aliases":["view"]},
-  {"name":"plan","description":"Show the task plan","arguments":"none","action":{"kind":"builtin","command":"plan"}},
+  {"name":"plan","description":"Show private plans/ files","arguments":"none","action":{"kind":"builtin","command":"plan"}},
   {"name":"goal","description":"Show GOAL.md","arguments":"none","action":{"kind":"builtin","command":"goal"}},
   {"name":"mcp","description":"Inspect MCP servers and tools","arguments":"none","action":{"kind":"builtin","command":"mcp"}},
   {"name":"quit","aliases":["exit","q"],"description":"Quit","arguments":"none","action":{"request":{"kind":"quit"},"kind":"request"}},

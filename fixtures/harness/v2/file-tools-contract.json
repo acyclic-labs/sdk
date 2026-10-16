@@ -597,10 +597,142 @@
     }
   },
   "range_read": {
-    "canonical": "🦀",
+    "canonical": {
+      "file": {
+        "descriptor": {
+          "byte_length": 18,
+          "media_type": "text/plain",
+          "sha256": [
+            159,
+            11,
+            173,
+            16,
+            70,
+            100,
+            181,
+            179,
+            188,
+            132,
+            6,
+            49,
+            141,
+            46,
+            22,
+            171,
+            176,
+            2,
+            45,
+            236,
+            231,
+            189,
+            189,
+            66,
+            110,
+            99,
+            139,
+            89,
+            193,
+            36,
+            129,
+            108
+          ]
+        },
+        "display_name": "source.txt",
+        "path": "source.txt",
+        "version": "generation-1",
+        "volume": {
+          "class": "agent_private",
+          "id": "private",
+          "owner": {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "kind": "agent"
+          },
+          "provider": {
+            "family": "filesystem",
+            "namespace": "file-contract",
+            "version": "1"
+          }
+        }
+      },
+      "selection": {
+        "omitted_after": 9,
+        "omitted_before": 5,
+        "range": {
+          "end": 9,
+          "start": 5
+        },
+        "text": "🦀"
+      }
+    },
     "full": {
       "kind": "json",
-      "value": "🦀"
+      "value": {
+        "file": {
+          "descriptor": {
+            "byte_length": 18,
+            "media_type": "text/plain",
+            "sha256": [
+              159,
+              11,
+              173,
+              16,
+              70,
+              100,
+              181,
+              179,
+              188,
+              132,
+              6,
+              49,
+              141,
+              46,
+              22,
+              171,
+              176,
+              2,
+              45,
+              236,
+              231,
+              189,
+              189,
+              66,
+              110,
+              99,
+              139,
+              89,
+              193,
+              36,
+              129,
+              108
+            ]
+          },
+          "display_name": "source.txt",
+          "path": "source.txt",
+          "version": "generation-1",
+          "volume": {
+            "class": "agent_private",
+            "id": "private",
+            "owner": {
+              "id": "33333333-3333-3333-3333-333333333333",
+              "kind": "agent"
+            },
+            "provider": {
+              "family": "filesystem",
+              "namespace": "file-contract",
+              "version": "1"
+            }
+          }
+        },
+        "selection": {
+          "omitted_after": 9,
+          "omitted_before": 5,
+          "range": {
+            "end": 9,
+            "start": 5
+          },
+          "text": "🦀"
+        }
+      }
     },
     "input": {
       "file": {
@@ -796,7 +928,7 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read exact bounded UTF-8 from an authorized immutable file",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -881,31 +1013,6 @@
                 "namespace",
                 "family",
                 "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
               ],
               "type": "object"
             },
@@ -1018,17 +1125,6 @@
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
-            },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
             }
           },
           "required": [
@@ -1037,7 +1133,7 @@
           "title": "ReadFileInput",
           "type": "object"
         },
-        "name": "read",
+        "name": "acyclic.read_file",
         "output_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
@@ -1066,47 +1162,47 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-5"
       },
       "definition_digest": [
-        104,
-        78,
-        60,
-        172,
-        30,
-        207,
-        7,
-        4,
-        137,
-        238,
-        1,
-        161,
-        58,
+        226,
+        218,
+        5,
+        93,
+        230,
+        91,
+        145,
+        226,
+        51,
+        103,
+        119,
         86,
-        206,
-        255,
-        164,
-        16,
-        161,
-        251,
-        29,
-        0,
-        77,
-        127,
-        225,
+        198,
+        30,
+        109,
         227,
-        101,
-        251,
-        143,
-        206,
-        38,
-        146
+        233,
+        9,
+        47,
+        213,
+        191,
+        219,
+        161,
+        46,
+        75,
+        227,
+        214,
+        182,
+        183,
+        47,
+        147,
+        70
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read exact bounded UTF-8 from an authorized immutable file",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -1191,31 +1287,6 @@
                 "namespace",
                 "family",
                 "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
               ],
               "type": "object"
             },
@@ -1328,17 +1399,6 @@
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
-            },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
             }
           },
           "required": [
@@ -1347,7 +1407,7 @@
           "title": "ReadFileInput",
           "type": "object"
         },
-        "name": "read",
+        "name": "acyclic.read_file",
         "output_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
@@ -1617,41 +1677,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-5"
       },
       "definition_digest": [
-        104,
-        245,
+        238,
+        87,
+        118,
         166,
-        187,
-        58,
-        134,
-        91,
-        154,
-        208,
-        161,
-        206,
-        153,
-        40,
-        159,
-        232,
-        0,
-        82,
-        3,
-        119,
-        30,
-        187,
-        32,
-        145,
-        201,
-        167,
+        75,
+        45,
+        13,
         236,
-        129,
-        78,
-        214,
-        36,
+        99,
+        223,
+        243,
+        160,
+        18,
+        211,
+        190,
+        204,
+        202,
+        130,
+        105,
+        14,
+        173,
+        246,
         12,
-        159
+        189,
+        166,
+        251,
+        140,
+        2,
+        92,
+        82,
+        90,
+        232
       ],
       "variant": "exact_read_reference"
     },
@@ -1689,7 +1749,7 @@
           "title": "WriteFileInput",
           "type": "object"
         },
-        "name": "write",
+        "name": "acyclic.write_file",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -2122,38 +2182,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        135,
+        19,
+        122,
+        57,
+        236,
+        188,
+        248,
+        1,
+        102,
+        13,
+        29,
+        8,
+        214,
+        6,
         118,
-        7,
-        95,
-        203,
-        58,
-        51,
-        208,
-        159,
-        89,
-        124,
-        221,
-        205,
-        211,
-        172,
-        184,
-        38,
-        252,
-        190,
-        12,
-        3,
-        189,
-        247,
-        84,
-        121,
-        113,
-        186,
-        202,
-        246,
         87,
-        207,
-        63
+        130,
+        210,
+        214,
+        133,
+        26,
+        175,
+        32,
+        26,
+        195,
+        44,
+        125,
+        131,
+        106,
+        106,
+        197,
+        44,
+        129
       ],
       "variant": "write_full"
     },
@@ -2191,7 +2251,7 @@
           "title": "WriteFileInput",
           "type": "object"
         },
-        "name": "write",
+        "name": "acyclic.write_file",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -2663,38 +2723,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        15,
-        173,
-        246,
-        150,
-        229,
-        177,
-        125,
-        87,
-        140,
-        221,
-        176,
-        69,
-        65,
-        92,
-        210,
+        189,
+        107,
+        73,
+        156,
+        184,
+        217,
+        144,
+        12,
+        212,
         214,
-        248,
+        115,
+        90,
+        84,
+        118,
+        49,
+        208,
+        17,
         108,
-        46,
-        201,
-        86,
-        133,
-        174,
-        32,
-        102,
-        7,
-        183,
-        105,
-        48,
-        213,
-        29,
-        233
+        82,
+        31,
+        15,
+        87,
+        215,
+        152,
+        13,
+        240,
+        52,
+        155,
+        92,
+        144,
+        4,
+        239
       ],
       "variant": "write_reference"
     },
@@ -2916,7 +2976,7 @@
           "title": "EditFileInput",
           "type": "object"
         },
-        "name": "edit",
+        "name": "acyclic.edit_file",
         "output_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -3349,38 +3409,38 @@
         "revision": "portable-5"
       },
       "definition_digest": [
-        3,
-        37,
-        166,
-        227,
+        55,
+        177,
+        211,
+        160,
+        17,
+        58,
+        136,
+        250,
+        226,
+        157,
+        102,
+        124,
         194,
-        191,
-        249,
-        209,
-        71,
-        175,
-        142,
-        212,
-        186,
-        128,
-        198,
-        12,
-        242,
-        148,
-        56,
-        202,
-        68,
-        134,
-        35,
-        254,
-        120,
-        170,
-        111,
-        194,
-        174,
-        75,
-        148,
-        38
+        114,
+        59,
+        243,
+        86,
+        156,
+        180,
+        172,
+        116,
+        252,
+        182,
+        38,
+        5,
+        185,
+        200,
+        116,
+        89,
+        118,
+        165,
+        204
       ],
       "variant": "exact_edit_full"
     },
@@ -4071,7 +4131,7 @@
     },
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read one exact bounded UTF-8 byte interval from an authorized immutable source",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -4288,37 +4348,570 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Exact immutable source and byte interval supplied by the caller.",
           "properties": {
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
             },
             "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "$ref": "#/$defs/TextRange",
+              "description": "Exact UTF-8 byte interval; no implicit rounding or truncation."
             }
           },
           "required": [
-            "file"
+            "file",
+            "range"
           ],
-          "title": "ReadFileInput",
+          "title": "ReadInput",
+          "type": "object",
+          "x-harness-text-configuration": {
+            "maximum_result_bytes": 4096,
+            "projection": "full",
+            "read": {
+              "maximum_input_bytes": 4096,
+              "maximum_text_bytes": 32
+            }
+          }
+        },
+        "name": "acyclic.read_file_range",
+        "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "TextRange": {
+              "additionalProperties": false,
+              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Inclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
+            "TextSelection": {
+              "additionalProperties": false,
+              "description": "One explicit partial read, including the exact omitted source intervals.",
+              "properties": {
+                "omitted_after": {
+                  "description": "Bytes excluded after the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_before": {
+                  "description": "Bytes excluded before the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "range": {
+                  "$ref": "#/$defs/TextRange",
+                  "description": "Selected source interval."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 with original line endings.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "range",
+                "text",
+                "omitted_before",
+                "omitted_after"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Durable read result retaining exact source identity and explicit omissions.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Original reference, including provider, volume, generation and content identity."
+            },
+            "selection": {
+              "$ref": "#/$defs/TextSelection",
+              "description": "Exact selected bytes and omitted source intervals."
+            }
+          },
+          "required": [
+            "file",
+            "selection"
+          ],
+          "title": "ReadResult",
           "type": "object"
         },
-        "name": "read",
-        "output_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
-        },
         "projection_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ReadResult": {
+              "additionalProperties": false,
+              "description": "Durable read result retaining exact source identity and explicit omissions.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Original reference, including provider, volume, generation and content identity."
+                },
+                "selection": {
+                  "$ref": "#/$defs/TextSelection",
+                  "description": "Exact selected bytes and omitted source intervals."
+                }
+              },
+              "required": [
+                "file",
+                "selection"
+              ],
+              "type": "object"
+            },
+            "TextRange": {
+              "additionalProperties": false,
+              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Inclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
+            "TextSelection": {
+              "additionalProperties": false,
+              "description": "One explicit partial read, including the exact omitted source intervals.",
+              "properties": {
+                "omitted_after": {
+                  "description": "Bytes excluded after the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_before": {
+                  "description": "Bytes excluded before the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "range": {
+                  "$ref": "#/$defs/TextRange",
+                  "description": "Selected source interval."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 with original line endings.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "range",
+                "text",
+                "omitted_before",
+                "omitted_after"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
@@ -4329,7 +4922,7 @@
                   "type": "string"
                 },
                 "value": {
-                  "type": "string"
+                  "$ref": "#/$defs/ReadResult"
                 }
               },
               "required": [
@@ -4341,47 +4934,47 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-text-1"
       },
       "definition_digest": [
-        104,
-        78,
-        60,
-        172,
-        30,
-        207,
-        7,
-        4,
-        137,
-        238,
+        31,
+        189,
         1,
-        161,
-        58,
-        86,
         206,
-        255,
-        164,
-        16,
-        161,
-        251,
-        29,
-        0,
-        77,
-        127,
-        225,
-        227,
-        101,
-        251,
+        63,
+        93,
+        200,
+        119,
+        138,
         143,
-        206,
-        38,
-        146
+        151,
+        183,
+        140,
+        215,
+        150,
+        255,
+        44,
+        11,
+        204,
+        12,
+        224,
+        49,
+        86,
+        244,
+        193,
+        133,
+        103,
+        100,
+        222,
+        241,
+        43,
+        82
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read one exact bounded UTF-8 byte interval from an authorized immutable source",
         "input_schema": {
           "$defs": {
             "FileDescriptor": {
@@ -4598,35 +5191,301 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Exact immutable source and byte interval supplied by the caller.",
           "properties": {
             "file": {
               "$ref": "#/$defs/FileRef",
               "description": "Owner-authorized immutable source."
             },
             "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "$ref": "#/$defs/TextRange",
+              "description": "Exact UTF-8 byte interval; no implicit rounding or truncation."
             }
           },
           "required": [
-            "file"
+            "file",
+            "range"
           ],
-          "title": "ReadFileInput",
-          "type": "object"
+          "title": "ReadInput",
+          "type": "object",
+          "x-harness-text-configuration": {
+            "maximum_result_bytes": 4096,
+            "projection": "reference",
+            "read": {
+              "maximum_input_bytes": 4096,
+              "maximum_text_bytes": 32
+            }
+          }
         },
-        "name": "read",
+        "name": "acyclic.read_file_range",
         "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "TextRange": {
+              "additionalProperties": false,
+              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Inclusive byte offset.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
+            "TextSelection": {
+              "additionalProperties": false,
+              "description": "One explicit partial read, including the exact omitted source intervals.",
+              "properties": {
+                "omitted_after": {
+                  "description": "Bytes excluded after the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "omitted_before": {
+                  "description": "Bytes excluded before the selection.",
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "range": {
+                  "$ref": "#/$defs/TextRange",
+                  "description": "Selected source interval."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 with original line endings.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "range",
+                "text",
+                "omitted_before",
+                "omitted_after"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
+          "additionalProperties": false,
+          "description": "Durable read result retaining exact source identity and explicit omissions.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Original reference, including provider, volume, generation and content identity."
+            },
+            "selection": {
+              "$ref": "#/$defs/TextSelection",
+              "description": "Exact selected bytes and omitted source intervals."
+            }
+          },
+          "required": [
+            "file",
+            "selection"
+          ],
+          "title": "ReadResult",
+          "type": "object"
         },
         "projection_schema": {
           "$defs": {
@@ -4892,41 +5751,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-text-1"
       },
       "definition_digest": [
-        104,
-        245,
-        166,
-        187,
-        58,
-        134,
-        91,
-        154,
-        208,
-        161,
-        206,
-        153,
-        40,
-        159,
-        232,
-        0,
-        82,
-        3,
-        119,
+        227,
+        27,
+        136,
+        27,
         30,
-        187,
-        32,
-        145,
-        201,
-        167,
-        236,
+        16,
+        211,
+        13,
         129,
-        78,
-        214,
-        36,
-        12,
-        159
+        172,
+        40,
+        219,
+        19,
+        69,
+        134,
+        4,
+        79,
+        230,
+        196,
+        89,
+        89,
+        178,
+        209,
+        35,
+        176,
+        98,
+        148,
+        242,
+        159,
+        123,
+        207,
+        137
       ],
       "variant": "range_read_reference"
     },

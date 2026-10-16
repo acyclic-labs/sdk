@@ -17,6 +17,7 @@
 )]
 #![doc = include_str!("../README.md")]
 
+mod sync;
 pub mod agent_loop;
 #[cfg(feature = "tui")]
 pub use acyclic_harness_tui as tui;
@@ -80,13 +81,14 @@ pub mod test_support;
 pub mod tool;
 pub mod tools;
 #[cfg(feature = "tui")]
+pub mod tui_config;
+#[cfg(feature = "tui")]
 pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;
-pub mod workspace;
 pub use wire_codec::encode_error;
 #[cfg(test)]
 #[path = "../tests/support/stream/mod.rs"]

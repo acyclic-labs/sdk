@@ -34,7 +34,6 @@ use acyclic_fs::{
     Workspace, WorkspaceError, WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
 
@@ -79,9 +78,9 @@ mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) mod native_process;
+mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessObserver, NativeProcessProvider};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(
@@ -152,7 +151,9 @@ use host::*;
 pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
+mod file_query;
 use content_verifier::*;
+pub use file_query::FilesystemFileQuery;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
 mod project_verifier;
@@ -212,12 +213,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let descriptor = crate::executor::with_history_io(io, |work| {
             FileDescriptor::from_bytes(bytes, media_type, work)
         })?;
-        let operation = fork_preparer_io::operation_key(idempotency_key, io)?;
         let provisional = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 volume.copy(work)?,
                 stock_string_copy(path, io)?,
-                fork_preparer_io::hex_key(&operation.into_bytes(), io)?,
+                stock_string_copy("pending", io)?,
                 FileDescriptor::new(
                     *descriptor.sha256(),
                     descriptor.byte_length(),
@@ -284,19 +284,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let prior = crate::conversation::BoundedContentFuture::new(io, || async {
-            let owned;
-            let io = if let Some(io) = io {
-                io
-            } else {
-                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                &owned
+            let opened = match io {
+                Some(io) => (self).open(&workspace, Some(io)).await?,
+                None => self.open(&workspace, None).await?,
             };
-            let opened = self.open(&workspace, Some(io)).await?;
-            io.sdk(
-                opened
-                    .operation_generation(operation, io, io.cancellation())
-                    .await,
-            )
+            Ok(match io {
+                Some(io) => {
+                    let hash = acyclic_fs::WorkCounters {
+                        bytes_hashed: idempotency_key.as_str().len() as u64,
+                        ..Default::default()
+                    };
+                    io.preflight(hash)?;
+                    let key = filesystem_key(idempotency_key);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = io.original_native_work() {
+                        original.spent(hash).map_err(|cause| Error::NativeWork {
+                            cause,
+                            custody: None,
+                        })?;
+                        opened
+                            .operation_generation(key, original, io.cancellation())
+                            .await
+                            .map_err(|source| Error::NativeWorkspace {
+                                source: Box::new(source),
+                                custody: None,
+                            })?
+                    } else {
+                        io.charge(hash)?;
+                        io.receive(
+                            opened
+                                .operation_generation(key, io.remaining()?, io.cancellation())
+                                .await,
+                        )?
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        io.charge(hash)?;
+                        io.receive(
+                            opened
+                                .operation_generation(key, io.remaining()?, io.cancellation())
+                                .await,
+                        )?
+                    }
+                }
+                None => opened
+                    .operation_generation(
+                        filesystem_key(idempotency_key),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| map_error(failure.error))?,
+            })
         })?
         .await?;
         if let Some(prior) = prior {

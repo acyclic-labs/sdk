@@ -20,16 +20,15 @@ proptest! {
             }
             registry
         };
-        let original = registry(&left);
-        let before = original.definitions(None).unwrap();
-        let result = original.clone().extend(registry(&right));
-        let accepted = result.is_ok();
+        let mut merged = registry(&left);
+        let before = merged.definitions(None).unwrap();
+        let accepted = merged.extend(registry(&right)).is_ok();
         prop_assert_eq!(accepted, left.is_disjoint(&right));
-        if let Ok(merged) = result {
+        if accepted {
             let actual: BTreeSet<_> = merged.definitions(None).unwrap().into_iter().map(|definition| definition.name).collect();
             prop_assert_eq!(actual, left.union(&right).cloned().collect::<BTreeSet<_>>());
         } else {
-            prop_assert_eq!(original.definitions(None).unwrap(), before);
+            prop_assert_eq!(merged.definitions(None).unwrap(), before);
         }
     }
 }
@@ -46,14 +45,14 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
             Some(name)
         );
     }
+    let mut custom = ToolRegistry::default();
+    custom.register((example_tool(), None), &mut None, None)?;
     let mut second = example_tool();
     second.definition.name = "example.second".into();
     let enabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .content(content())
-        .workspace(Arc::new(Echo))
-        .tool(second)
-        .tools([example_tool()])
+        .tool(second)?
+        .tools(custom)?
         .build()?;
     for name in names {
         assert_eq!(enabled.runtime().tool(name)?.name, name);
@@ -70,8 +69,8 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     );
     let disabled = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
-        .without_default_tools()
-        .tool(example_tool())
+        .default_tools(false)
+        .tool(example_tool())?
         .build()?;
     for name in names {
         assert!(matches!(
@@ -93,26 +92,10 @@ fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
 
 #[test]
 fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<()> {
-    let artifacts = HarnessBuilder::new()
-        .agent_loop(Arc::new(DelegatingLoop))
-        .artifacts(content())
-        .build()?;
-    for name in ["read", "write", "edit"] {
-        assert!(matches!(
-            artifacts.runtime().tool(name),
-            Err(Error::NotFound(_))
-        ));
-        assert!(
-            !artifacts
-                .capabilities()
-                .contains(&format!("tool:call:{name}"))
-        );
-    }
     assert!(matches!(
         HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .content(content())
-            .tool(crate::tool::files::read()?)
+            .tool(crate::tool::files::read()?)?
             .build(),
         Err(Error::Conflict(_))
     ));
@@ -121,80 +104,20 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
     for name in ["bash", "fs", "read", "write", "edit"] {
-        assert!(matches!(
-            bound.runtime().tool(name),
-            Err(Error::NotFound(_))
-        ));
+        assert_eq!(bound.runtime().tool(name)?.name, name);
         assert!(!bound.capabilities().contains(&format!("tool:call:{name}")));
-    }
-    Ok(())
-}
-
-struct Reader;
-impl conversation::ContentResidencyVerifier for Reader {}
-fn content() -> runtime::ContentBindings {
-    runtime::ContentBindings {
-        reader: Arc::new(Reader),
-        writer: None,
-    }
-}
-
-#[test]
-fn registration_and_grants_follow_available_bindings() -> Result<()> {
-    for volume in [false, true] {
-        for workspace in [false, true] {
-            let mut builder = HarnessBuilder::new().agent_loop(Arc::new(DelegatingLoop));
-            if volume {
-                builder = builder.content(content());
-            }
-            if workspace {
-                builder = builder.workspace(Arc::new(Echo));
-            }
-            let harness = builder.build()?;
-            for (name, available) in [
-                ("bash", workspace),
-                ("fs", workspace),
-                ("read", volume),
-                ("write", volume),
-                ("edit", volume),
-            ] {
-                assert_eq!(harness.runtime().tool(name).is_ok(), available);
-                assert_eq!(
-                    harness
-                        .capabilities()
-                        .contains(&format!("tool:call:{name}")),
-                    available
-                );
-            }
-        }
-    }
-    let mut bindings = Bindings::local();
-    bindings.content = Some(content());
-    bindings.workspace_tools = Some(Arc::new(Echo));
-    bindings.scope =
-        runtime::RuntimeScope::new(Capabilities::new(["tool:call:read"]), Limits::default())?;
-    let harness = HarnessBuilder::new()
-        .bindings(bindings)
-        .agent_loop(Arc::new(DelegatingLoop))
-        .build()?;
-    assert_eq!(harness.runtime().tool("read")?.name, "read");
-    for name in ["bash", "fs", "write", "edit"] {
-        assert!(matches!(
-            harness.runtime().tool(name),
-            Err(Error::NotFound(_))
-        ));
     }
     Ok(())
 }
 
 #[test]
 fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()> {
-    let destination = crate::tools::defaults()?;
+    let mut destination = crate::tools::defaults()?;
     let mut incoming = ToolRegistry::default();
     incoming.register((example_tool(), None), &mut None, None)?;
     incoming.register((crate::tool::files::read()?, None), &mut None, None)?;
     assert!(matches!(
-        destination.clone().extend(incoming),
+        destination.extend(incoming),
         Err(Error::Conflict(_))
     ));
     assert!(destination.get("example.echo", None, None)?.is_none());
@@ -211,7 +134,8 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     custom.register((second, None), &mut None, None)?;
     custom.select_model_version("example.echo", "2")?;
     custom.remove_from_model("example.echo")?;
-    let mut combined = crate::tools::defaults()?.extend(custom)?;
+    let mut combined = crate::tools::defaults()?;
+    combined.extend(custom)?;
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());
@@ -324,7 +248,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
     for workspace in ["checkout", "child-view"] {
         let bundle = HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
-            .workspace(Arc::new(Workspace(workspace)))
+            .workspace_tools(Arc::new(Workspace(workspace)))
             .grant("task:spawn:commands@1")
             .task(TaskDefinition::live(
                 "commands",

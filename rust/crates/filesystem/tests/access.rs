@@ -789,82 +789,6 @@ fn malformed_generation_denials_fail_closed() {
     );
 }
 
-#[test]
-fn native_mount_modes_share_the_policy_decisions() -> Result<(), Box<dyn std::error::Error>> {
-    let caller = principal();
-    let cap = capability();
-    let context = Context {
-        now: 100,
-        approvals: 0,
-    };
-    let policy = policy(vec![
-        rule("read", Effect::Allow, &[Action::List, Action::Read], "**"),
-        rule(
-            "hidden",
-            Effect::Deny,
-            &[Action::List, Action::Read],
-            "secrets/**",
-        ),
-        rule("inbox-no-read", Effect::Deny, &[Action::Read], "inbox/**"),
-        rule("inbox", Effect::Allow, &[Action::Create], "inbox/**"),
-        rule("log", Effect::Allow, &[Action::Append], "logs/**"),
-    ]);
-    let trie = PathTrie::compile(
-        &policy,
-        &caller,
-        resource(&caller.lineage, "", 10),
-        context,
-        &cap,
-    )?;
-    let source = trie.mount_mode("src/lib.rs", 100);
-    assert!(source.visible());
-    assert!(source.read_only());
-    assert!(!source.create_only());
-    let secret = trie.mount_mode("secrets/key", 100);
-    assert!(!secret.visible());
-    assert!(!secret.allows(Action::Read));
-    let inbox = trie.mount_mode("inbox/message", 100);
-    assert!(inbox.create_only());
-    assert!(!inbox.read_only());
-    assert!(!inbox.allows(Action::Read));
-    let log = trie.mount_mode("logs/events", 100);
-    assert!(log.allows(Action::Append));
-    assert!(!log.allows(Action::Write));
-    assert!(!log.read_only());
-    for path in ["src/lib.rs", "secrets/key", "inbox/message", "logs/events"] {
-        for action in Action::ALL {
-            assert_eq!(
-                trie.mount_mode(path, 100).allows(action),
-                decide(
-                    &policy,
-                    &caller,
-                    action,
-                    resource(&caller.lineage, path, 10),
-                    context,
-                    &cap
-                )
-                .allowed
-            );
-        }
-    }
-    let expiring = Capability {
-        expires_at: Some(101),
-        ..cap
-    };
-    let trie = PathTrie::compile(
-        &policy,
-        &caller,
-        resource(&caller.lineage, "", 10),
-        context,
-        &expiring,
-    )?;
-    assert!(!trie.mount_mode("src/lib.rs", 101).visible());
-    assert!(trie.mount_mode("src/lib.rs", 101).read_only());
-    assert!(!trie.mount_mode("src/../secrets/key", 100).visible());
-    assert!(!trie.mount_mode("src/lib.rs", 99).visible());
-    Ok(())
-}
-
 fn glob_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop_oneof![
@@ -911,10 +835,7 @@ proptest! {
         if folded { res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
         let trie = PathTrie::compile(&policy, &principal, res, context, &cap)?;
         let prepared = trie.prepare(&path)?;
-        let mode = prepared.mount_mode(100);
-        prop_assert_eq!(mode.visible(), decide(&policy, &principal, Action::List, res, context, &cap).allowed);
         for action in Action::ALL {
-            prop_assert_eq!(mode.allows(action), decide(&policy, &principal, action, res, context, &cap).allowed);
             prop_assert_eq!(trie.decide(action, &path, 100), decide(&policy, &principal, action, res, context, &cap));
             prop_assert_eq!(prepared.decide(action, 100), decide(&policy, &principal, action, res, context, &cap));
         }

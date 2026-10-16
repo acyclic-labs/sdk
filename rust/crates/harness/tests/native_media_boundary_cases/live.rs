@@ -632,7 +632,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             writer: None,
         })
         .tasks(tasks)
-        .replace_tools(tools)
+        .tools(tools)?
         .extensions_from(&agent)?
         .extensions(linked.clone())
         .grant("model:generate")

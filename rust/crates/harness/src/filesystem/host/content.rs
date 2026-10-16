@@ -94,11 +94,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         crate::executor::with_history_io(io, |work| recorded.validate(work))?;
         if recorded.volume() != volume
-            || recorded.version()
-                != fork_preparer_io::hex_key(
-                    &fork_preparer_io::operation_key(key, io)?.into_bytes(),
-                    io,
-                )?
+            || recorded.version() != "pending"
             || expected_path.is_some_and(|path| path != recorded.path())
         {
             return Err(stock_boundary(

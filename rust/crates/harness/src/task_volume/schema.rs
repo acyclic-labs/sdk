@@ -1,4 +1,4 @@
-use super::{Error, Result};
+use super::{Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
@@ -168,7 +168,7 @@ pub enum FileKey {
     /// Editable command definitions and workspace files followed by UI queries.
     Input(InputPath),
     /// Ordinary editable Markdown in the private volume's plans folder.
-    Plan(Component),
+    Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
     /// Protected task namespace.
@@ -257,14 +257,17 @@ impl FileKey {
                     name: id(name)?,
                 });
             }
-            ["commands" | "workspace", ..] => {
+            [
+                "commands" | "workspace" | "config" | ".claude" | ".codex" | "skills",
+                ..,
+            ] => {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
             ["plans", name] => {
-                return Ok(Self::Plan(id(name
-                    .strip_suffix(".md")
-                    .ok_or(Error::InvalidPath)?)?));
+                return Ok(Self::Plan(PlanName::new(
+                    name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
+                )?));
             }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
@@ -353,6 +356,7 @@ impl FileKey {
     /// Owner to pass to the existing volume authorization decision.
     pub fn owner(&self) -> Owner {
         match self {
+            Self::Input(path) if path.0.starts_with("config/") => Owner::Caller,
             Self::Ui { .. } => Owner::Caller,
             Self::Session {
                 file: TaskFile::Request(_),

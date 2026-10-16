@@ -33,6 +33,7 @@ impl WorkspaceGitExecutor<'_> {
                         &destination,
                         snapshot,
                         IdempotencyKey::from_bytes(identity),
+                        PublicationPermit::Unrestricted,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await

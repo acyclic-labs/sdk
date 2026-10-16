@@ -2,6 +2,32 @@
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub struct StreamPath(OwnedBytes);
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for StreamPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for StreamPath {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PathVisitor;
+        impl serde::de::Visitor<'_> for PathVisitor {
+            type Value = StreamPath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a canonical stream path")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<StreamPath, E> {
+                StreamPath::new(value).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(PathVisitor)
+    }
+}
+
 impl StreamPath {
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {

@@ -1,0 +1,5 @@
+{"turns":[[{"type":"event","kind":"content","delta":"مر"},{"type":"event","kind":"content","delta":"حبا"},{"type":
+  "event","kind":"content","delta":" world"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":
+  "مرحبا world","events":[{"kind":"model","event":{"kind":"content","delta":"مر"}},{"kind":"model","event":{"kind":
+  "content","delta":"حبا"}},{"kind":"model","event":{"kind":"content","delta":" world"}},{"kind":"model","event":{"kind"
+  :"completed","metadata":null}}]}}

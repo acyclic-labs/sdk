@@ -16,9 +16,6 @@ impl StockExecution<'_> {
         let _capability;
         let mut context;
         (context, _capability) = self.authorize_tool_invocation(tool, &invocation)?;
-        if let Some(context) = &mut context {
-            context.model_step = step;
-        }
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
@@ -272,7 +269,11 @@ impl StockExecution<'_> {
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
-            Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error @ Error::Storage(_)) => {
+                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
+                return Err(Error::Indeterminate(operation_id));
+            }
+            Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
             Err(error) => {
