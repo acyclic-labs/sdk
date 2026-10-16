@@ -496,6 +496,8 @@ pub fn verify_node_dials(fault: u8) {
                 pool.routes.get_mut(&1).unwrap().node = "good".into();
             }
             let client = Client {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
                 commands: mpsc::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
@@ -607,6 +609,8 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.routes.get_mut(&1).unwrap().records = records;
         pool.routes.get_mut(&1).unwrap().node = "good".into();
         let client = Client {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
