@@ -109,13 +109,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "plan_markdown"
-path = "fuzz_targets/plan_markdown.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
 required-features = ["runtime"]
