@@ -17,12 +17,13 @@ use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::{HostRoot, NativeHostWork};
+use crate::sync::{Condvar, Mutex, MutexGuard, RwLock, TryLockError};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, TryLockError};
+use std::sync::Arc;
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,

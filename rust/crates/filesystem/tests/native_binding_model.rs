@@ -1,13 +1,16 @@
 //! Exhaustive models of the production cached binding decision.
+#![cfg(any(kani, acyclic_fs_loom))]
 
 #[path = "../src/native_mount/cached_binding.rs"]
 mod cached_binding;
+#[path = "../src/sync.rs"]
+mod sync;
 
-#[cfg(all(not(kani), target_os = "linux"))]
+#[cfg(all(not(kani), target_os = "linux", acyclic_fs_loom))]
 mod interleavings {
     use super::cached_binding::cached_binding_matches;
-    use loom::sync::atomic::{AtomicU8, Ordering};
-    use loom::sync::{Arc, Mutex, RwLock};
+    use crate::sync::atomic::{AtomicU8, Ordering};
+    use crate::sync::{Arc, Mutex, RwLock};
     use loom::thread;
     use std::cell::Cell;
 
@@ -55,32 +58,38 @@ mod interleavings {
                     {
                         // RwLock supplies the existing source lease contract;
                         // production owns the lookup/lease/decision ordering.
+                        let sampled = Cell::new(None);
                         let sample = || {
+                            assert!(
+                                gate.try_write().is_err(),
+                                "source lease was released before decision"
+                            );
                             let observed =
                                 (stamp.load(Ordering::Acquire), epoch.load(Ordering::Acquire));
                             assert!(
                                 observed == (0, 0)
                                     || observed == (u8::from(changed), u8::from(rebound))
                             );
+                            if let Some(previous) = sampled.replace(Some(observed)) {
+                                assert_eq!(
+                                    previous, observed,
+                                    "leased source state changed during decision"
+                                );
+                            }
                             observed
                         };
-                        // Extend the model lease through the oracle so a
-                        // writer cannot change the state being compared with
-                        // the returned decision. Kani checks its real lifetime.
-                        let mut lease = None;
                         let fallback = Cell::new(false);
                         let matched = cached_binding_matches(
-                            || *cache.lock().unwrap(),
-                            || {
-                                lease = Some(gate.read().unwrap());
-                                Ok::<_, ()>(())
-                            },
+                            &cache,
+                            |binding| *binding,
+                            || Ok::<_, ()>(gate.read().unwrap()),
                             // Negative control: a reporting source alone must
                             // never bypass freshness after a related change.
                             |expected| {
+                                let observed = sample();
                                 reports
                                     && (accept_stale && (related || rebound)
-                                        || sample() == expected)
+                                        || observed == expected)
                             },
                             |expected| {
                                 fallback.set(true);
@@ -88,8 +97,7 @@ mod interleavings {
                                 observed.1 == expected.1 && (observed.0 == expected.0 || !related)
                             },
                         );
-                        if lease.is_some() {
-                            let observed = sample();
+                        if let Some(observed) = sampled.get() {
                             assert_eq!(
                                 matched,
                                 observed.1 == 0 && (!related || observed.0 == 0),
@@ -113,7 +121,7 @@ mod interleavings {
 
 #[cfg(kani)]
 mod proofs {
-    use super::cached_binding::cached_binding_matches;
+    use super::cached_binding::cached_binding_decision;
     use std::cell::Cell;
 
     struct Lease<'a>(&'a Cell<bool>);
@@ -135,8 +143,8 @@ mod proofs {
         let lease_calls = Cell::new(0_u8);
         let current_calls = Cell::new(0_u8);
         let fallback_calls = Cell::new(0_u8);
-        let matched = cached_binding_matches(
-            || present.then_some(()),
+        let matched = cached_binding_decision(
+            present.then_some(()),
             || {
                 lease_calls.set(lease_calls.get() + 1);
                 live.set(admitted);

@@ -310,8 +310,9 @@ pub(super) unsafe fn notification(
             if !metadata_changed
                 && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                 && crate::native_mount::cached_binding::cached_binding_matches(
-                    || {
-                        lock_recover(projection)
+                    projection,
+                    |bindings| {
+                        bindings
                             .get(&capture_path)
                             .copied()
                             .filter(|binding| binding.host == host && host.links == Some(1))
