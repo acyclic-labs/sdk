@@ -1,5 +1,6 @@
 //! Shared authenticated Actors client over a tonic transport.
 
+pub use acyclic_auth::credential::CredentialProvider;
 use crate::domain;
 use crate::wire;
 use prost::Message;
@@ -9,7 +10,7 @@ use tonic::metadata::{Ascii, MetadataValue};
 
 /// Sensitive bearer metadata applied to each generated RPC.
 #[derive(Clone)]
-pub struct BearerAuth(MetadataValue<Ascii>);
+pub struct BearerAuth(Option<MetadataValue<Ascii>>);
 impl BearerAuth {
     /// Validates a bounded bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, Error> {
@@ -20,7 +21,7 @@ impl BearerAuth {
         let mut value: MetadataValue<Ascii> =
             format!("Bearer {token}").parse().map_err(|_| invalid())?;
         value.set_sensitive(true);
-        Ok(Self(value))
+        Ok(Self(Some(value)))
     }
 }
 impl tonic::service::Interceptor for BearerAuth {
@@ -32,9 +33,8 @@ impl tonic::service::Interceptor for BearerAuth {
             .extensions_mut()
             .remove::<Self>()
             .unwrap_or_else(|| self.clone());
-        request
-            .metadata_mut()
-            .insert("authorization", authorization.0);
+        let authorization = authorization.0.ok_or_else(|| tonic::Status::unauthenticated("missing request credential"))?;
+        request.metadata_mut().insert("authorization", authorization);
         Ok(request)
     }
 }
@@ -48,6 +48,9 @@ pub enum Error {
     /// Endpoint, credential, or caller-supplied trust configuration is invalid.
     #[error("Actors client configuration failed: {0}")]
     Configuration(String),
+    /// The current credential callback failed or returned an invalid credential.
+    #[error("Actors credential renewal failed")]
+    Credential(#[from] acyclic_auth::credential::CredentialError),
     /// A selected transport could not be constructed or reached.
     #[error("Actors transport failure: {0}")]
     Transport(String),
@@ -122,6 +125,11 @@ impl Error {
                 metadata.service_message = detail.map(|value| value.message);
                 metadata.raw_details = Some(raw_details);
             }
+            Self::Credential(_) => {
+                metadata.message = "Actors credential renewal failed".into();
+                metadata.grpc_code = Some(16);
+                metadata.grpc_name = Some(code);
+            }
             Self::Cancelled => {
                 metadata.message = String::from("Actors operation cancelled");
                 metadata.grpc_code = Some(1);
@@ -145,6 +153,7 @@ impl Error {
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
             Self::Semantic(error) => error.code_name(),
             Self::Cancelled => "cancelled",
+            Self::Credential(_) => "unauthenticated",
         }
     }
 
@@ -198,6 +207,7 @@ fn service_error(status: tonic::Status) -> Error {
 
 /// Connected Actors client whose operation methods are shared by all targets.
 pub struct Client {
+    credential: Option<CredentialProvider>,
     #[cfg(not(target_arch = "wasm32"))]
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
@@ -207,6 +217,22 @@ pub struct Client {
 }
 
 impl Client {
+    /// Resolve a current request credential without changing the shared transport.
+    pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
+        self.credential = Some(credential);
+        self
+    }
+
+    async fn request<T>(&self, body: T, authorization: Option<BearerAuth>) -> Result<tonic::Request<T>, Error> {
+        let authorization = if authorization.is_some() { authorization } else if let Some(provider) = &self.credential {
+            let token = provider.resolve().await?;
+            Some(BearerAuth::new(&token)?)
+        } else { None };
+        let mut request = tonic::Request::new(body);
+        if let Some(authorization) = authorization { request.extensions_mut().insert(authorization); }
+        Ok(request)
+    }
+
     /// Returns `grpc` for native transport and `grpc-web` for browser transport.
     #[must_use]
     pub const fn transport(&self) -> &'static str {
@@ -220,10 +246,19 @@ impl Client {
 
 /// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
 pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<Client, Error> {
+    connect_authorized(endpoint, BearerAuth::new(token)?, ca).await
+}
+
+/// Connect with no static bearer; each operation must resolve its callback first.
+pub async fn connect_with_credential(endpoint: &str, credential: CredentialProvider, ca: Option<&[u8]>) -> Result<Client, Error> {
+    Ok(connect_authorized(endpoint, BearerAuth(None), ca).await?.with_credential_provider(credential))
+}
+
+async fn connect_authorized(endpoint: &str, authorization: BearerAuth, ca: Option<&[u8]>) -> Result<Client, Error> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let inner =
-            crate::grpc::connect(endpoint, token, ca)
+            crate::grpc::connect_authorized(endpoint, authorization, ca)
                 .await
                 .map_err(|error| match error {
                     crate::grpc::ConnectError::InsecureEndpoint => {
@@ -242,7 +277,7 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
                         Error::Transport(format!("{error:?}"))
                     }
                 })?;
-        Ok(Client { inner })
+        Ok(Client { inner, credential: None })
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -282,8 +317,6 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
                 "Actors endpoint must use HTTPS; HTTP is limited to loopback tests and userinfo, query, and fragment are forbidden".into(),
             ));
         }
-        let authorization = BearerAuth::new(token)
-            .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         let transport = tonic_web_wasm_client::Client::new_with_options(
             endpoint.as_str().trim_end_matches('/').to_owned(),
             tonic_web_wasm_client::options::FetchOptions::new()
@@ -301,7 +334,7 @@ pub async fn connect(endpoint: &str, token: &str, ca: Option<&[u8]>) -> Result<C
         )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        Ok(Client { inner })
+        Ok(Client { inner, credential: None })
     }
 }
 
@@ -344,6 +377,7 @@ macro_rules! client_operations {
             #[doc = concat!("Executes the semantic ", $name, " operation.")]
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
                 let input = wire::$input::from(request.clone());
+                let input = self.request(input, None).await?;
                 let response = self.inner.clone().$method(input).await
                     .map(tonic::Response::into_inner).map_err(service_error)?;
                 Ok(response.try_into()?)
@@ -370,8 +404,7 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = domain::$input::try_from(input)
                             .map_err(|error| Error::Configuration(error.to_string()))?;
-                        let mut input = tonic::Request::new(wire::$input::from(input));
-                        if let Some(authorization) = authorization { input.extensions_mut().insert(authorization); }
+                        let input = self.request(wire::$input::from(input), authorization).await?;
                         let response = self.inner.clone().$method(input).await
                             .map(tonic::Response::into_inner).map_err(service_error)?;
                         let output = domain::$output::try_from(response)?;

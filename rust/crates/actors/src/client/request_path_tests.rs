@@ -64,7 +64,7 @@ impl Service<http::Request<Body>> for Echo {
 }
 
 #[tokio::test]
-async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
+async fn request_path_binary_calls_keep_admission_credentials_and_response_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
     let endpoint = format!("http://{}", incoming.local_addr()?);
@@ -82,6 +82,7 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             .connect()
             .await?;
         let client = Client {
+            credential: None,
             inner: wire::actors_service_client::ActorsServiceClient::with_interceptor(
                 crate::grpc::TracedChannel::new(channel, crate::grpc::transport_span),
                 BearerAuth::new("fixture")?,
@@ -133,6 +134,18 @@ async fn request_path_binary_calls_keep_admission_auth_and_response_semantics()
             Err(Error::Configuration(_))
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+        let renewals = Arc::new(AtomicUsize::new(0));
+        let resolved = renewals.clone();
+        let client = client.with_credential_provider(CredentialProvider::new(move || {
+            resolved.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Ok("renewed".into()))
+        }));
+        let typed = domain::InvokeActorRequest::try_from(renewed.clone())?;
+        assert_eq!(client.invoke_actor(&typed).await?.body, vec![8]);
+        let output = client.call("InvokeActor", &renewed.encode_to_vec()).await?;
+        assert_eq!(wire::InvokeActorResponse::decode(output.as_slice())?.body, vec![8]);
+        assert_eq!(renewals.load(Ordering::Relaxed), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
