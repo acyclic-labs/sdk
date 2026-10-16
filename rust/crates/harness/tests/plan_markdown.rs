@@ -14,6 +14,7 @@ fn checked_in_fuzz_corpus() {
         ("unicode", Some(3)),
         ("indented", None),
         ("mixed", Some(5)),
+        ("escaped", None),
     ] {
         let text = std::fs::read_to_string(directory.join(name)).unwrap();
         assert_eq!(
@@ -85,6 +86,24 @@ fn task_paragraphs_keep_their_separators() {
     ] {
         let items: Vec<_> = parse_task_list(markdown).unwrap().items().collect();
         assert_eq!(items.last().unwrap().text, expected, "{markdown}");
+    }
+}
+
+#[test]
+fn escaped_and_entity_markers_remain_literal() {
+    for marker in [
+        r"\[~]",
+        r"[\~]",
+        r"[~\]",
+        "&#91;~]",
+        "[&#126;]",
+        "[~&#93;",
+        "&lbrack;~&rbrack;",
+    ] {
+        for prefix in ["- ", "* ", "+ ", "1. "] {
+            let markdown = format!("{prefix}{marker} literal\n");
+            assert!(parse_task_list(&markdown).is_none(), "{markdown}");
+        }
     }
 }
 
@@ -184,4 +203,78 @@ proptest! {
             prop_assert!(parse_task_list(&markdown).is_none());
         }
     }
+}
+
+#[tokio::test]
+async fn plan_rows_reuse_unchanged_file_revisions_and_clip_without_collection() {
+    use acyclic_harness::{
+        client::FileQueryView,
+        task_volume::{FileKey, Query, TaskVolume, Write},
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    use futures::StreamExt as _;
+    use std::sync::Arc;
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("plan-cache").unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut generation = volume.snapshot(&Query::Plans, 2).await.unwrap().generation;
+    for (path, markdown) in [
+        ("plans/a.md", "- [ ] Same\n".repeat(1000)),
+        ("plans/b.md", "- [~] Before".into()),
+    ] {
+        generation = volume
+            .append(
+                generation,
+                &Write::new(FileKey::parse(path).unwrap(), markdown.into_bytes()),
+            )
+            .await
+            .unwrap();
+    }
+    let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
+    let mut changes = volume
+        .follow(Query::Plans, snapshot.cursor.clone())
+        .await
+        .unwrap();
+    let mut view = FileQueryView::from_snapshot(Query::Plans, snapshot, 2, 65_536).unwrap();
+    let original = view.clone();
+    for _ in 0..10 {
+        assert_eq!(
+            view.plan_rows().nth(1).unwrap().as_ptr(),
+            original.plan_rows().nth(1).unwrap().as_ptr()
+        );
+        assert_eq!(
+            view.plan_rows().take(2).collect::<Vec<_>>(),
+            ["plans/a.md", "[ ] Same"]
+        );
+    }
+    generation = volume
+        .append(
+            generation,
+            &Write::new(FileKey::parse("plans/b.md").unwrap(), "- [x] After"),
+        )
+        .await
+        .unwrap();
+    view.apply(changes.next().await.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        view.plan_rows().nth(1).unwrap().as_ptr(),
+        original.plan_rows().nth(1).unwrap().as_ptr()
+    );
+    assert_eq!(view.plan_rows().last(), Some("[x] After"));
+    assert_ne!(
+        view.plan_rows().last().unwrap().as_ptr(),
+        original.plan_rows().last().unwrap().as_ptr()
+    );
+    let before_checkpoint = view.clone();
+    volume
+        .append(generation, &Write::new(FileKey::Goal, "unrelated"))
+        .await
+        .unwrap();
+    view.apply(changes.next().await.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        view.plan_rows().last().unwrap().as_ptr(),
+        before_checkpoint.plan_rows().last().unwrap().as_ptr()
+    );
 }

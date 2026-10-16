@@ -19,13 +19,7 @@ impl Widget for PlanPanel<'_> {
         let block = Block::bordered().title("Plans");
         let body = block.inner(area);
         block.render(area, buffer);
-        for (row, line) in self
-            .files
-            .plan_lines()
-            .into_iter()
-            .take(usize::from(body.height))
-            .enumerate()
-        {
+        for (y, line) in (body.y..body.bottom()).zip(self.files.plan_rows()) {
             let style = if line.starts_with("plans/") {
                 Style::default().add_modifier(Modifier::BOLD)
             } else if line.starts_with("[~]") {
@@ -35,13 +29,7 @@ impl Widget for PlanPanel<'_> {
             } else {
                 Style::default()
             };
-            buffer.set_stringn(
-                body.x,
-                body.y + row as u16,
-                line,
-                usize::from(body.width),
-                style,
-            );
+            buffer.set_stringn(body.x, y, line, usize::from(body.width), style);
         }
     }
 }

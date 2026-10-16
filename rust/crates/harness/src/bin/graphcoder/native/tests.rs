@@ -157,3 +157,96 @@ async fn default_manifest_survives_restart_of_an_unfinished_native_turn() -> Res
     assert_eq!(records[0]["request_digest"], records[1]["request_digest"]);
     Ok(())
 }
+
+#[cfg(all(unix, feature = "tui"))]
+#[tokio::test]
+async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+    let scenario = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/scenarios/plan-query/filenames-and-paragraphs.json");
+    if let Some(config_path) = std::env::var_os("GC_PLAN_PTY_CONFIG") {
+        #[derive(serde::Deserialize)]
+        struct Revision {
+            path: String,
+            text: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Scenario {
+            writes: Vec<Revision>,
+        }
+        let config = Config::from_file(Path::new(&config_path))?;
+        let native = Arc::new(NativeSession::open(config.clone()).await?);
+        let publisher = FilesystemContentPublisher::new(
+            native.files.clone(),
+            &config.private_volume,
+            &config.owner.verifier()?,
+            &config.owner.scope,
+            65_536,
+            None,
+        )?;
+        let case: Scenario = serde_json::from_slice(&std::fs::read(scenario)?)?;
+        let mut revisions = case.writes.into_iter();
+        let first = revisions.next().ok_or("missing initial plan")?;
+        publisher
+            .stage_once(
+                OperationId::new(),
+                &first.path,
+                first.text.as_bytes(),
+                "text/markdown",
+                "plan.md",
+                None,
+            )?
+            .await?;
+        let trigger = config.stream_root.join("pty-write");
+        let writer = tokio::spawn(async move {
+            for (offset, revision) in revisions.enumerate() {
+                let index = offset + 1;
+                {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        while tokio::fs::read_to_string(&trigger)
+                            .await
+                            .unwrap_or_default()
+                            != index.to_string()
+                        {
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                        }
+                    })
+                    .await
+                    .map_err(storage)?;
+                }
+                publisher
+                    .stage_once(
+                        OperationId::new(),
+                        &revision.path,
+                        revision.text.as_bytes(),
+                        "text/markdown",
+                        "plan.md",
+                        None,
+                    )?
+                    .await?;
+            }
+            Ok::<_, Error>(())
+        });
+        crate::run_backend(crate::Backend::Native(native), false).await?;
+        writer.await??;
+    } else {
+        let directory = tempfile::tempdir()?;
+        let config = configuration(directory.path()).await?;
+        let path = directory.path().join("session.json");
+        std::fs::write(&path, serde_json::to_vec(&config)?)?;
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/plan_pty.py");
+        let status = Command::new("python3")
+            .arg(script)
+            .arg(std::env::current_exe()?)
+            .arg(&path)
+            .arg(scenario)
+            .arg(config.stream_root.join("pty-write"))
+            .status()?;
+        assert!(
+            status.success(),
+            "production binary loop PTY scenario failed"
+        );
+    }
+    Ok(())
+}

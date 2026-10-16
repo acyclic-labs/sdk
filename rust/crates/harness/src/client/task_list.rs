@@ -1,6 +1,6 @@
 //! Disposable Markdown task-list interpretation of an observed file.
 
-use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, TextMergeStream};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd, TextMergeWithOffset};
 use std::borrow::Cow;
 
 /// A Markdown checkbox state.
@@ -66,7 +66,9 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
     let mut items = Vec::<Item<'_>>::new();
     let mut stack = Vec::new();
     let mut code = false;
-    for event in TextMergeStream::new(Parser::new_ext(markdown, Options::ENABLE_TASKLISTS)) {
+    for (event, span) in TextMergeWithOffset::new(
+        Parser::new_ext(markdown, Options::ENABLE_TASKLISTS).into_offset_iter(),
+    ) {
         match event {
             Event::Start(Tag::Item) => {
                 stack.push(items.len());
@@ -106,6 +108,12 @@ pub fn parse_task_list(markdown: &str) -> Option<TaskList<'_>> {
                         let mut value = text(value);
                         if item.first_text && item.state.is_none() {
                             if let Some(tail) = value.strip_prefix("[~]") {
+                                let source = markdown.get(span.clone())?;
+                                if !source.starts_with("[~]")
+                                    || markdown.get(..span.start)?.ends_with('\\')
+                                {
+                                    return None;
+                                }
                                 if !tail.starts_with(char::is_whitespace) {
                                     return None;
                                 }

@@ -76,6 +76,42 @@ async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_mat
     Ok(())
 }
 
+#[tokio::test]
+async fn one_matching_plan_with_unrelated_entries_stays_live()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for path in ["plans/a.md", "plans/计划.md", "plans/release notes.md"] {
+        let fixture = Fixture::new().await?;
+        fixture
+            .write(&[
+                ("plans/0.txt", Some("ignored")),
+                (path, Some("- [ ] Build")),
+                ("plans/notes.txt", Some("ignored")),
+            ])
+            .await?;
+        let observation = fixture
+            .source
+            .observe_files(Query::Plans, None, 1, 64)
+            .await?;
+        let mut changes = observation.changes;
+        let mut view = FileQueryView::from_snapshot(
+            Query::Plans,
+            observation.snapshot.ok_or("snapshot missing")?,
+            1,
+            64,
+        )?;
+        assert_eq!(view.plan_rows().collect::<Vec<_>>(), [path, "[ ] Build"]);
+        fixture
+            .write(&[
+                (path, Some("- [x] Ship")),
+                ("plans/another.txt", Some("ignored")),
+            ])
+            .await?;
+        assert!(view.apply(next(&mut changes).await)?);
+        assert_eq!(view.plan_rows().collect::<Vec<_>>(), [path, "[x] Ship"]);
+    }
+    Ok(())
+}
+
 struct Fixture {
     host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     source: FilesystemFileQuery<MemoryStream, MemoryObjectBackend>,

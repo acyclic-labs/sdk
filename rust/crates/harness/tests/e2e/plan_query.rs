@@ -1,7 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
     AgentId, OperationId,
-    client::{ClientSession, MemoryClientState},
+    client::{ClientSession, FileQueryView, MemoryClientState},
     context::CompactionPolicy,
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent},
@@ -13,6 +13,8 @@ use futures::StreamExt as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
+
+type CapturedRevision = (BTreeMap<String, String>, Vec<Vec<String>>);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +46,53 @@ impl PlanQuery {
     }
 
     pub(super) async fn run(self) -> TestResult {
+        self.check(&self.capture(true).await?)
+    }
+
+    fn check(&self, captured: &[CapturedRevision]) -> TestResult {
+        if captured.len() != self.writes.len() {
+            return Err("missing plan revisions".into());
+        }
+        for (revision, (files, panels)) in self.writes.iter().zip(captured) {
+            if files != &revision.files {
+                return Err(format!("wrong file revision after {}", revision.path).into());
+            }
+            let expected: Vec<_> = revision
+                .panel
+                .iter()
+                .map(|line| line.trim_end().to_owned())
+                .collect();
+            if panels.is_empty() || panels.iter().any(|rows| rows != &expected) {
+                return Err(format!("wrong plan panel: {panels:?}, expected {expected:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) async fn negative_oracles(mut self) -> TestResult {
+        let captured = self.capture(false).await?;
+        self.check(&captured)?;
+        for index in 0..self.writes.len() {
+            let good = std::mem::replace(
+                &mut self.writes[index].files,
+                BTreeMap::from([("plans/wrong.md".into(), "wrong revision".into())]),
+            );
+            assert!(
+                self.check(&captured).is_err(),
+                "accepted revision {index} files"
+            );
+            self.writes[index].files = good;
+            let good = std::mem::replace(&mut self.writes[index].panel, vec!["wrong panel".into()]);
+            assert!(
+                self.check(&captured).is_err(),
+                "accepted revision {index} panel"
+            );
+            self.writes[index].panel = good;
+        }
+        Ok(())
+    }
+
+    async fn capture(&self, agent: bool) -> TestResult<Vec<CapturedRevision>> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let goal = storage
             .stage(
@@ -66,29 +115,51 @@ impl PlanQuery {
             ScriptedTurn::Text("Plans saved".into()),
         ]).collect();
         let provider = Arc::new(ScriptedModelProvider::new(turns));
-        let bundle = storage
-            .builder()
-            .model(
-                Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
-                provider.clone(),
+        let bundle = if agent {
+            Some(
+                storage
+                    .builder()
+                    .model(
+                        Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
+                        provider.clone(),
+                    )
+                    .grant("model:generate")
+                    .tool(files::write_file()?)?
+                    .grant("tool:call:acyclic.write_file")
+                    .compaction(CompactionPolicy::Disabled)
+                    .build()?,
             )
-            .grant("model:generate")
-            .tool(files::write_file()?)?
-            .grant("tool:call:acyclic.write_file")
-            .compaction(CompactionPolicy::Disabled)
-            .build()?;
+        } else {
+            None
+        };
         let observation = volume.observe_files(Query::Plans, None, 32, 65_536).await?;
         let snapshot = observation.snapshot.ok_or("missing initial snapshot")?;
         let identity = (snapshot.cursor.volume, snapshot.cursor.query);
         let mut changes = observation.changes;
         let mut client = ClientSession::open(MemoryClientState::default())?;
         client.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
-        for revision in self.writes {
-            let output = storage
-                .run_prompt(&bundle, "Update the private plan files", Vec::new())
-                .await?;
-            if output.text != "Plans saved" {
-                return Err("agent did not settle the plan write".into());
+        let mut captured = Vec::new();
+        for revision in &self.writes {
+            let mut views = Vec::new();
+            if let Some(bundle) = &bundle {
+                let output = storage
+                    .run_prompt(bundle, "Update the private plan files", Vec::new())
+                    .await?;
+                if output.text != "Plans saved" {
+                    return Err("agent did not settle the plan write".into());
+                }
+            } else {
+                // Oracle mutation tests need observed file/render outputs, not another
+                // model turn. Full scenarios above retain the real agent-write path.
+                storage
+                    .stage(
+                        OperationId::new(),
+                        &revision.path,
+                        revision.text.as_bytes(),
+                        "text/markdown",
+                        "plan.md",
+                    )
+                    .await?;
             }
             let (file, contents) = storage
                 .read_delegated_path(storage.owner_scope(), "", &revision.path, None)
@@ -110,7 +181,7 @@ impl PlanQuery {
                     return Err("client cursor did not advance".into());
                 }
                 if modified {
-                    check_panel(view, &revision.panel)?;
+                    views.push(view.clone());
                 }
             }
             let view = client
@@ -118,7 +189,25 @@ impl PlanQuery {
                 .queries
                 .get(&identity)
                 .ok_or("file query missing")?;
-            let files: BTreeMap<_, _> = view
+            views.push(view.clone());
+
+            // A new client reconstructs exactly the accepted file view at each cut.
+            let mut reopened = ClientSession::open(client.into_store())?;
+            if !reopened.views().queries.is_empty() {
+                return Err("file payloads leaked into recovery metadata".into());
+            }
+            reopened.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
+            views.push(
+                reopened
+                    .views()
+                    .queries
+                    .get(&identity)
+                    .ok_or("snapshot missing")?
+                    .clone(),
+            );
+            let files = views
+                .last()
+                .ok_or("missing final view")?
                 .files()
                 .iter()
                 .map(|(key, value)| {
@@ -128,36 +217,19 @@ impl PlanQuery {
                     )
                 })
                 .collect();
-            if files != revision.files {
-                return Err(format!("wrong file revision after {}", revision.path).into());
-            }
-            check_panel(view, &revision.panel)?;
-
-            // A new client reconstructs exactly the accepted file view at each cut.
-            let mut reopened = ClientSession::open(client.into_store())?;
-            if !reopened.views().queries.is_empty() {
-                return Err("file payloads leaked into recovery metadata".into());
-            }
-            reopened.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
-            check_panel(
-                reopened
-                    .views()
-                    .queries
-                    .get(&identity)
-                    .ok_or("snapshot missing")?,
-                &revision.panel,
-            )?;
+            let panels = views.iter().map(panel_rows).collect();
+            captured.push((files, panels));
             client = reopened;
         }
-        if provider.remaining() != 0 {
+        if agent && provider.remaining() != 0 {
             return Err("unused plan writer script".into());
         }
-        Ok(())
+        Ok(captured)
     }
 }
 
 #[cfg(feature = "tui")]
-fn check_panel(view: &acyclic_harness::client::FileQueryView, expected: &[String]) -> TestResult {
+fn panel_rows(view: &FileQueryView) -> Vec<String> {
     use acyclic_harness::client::PlanPanel;
     use acyclic_harness_tui::ratatui::{buffer::Buffer, layout::Rect, text::Span, widgets::Widget};
     let area = Rect::new(0, 0, 80, 20);
@@ -178,20 +250,12 @@ fn check_panel(view: &acyclic_harness::client::FileQueryView, expected: &[String
     while lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
-    let expected: Vec<_> = expected
-        .iter()
-        .map(|line| line.trim_end().to_owned())
-        .collect();
-    if lines != expected {
-        return Err(format!("wrong plan panel: {lines:?}, expected {expected:?}").into());
-    }
-    Ok(())
+    lines
 }
 
 #[cfg(not(feature = "tui"))]
-fn check_panel(view: &acyclic_harness::client::FileQueryView, expected: &[String]) -> TestResult {
-    if view.plan_lines() != expected {
-        return Err("wrong plan panel rows".into());
-    }
-    Ok(())
+fn panel_rows(view: &FileQueryView) -> Vec<String> {
+    view.plan_rows()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
 }

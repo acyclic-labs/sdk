@@ -4,13 +4,14 @@ use crate::{
     Error, Result,
     task_volume::{Change, Cursor, FileKey, FileValue, Query, SCHEMA, Snapshot},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Bounded, shared file slices from one accepted volume query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileQueryView {
     query: Query,
     files: BTreeMap<FileKey, FileValue>,
+    rows: BTreeMap<FileKey, Arc<[String]>>,
     cursor: Cursor,
     bytes: usize,
     maximum_files: usize,
@@ -58,14 +59,25 @@ impl FileQueryView {
                 return Err(invalid());
             }
         }
+        let rows = files
+            .iter()
+            .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
+            .map(|(key, file)| (key.clone(), plan_rows(file)))
+            .collect();
         Ok(Self {
             query,
+            rows,
             files,
             cursor,
             bytes,
             maximum_files,
             maximum_bytes,
         })
+    }
+
+    /// File selection represented by this fold, including an empty snapshot.
+    pub fn query(&self) -> &Query {
+        &self.query
     }
 
     /// Exact resume cut; it advances even for nonmatching publications.
@@ -78,34 +90,16 @@ impl FileQueryView {
         &self.files
     }
 
-    /// Plain panel rows derived from the current private plan files.
+    /// Borrows cached rows; iteration and clipping never parse or format a file.
+    pub fn plan_rows(&self) -> impl Iterator<Item = &str> {
+        self.rows
+            .values()
+            .flat_map(|rows| rows.iter().map(String::as_str))
+    }
+
+    /// Collects plain rows for consumers that require an owned export.
     pub fn plan_lines(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        for (key, file) in &self.files {
-            if !matches!(key, FileKey::Plan(_)) {
-                continue;
-            }
-            lines.push(key.path());
-            let markdown = String::from_utf8_lossy(&file.bytes);
-            if let Some(list) = super::parse_task_list(&markdown) {
-                for task in list.items() {
-                    for (index, line) in task.text.lines().enumerate() {
-                        lines.push(format!(
-                            "{} {}",
-                            if index == 0 {
-                                task.state.marker()
-                            } else {
-                                "   "
-                            },
-                            safe(line)
-                        ));
-                    }
-                }
-            } else {
-                lines.extend(markdown.lines().map(safe));
-            }
-        }
-        lines
+        self.plan_rows().map(str::to_owned).collect()
     }
 
     /// Folds the next accepted record atomically. Gaps require a new snapshot.
@@ -178,14 +172,41 @@ impl FileQueryView {
         }
         for key in change.removed {
             self.files.remove(&key);
+            self.rows.remove(&key);
         }
         for file in change.file.into_iter().chain(change.files) {
+            if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
+                self.rows.insert(file.key.clone(), plan_rows(&file));
+            }
             self.files.insert(file.key.clone(), file);
         }
         self.bytes = bytes;
         self.cursor = change.cursor;
         Ok(changed)
     }
+}
+
+fn plan_rows(file: &FileValue) -> Arc<[String]> {
+    let mut lines = vec![file.key.path()];
+    let markdown = String::from_utf8_lossy(&file.bytes);
+    if let Some(list) = super::parse_task_list(&markdown) {
+        for task in list.items() {
+            for (index, line) in task.text.lines().enumerate() {
+                lines.push(format!(
+                    "{} {}",
+                    if index == 0 {
+                        task.state.marker()
+                    } else {
+                        "   "
+                    },
+                    safe(line)
+                ));
+            }
+        }
+    } else {
+        lines.extend(markdown.lines().map(safe));
+    }
+    lines.into()
 }
 
 fn safe(text: &str) -> String {

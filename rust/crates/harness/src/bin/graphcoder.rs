@@ -9,6 +9,13 @@ mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/options.rs"]
 mod options;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "tui"
+))]
+#[path = "graphcoder/plans.rs"]
+mod plans;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "graphcoder/terminal.rs"]
 mod terminal;
@@ -127,8 +134,7 @@ fn input_lines()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness::{Error, wire, wire_api::current_protocol};
-    use std::io::{IsTerminal as _, Write as _};
+    use acyclic_harness::Error;
     let Some((selection, headless)) = options::parse()? else {
         return Ok(());
     };
@@ -180,6 +186,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     };
+    run_backend(backend, headless).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn run_backend(backend: Backend, headless: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_harness::{Error, wire, wire_api::current_protocol};
+    use std::io::{IsTerminal as _, Write as _};
     let handshake = wire::client_frame::Frame::Handshake(wire::HandshakeRequest {
         protocol: Some(current_protocol()),
         required: None,
@@ -195,6 +208,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = input_lines()?;
     let mut output = std::io::stdout().lock();
     let mut scrollback = terminal::Scrollback::default();
+    #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+    let mut plans: Option<plans::Plans> = None;
     #[cfg(feature = "filesystem-local")]
     let mut parent = None;
     #[cfg(feature = "filesystem-local")]
@@ -228,8 +243,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         output.flush()?;
         #[cfg(feature = "filesystem-local")]
         let line = loop {
+            let mut plan_next = Box::pin(async {
+                #[cfg(feature = "tui")]
+                if let Some(plans) = plans.as_mut() {
+                    return plans.next().await;
+                }
+                futures::future::pending::<acyclic_harness::Result<bool>>().await
+            });
             tokio::select! {
                 line = input.recv() => break line,
+                changed = &mut plan_next => {
+                    drop(plan_next);
+                    if changed? {
+                        #[cfg(feature = "tui")]
+                        plans.as_ref().ok_or_else(|| Error::Conflict("plan selection missing".into()))?.render(&mut output)?;
+                    }
+                },
                 outcome = workers.join_next(), if !workers.is_empty() => {
                     let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?
                         .map_err(|error| Error::Storage(format!("frontend worker ended without a receipt; retain its original lease: {error}")))??;
@@ -285,6 +314,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
             continue;
+        }
+        #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+        if command == "/plan" {
+            let native = backend
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("session is closed".into()))?
+                .native()?
+                .clone();
+            plans = None;
+            plans = Some(plans::Plans::open(native).await?);
+            plans
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("plan selection missing".into()))?
+                .render(&mut output)?;
+            continue;
+        }
+        #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+        if command == "/reopen" {
+            plans = None;
         }
         let result = commands::execute(
             command,

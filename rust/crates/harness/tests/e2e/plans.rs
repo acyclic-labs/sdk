@@ -31,14 +31,14 @@ struct Write {
     text: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Expected {
     markdown: String,
     tasks: Option<Vec<ExpectedTask>>,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ExpectedTask {
     state: String,
@@ -64,6 +64,45 @@ impl Plans {
     }
 
     pub(super) async fn run(self) -> TestResult {
+        self.check(&self.capture(true).await?)
+    }
+
+    fn check(&self, actual: &BTreeMap<String, Expected>) -> TestResult {
+        if actual != &self.expect {
+            return Err("plan files or task rendering differ".into());
+        }
+        Ok(())
+    }
+
+    pub(super) async fn negative_oracles(mut self) -> TestResult {
+        let actual = self.capture(false).await?;
+        self.check(&actual)?;
+        let path = self.expect.keys().next().ok_or("no expectations")?.clone();
+        let good = self.expect.clone();
+        for field in ["bytes", "tasks", "missing"] {
+            self.expect = good.clone();
+            match field {
+                "bytes" => {
+                    self.expect.get_mut(&path).ok_or("missing file")?.markdown =
+                        "wrong bytes".into()
+                }
+                "tasks" => {
+                    self.expect.get_mut(&path).ok_or("missing file")?.tasks =
+                        Some(vec![ExpectedTask {
+                            state: "[ ]".into(),
+                            text: "wrong task".into(),
+                        }])
+                }
+                _ => {
+                    self.expect.remove(&path);
+                }
+            }
+            assert!(self.check(&actual).is_err(), "accepted wrong {field}");
+        }
+        Ok(())
+    }
+
+    async fn capture(&self, agent: bool) -> TestResult<BTreeMap<String, Expected>> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
         let goal_markdown = b"---\nstatus: blocked\n---\n# Ship it\n";
         let goal = storage
@@ -87,34 +126,49 @@ impl Plans {
         }).collect();
         turns.push(ScriptedTurn::Text("Plans saved".into()));
         let provider = Arc::new(ScriptedModelProvider::new(turns));
-        let bundle = storage
-            .builder()
-            .model(
-                Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
-                provider.clone(),
-            )
-            .grant("model:generate")
-            .tool(files::write_file()?)?
-            .grant("tool:call:acyclic.write_file")
-            .compaction(CompactionPolicy::Disabled)
-            .build()?;
-        let output = storage
-            .run_prompt(&bundle, &self.prompt, Vec::new())
-            .await?;
-        if output.text != "Plans saved"
-            || provider.remaining() != 0
-            || provider.requests().len() != self.writes.len() + 1
-        {
-            return Err("plan writer did not consume its complete model script".into());
+        if agent {
+            let bundle = storage
+                .builder()
+                .model(
+                    Model::new("scripted".into(), "plans".into(), "1".into(), Value::Null)?,
+                    provider.clone(),
+                )
+                .grant("model:generate")
+                .tool(files::write_file()?)?
+                .grant("tool:call:acyclic.write_file")
+                .compaction(CompactionPolicy::Disabled)
+                .build()?;
+            let output = storage
+                .run_prompt(&bundle, &self.prompt, Vec::new())
+                .await?;
+            if output.text != "Plans saved"
+                || provider.remaining() != 0
+                || provider.requests().len() != self.writes.len() + 1
+            {
+                return Err("plan writer did not consume its complete model script".into());
+            }
+        } else {
+            for write in &self.writes {
+                storage
+                    .stage(
+                        OperationId::new(),
+                        &write.path,
+                        write.text.as_bytes(),
+                        "text/markdown",
+                        "plan.md",
+                    )
+                    .await?;
+            }
         }
-        for (path, expected) in self.expect {
+        let mut actual = BTreeMap::new();
+        let paths: BTreeSet<_> = self.writes.iter().map(|write| &write.path).collect();
+        for path in paths {
             let (file, bytes) = storage
                 .read_delegated_path(storage.owner_scope(), "", &path, None)
                 .await?;
             if file.volume().class() != VolumeClass::AgentPrivate
                 || file.volume() != goal.volume()
                 || file.path() != path
-                || bytes.as_ref() != expected.markdown.as_bytes()
             {
                 return Err(format!("plan source or contents differ: {path}").into());
             }
@@ -127,9 +181,13 @@ impl Plans {
                     })
                     .collect::<Vec<_>>()
             });
-            if tasks != expected.tasks {
-                return Err(format!("plan task rendering differs: {path}").into());
-            }
+            actual.insert(
+                path.clone(),
+                Expected {
+                    markdown: markdown.into(),
+                    tasks,
+                },
+            );
         }
         let (_, goal_bytes) = storage
             .read_delegated_path(storage.owner_scope(), "", "GOAL.md", None)
@@ -137,6 +195,6 @@ impl Plans {
         if goal_bytes.as_ref() != goal_markdown {
             return Err("plan writes changed GOAL.md".into());
         }
-        Ok(())
+        Ok(actual)
     }
 }

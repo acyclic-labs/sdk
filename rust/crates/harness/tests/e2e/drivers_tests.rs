@@ -6,23 +6,20 @@ use std::path::Path;
 #[tokio::test]
 async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
-    for name in ["lifecycle", "multiple-raw-and-code"] {
-        let baseline =
+    for name in [
+        "lifecycle",
+        "multiple-raw-and-code",
+        "filenames-and-paragraphs",
+    ] {
+        let mut baseline =
             crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
-        run(baseline.clone()).await?;
-        for index in 0..baseline["writes"].as_array().ok_or("missing writes")?.len() {
-            for field in ["files", "panel"] {
-                let mut case = baseline.clone();
-                case["writes"][index][field] = match field {
-                    "files" => json!({"plans/wrong.md":"wrong revision"}),
-                    _ => json!(["wrong panel"]),
-                };
-                assert!(
-                    run(case).await.is_err(),
-                    "accepted {name} revision {index} {field}"
-                );
-            }
-        }
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plan_query::PlanQuery::parse(baseline)?
+            .negative_oracles()
+            .await?;
     }
     Ok(())
 }
@@ -31,33 +28,15 @@ async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResu
 async fn plans_oracles_reject_wrong_bytes_states_raw_fallback_and_missing_files() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     for name in ["lifecycle", "multiple-files", "malformed-raw"] {
-        let baseline =
+        let mut baseline =
             crate::scenario::load_value(&root, &root.join(format!("plans/{name}.json")))?;
-        run(baseline.clone()).await?;
-        let path = baseline["expect"]
-            .as_object()
-            .ok_or("missing files")?
-            .keys()
-            .next()
-            .ok_or("empty files")?
-            .clone();
-        for field in ["bytes", "tasks", "missing"] {
-            let mut case = baseline.clone();
-            match field {
-                "bytes" => case["expect"][&path]["markdown"] = json!("wrong bytes"),
-                "tasks" => {
-                    case["expect"][&path]["tasks"] = json!([{"state":"[ ]","text":"wrong task"}])
-                }
-                "missing" => {
-                    case["expect"]
-                        .as_object_mut()
-                        .ok_or("missing files")?
-                        .remove(&path);
-                }
-                _ => return Err("unknown plan mutation".into()),
-            }
-            assert!(run(case).await.is_err(), "accepted wrong {name} {field}");
-        }
+        baseline
+            .as_object_mut()
+            .ok_or("missing scenario")?
+            .remove("driver");
+        super::super::plans::Plans::parse(baseline)?
+            .negative_oracles()
+            .await?;
     }
     Ok(())
 }
