@@ -3,7 +3,7 @@ use crate::{MemoryStream, OwnedBytes};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
 
-pub(super) type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 mod retry_capture;
 
@@ -343,6 +343,9 @@ async fn persistent_unknown_expires_at_the_operation_deadline() -> TestResult {
 
 #[tokio::test]
 async fn retry_attempts_record_independent_spans() -> TestResult {
+    if retry_capture::isolate("retry_attempts_record_independent_spans")? {
+        return Ok(());
+    }
     use tracing::instrument::WithSubscriber as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
     let (_registration, subscriber) = retry_capture::dispatch(captured.clone());
@@ -517,6 +520,9 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
 
 #[tokio::test]
 async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
+    if retry_capture::isolate("concurrent_retry_captures_keep_their_own_dispatcher")? {
+        return Ok(());
+    }
     use tracing::instrument::WithSubscriber as _;
     let first = acyclic_grpc_observability::tests::Capture::default();
     let second = acyclic_grpc_observability::tests::Capture::default();

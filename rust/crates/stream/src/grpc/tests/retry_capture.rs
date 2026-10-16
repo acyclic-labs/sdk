@@ -13,6 +13,36 @@ pub(super) fn dispatch(capture: Capture) -> (Dispatch, Dispatch) {
     (registration, capture)
 }
 
+pub(super) fn isolate(test: &str) -> TestResult<bool> {
+    const CHILD: &str = "ACYCLIC_RETRY_CAPTURE_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(test) {
+        return Ok(false);
+    }
+    // Another test can already be inside tracing's first-registration fast path
+    // when this capture starts. Isolate that process-global cache, not just TLS.
+    let parent = module_path!().rsplit_once("::").ok_or("test module")?.0;
+    let output = child_command(&format!("{parent}::{test}"))?
+        .env(CHILD, test)
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
+    Ok(true)
+}
+
+fn child_command(test: &str) -> TestResult<std::process::Command> {
+    let test = test.split_once("::").ok_or("test module")?.1;
+    let mut child = std::process::Command::new(std::env::current_exe()?);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        child.creation_flags(0x08000000);
+    }
+    child.args([test, "--exact", "--nocapture"]);
+    Ok(child)
+}
+
 #[test]
 fn unobserved_first_registration_preserves_retry_capture() -> TestResult {
     isolated_registration(false)
@@ -35,15 +65,7 @@ fn isolated_registration(broken: bool) -> TestResult {
         } else {
             "unobserved_first_registration_preserves_retry_capture"
         };
-        let module = module_path!().split_once("::").ok_or("test module")?.1;
-        let mut child = std::process::Command::new(std::env::current_exe()?);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            child.creation_flags(0x08000000);
-        }
-        let output = child
-            .args([&format!("{module}::{test}"), "--exact", "--nocapture"])
+        let output = child_command(&format!("{}::{test}", module_path!()))?
             .env(CHILD, mode)
             .output()?;
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -54,6 +76,7 @@ fn isolated_registration(broken: bool) -> TestResult {
             assert!(stderr.contains("left: 0"), "{stdout}\n{stderr}");
         } else {
             assert!(output.status.success(), "{stdout}\n{stderr}");
+            assert!(stdout.contains("1 passed; 0 failed"), "{stdout}\n{stderr}");
         }
         return Ok(());
     }
