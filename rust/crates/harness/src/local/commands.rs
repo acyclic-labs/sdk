@@ -161,33 +161,71 @@ impl LocalHarness {
                 json!({"selected_task":null,"deleted":if deleted { vec![task] } else { vec![] },"cleared":false}),
             );
         }
+        // Every stock admission retains its input before becoming runnable.
+        // UI settings and post-worker status projections are optional. Pin one
+        // input-directory generation and visit only one bounded page at a time.
+        let grant = crate::conversation::ContentGrant::verify_directory_read(
+            &self.verifier,
+            &self.signed,
+            &self.journal,
+            "inputs",
+            &mut None,
+        )?;
+        let mut generation = None;
         let mut after = None;
         let mut deleted = 0_u64;
         loop {
-            let Some(page) = self
-                .task_files
-                .inner
-                .page(after.as_ref(), self.limits.context_messages.min(64))
+            let (cut, page) = match self
+                .files
+                .list_private_directory(
+                    &self.journal,
+                    &grant,
+                    "inputs",
+                    generation.as_ref(),
+                    after.as_ref(),
+                    self.limits.context_messages.min(64) as u32,
+                )
                 .await
-                .map_err(storage)?
-            else {
-                tokio::task::yield_now().await;
-                continue;
+            {
+                Ok(page) => page,
+                Err(Error::NotFound(_)) => break,
+                Err(error) => return Err(error),
             };
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map(|file| file.key.clone());
-            for file in page {
-                if let FileKey::Ui { directory, name } = file.key
-                    && name.as_str() == "settings.json"
-                    && let Some(task) = directory.as_str().strip_prefix("task-")
-                    && self.delete_conversation(TaskId::parse(task)?).await?
+            generation = Some(cut);
+            after = page.entries.last().map(|entry| entry.name.clone());
+            for entry in page.entries {
+                if entry.kind != acyclic_fs::kernel::FileKind::Regular {
+                    continue;
+                }
+                let name = entry
+                    .name
+                    .unicode_text(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .map_err(storage)?
+                    .value;
+                let Some(task) = name
+                    .strip_suffix(".json")
+                    .and_then(|name| TaskId::parse(name).ok())
+                else {
+                    continue;
+                };
+                let admission = match self.runtime.task_host().observe_admission(task).await {
+                    Ok(admission) => admission,
+                    Err(Error::NotFound(_)) => continue,
+                    Err(error) => return Err(error),
+                };
+                if admission.task.name == "acyclic.stock_turn"
+                    && self.delete_conversation(task).await?
                 {
                     deleted = deleted.checked_add(1).ok_or_else(|| {
                         Error::Invalid("deleted conversation count overflow".into())
                     })?;
                 }
+            }
+            if !page.has_more {
+                break;
             }
             tokio::task::yield_now().await;
         }
@@ -395,6 +433,7 @@ impl LocalHarness {
         let records: Vec<_> = snapshot
             .files
             .iter()
+            .filter(|file| !matches!(&file.key, FileKey::Ui { directory, .. } if directory.as_str() == "exports"))
             .map(|file| json!({"path":file.key.path(),"bytes":file.bytes.as_ref()}))
             .collect();
         let bytes = serde_json::to_vec(&json!({"generation":snapshot.generation,"files":records}))

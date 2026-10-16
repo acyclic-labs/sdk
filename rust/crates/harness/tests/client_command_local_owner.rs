@@ -418,6 +418,24 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
     let root = TaskId::parse(root["task"].as_str().unwrap())?;
     let child = send(&local, &mut client, "child").await?;
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    assert!(local.tools().get("bash", None, None)?.is_some());
+    // Rejected tool calls retain owner input records but are not conversations.
+    // These force multiple admission-directory pages without launching a shell.
+    for _ in 0..12 {
+        assert!(
+            local
+                .dispatch_command(
+                    OperationId::new(),
+                    None,
+                    CommandResolution::Tool {
+                        tool: acyclic_harness::client::CommandTool::Bash,
+                        input: json!({"command":42}),
+                    }
+                )
+                .await
+                .is_err()
+        );
+    }
     for index in 0..25 {
         let key = FileKey::parse(&format!(".ui/archive-{index:04}/settings.json"))
             .map_err(volume_error)?;
@@ -449,6 +467,111 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
     assert!(local.resume(root).await.is_err() && local.resume(child).await.is_err());
     assert!(client.selected_task()?.is_none());
     Ok(())
+}
+
+async fn clear_direct_admissions(completed: usize, page: usize) -> Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = provider((0..completed).map(|_| ScriptedTurn::Text("done".into())));
+    let local = local_with_limits(
+        directory.path(),
+        provider.clone(),
+        acyclic_harness::conversation::Limits {
+            context_messages: page,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let mut tasks = Vec::new();
+    for index in 0..=completed {
+        let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
+            local.submit(OperationId::new(), "direct admission").await?
+        else {
+            panic!("direct admission")
+        };
+        tasks.push(task_id);
+        if index < completed {
+            assert_eq!(local.resume(task_id).await?.text, "done");
+        }
+        let key =
+            FileKey::parse(&format!(".ui/task-{task_id}/settings.json")).map_err(volume_error)?;
+        assert!(
+            local
+                .task_files()
+                .observe(Query::File(key), None, 1)
+                .await
+                .map_err(volume_error)?
+                .snapshot
+                .unwrap()
+                .files
+                .is_empty(),
+            "direct admissions must exercise conversations without UI settings"
+        );
+    }
+    let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 128).await?;
+    client.submit("/clearall", &NoReads).await?;
+    let result = send(&local, &mut client, "yes").await?;
+    assert_eq!(result["deleted_count"], completed + 1);
+    for task in &tasks {
+        let key =
+            FileKey::parse(&format!(".ui/task-{task}/settings.json")).map_err(volume_error)?;
+        let snapshot = local
+            .task_files()
+            .observe(Query::File(key), None, 1)
+            .await
+            .map_err(volume_error)?
+            .snapshot
+            .unwrap();
+        let settings: Value = serde_json::from_slice(&snapshot.files[0].bytes).unwrap();
+        assert_eq!(settings["deleted"], true);
+    }
+    assert!(matches!(
+        local.resume(*tasks.last().unwrap()).await,
+        Err(Error::InteractionRejected(
+            acyclic_harness::InteractionRejection::Cancelled
+        ))
+    ));
+    assert_eq!(
+        provider.requests().len(),
+        completed,
+        "clear dispatched a pending conversation"
+    );
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    // Every direct admission, settled or pending, is cleared without requiring
+    // optional UI settings, independently of the bounded enumeration page size.
+    #[test]
+    fn clear_all_covers_direct_admissions_without_ui_settings(completed in 0usize..3, page in 8usize..12) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(clear_direct_admissions(completed, page)).unwrap();
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn root_exports_never_embed_earlier_exports(repetitions in 2usize..5) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(async {
+                let directory = tempfile::tempdir().unwrap();
+                let local = local(directory.path(), provider([])).await?;
+                let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 128).await?;
+                for _ in 0..repetitions {
+                    let result = send(&local, &mut client, "/export").await?;
+                    let key = FileKey::parse(result["export"].as_str().unwrap()).map_err(volume_error)?;
+                    let snapshot = local.task_files().observe(Query::File(key), None, 1).await
+                        .map_err(volume_error)?.snapshot.unwrap();
+                    let exported: Value = serde_json::from_slice(&snapshot.files[0].bytes).unwrap();
+                    assert!(exported["files"].as_array().unwrap().iter().all(|file|
+                        !file["path"].as_str().unwrap().starts_with(".ui/exports/")),
+                        "root export embedded previous diagnostic bytes");
+                    assert!(snapshot.files[0].bytes.len() <= 65_536);
+                }
+                Ok::<(), Error>(())
+            }).unwrap();
+    }
 }
 
 #[tokio::test]
