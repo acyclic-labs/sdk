@@ -221,11 +221,23 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
     );
     assert_eq!(local.resume(task).await?.text, "done");
     let messages = provider.requests();
-    assert!(
-        serde_json::to_string(&messages.last().unwrap().messages)
-            .unwrap()
-            .contains("child")
-    );
+    let output = messages
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            acyclic_harness::model::ModelContentPart::ToolResult {
+                call_id,
+                name,
+                content: acyclic_harness::model::ToolResultContent::Json { value },
+            } if call_id == "child-read" && name == "bash" => Some(value),
+            _ => None,
+        })
+        .expect("model did not receive its child bash result");
+    assert_eq!(output["stdout"], "child");
+    assert_eq!(output["success"], true);
     assert_eq!(
         std::fs::read_to_string(directory.path().join("marker")).unwrap(),
         "parent"
