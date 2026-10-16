@@ -5,12 +5,22 @@ mod signed;
 use proptest::prelude::*;
 
 fn holder(count: usize) -> VerifiedCapability {
-    let mut cap = verify(&signed::root(|_| {}), &signed::Snapshot::default(), signed::NOW).unwrap();
+    let mut cap = verify(
+        &signed::root(|_| {}),
+        &signed::Snapshot::default(),
+        signed::NOW,
+    )
+    .unwrap();
     for _ in 0..count {
         cap.blocks.push(Block {
             certificates: None,
             next_public_key: vec![0; 32],
-            caveats: vec![Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![] }) }],
+            caveats: vec![Caveat {
+                kind: CaveatKind::Filter(Filter {
+                    keys: vec![],
+                    attributes: vec![],
+                }),
+            }],
         });
     }
     cap
@@ -26,7 +36,9 @@ fn work(cap: &VerifiedCapability, broken: bool) -> usize {
             // same caveat visits as the production traversal above.
             for _ in 0..2 {
                 for block in cap.blocks.iter().skip(clause.declaring_block() + 1) {
-                    for _ in &block.caveats { filter_work(); }
+                    for _ in &block.caveats {
+                        filter_work();
+                    }
                 }
             }
         }

@@ -19,8 +19,13 @@ impl<'a> ScopedFilter<'a> {
     /// Issuer and delegation ancestors visible when this filter was declared.
     pub fn lineage(&self) -> impl DoubleEndedIterator<Item = &'a str> {
         let principal = self.principal;
-        std::iter::once(principal.id.as_str())
-            .chain(principal.lineage.iter().take(self.visible_lineage).map(String::as_str))
+        std::iter::once(principal.id.as_str()).chain(
+            principal
+                .lineage
+                .iter()
+                .take(self.visible_lineage)
+                .map(String::as_str),
+        )
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
@@ -61,7 +66,8 @@ impl<'a> Effective<'a> {
     /// Every returned filter must hold, using its declaring-block identity.
     pub fn filters(&self) -> impl Iterator<Item = ScopedFilter<'a>> {
         let mut visible_lineage = self.capability.blocks[0]
-            .certificates.as_ref()
+            .certificates
+            .as_ref()
             .and_then(|certificates| certificates.keys.last())
             .map_or(0, |certificate| certificate.key.principal.lineage.len());
         self.capability
@@ -80,13 +86,10 @@ impl<'a> Effective<'a> {
                     }
                 }
                 let visible_lineage = visible_lineage;
-                block
-                    .caveats
-                    .iter()
-                    .filter_map(move |caveat| {
-                        #[cfg(test)]
-                        filter_work();
-                        match &caveat.kind {
+                block.caveats.iter().filter_map(move |caveat| {
+                    #[cfg(test)]
+                    filter_work();
+                    match &caveat.kind {
                         CaveatKind::Filter(filter) => Some(ScopedFilter {
                             declaring_block: index,
                             filter,
@@ -94,7 +97,8 @@ impl<'a> Effective<'a> {
                             visible_lineage,
                         }),
                         _ => None,
-                    }})
+                    }
+                })
             })
     }
     /// Per-dimension minimum; metering remains at the root's owning ledger.
