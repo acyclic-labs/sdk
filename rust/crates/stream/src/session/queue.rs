@@ -70,42 +70,39 @@ impl<P: StreamProvider> Session<P> {
                 item: Some(item),
             }),
         );
-        // Replace only unsent ordinary values of the same key. Reinsertion
-        // retains the order of every remaining cursor and every attention event.
-        if let Some(key) = &key {
-            let prior = self.pending.iter().rposition(|pending| {
-                pending.frame.channel_id == identity.channel_id && pending.key.as_ref() == Some(key)
-            });
-            if let Some(index) = prior
-                && let Some(old) = self.pending.remove(index)
-            {
-                self.pending_bytes -= old.frame.encoded_len();
-                self.channels
-                    .get_mut(&identity.channel_id)
-                    .ok_or(StreamError::Unavailable)?
-                    .pending -= 1;
-            }
-        }
-        if self.pending_bytes.saturating_add(frame.encoded_len()) > self.limits.pending_bytes
-            || self.pending.len() >= self.limits.pending_frames
-        {
+        // Conflation is local to one bounded LATEST queue. Validate the
+        // replacement before mutating it so capacity failures are atomic.
+        let channel = self
+            .channels
+            .get_mut(&identity.channel_id)
+            .ok_or(StreamError::Unavailable)?;
+        let prior = key.as_ref().and_then(|key| {
+            channel
+                .pending
+                .iter()
+                .rposition(|p| p.key.as_ref() == Some(key))
+        });
+        let replaced = prior.map_or(0, |index| channel.pending[index].frame.encoded_len());
+        let bytes = self.pending_bytes - replaced + frame.encoded_len();
+        let count = self.pending_frames + usize::from(prior.is_none());
+        if bytes > self.limits.pending_bytes || count > self.limits.pending_frames {
             return Err(StreamError::Capacity);
         }
-        self.pending_bytes += frame.encoded_len();
-        self.pending.push_back(Pending { frame, key });
-        self.channels
-            .get_mut(&identity.channel_id)
-            .ok_or(StreamError::Unavailable)?
-            .pending += 1;
+        if let Some(index) = prior {
+            channel.pending.remove(index);
+        }
+        channel.pending.push_back(Pending { frame, key });
+        self.pending_bytes = bytes;
+        self.pending_frames = count;
         self.refresh_source(identity.channel_id);
         Ok(())
     }
 
     fn finish_if_drained(&mut self, id: u64) -> Result<(), StreamError> {
         if self
-            .pending
-            .iter()
-            .any(|pending| pending.frame.channel_id == id)
+            .channels
+            .get(&id)
+            .is_some_and(|c| !c.pending.is_empty())
         {
             return Ok(());
         }
@@ -129,51 +126,47 @@ impl<P: StreamProvider> Session<P> {
         if self.credit.frames == 0 || self.credit.bytes == 0 || self.runnable.is_empty() {
             return Ok(None);
         }
-        for index in 0..self.pending.len() {
-            let pending = self.pending.get(index).ok_or(StreamError::Unavailable)?;
-            if !self.runnable.contains(&pending.frame.channel_id) {
-                continue;
-            }
-            let channel = self
-                .channels
-                .get(&pending.frame.channel_id)
-                .ok_or(StreamError::Unavailable)?;
-            if channel.credit.frames == 0 || channel.credit.bytes == 0 {
-                continue;
-            }
-            // A blocked earlier record on the same channel cannot be overtaken.
-            if self
-                .pending
-                .iter()
-                .take(index)
-                .any(|old| old.frame.channel_id == pending.frame.channel_id)
-            {
-                continue;
-            }
-            let mut credit = self.credit;
-            if wire_codec::session::consume_credit(&mut credit, &pending.frame).is_err() {
-                continue;
-            }
-            let mut local = channel.credit;
-            if wire_codec::session::consume_credit(&mut local, &pending.frame).is_err() {
-                continue;
-            }
-            self.credit = credit;
-            let pending = self.pending.remove(index).ok_or(StreamError::Unavailable)?;
-            self.pending_bytes -= pending.frame.encoded_len();
-            let channel = self
-                .channels
-                .get_mut(&pending.frame.channel_id)
-                .ok_or(StreamError::Unavailable)?;
-            channel.credit = local;
-            channel.pending -= 1;
-            if let Some(Body::Data(data)) = &pending.frame.body {
-                channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
-            }
-            self.finish_if_drained(pending.frame.channel_id)?;
-            self.refresh_source(pending.frame.channel_id);
-            return Ok(Some(pending.frame));
+        // The index contains only locally credited heads. Size ordering also
+        // excludes heads that exceed global byte credit without visiting them.
+        let bound = (
+            usize::try_from(self.credit.bytes).unwrap_or(usize::MAX),
+            u64::MAX,
+        );
+        let selected = self
+            .ready_after
+            .filter(|after| *after < bound)
+            .and_then(|after| {
+                self.runnable
+                    .range((
+                        std::ops::Bound::Excluded(after),
+                        std::ops::Bound::Included(bound),
+                    ))
+                    .next()
+                    .copied()
+            })
+            .or_else(|| self.runnable.range(..=bound).next().copied());
+        let Some((_, id)) = selected else {
+            return Ok(None);
+        };
+        self.ready_after = selected;
+        #[cfg(test)]
+        {
+            self.head_visits += 1;
         }
-        Ok(None)
+        let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        let pending = channel
+            .pending
+            .pop_front()
+            .ok_or(StreamError::Unavailable)?;
+        wire_codec::session::consume_credit(&mut self.credit, &pending.frame)?;
+        wire_codec::session::consume_credit(&mut channel.credit, &pending.frame)?;
+        self.pending_bytes -= pending.frame.encoded_len();
+        self.pending_frames -= 1;
+        if let Some(Body::Data(data)) = &pending.frame.body {
+            channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
+        }
+        self.finish_if_drained(id)?;
+        self.refresh_source(id);
+        Ok(Some(pending.frame))
     }
 }

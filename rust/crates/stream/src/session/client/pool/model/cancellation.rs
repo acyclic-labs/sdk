@@ -12,18 +12,7 @@ pub fn verify_cancel_before_open(broken: bool) {
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
         let (mut pool, receiver) = fixture(channel.clone());
-        let (commands, _) = mpsc::channel(2);
-        let client = Client {
-            connections: super::super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(super::super::super::super::runtime::PlatformExecutor),
-            commands,
-            removed: Arc::clone(&pool.removed),
-            next_id: Arc::new(AtomicU64::new(5)),
-            active: Arc::clone(&pool.active),
-            admissions: Arc::clone(&pool.admissions),
-            attempt_epoch: Arc::clone(&pool.attempt_epoch),
-            abandoned: Arc::clone(&pool.abandoned),
-        };
+        let client = super::super::fixture::client(&pool);
         let old = client
             .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver)
             .unwrap();

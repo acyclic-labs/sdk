@@ -19,7 +19,7 @@ use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 #[cfg(not(target_arch = "wasm32"))]
 mod sources;
 #[cfg(acyclic_stream_loom)]
-pub use sources::model::verify_source_wakes;
+pub use sources::model::{verify_source_recheck, verify_source_wakes};
 #[cfg(not(target_arch = "wasm32"))]
 mod children;
 mod client;
@@ -89,7 +89,8 @@ struct Channel {
     generation: u64,
     latest: bool,
     children: bool,
-    pending: usize,
+    pending: VecDeque<Pending>,
+    indexed: Option<usize>,
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
@@ -124,9 +125,12 @@ struct Session<P> {
     incoming: BoxStream<'static, Result<wire::SessionFrame, StreamError>>,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
-    pending: VecDeque<Pending>,
+    pending_frames: usize,
     pending_bytes: usize,
-    runnable: BTreeSet<u64>,
+    runnable: BTreeSet<(usize, u64)>,
+    ready_after: Option<(usize, u64)>,
+    #[cfg(test)]
+    head_visits: usize,
 }
 
 /// Opens one bidirectional node session over the canonical provider.
@@ -157,9 +161,12 @@ pub fn serve<P: StreamProvider>(
         incoming,
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
-        pending: VecDeque::new(),
+        pending_frames: 0,
         pending_bytes: 0,
         runnable: BTreeSet::new(),
+        ready_after: None,
+        #[cfg(test)]
+        head_visits: 0,
     };
     Ok(stream::try_unfold(session, |mut session| async move {
         loop {
@@ -182,7 +189,7 @@ pub fn serve<P: StreamProvider>(
             let room = policy::room(
                 session.limits.pending_frames,
                 session.limits.pending_bytes,
-                session.pending.len(),
+                session.pending_frames,
                 session.pending_bytes,
                 DATA_FRAME_BYTES,
                 session.credit.frames > 0 && session.credit.bytes > 0,

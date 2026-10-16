@@ -20,6 +20,37 @@ struct Wake {
     signal: Arc<signal::Signal<wire::SessionChannel>>,
     #[cfg(acyclic_stream_loom)]
     omit_signal: bool,
+    #[cfg(acyclic_stream_loom)]
+    clear_after_recheck: bool,
+    #[cfg(acyclic_stream_loom)]
+    release_only: bool,
+}
+impl Wake {
+    fn recheck<T>(&self, provider: impl FnOnce() -> T) -> T {
+        #[cfg(acyclic_stream_loom)]
+        let late = self.clear_after_recheck;
+        #[cfg(not(acyclic_stream_loom))]
+        let late = false;
+        // A wake racing the provider recheck must enqueue a fresh hint. Clearing
+        // afterward can erase a wake that was deduplicated against the old hint.
+        // The RMW also acquires publications carried by coalesced wakes.
+        let reset = || {
+            #[cfg(acyclic_stream_loom)]
+            if self.release_only {
+                self.queued.store(0, Ordering::Release);
+                return;
+            }
+            self.queued.swap(0, Ordering::AcqRel);
+        };
+        if !late {
+            reset();
+        }
+        let result = provider();
+        if late {
+            reset();
+        }
+        result
+    }
 }
 impl ArcWake for Wake {
     fn wake_by_ref(wake: &Arc<Self>) {
@@ -92,6 +123,10 @@ impl Sources {
                     signal: self.signal.clone(),
                     #[cfg(acyclic_stream_loom)]
                     omit_signal: false,
+                    #[cfg(acyclic_stream_loom)]
+                    clear_after_recheck: false,
+                    #[cfg(acyclic_stream_loom)]
+                    release_only: false,
                 }),
                 opening: true,
                 mode,
@@ -214,13 +249,13 @@ impl Sources {
             if let Some(id) = self.pop(room) {
                 let entry = self.entries.get_mut(&id).unwrap();
                 entry.ready = false;
-                entry.wake.queued.store(0, Ordering::Release);
                 let waker = futures::task::waker_ref(&entry.wake);
-                match entry
-                    .stream
-                    .as_mut()
-                    .poll_next(&mut Context::from_waker(&waker))
-                {
+                match entry.wake.recheck(|| {
+                    entry
+                        .stream
+                        .as_mut()
+                        .poll_next(&mut Context::from_waker(&waker))
+                }) {
                     Poll::Ready(Some(event)) => {
                         entry.opening = false;
                         entry.ready = true;
@@ -253,8 +288,8 @@ impl Channel {
         if self.ending.is_some() {
             None
         } else {
-            let all = self.pending == 0 && self.credit.frames > 0 && self.credit.bytes > 0;
-            let latest = self.latest && self.pending < 3;
+            let all = self.pending.is_empty() && self.credit.frames > 0 && self.credit.bytes > 0;
+            let latest = self.latest && self.pending.len() < 3;
             match (all, latest) {
                 (true, true) => Some(EITHER),
                 (true, false) => Some(ALL),
@@ -267,14 +302,18 @@ impl Channel {
 impl<P: StreamProvider> Session<P> {
     pub(super) fn refresh_source(&mut self, id: u64) {
         let mode = self.channels.get(&id).and_then(Channel::source_mode);
-        if self
-            .channels
-            .get(&id)
-            .is_some_and(|c| c.pending > 0 && c.credit.frames > 0 && c.credit.bytes > 0)
-        {
-            self.runnable.insert(id);
-        } else {
-            self.runnable.remove(&id);
+        if let Some(channel) = self.channels.get_mut(&id) {
+            if let Some(length) = channel.indexed.take() {
+                self.runnable.remove(&(length, id));
+            }
+            if channel.credit.frames > 0
+                && let Some(head) = channel.pending.front()
+                && head.frame.encoded_len() as u64 <= channel.credit.bytes
+            {
+                let length = head.frame.encoded_len();
+                channel.indexed = Some(length);
+                self.runnable.insert((length, id));
+            }
         }
         self.sources.mode(id, mode);
     }

@@ -168,7 +168,13 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                                 generation: 1,
                                 latest,
                                 children: false,
-                                pending,
+                                pending: (0..pending)
+                                    .map(|_| Pending {
+                                        frame: Default::default(),
+                                        key: None,
+                                    })
+                                    .collect(),
+                                indexed: None,
                                 credit: wire::SessionWindow { frames, bytes },
                                 sent: Default::default(),
                                 applied: Default::default(),
