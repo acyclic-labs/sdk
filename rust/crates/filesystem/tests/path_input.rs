@@ -39,19 +39,31 @@ pub fn check(data: &[u8]) {
                 );
             }
         }
-        if let Ok(name) = LogicalName::new(
-            NameEncoding::Utf8,
-            chunk.to_vec(),
-            limits.maximum_component_bytes,
-        ) {
-            let text = std::str::from_utf8(name.as_bytes()).unwrap();
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        for component in text.split('/') {
+            let Ok(name) = LogicalName::new(
+                NameEncoding::Utf8,
+                component.as_bytes().to_vec(),
+                limits.maximum_component_bytes,
+            ) else {
+                continue;
+            };
             let alias = LogicalName::new(
                 NameEncoding::Utf8,
-                text.to_ascii_uppercase().into_bytes(),
+                component.to_ascii_uppercase().into_bytes(),
                 limits.maximum_component_bytes,
             )
             .unwrap();
-            assert_eq!(name.case_fold_key(), alias.case_fold_key());
+            let key = name.case_fold_key();
+            assert_eq!(key, alias.case_fold_key());
+            if let Ok(folded) = LogicalName::new(
+                NameEncoding::Utf8,
+                key.clone(),
+                limits.maximum_component_bytes,
+            ) {
+                assert_eq!(folded.case_fold_key(), key);
+            }
         }
     }
     // Known full-fold mappings compose without locale or surrounding context.

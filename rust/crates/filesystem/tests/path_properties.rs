@@ -21,7 +21,11 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
     fn canonical_paths_and_fold_keys_preserve_namespace_boundaries(
-        data in prop::collection::vec(any::<u8>(), 0..2048)
+        data in prop_oneof![
+            prop::collection::vec(any::<u8>(), 0..2048),
+            prop::collection::vec(any::<char>(), 0..48)
+                .prop_map(|characters| characters.into_iter().collect::<String>().into_bytes()),
+        ]
     ) {
         input::check(&data);
     }
