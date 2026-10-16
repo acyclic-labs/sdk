@@ -43,6 +43,8 @@ mod commands;
 pub use commands::*;
 mod mentions;
 pub use mentions::*;
+mod diff;
+pub use diff::*;
 mod notifications;
 pub use notifications::*;
 mod task_list;
@@ -53,6 +55,12 @@ pub use file_query::FileQueryView;
 mod plan_panel;
 #[cfg(feature = "tui")]
 pub use plan_panel::PlanPanel;
+mod interests;
+pub use interests::{ClientInterests, InterestChanges, InterestTier};
+mod interest_files;
+pub use interest_files::InterestDocument;
+mod swarm;
+pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 
