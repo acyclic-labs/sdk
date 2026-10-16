@@ -2,13 +2,14 @@ use super::*;
 use crate::sync::owned::{Arc as StateArc, Mutex, lock_owned};
 use crate::{
     conversation::ContentGrant,
-    goal::{GoalContinuation, GoalView},
+    goal::{GoalBlockedReason, GoalContinuation, GoalStatus, GoalView},
     resources::GenerationRef,
     runtime::TaskStateProvider,
 };
 
-mod record;
+use crate::goal::request_head as record;
 use record::Turn;
+mod goal;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
 #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -337,6 +338,12 @@ impl LocalHarness {
                 Err(error) => return Err(error),
             };
             let goal = GoalView::from_file(source, &bytes, self.limits.file_bytes)?;
+            let unreachable = GoalBlockedReason::TaskViewUnreachable;
+            if goal.status == GoalStatus::Blocked
+                && goal.reason.as_deref() == Some(unreachable.to_string().as_str())
+            {
+                return Err(Error::GoalBlocked(unreachable));
+            }
             match policy.on_settle(
                 &goal,
                 crate::runtime::task_id_for_admission(current.root),
@@ -345,8 +352,14 @@ impl LocalHarness {
             ) {
                 None => Ok(None),
                 Some(GoalContinuation::Continue(operation)) => {
+                    let Some(path) = self.goal_task_path() else {
+                        let contents = goal
+                            .status_contents(GoalStatus::Blocked, Some(&unreachable.to_string()))?;
+                        self.block_goal(&goal, settled, &contents).await?;
+                        return Err(Error::GoalBlocked(unreachable));
+                    };
                     let prompt =
-                        format!("Continue the active goal in GOAL.md.\n\n{}", goal.markdown);
+                        format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
                     let admission = self
                         .publish_turn(
                             operation,
@@ -359,31 +372,7 @@ impl LocalHarness {
                     admitted_task(admission).map(Some)
                 }
                 Some(GoalContinuation::Block(contents)) => {
-                    let grant = ContentGrant::verify(
-                        &self.verifier,
-                        &self.signed,
-                        &self.scratch,
-                        VolumeOperation::Write,
-                        u64::MAX,
-                        &mut None,
-                    )?;
-                    self.files
-                        .put_content(
-                            &self.scratch,
-                            &grant,
-                            "GOAL.md",
-                            contents.as_bytes(),
-                            "text/markdown",
-                            "GOAL.md",
-                            self.limits.file_bytes,
-                            &crate::IdempotencyKey::new(format!(
-                                "goal-cap:{settled}:{}",
-                                goal.source.version()
-                            ))?,
-                            Some(&self.files.file_generation(&goal.source, None)?),
-                            None,
-                        )
-                        .await?;
+                    self.block_goal(&goal, settled, &contents).await?;
                     Ok(None)
                 }
             }

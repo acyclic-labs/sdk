@@ -2018,6 +2018,10 @@ export class WasmClientViews {
      */
     begin(metadata: any, predicted: any, assumption: any): string;
     /**
+     * Associates the same two volume-scoped sources as the native client.
+     */
+    bindGoalSources(goal: any, request: any): void;
+    /**
      * Export one explicitly selected hypothesis, preserving reference values.
      */
     checkpoint(branch: string): any;
@@ -2033,6 +2037,14 @@ export class WasmClientViews {
      * Narrow changed hypothesis IDs and work; no full-state export.
      */
     observe(key: string, evidence: any): any;
+    /**
+     * Applies one accepted publication, retaining its original source cursor.
+     */
+    queryChange(change: any): boolean;
+    /**
+     * Applies the ordinary file-query snapshot through the shared Rust fold.
+     */
+    querySnapshot(query: any, snapshot: any, maximum_files: number, maximum_bytes: number): void;
     /**
      * Release an unreferenced demanded record.
      */
@@ -2057,6 +2069,10 @@ export class WasmClientViews {
      * Select only one demanded record and explicitly supplied overlays.
      */
     view(key: string, overlays: any): any;
+    /**
+     * Exports the shared view, preserving full-width cursors as BigInts.
+     */
+    views(): any;
 }
 
 /**
@@ -2895,6 +2911,10 @@ export interface InitOutput {
     readonly wasmbrowserhistoryreader_readPage: (a: number, b: any, c: any) => any;
     readonly wasmclientviews_advance: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_begin: (a: number, b: any, c: any, d: any) => [number, number, number, number];
+    readonly wasmclientviews_bindGoalSources: (a: number, b: any, c: any) => [number, number];
+    readonly wasmclientviews_queryChange: (a: number, b: any) => [number, number, number];
+    readonly wasmclientviews_querySnapshot: (a: number, b: any, c: any, d: number, e: number) => [number, number];
+    readonly wasmclientviews_views: (a: number) => [number, number, number];
     readonly wasmclientviews_checkpoint: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_discard: (a: number, b: any) => [number, number, number];
     readonly wasmclientviews_new: (a: any, b: any, c: any, d: any, e: any, f: any, g: any, h: number) => [number, number, number];

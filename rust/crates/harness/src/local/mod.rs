@@ -100,8 +100,13 @@ impl LocalHarness {
                 tools.register((tool, None), &mut None, None)?;
             }
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation =
-                mcp::install(&config.project, config.settings, tools, config.mcp_limits).await?;
+            let installation = mcp::install(
+                &config.project,
+                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
+                tools,
+                config.mcp_limits,
+            )
+            .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(

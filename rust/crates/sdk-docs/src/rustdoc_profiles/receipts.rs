@@ -5,7 +5,7 @@ use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
 use std::{collections::BTreeSet, fs, path::Path};
 
 pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
-    let receipt = read_public_receipt(path.as_ref())?;
+    let (_, receipt) = read_public_receipt(path.as_ref())?;
     Ok(receipt
         .index
         .values()
@@ -42,7 +42,7 @@ pub fn extract_owned_api(
             "binding API extraction requires a non-empty profile identity".to_owned(),
         ));
     }
-    let receipt = read_public_receipt(path.as_ref())?;
+    let (raw, receipt) = read_public_receipt(path.as_ref())?;
     let root = receipt.index.get(&receipt.root).ok_or_else(|| {
         ProfileError::InvalidRustdoc("binding receipt root is absent from its index".to_owned())
     })?;
@@ -55,13 +55,7 @@ pub fn extract_owned_api(
     // Use the same format-59 compatibility adapter and public-api renderer as
     // `build_data`. Rustdoc's debug representation is a compiler-internal
     // identity and does not match the rendered SDK signature.
-    let raw = fs::read(path.as_ref()).map_err(|error| {
-        ProfileError::InvalidRustdoc(format!(
-            "cannot read public API input {}: {error}",
-            path.as_ref().display()
-        ))
-    })?;
-    let public_items = public_api::extract(path.as_ref(), &raw).map_err(|error| {
+    let public_items = public_api::extract(path.as_ref(), &raw, &receipt).map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
             "public API extraction failed for {}: {error}",
             path.as_ref().display()
@@ -100,18 +94,18 @@ pub fn extract_owned_api(
     Ok(items)
 }
 
-fn read_public_receipt(path: impl AsRef<Path>) -> Result<RustdocCrate, ProfileError> {
+fn read_public_receipt(path: impl AsRef<Path>) -> Result<(Vec<u8>, RustdocCrate), ProfileError> {
     let path = path.as_ref();
     let bytes = fs::read(path)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("{}: {error}", path.display())))?;
-    let receipt = serde_json::from_slice::<RustdocCrate>(&bytes)
+    let receipt = public_api::decode::from_slice(&bytes)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("{}: {error}", path.display())))?;
     if receipt.format_version != FORMAT_VERSION || receipt.includes_private {
         return Err(ProfileError::InvalidRustdoc(
             "public Rustdoc extraction requires format 60 with includes_private=false".to_owned(),
         ));
     }
-    Ok(receipt)
+    Ok((bytes, receipt))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +119,7 @@ pub struct RustdocObservation {
 }
 
 pub fn observe_rustdoc(path: impl AsRef<Path>) -> Result<RustdocObservation, ProfileError> {
-    let receipt = read_public_receipt(path)?;
+    let (_, receipt) = read_public_receipt(path)?;
     observe_receipt(receipt)
 }
 

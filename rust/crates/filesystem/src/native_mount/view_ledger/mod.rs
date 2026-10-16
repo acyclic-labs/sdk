@@ -5,12 +5,13 @@ use crate::FileId;
 use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::lock_order::{Mutex as RankedMutex, OBSERVERS};
+use crate::sync::RwLock;
 use notifications::ObserverEntries;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError, RwLock, Weak};
+use std::sync::{Arc, PoisonError, Weak};
 use storage::ChangePositions;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) use storage::same_work;
