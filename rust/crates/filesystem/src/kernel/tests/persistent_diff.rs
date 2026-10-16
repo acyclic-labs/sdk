@@ -15,6 +15,9 @@ use crate::{OperationFailure, WorkBudget};
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
+#[path = "persistent_diff/ordered.rs"]
+mod ordered;
+
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,

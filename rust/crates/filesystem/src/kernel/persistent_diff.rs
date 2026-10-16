@@ -346,6 +346,10 @@ fn push_page<F: Format>(
             }
             return Ok(());
         }
+        // One decoded leaf has strictly increasing keys. Keep its preceding
+        // insertion position, but reset for every page: another side/leaf may
+        // start before it. No changes are removed while this cursor is live.
+        let mut cursor = None;
         match &mut page.value.page {
             PageLease::Owned(Page::Leaf(entries)) => {
                 // Move owned leaf payloads; split their original guard instead
@@ -365,6 +369,7 @@ fn push_page<F: Format>(
                         maximum,
                         limits,
                         accounting,
+                        &mut cursor,
                     )?;
                 }
             }
@@ -390,6 +395,7 @@ fn push_page<F: Format>(
                             maximum,
                             limits,
                             accounting,
+                            &mut cursor,
                         )?;
                     }
                 }
@@ -409,12 +415,22 @@ fn insert_value<F: Format>(
     maximum: usize,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
+    cursor: &mut Option<usize>,
 ) -> Result<(), FsError> {
     let prepared = (|| {
-        let position =
-            super::search::binary_search_with_accounting(&values.value, accounting, |entry| {
-                entry.key.cmp(F::key(&value.value))
-            })?;
+        let compare = |entry: &ValueChange<F::Key, F::Value>| entry.key.cmp(F::key(&value.value));
+        let position = match *cursor {
+            None => {
+                super::search::binary_search_with_accounting(&values.value, accounting, compare)?
+            }
+            Some(start) => super::search::galloping_search_with_accounting(
+                values.value.get(start..).ok_or(FsError::InvalidDiff)?,
+                accounting,
+                compare,
+            )?
+            .map(|index| start + index)
+            .map_err(|index| start + index),
+        };
         if let Err(index) = position {
             values
                 .ensure_for_push(maximum.saturating_add(1), accounting)
@@ -473,6 +489,7 @@ fn insert_value<F: Format>(
     values.allocation.absorb(&mut allocation)?;
     values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
     *destination = Some(value);
+    *cursor = Some(index + 1);
     Ok(())
 }
 

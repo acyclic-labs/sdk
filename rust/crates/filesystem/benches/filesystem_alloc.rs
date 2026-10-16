@@ -8,6 +8,9 @@ mod admission;
 #[path = "support/lazy_nodes.rs"]
 mod lazy_nodes;
 
+#[path = "support/merge_diff.rs"]
+mod merge_diff;
+
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
 
