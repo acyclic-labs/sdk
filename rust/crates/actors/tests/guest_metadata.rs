@@ -61,7 +61,7 @@ proptest! {
 }
 
 #[test]
-fn positional_metadata_uses_the_same_admission() -> Result<(), Box<dyn std::error::Error>> {
+fn positional_metadata_uses_the_same_admission() {
     for bytes in [
         br#"[1,"cap"]"#.as_slice(),
         br#"["a","o","p","c","i","1",[1,"cap"]]"#.as_slice(),
@@ -81,7 +81,6 @@ fn positional_metadata_uses_the_same_admission() -> Result<(), Box<dyn std::erro
         assert!(serde_json::from_slice::<CallerCapability>(bytes).is_err());
         assert!(serde_json::from_slice::<AdmittedCaller>(bytes).is_err());
     }
-    Ok(())
 }
 
 #[test]
