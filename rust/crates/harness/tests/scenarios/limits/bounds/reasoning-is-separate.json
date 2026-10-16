@@ -1,0 +1,4 @@
+{"limits":{"file_bytes":1},"turns":[[{"type":"event","kind":"reasoning","delta":"reasoning bytes are not assistant file bytes"},{
+  "type":"event","kind":"content","delta":"y"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"events":[{"kind":
+  "model","event":{"kind":"reasoning","delta":"reasoning bytes are not assistant file bytes"}},{"kind":"model","event":{"kind":
+  "content","delta":"y"}},{"kind":"model","event":{"kind":"completed"}}]}}

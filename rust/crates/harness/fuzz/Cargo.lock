@@ -78,6 +78,7 @@ dependencies = [
  "prost-build",
  "prost-reflect",
  "protoc-bin-vendored",
+ "pulldown-cmark",
  "reqwest",
  "rmcp",
  "schemars",

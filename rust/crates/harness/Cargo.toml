@@ -31,6 +31,11 @@ name = "task-volume"
 path = "tests/task_volume.rs"
 
 [[test]]
+name = "file-query"
+path = "tests/file_query.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "mcp-loom"
 path = "tests/mcp_loom.rs"
 
@@ -89,6 +94,10 @@ required-features = ["filesystem"]
 [[test]]
 name = "client-notifications"
 path = "tests/client_notifications.rs"
+
+[[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown.rs"
 
 [[test]]
 name = "client-interests"
@@ -150,6 +159,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
