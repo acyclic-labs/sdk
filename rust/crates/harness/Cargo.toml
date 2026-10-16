@@ -146,6 +146,10 @@ name = "client-query"
 path = "tests/client_query.rs"
 
 [[test]]
+name = "client-swarm-views"
+path = "tests/client_swarm_views.rs"
+
+[[test]]
 name = "task-workflow"
 path = "tests/task_workflow.rs"
 required-features = ["filesystem-local"]
@@ -209,7 +213,7 @@ search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false }

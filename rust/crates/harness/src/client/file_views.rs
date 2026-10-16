@@ -114,6 +114,13 @@ impl FileViews {
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
     }
+
+    pub(crate) fn watermark(&mut self, value: acyclic_stream::StreamWatermarks) -> Result<()> {
+        let mut cursor = self.cursor.clone();
+        cursor.advance_watermarks(value)?;
+        self.cursor = cursor;
+        Ok(())
+    }
     /// One materialized file.
     pub fn file(&self, key: &FileKey) -> Option<&HeadFile> {
         self.files.get(key)

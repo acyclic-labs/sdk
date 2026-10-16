@@ -84,7 +84,7 @@ pub struct Observation {
     pub changes: ChangeStream,
 }
 
-fn query_id(query: &Query) -> Result<[u8; 32]> {
+pub(crate) fn query_id(query: &Query) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&serde_json::to_vec(query).map_err(|_| Error::InvalidSegment)?).as_bytes())
 }
 

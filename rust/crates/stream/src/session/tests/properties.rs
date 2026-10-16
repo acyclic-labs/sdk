@@ -2,9 +2,7 @@ use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
-fn empty_session(latest: bool) -> Session<MemoryStream> {
-    let (cancel, _) = oneshot::channel();
-    let enabled = Arc::new(gate::Gate::new());
+pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
     Session {
         provider: Arc::new(MemoryStream::default()),
         limits: Limits::default(),
@@ -18,22 +16,23 @@ fn empty_session(latest: bool) -> Session<MemoryStream> {
                 children: false,
                 generation: 1,
                 latest,
-                enabled,
-                pending: 0,
+                pending: VecDeque::new(),
+                indexed: None,
                 credit: wire::SessionWindow::default(),
                 sent: cursor(0),
                 applied: cursor(0),
                 ending: None,
-                cancel: Some(cancel),
             },
         )]),
-        sources: SelectAll::new(),
+        sources: sources::Sources::new(),
         incoming: stream::empty().boxed(),
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
-        pending: VecDeque::new(),
+        pending_frames: 0,
         pending_bytes: 0,
-        readiness: (false, false, false),
+        runnable: BTreeSet::new(),
+        ready_after: None,
+        head_visits: 0,
     }
 }
 
@@ -83,10 +82,104 @@ proptest! {
         let expected: Vec<_> = history.iter().enumerate().filter(|(index, (key, _, attention))| {
             !latest || *attention || !history[index + 1..].iter().any(|(later_key, _, later_attention)| later_key == key && !later_attention)
         }).map(|(index, _)| index as u64 + 1).collect();
-        let actual: Vec<_> = session.pending.iter().filter_map(|pending| match &pending.frame.body {
+        let actual: Vec<_> = session.channels[&1].pending.iter().filter_map(|pending| match &pending.frame.body {
             Some(Body::Data(data)) => data.after.as_ref().map(|after| after.next), _ => None,
         }).collect();
         prop_assert_eq!(actual, expected);
-        prop_assert_eq!(session.pending_bytes, session.pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
+        prop_assert_eq!(session.pending_bytes, session.channels[&1].pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
     }
+}
+
+fn check_admission(session: &Session<MemoryStream>) {
+    let expected: BTreeSet<_> = session
+        .channels
+        .iter()
+        .filter_map(|(id, channel)| {
+            channel
+                .pending
+                .front()
+                .filter(|p| {
+                    channel.credit.frames > 0
+                        && p.frame.encoded_len() as u64 <= channel.credit.bytes
+                })
+                .map(|p| (p.frame.encoded_len(), *id))
+        })
+        .collect();
+    let frames: usize = session.channels.values().map(|c| c.pending.len()).sum();
+    let bytes: usize = session
+        .channels
+        .values()
+        .flat_map(|c| &c.pending)
+        .map(|p| p.frame.encoded_len())
+        .sum();
+    assert_eq!(session.pending_frames, frames);
+    assert_eq!(session.pending_bytes, bytes);
+    for (id, channel) in &session.channels {
+        assert_eq!(
+            channel.indexed.map(|length| (length, *id)),
+            expected
+                .iter()
+                .find(|(_, candidate)| candidate == id)
+                .copied()
+        );
+    }
+    assert_eq!(
+        session.runnable, expected,
+        "runnable index lost a credited channel"
+    );
+}
+
+fn exercise_admission(operations: &[u8], broken: bool) {
+    let mut session = empty_session(false);
+    session.credit = wire::SessionWindow {
+        frames: 1000,
+        bytes: crate::MAX_COMMAND_BYTES as u64,
+    };
+    let mut sequence = 0;
+    for operation in operations {
+        match operation % 4 {
+            0 => {
+                session
+                    .record(
+                        wire::SessionChannel {
+                            channel_id: 1,
+                            generation: 1,
+                        },
+                        Ok(Event::Record(Record {
+                            sequence,
+                            value: vec![0].into(),
+                            commit_id: CommitId::from_bytes([1; 32]),
+                            committed_at_micros: 0,
+                        })),
+                    )
+                    .unwrap();
+                sequence += 1;
+            }
+            1 => session.receive(super::window(1)).unwrap(),
+            2 => {
+                session.ready().unwrap();
+            }
+            _ => {
+                session.remove(1).unwrap();
+                session = empty_session(false);
+                sequence = 0;
+            }
+        }
+        if broken {
+            session.runnable.clear();
+        }
+        check_admission(&session);
+    }
+}
+proptest! {
+    // The cached runnable set equals the credit policy after every
+    // append, credit grant, delivery and cancellation; no source is lost.
+    #[test]
+    fn runnable_channels_match_credit_policy(operations in prop::collection::vec(any::<u8>(), 0..48)) {
+        exercise_admission(&operations, false);
+    }
+}
+#[test]
+fn negative_control_drops_the_runnable_index_update() {
+    assert!(std::panic::catch_unwind(|| exercise_admission(&[0, 1], true)).is_err());
 }
