@@ -10,6 +10,7 @@ async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResu
         "lifecycle",
         "multiple-raw-and-code",
         "filenames-and-paragraphs",
+        "empty-stem",
     ] {
         let mut baseline =
             crate::scenario::load_value(&root, &root.join(format!("plan-query/{name}.json")))?;
