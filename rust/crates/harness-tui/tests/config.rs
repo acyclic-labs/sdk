@@ -501,3 +501,61 @@ fn no_wrap_clips_collapsed_paste_marker_by_visible_graphemes() {
     assert_eq!(text, "es] ");
     assert_eq!(viewport.cursor, Some((3, 0)));
 }
+
+#[test]
+fn reloading_keymap_cancels_pending_cut_and_retains_deferred_typing() {
+    let mut input = PromptInput::new(Editor::new("draft"));
+    let mut view = ConfigView::default();
+    apply(&view, &mut input);
+    input.editor.select_all();
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Char('x'), M::CONTROL), 0, 80)
+            .is_empty()
+    );
+    view.set_file(
+        Scope::User,
+        ConfigFile::Keymap,
+        Some(r#"{"bindings":{"Ctrl+x":null,"Ctrl+x Ctrl+e":null}}"#),
+    );
+    apply(&view, &mut input);
+    assert!(input.tick(1000).is_empty());
+    assert_eq!(input.editor.selected_text(), "draft");
+    input.editor.set_text("", 1001);
+    view.set_file(
+        Scope::User,
+        ConfigFile::Keymap,
+        Some(r#"{"bindings":{"a b":"app.tree"}}"#),
+    );
+    apply(&view, &mut input);
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Char('a'), M::NONE), 1002, 80)
+            .is_empty()
+    );
+    assert_eq!(input.editor.text(), "");
+    view.set_file(Scope::User, ConfigFile::Keymap, None);
+    apply(&view, &mut input);
+    assert_eq!(input.editor.text(), "a");
+    assert!(input.tick(2000).is_empty());
+    assert_eq!(input.editor.text(), "a");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    #[test]
+    fn keymap_reload_preserves_exactly_the_deferred_character(text in "[a-z]", same in any::<bool>()) {
+        let mut input = PromptInput::default();
+        let mut view = ConfigView::default();
+        let chord = format!("{text} F1");
+        view.set_file(Scope::User, ConfigFile::Keymap,
+            Some(&json!({"bindings":{chord:"app.tree"}}).to_string()));
+        apply(&view, &mut input);
+        let key = KeyEvent::new(KeyCode::Char(text.chars().next().unwrap()), M::NONE);
+        prop_assert!(input.key(key, 0, 80).is_empty());
+        if !same { view.set_file(Scope::User, ConfigFile::Keymap, None); }
+        apply(&view, &mut input);
+        prop_assert!(input.tick(1000).is_empty());
+        prop_assert_eq!(input.editor.text(), text);
+    }
+}

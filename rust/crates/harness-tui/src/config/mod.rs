@@ -274,7 +274,7 @@ impl ConfigView {
         })?;
         let theme = self.theme(profile)?;
         input.set_settings(settings);
-        input.keymap = keymap;
+        input.set_keymap(keymap);
         input.theme = theme;
         Ok(())
     }

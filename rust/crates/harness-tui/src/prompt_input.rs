@@ -90,6 +90,21 @@ pub struct PromptInput {
 }
 
 impl PromptInput {
+    /// Replace followed bindings. Deferred text remains committed input; actions
+    /// from an obsolete map (including a pending cut) are cancelled.
+    pub fn set_keymap(&mut self, keymap: InputKeymap) {
+        if self.keymap == keymap {
+            return;
+        }
+        let pending = self.pending_chord.take();
+        self.keymap = keymap;
+        self.last_interrupt = None;
+        if let Some((_, at, Some(DecodedKey::Text(text)))) = pending {
+            // There is no pending chord left to flush into a host effect.
+            let _ = self.committed_text(text.encode_utf8(&mut [0; 4]), at);
+        }
+    }
+
     /// Apply preferences to active and suspended drafts so cancelling an edit or
     /// search cannot resurrect preferences from an older file snapshot.
     pub fn set_settings(&mut self, settings: crate::UiSettings) -> bool {
