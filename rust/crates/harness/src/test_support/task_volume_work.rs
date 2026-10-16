@@ -84,11 +84,12 @@ impl<V> FromIterator<(FileKey, V)> for Files<V> {
     }
 }
 impl<V> Files<V> {
-    pub fn as_map(&self) -> &BTreeMap<FileKey, V> {
-        &self.0
-    }
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn as_map(&self) -> &BTreeMap<FileKey, V> {
+        &self.0
     }
     pub fn remove(&mut self, key: &FileKey) -> Option<V> {
         examined();

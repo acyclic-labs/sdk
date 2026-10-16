@@ -170,7 +170,7 @@ fn profile(accounted: bool) -> Result<()> {
             }
             times[index].sort_unstable();
             let mut result = Ok(());
-            let allocation = allocation_counter::measure(|| result = operation(index));
+            let allocation = acyclic_test_support::measure(|| result = operation(index));
             result?;
             assert_eq!(allocation.count_total, 0);
             assert_eq!(allocation.bytes_total, 0);
@@ -267,7 +267,7 @@ fn contended_retained_path_accounting() -> Result<()> {
                             if syscalls {
                                 eprintln!("PATH_BEGIN");
                             }
-                            let allocations = allocation_counter::measure(|| {
+                            let allocations = acyclic_test_support::measure(|| {
                                 for _ in 0..calls {
                                     if index == 0 {
                                         scan(store, "files/new", io).unwrap();

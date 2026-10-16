@@ -2,6 +2,31 @@
 #![cfg(all(acyclic_stream_loom, feature = "grpc"))]
 
 #[test]
+fn latest_cursor_fencing_and_conflated_watermarks_use_the_real_pool() {
+    acyclic_stream::session::verify_follow_data(0);
+}
+#[test]
+#[should_panic(expected = "fenced LATEST must not advance its cursor")]
+fn negative_control_latest_ignores_the_generation_fence() {
+    acyclic_stream::session::verify_follow_data(1);
+}
+#[test]
+#[should_panic(expected = "standalone watermark must be delivered")]
+fn negative_control_drops_standalone_watermarks() {
+    acyclic_stream::session::verify_follow_data(2);
+}
+
+#[test]
+fn connection_wakes_are_atomic_with_waiter_registration() {
+    acyclic_stream::session::verify_connections(false);
+}
+#[test]
+#[should_panic(expected = "connection publication lost its wakeup")]
+fn negative_control_drops_the_connection_wake() {
+    acyclic_stream::session::verify_connections(true);
+}
+
+#[test]
 fn cancelled_reconnect_cannot_capture_a_new_interest() {
     acyclic_stream::session::verify_abandoned_reconnect(false);
 }
@@ -114,4 +139,14 @@ fn latest_consumption_and_move_fence_share_one_application_cut() {
 #[should_panic(expected = "a stale delivery cannot advance the fenced resume cut")]
 fn negative_control_checks_latest_generation_outside_the_cursor_lock() {
     acyclic_stream::session::verify_latest_progress(true);
+}
+
+#[test]
+fn initial_eof_retry_yields_to_deadline_and_cancellation() {
+    acyclic_stream::session::verify_initial_retry_yield(false);
+}
+#[test]
+#[should_panic(expected = "initial retry must yield before another physical RPC")]
+fn negative_control_initial_eof_retry_monopolizes_the_executor() {
+    acyclic_stream::session::verify_initial_retry_yield(true);
 }

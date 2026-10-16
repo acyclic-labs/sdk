@@ -303,7 +303,7 @@ fn former_index_has_bounded_seeks_but_is_rejected_by_the_scan_regression_guard()
 fn ordinary_queries_allocate_nothing_and_punctuation_scratch_is_bounded() {
     let paths = fixture(4096);
     for query in ["files/new", "missing", "files/00002048/child"] {
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             std::hint::black_box(conflicts(&paths, query));
         });
         assert_eq!((allocation.count_total, allocation.bytes_total), (0, 0));
@@ -312,7 +312,7 @@ fn ordinary_queries_allocate_nothing_and_punctuation_scratch_is_bounded() {
         .into_iter()
         .map(|s| (s.to_owned(), ()))
         .collect();
-    let allocation = allocation_counter::measure(|| {
+    let allocation = acyclic_test_support::measure(|| {
         assert!(conflicts(&paths, "foo"));
     });
     assert_eq!(
@@ -334,7 +334,7 @@ fn long_punctuation_queries_need_no_prefix_buffer() {
         paths.insert(format!("{query}/child"), ());
         paths.insert("aaa".into(), ());
         paths.insert("zzz".into(), ());
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             assert!(conflicts(&paths, &query));
         });
         assert_eq!(
@@ -345,7 +345,7 @@ fn long_punctuation_queries_need_no_prefix_buffer() {
             ),
             (0, 0, 0)
         );
-        let old = allocation_counter::measure(|| assert!(old_crossover::conflicts(&paths, &query)));
+        let old = acyclic_test_support::measure(|| assert!(old_crossover::conflicts(&paths, &query)));
         assert_eq!(old.count_total, 1);
         assert_eq!(
             old.bytes_total,

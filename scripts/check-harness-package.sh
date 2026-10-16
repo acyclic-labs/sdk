@@ -69,10 +69,12 @@ bun install --ignore-scripts
 mkdir -p test
 install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
 # The workspace runs the full source suite separately. Reuse the client and
-# transport conformance cases here against the installed public exports.
-for source_test in client wire-transport; do
+# query conformance cases here against the installed public exports.
+for source_test in client client-query; do
   sed \
     -e 's#../src/index.js#@acyclic-labs/harness#g' \
+    -e 's#../src/client.js#@acyclic-labs/harness/client#g' \
+    -e 's#../src/client-query.js#@acyclic-labs/harness/client#g' \
     -e 's#../generated/proto/harness/v2/harness_pb.js#@acyclic-labs/harness/proto#g' \
     -e 's#../generated/proto/protocol/v1/protocol_pb.js#@acyclic-labs/harness/protocol#g' \
     "$root/typescript/packages/harness/test/$source_test.test.ts" >"test/$source_test.test.ts"

@@ -117,6 +117,6 @@ impl Drop for Subscription {
     }
 }
 
-#[cfg(acyclic_stream_loom)]
+#[cfg(all(test, acyclic_stream_loom))]
 #[path = "../publication-models/change.rs"]
 mod models;

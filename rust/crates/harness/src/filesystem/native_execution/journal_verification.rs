@@ -51,7 +51,7 @@ pub(crate) fn verify_decode(input: &[u8]) -> bool {
     let slots = lexical_items(input).min(lexical_containers(input).saturating_mul(4));
     let bound = journal_allocation::decode_owned_bytes(slots, input.len() as u64, 0).unwrap();
     let mut decoded = None;
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         decoded = Some(serde_json::from_slice::<MaterializationJournal>(input));
     });
     assert!(measured.bytes_max as u64 <= bound, "{measured:?} > {bound}");

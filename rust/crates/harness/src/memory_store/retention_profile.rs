@@ -197,7 +197,7 @@ fn measure(
             continue;
         }
         times.sort_unstable();
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             let _ = std::hint::black_box(operation(legacy));
         });
         eprintln!(

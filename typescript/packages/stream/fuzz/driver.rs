@@ -11,9 +11,6 @@ pub struct Driver {
     output: BufReader<ChildStdout>,
 }
 impl Driver {
-    pub fn open(root: &Path) -> Self {
-        Self::configured(root, "decode", "")
-    }
     pub fn configured(root: &Path, scenario: &str, fault: &str) -> Self {
         let mut child = Command::new("bun")
             .arg(if scenario.starts_with("deadline") {

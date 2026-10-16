@@ -13,9 +13,9 @@ fuzz_target!(|input: &[u8]| {
     }
     static DRIVER: OnceLock<Mutex<driver::Driver>> = OnceLock::new();
     let shared = DRIVER.get_or_init(|| {
-        Mutex::new(driver::Driver::open(
+        Mutex::new(driver::Driver::configured(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
-        ))
+        , "decode", ""))
     });
     let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
     let result = shared

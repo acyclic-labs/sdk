@@ -149,7 +149,7 @@ fn terminal_encoding_allocates_only_its_output_buffer() {
         ..notice(1, AttentionEvent::TaskFailed)
     };
     let mut output = String::new();
-    let bell = allocation_counter::measure(|| {
+    let bell = acyclic_test_support::measure(|| {
         output = terminal_notification(
             &notification,
             NotificationMode::On,
@@ -164,7 +164,7 @@ fn terminal_encoding_allocates_only_its_output_buffer() {
         TerminalNotificationProtocol::Osc9,
         TerminalNotificationProtocol::Osc777,
     ] {
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             output = terminal_notification(&notification, NotificationMode::On, protocol, false);
         });
         assert_eq!(allocation.count_total, 1);
@@ -184,7 +184,7 @@ fn queue_insertion_cost_is_independent_of_payload_size() -> Result<()> {
         let payload = notification.detail.as_ptr();
         let mut view = NotificationView::new(1, 1, 1_048_640)?;
         let mut result = Ok(false);
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = view.apply(notification);
         });
         assert!(result?);
@@ -224,7 +224,7 @@ fn existing_task_updates_allocate_only_shared_record_metadata() -> Result<()> {
             ..notice(2, AttentionEvent::TaskFailed)
         };
         let mut result = Ok(false);
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = view.apply(next);
         });
         assert!(result?);

@@ -61,7 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         internal_class: Option<InternalContentClass>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
         crate::executor::with_history_io(io, |work| volume.validate(work))?;
         if volume.provider() != &self.provider {
             return Err(stock_boundary(
@@ -161,8 +161,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        self.read_pinned_io(&reference, maximum_bytes, io).await?;
-        Ok(Some(reference))
+        let bytes = self.read_pinned_io(&reference, maximum_bytes, io).await?;
+        Ok(Some((reference, bytes)))
     }
 
     /// Stages journal payloads under the assigned internal subtree.

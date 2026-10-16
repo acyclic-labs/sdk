@@ -19,7 +19,12 @@ pub enum VolumeClass {
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
 )]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum VolumeOwner {
     /// Project workspace owner.
     Project(#[serde(deserialize_with = "deserialize_label")] String),

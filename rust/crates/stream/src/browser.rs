@@ -408,6 +408,15 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.tail(path).await)
             .await
     }
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        // tail refreshes from completed strict IndexedDB transactions; an
+        // uncommitted cache mutation is never exposed outside its writer.
+        let accepted = self.tail(path).await?;
+        Ok(StreamWatermarks {
+            accepted,
+            durable: accepted,
+        })
+    }
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         self.with_provider(async move |provider| provider.bounds(path).await)
             .await

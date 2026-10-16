@@ -20,7 +20,7 @@ use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
     envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, observation_from_wire,
-    observation_wire, optional_key, path, read_response_records, read_response_wire, record,
+    observation_wire, optional_key, path, read_response_wire,
     record_wire,
 };
 use crate::{
@@ -422,24 +422,7 @@ fn error_status(error: &StreamError) -> Status {
     }
 }
 
-pub(crate) fn status(error: &Status) -> StreamError {
-    match (error.code(), error.message()) {
-        (Code::InvalidArgument, "invalid_path") => StreamError::InvalidPath,
-        (Code::InvalidArgument, "limit_exceeded") => StreamError::LimitExceeded,
-        (Code::InvalidArgument, _) => StreamError::InvalidArgument,
-        (Code::NotFound, _) => StreamError::NotFound,
-        (Code::AlreadyExists, _) => StreamError::AlreadyExists,
-        (Code::OutOfRange, _) => StreamError::OutOfRange,
-        (Code::PermissionDenied | Code::Unauthenticated, _) => StreamError::AccessDenied,
-        (Code::ResourceExhausted, _) => StreamError::Capacity,
-        (Code::FailedPrecondition, "hierarchy_changed") => StreamError::HierarchyChanged,
-        (Code::FailedPrecondition, "idempotency_mismatch") => StreamError::IdempotencyMismatch,
-        (Code::FailedPrecondition, "prefix_not_retained") => StreamError::PrefixNotRetained,
-        (Code::FailedPrecondition, "deadline_elapsed") => StreamError::DeadlineElapsed,
-        (Code::Unimplemented, "unsupported_capability") => StreamError::Unsupported,
-        _ => StreamError::Unavailable,
-    }
-}
+pub(crate) use crate::wire_codec::status;
 
 /// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
 struct Completion {

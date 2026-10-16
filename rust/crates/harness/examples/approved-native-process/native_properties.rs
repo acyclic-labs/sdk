@@ -52,7 +52,7 @@ pub(crate) fn verify_native_callbacks() -> Result<()> {
             let baseline = work.live_allocation_bytes();
             let before = work.receipt().allocation_operations;
             let mut copied = None;
-            let allocations = allocation_counter::measure(|| {
+            let allocations = acyclic_test_support::measure(|| {
                 copied = Some(machine.initialize_with_native_work(&state, &work));
             });
             let (initial, initial_custody) = copied.unwrap()?;
@@ -68,7 +68,7 @@ pub(crate) fn verify_native_callbacks() -> Result<()> {
             prop_assert_eq!(work.live_allocation_bytes(), baseline);
             let mut copied = None;
             let before = work.receipt().allocation_operations;
-            let allocations = allocation_counter::measure(|| {
+            let allocations = acyclic_test_support::measure(|| {
                 copied = Some(machine.transition_with_native_work(&state, Value::Null, &work));
             });
             let (transition, transition_custody) = copied.unwrap()?;
@@ -123,7 +123,7 @@ fn verify_operation_exhaustion(machine: &Machine) -> Result<()> {
             .unwrap();
             let baseline = work.live_allocation_bytes();
             let before = work.receipt().allocation_operations;
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 drop(machine.transition_with_native_work(&state, Value::Null, &work));
             });
             prop_assert!(
@@ -149,7 +149,7 @@ fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
     let state = json!({"a": 1});
     let work = new_work(budget)?;
     let mut copied = None;
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         copied = Some(machine.initialize_with_native_work(&state, &work));
     });
     let (value, custody) = copied.unwrap()?;
@@ -168,7 +168,7 @@ fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
         );
         let mut copied = None;
         let before = work.receipt().allocation_operations;
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             copied = Some(machine.initialize_with_native_work(&state, &work));
         });
         let (value, custody) = copied.unwrap()?;
@@ -195,7 +195,7 @@ fn verify_allocation_boundaries(machine: &Machine) -> Result<()> {
         ..budget
     })?;
     let baseline_exhausted = exhausted.live_allocation_bytes();
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         assert!(
             machine
                 .transition_with_native_work(&state, Value::Null, &exhausted)

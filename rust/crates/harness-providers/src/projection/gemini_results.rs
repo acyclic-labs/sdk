@@ -31,7 +31,8 @@ fn key(value: &Value) -> (&str, &str) {
 
 fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     let calls = calls.iter().filter_map(|item| match item {
-        Item::Json(value) => value.get("functionCall"),
+        Item::Json(value) => value.get("functionCall").map(key),
+        Item::Call(call) => Some((call.id.as_str(), call.name.as_ref())),
         Item::Native(_) => None,
     });
     // The normal call-ordered path borrows both sequences and allocates nothing.
@@ -40,9 +41,9 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
         .clone()
         .zip(results.iter().filter_map(|item| match item {
             Item::Json(value) => value.get("functionResponse"),
-            Item::Native(_) => None,
+            Item::Native(_) | Item::Call(_) => None,
         }))
-        .all(|(call, result)| key(call) == key(result))
+        .all(|(call, result)| call == key(result))
     {
         return;
     }
@@ -52,7 +53,7 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     }
     let positions: HashMap<_, _> = calls
         .enumerate()
-        .map(|(index, call)| (key(call), index))
+        .map(|(index, call)| (call, index))
         .collect();
     if positions.len() != count {
         return;
@@ -66,7 +67,7 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
                 .get("functionResponse")
                 .and_then(|result| positions.get(&key(result)))
                 .copied(),
-            Item::Native(_) => None,
+            Item::Native(_) | Item::Call(_) => None,
         };
         ranks.push(if let Some(position) = position {
             if std::mem::replace(&mut seen[position], true) {

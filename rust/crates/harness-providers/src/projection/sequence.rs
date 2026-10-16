@@ -1,11 +1,8 @@
 //! Portable role boundaries and stateless reasoning-item adjacency.
-use super::{
-    merge_chat_text,
-    wire::{Item, Message},
-};
-use crate::{Adapter, invalid};
+use super::wire::{Item, Message};
+use crate::Adapter;
 use acyclic_harness::Result;
-use serde_json::{Value, json};
+use serde_json::json;
 
 pub(super) fn push<'a>(
     adapter: Adapter,
@@ -39,33 +36,24 @@ pub(super) fn push<'a>(
                 parts: more,
             },
         ) if old == new => parts.append(more),
-        (Some(Message::Item(Item::Json(old))), Message::Item(Item::Json(new)))
-            if adapter == Adapter::Chat
-                && old["role"] == "assistant"
-                && new["role"] == "assistant" =>
+        (Some(Message::Chat(old)), Message::Chat(new))
+            if old.role == "assistant" && new.role == "assistant" =>
         {
-            if let Some(Value::Array(more)) = new.get_mut("tool_calls") {
-                let calls = old
-                    .as_object_mut()
-                    .ok_or_else(|| invalid("invalid Chat turn"))?
-                    .entry("tool_calls")
-                    .or_insert_with(|| json!([]));
-                calls
-                    .as_array_mut()
-                    .ok_or_else(|| invalid("invalid Chat calls"))?
-                    .append(more);
+            old.tool_calls.append(&mut new.tool_calls);
+            if let Some(more) = new.reasoning_content.take() {
+                old.reasoning_content
+                    .get_or_insert_with(String::new)
+                    .push_str(&more);
             }
-            if let Some(reasoning) = new["reasoning_content"].as_str() {
-                let previous = old
-                    .as_object_mut()
-                    .ok_or_else(|| invalid("invalid Chat turn"))?
-                    .entry("reasoning_content")
-                    .or_insert_with(|| json!(""));
-                let mut text = previous.as_str().unwrap_or_default().to_owned();
-                text.push_str(reasoning);
-                *previous = json!(text);
+            if let Some(more) = new.content.take() {
+                match &mut old.content {
+                    Some(text) => {
+                        text.push('\n');
+                        text.push_str(&more);
+                    }
+                    None => old.content = Some(more),
+                }
             }
-            merge_chat_text(&mut old["content"], new["content"].take())?;
         }
         _ => messages.push(next),
     }
@@ -129,7 +117,8 @@ fn role(message: &Message<'_>) -> &'static str {
     }
 }
 fn produced(message: &Message<'_>) -> bool {
-    matches!(message,Message::Item(Item::Json(item)) if item["type"]=="function_call" || (item["type"]=="message" && item["role"]=="assistant"))
+    matches!(message, Message::Item(Item::Call(_)))
+        || matches!(message,Message::Item(Item::Json(item)) if item["type"]=="function_call" || (item["type"]=="message" && item["role"]=="assistant"))
 }
 fn continuation<'a>(adapter: Adapter) -> Message<'a> {
     match adapter {

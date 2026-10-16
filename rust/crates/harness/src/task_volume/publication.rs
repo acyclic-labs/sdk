@@ -1,16 +1,17 @@
 //! One generation-retry path for independent immutable task-file publishers.
 use super::*;
 
-pub(crate) async fn publish<P, F, Fut>(
+pub(crate) async fn publish<P, F, Fut, E>(
     volume: &TaskVolume<P>,
     mut generation: Generation,
     write: &Write,
     mut authorize: F,
-) -> crate::Result<Generation>
+) -> std::result::Result<Generation, E>
 where
     P: StreamProvider + ?Sized,
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = crate::Result<(Vec<CommitCondition>, Option<u64>)>>,
+    Fut: std::future::Future<Output = std::result::Result<(Vec<CommitCondition>, Option<u64>), E>>,
+    E: From<Error>,
 {
     loop {
         let (conditions, deadline) = authorize().await?;

@@ -600,7 +600,7 @@ fn obsolete_flat_and_chord_target_formats_are_rejected() {
 fn source_reuses_parsed_file(broken: bool) {
     let mut view = ConfigView::default();
     view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
-    let work = allocation_counter::measure(|| {
+    let work = acyclic_test_support::measure(|| {
         for _ in 0..64 {
             let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
             assert_eq!(source["wrap"], false);

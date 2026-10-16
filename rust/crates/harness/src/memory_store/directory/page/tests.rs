@@ -60,13 +60,13 @@ fn measured(
     after: Option<&str>,
     maximum: usize,
     implementation: Implementation,
-) -> (allocation_counter::AllocationInfo, MemoryStorePage) {
+) -> (acyclic_test_support::AllocationInfo, MemoryStorePage) {
     let mut result = MemoryStorePage {
         generation: 1,
         entries: Vec::new(),
         has_more: false,
     };
-    let allocations = allocation_counter::measure(|| {
+    let allocations = acyclic_test_support::measure(|| {
         result = selected(fixture, path, after, maximum, implementation);
     });
     (allocations, result)
@@ -260,7 +260,7 @@ fn retained_index_storage_is_linear_and_rewrites_allocate_nothing() {
     for count in [256, 4096] {
         let paths: Vec<_> = (0..count).map(|item| format!("files/{item:08}")).collect();
         let mut index = DirectoryIndex::default();
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             for (generation, path) in paths.iter().enumerate() {
                 index.publish(path, 1 + generation as u64);
             }
@@ -273,7 +273,7 @@ fn retained_index_storage_is_linear_and_rewrites_allocate_nothing() {
             allocation.bytes_current,
             allocation.bytes_max
         );
-        let rewrites = allocation_counter::measure(|| {
+        let rewrites = acyclic_test_support::measure(|| {
             for (generation, path) in paths.iter().enumerate() {
                 index.publish(path, 1 + count as u64 + generation as u64);
             }

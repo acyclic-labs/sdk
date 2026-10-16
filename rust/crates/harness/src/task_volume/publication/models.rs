@@ -44,7 +44,7 @@ fn scenario(broken: bool) {
         model_checking::set_fault(model_checking::Fault::StopAfterGenerationConflict);
     }
     let result = loom::future::block_on(Box::pin(publish(&volume, generation, &output, || {
-        std::future::ready(Ok((Vec::new(), None)))
+        std::future::ready(Ok::<_, Error>((Vec::new(), None)))
     })));
     assert!(
         result.is_ok(),

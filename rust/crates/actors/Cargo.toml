@@ -46,7 +46,7 @@ url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 async-trait.workspace = true
-allocation-counter = "=0.8.1"
+acyclic-test-support = { path = "../test-support" }
 loom = "0.7"
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

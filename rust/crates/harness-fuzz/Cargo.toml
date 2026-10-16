@@ -213,6 +213,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_offline"
+path = "fuzz_targets/client_offline.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recorded_invocation"
 path = "fuzz_targets/recorded_invocation.rs"
 required-features = ["runtime"]
@@ -221,7 +229,7 @@ doc = false
 bench = false
 
 [dev-dependencies]
-allocation-counter = "0.8.1"
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

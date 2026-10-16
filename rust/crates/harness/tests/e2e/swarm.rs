@@ -116,12 +116,12 @@ pub(super) async fn run_with_fault(
     // Meter the production subscription pipeline, including the server polled
     // by its incoming stream and snapshot/reducer callbacks. Fixture seeding,
     // producer writes and cold-reopen checks are outside this work boundary.
-    let mut allocation = allocation_counter::AllocationInfo::default();
+    let mut allocation = acyclic_test_support::AllocationInfo::default();
     let allocated = &mut allocation;
     let mut consume = Box::pin(consume);
     let consume = futures::future::poll_fn(move |cx| {
         let mut result = Poll::Pending;
-        *allocated += allocation_counter::measure(|| result = consume.as_mut().poll(cx));
+        *allocated += acyclic_test_support::measure(|| result = consume.as_mut().poll(cx));
         result
     });
     let produce = Producer {
@@ -221,9 +221,10 @@ pub(super) async fn run_with_fault(
     measured.sort_unstable();
     if !measured.is_empty() {
         println!(
-            "swarm agents={} sessions=1 samples={} tier1_p99_ns={} wire={wire}",
+            "swarm agents={} sessions=1 samples={} tier1_p50_ns={} tier1_p99_ns={} wire={wire}",
             case.agents,
             measured.len(),
+            measured[measured.len() / 2],
             measured[(measured.len() * 99 / 100).min(measured.len() - 1)]
         );
     }
