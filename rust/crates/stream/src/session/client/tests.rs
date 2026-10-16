@@ -245,16 +245,19 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
     let mut samples = Vec::new();
     for sequence in 1..=144 {
         let started = std::time::Instant::now();
-        provider
-            .append(AppendRequest {
+        let (written, record, elapsed) = crate::test_latency::sample(
+            provider.append(AppendRequest {
                 path: path.clone(),
                 records: vec![OwnedBytes::from_static(b"delta")],
                 if_tail: None,
                 idempotency_key: None,
-            })
-            .await?;
-        let record = next(&mut follow).await?;
-        let elapsed = started.elapsed().as_nanos();
+            }),
+            next(&mut follow),
+            || started.elapsed().as_nanos(),
+        )
+        .await;
+        written?;
+        let record = record?;
         assert_eq!(record.sequence, sequence);
         assert_eq!(record.value.as_slice(), b"delta");
         if sequence > 16 {

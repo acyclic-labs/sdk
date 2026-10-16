@@ -178,17 +178,15 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         let mut latencies = Vec::new();
         for index in 0..144 {
             let started = std::time::Instant::now();
-            append(&provider, "events").await?;
-            assert_eq!(
-                measured
-                    .next()
-                    .await
-                    .ok_or("latency follow ended")??
-                    .sequence,
-                index + 2
-            );
+            let (written, record, elapsed) =
+                crate::test_latency::sample(append(&provider, "events"), measured.next(), || {
+                    started.elapsed().as_nanos()
+                })
+                .await;
+            written?;
+            assert_eq!(record.ok_or("latency follow ended")??.sequence, index + 2);
             if index >= 16 {
-                latencies.push(started.elapsed().as_nanos());
+                latencies.push(elapsed);
             }
         }
         latencies.sort_unstable();
