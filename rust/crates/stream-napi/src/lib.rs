@@ -16,7 +16,8 @@ use std::{
 
 use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
 use futures::StreamExt;
-use napi::bindgen_prelude::{Buffer, Error, Result, Status};
+use napi::bindgen_prelude::{Buffer, Error, Promise, Result, Status};
+use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 use prost::Message;
 use serde::Serialize;
@@ -482,6 +483,32 @@ async fn connect_native(
 
 #[napi]
 impl NativeStreamClient {
+    /// Resolves JavaScript credentials inside each Rust retry and reconnect.
+    #[napi(js_name = "withCredentialProvider")]
+    pub fn with_credential_provider(&self, callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>) -> Self {
+        Self::from_client(self.provider.with_credential_provider(credentials::provider(callback)))
+    }
+
+    /// Establishes TLS without calling the provider until a physical RPC starts.
+    #[napi(js_name = "connectWithCredentialResult")]
+    pub async fn connect_with_credential_result(
+        endpoint: String,
+        callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>,
+        ca_certificate_pem: Option<Buffer>,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamConnectResult> {
+        let credential = credentials::provider(callback);
+        let certificate = ca_certificate_pem.map(|bytes| bytes.to_vec());
+        let result = run_with_cancellation(async move {
+            grpc::Client::connect_eager_with_credential(&endpoint, credential, certificate.as_deref())
+                .await.map_err(|error| connect_error(&error))
+        }, cancellation_state(cancellation)).await;
+        Ok(match result {
+            Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
+            Err(error) => NativeStreamConnectResult::failure(error),
+        })
+    }
+
     /// Uses a request-local credential while retaining the existing TLS channel.
     #[napi(js_name = "withCredential")]
     pub fn with_credential(&self, token: String) -> Result<Self> {
@@ -695,6 +722,7 @@ impl NativeStreamClient {
 }
 
 mod operations;
+mod credentials;
 use operations::*;
 
 #[cfg(test)]

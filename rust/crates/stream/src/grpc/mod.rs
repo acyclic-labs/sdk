@@ -2,7 +2,7 @@
 
 use std::{future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
 
-pub use acyclic_auth::credential::CredentialProvider;
+pub use acyclic_auth::credential::{CredentialError, CredentialProvider};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt, stream};

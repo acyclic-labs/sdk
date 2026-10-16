@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { credentialProvider, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -93,22 +93,36 @@ export async function nativeStreamAvailable(): Promise<boolean> {
 export class NativeStreamProvider implements StreamProvider {
   private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative, private readonly credential?: CredentialProvider) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, credential?: CredentialProvider): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string | undefined, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, credential?: CredentialProvider): Promise<NativeStreamProvider> {
+    const certificate = caCertificate === undefined ? undefined : Buffer.from(caCertificate);
+    const resolve = credential === undefined ? undefined : credentialProvider({ credential });
+    if (resolve === undefined) validateCredential(token);
     const module = await loadNativeModule();
-    const result = caCertificate === undefined
-      ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
-      : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
+    let result: GeneratedNative.NativeStreamConnectResult;
+    if (resolve !== undefined) {
+      const binding = module.NativeStreamClient as typeof GeneratedNative.NativeStreamClient & {
+        connectWithCredentialResult(endpoint: string, callback: () => Promise<string>, ca?: Buffer, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<GeneratedNative.NativeStreamConnectResult>;
+      };
+      if (typeof binding.connectWithCredentialResult !== "function") throw new StreamError("configuration", "Stream native companion does not support credential providers");
+      result = await binding.connectWithCredentialResult(endpoint, async () => await resolve(), certificate, cancellation);
+    } else {
+      validateCredential(token);
+      result = certificate === undefined
+        ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
+        : await module.NativeStreamClient.connectWithCaResult(endpoint, token, certificate, cancellation);
+    }
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
-    return new NativeStreamProvider(result.client, module, credential === undefined ? undefined : credentialProvider({ credential }));
+    return new NativeStreamProvider(result.client, module, resolve);
   }
 
   private async requestClient(signal?: AbortSignal): Promise<GeneratedNative.NativeStreamClient> {
-    if (this.credential === undefined) return this.client;
-    const token = await this.credential(signal);
-    const client = this.client as GeneratedNative.NativeStreamClient & { withCredential(token: string): GeneratedNative.NativeStreamClient };
-    if (typeof client.withCredential !== "function") throw new StreamError("configuration", "Stream native companion does not support per-request credentials");
-    return client.withCredential(token);
+    if (this.credential === undefined || signal === undefined) return this.client;
+    signal.throwIfAborted();
+    const resolve = this.credential;
+    const client = this.client as GeneratedNative.NativeStreamClient & { withCredentialProvider(callback: () => Promise<string>): GeneratedNative.NativeStreamClient };
+    if (typeof client.withCredentialProvider !== "function") throw new StreamError("configuration", "Stream native companion does not support credential providers");
+    return client.withCredentialProvider(async () => await resolve(signal));
   }
 
   get transport(): string { return this.client.transport(); }
