@@ -196,6 +196,21 @@ async fn projection(chunks: &[String], tokens: &[u16], structured: bool, omit_fi
         .unwrap();
     assert_eq!(bytes(current), b"thinking");
     let replayed = fixture.reopened().await;
+    let text = replayed.file(&path("swarm/a"), &key(".tasks/t/turns/7/text.md"));
+    if chunks.is_empty() {
+        assert!(text.is_none());
+    } else {
+        assert_eq!(bytes(text.unwrap()), chunks.concat().as_bytes());
+    }
+    for (index, chunk) in chunks.iter().enumerate() {
+        let output = replayed
+            .file(
+                &path("swarm/a"),
+                &key(&format!(".tasks/t/turns/7/tools/call/stdout/{index}")),
+            )
+            .unwrap();
+        assert_eq!(bytes(output), chunk.as_bytes());
+    }
     let expected: Vec<_> = replayed.files(&path("swarm/a")).cloned().collect();
     let actual: Vec<_> = fixture
         .views
