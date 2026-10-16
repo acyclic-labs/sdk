@@ -46,6 +46,7 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let model = crate::filesystem::ModelTaskCommand {
+            context_manifest: None,
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)

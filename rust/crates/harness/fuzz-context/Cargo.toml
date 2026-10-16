@@ -11,6 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 acyclic-harness = { path = "..", features = ["filesystem-local", "native-execution", "terminal", "mcp-http", "test-support"] }
 
 [[bin]]

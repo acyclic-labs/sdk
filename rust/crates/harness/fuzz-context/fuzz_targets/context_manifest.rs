@@ -1,6 +1,8 @@
 #![no_main]
 
-use acyclic_harness::{context::ContextManifest, conversation::Limits};
+use acyclic_harness::{
+    context::ContextManifest, conversation::Limits, filesystem::ModelTaskCommand,
+};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &[u8]| {
@@ -12,6 +14,19 @@ fuzz_target!(|input: &[u8]| {
     };
     if input.len() > limits.render_bytes as usize {
         return;
+    }
+    if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input) {
+        if command
+            .context_manifest
+            .as_ref()
+            .is_none_or(|reference| reference.validate(&mut None).is_ok())
+        {
+            let encoded = serde_json::to_vec(&command).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ModelTaskCommand>(&encoded).unwrap(),
+                command
+            );
+        }
     }
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {

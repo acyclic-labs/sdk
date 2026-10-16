@@ -139,6 +139,9 @@ pub struct TaskObserveCommand {
 pub struct ModelTaskCommand {
     /// Provider-neutral user input, subject to retained task file grants.
     pub input: ModelContent,
+    /// Exact immutable manifest file retained with this admitted command.
+    #[serde(default)]
+    pub context_manifest: Option<FileRef>,
     /// An exact recorded history selection, when available.
     #[serde(default)]
     pub selected_context: Option<SelectedModelContext>,
@@ -194,7 +197,6 @@ struct ModelBinding {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
-    tools: Option<crate::tool::ToolRegistry>,
     compaction: crate::context::CompactionPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -267,7 +269,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             model,
             provider,
             context,
-            tools: None,
             compaction,
             #[cfg(not(target_arch = "wasm32"))]
             native_custody,

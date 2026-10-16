@@ -1,4 +1,89 @@
 use super::*;
+use crate::conversation::{BoundedContentFuture, ContentHold, ContentResidencyVerifier, VolumeRef};
+use crate::{
+    executor::stock_boundary, filesystem::PreparationIo, resources::GenerationRef, wire::ErrorCode,
+};
+
+// Dispatch fences the complete operation; each source read checks the task grants.
+struct ManifestReader<'a>(&'a TaskContext);
+
+impl ContentResidencyVerifier for ManifestReader<'_> {
+    fn read<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Invalid,
+                    "manifest source exceeds byte bound",
+                ));
+            }
+            self.0.read_file(reference, io).await
+        })
+    }
+
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        prefix: &'a str,
+        path: &'a str,
+        generation: Option<&'a GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io PreparationIo>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        BoundedContentFuture::new(io, || async move {
+            crate::executor::with_history_io(io, |work| {
+                let exact = volume.directory_read_capability(prefix, work)?;
+                let full = volume.capability(crate::conversation::VolumeOperation::Read, work)?;
+                let allowed = self.0.scope().grants().contains(&exact)
+                    || self.0.scope().grants().contains(&full);
+                let bytes = (exact.capacity() + full.capacity()) as u64;
+                drop((exact, full));
+                if let Some(work) = work.as_deref_mut() {
+                    work.release_owned(bytes)?;
+                }
+                if !allowed {
+                    return Err(stock_boundary(
+                        io,
+                        ErrorCode::Unauthorized,
+                        "task cannot read manifest skill root",
+                    ));
+                }
+                Ok::<(), Error>(())
+            })?;
+            let reader = &self
+                .0
+                .content_binding(Some(volume))
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::Unsupported,
+                        "manifest source reader is not bound",
+                    )
+                })?
+                .reader;
+            reader
+                .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?
+                .await
+        })
+    }
+}
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
@@ -6,39 +91,53 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Binds model context and tool visibility to one immutable volume file.
-    /// Resolve after `with_model(..., None)` and before dispatching native work.
-    pub async fn with_context_manifest(
-        mut self,
-        reference: FileRef,
-        reader: &dyn crate::conversation::ContentResidencyVerifier,
-        limits: crate::conversation::Limits,
-    ) -> Result<Self> {
-        let binding = self.model.as_mut().ok_or_else(|| {
-            Error::Unsupported("context manifest requires a model binding".into())
-        })?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if binding.native_custody.is_some() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "load the context manifest before native configuration",
-            });
-        }
-        if binding.context.contains_stage("context-manifest") {
-            return Err(Error::Conflict(
-                "command model already has a context manifest".into(),
-            ));
-        }
-        let (tools, stage) = crate::context::ContextManifest::bind(
+    pub(super) async fn model_context(
+        &self,
+        reference: Option<FileRef>,
+        context: &TaskContext,
+        pipeline: &ContextPipeline,
+        io: Option<&PreparationIo>,
+    ) -> Result<(ContextPipeline, crate::tool::ToolRegistry)> {
+        let Some(reference) = reference else {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or_else(|| {
+                    stock_boundary(
+                        Some(io),
+                        ErrorCode::Unsupported,
+                        "model configuration requires original work",
+                    )
+                })?;
+                let (tools, custody) = self.runtime.tool_registry().clone_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                return Ok((pipeline.copy(Some(io))?, tools));
+            }
+            return Ok((pipeline.copy(io)?, self.runtime.tool_registry().clone()));
+        };
+        let reader = ManifestReader(context);
+        let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
-            reader,
-            self.runtime.tool_registry().clone(),
-            limits,
+            &reader,
+            self.runtime.tool_registry(),
+            context.scope().limits(),
+            io,
         )
         .await?;
-        stage.validate(None)?;
-        binding.context = std::mem::take(&mut binding.context).with(stage);
-        binding.tools = Some(tools);
-        Ok(self)
+        let mut pipeline = ContextPipeline::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    ErrorCode::Unsupported,
+                    "manifest requires original work",
+                )
+            })?;
+            let custody = pipeline.append_with_native_work(stage, work)?;
+            io.absorb_native_custody(custody)?;
+            return Ok((pipeline, tools));
+        }
+        pipeline = pipeline.with(stage);
+        Ok((pipeline, tools))
     }
 }

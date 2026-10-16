@@ -43,6 +43,59 @@ fn definition(name: String, description: String) -> ToolDefinition {
 // Property: canonical encoding is idempotent, preserves array order and round-trips
 // arbitrary descriptions; byte admission rejects before accepting an oversized manifest.
 proptest! {
+    // Property: order never changes uniqueness or membership; duplicate source
+    // metadata, selected invocations and tool names are all rejected.
+    #[test]
+    fn catalog_uniqueness_is_independent_of_order(names in prop::collection::vec("[a-z]{1,8}", 0..16)) {
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>().len() == names.len();
+        let mut skills = Vec::new();
+        for name in &names {
+            let mut skill = skill("skills/x/SKILL.md".into())?;
+            skill.name = name.clone();
+            skills.push(skill);
+        }
+        let discovery = DiscoveredContext { instructions: Vec::new(), skills };
+        prop_assert_eq!(discovery.validate(&mut None).is_ok(), unique);
+        let manifest = ContextManifest {
+            tools: names.iter().map(|name| definition(name.clone(), "test".into())).collect(),
+            ..Default::default()
+        };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+        let mut discovery = discovery;
+        discovery.skills.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        discovery.skills.dedup_by(|a, b| a.name == b.name);
+        let manifest = ContextManifest { discovery, selected_skills: names, ..Default::default() };
+        prop_assert_eq!(manifest.validate(Limits::default()).is_ok(), unique);
+    }
+
+    // Property: command serialization preserves the entire immutable manifest
+    // identity, and configuration files obey the same bounds as instructions.
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn command_and_configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
+        use crate::conversation::{FileDescriptor, FileRef};
+        let reference = FileRef::new(
+            skill("skills/x/SKILL.md".into())?.source.root.volume,
+            format!("context/{path}.json"), "pinned-1".into(),
+            FileDescriptor::from_bytes(text.as_bytes(), "application/json", &mut None)?,
+            "manifest.json".into(), &mut None,
+        )?;
+        let command = crate::filesystem::ModelTaskCommand {
+            context_manifest: Some(reference.clone()), input: ModelContent::Text(text),
+            selected_context: None, max_steps: 1, max_output_tokens: None,
+            mailbox_operation: None, selected_output_volume: None,
+        };
+        let encoded = serde_json::to_vec(&command).unwrap();
+        prop_assert_eq!(serde_json::from_slice::<crate::filesystem::ModelTaskCommand>(&encoded).unwrap(), command);
+        let manifest = ContextManifest { sources: vec![reference.clone()], ..Default::default() };
+        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let bytes = manifest.encode(limits)?;
+        prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
+        let limits = Limits { path_bytes: bound, ..limits };
+        prop_assert_eq!(manifest.validate(limits).is_ok(), reference.path().len() <= bound);
+        prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), reference.path().len() <= bound);
+    }
+
     // Property: every declared skill path fits its UTF-8 byte bound, whether
     // selected or lazy. Validation, publication encoding and decoding agree at
     // arbitrary bounds and immediately below/at/above the exact byte length.
@@ -107,7 +160,7 @@ proptest! {
         if tamper && !hide {
             selected.first_mut().ok_or_else(|| TestCaseError::fail("selected definition missing"))?.description.push('!');
         }
-        let result = tools.pin_model_definitions(&selected);
+        let result = tools.pin_model_definitions(&selected, None);
         if tamper && !hide {
             prop_assert!(matches!(result, Err(Error::Conflict(_))));
             prop_assert_eq!(tools.definitions(None)?, before.clone());

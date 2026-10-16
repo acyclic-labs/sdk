@@ -16,7 +16,7 @@ where
         model: &Model,
         provider: Arc<dyn ModelProvider>,
         pipeline: &ContextPipeline,
-        tools: &ToolRegistry,
+        tools: ToolRegistry,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
         compaction: &crate::context::CompactionPolicy,

@@ -9,12 +9,15 @@ use crate::{
 };
 use proptest::prelude::*;
 
+mod recovery;
+
 fn model() -> Result<Model> {
     Model::new("test".into(), "manifest".into(), "1".into(), Value::Null)
 }
 
 fn command() -> ModelTaskCommand {
     ModelTaskCommand {
+        context_manifest: None,
         input: ModelContent::Text("use pinned context".into()),
         selected_context: None,
         max_steps: 1,
@@ -57,6 +60,7 @@ async fn manifest(
         conventions: vec![text.into()],
         discovery: DiscoveredContext::default(),
         selected_skills: Vec::new(),
+        sources: Vec::new(),
         tools: tools.clone(),
     };
     let publisher = FilesystemContentPublisher::new(
@@ -95,12 +99,18 @@ fn change_live_revision(fixture: &mut Fixture, revision: u8) -> Result<()> {
 async fn retained_command(
     fixture: &Fixture,
     runtime: &Runtime,
+    reference: FileRef,
 ) -> Result<(TaskId, LeaseFence, WorkflowCommand, Value)> {
+    let expected = reference.clone();
     let lease = fixture
         .admit_command(
             runtime,
             MODEL_TASK_COMMAND_KIND,
-            serde_json::to_value(command()).map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::to_value(ModelTaskCommand {
+                context_manifest: Some(reference),
+                ..command()
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         )
         .await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -122,6 +132,13 @@ async fn retained_command(
         .await?;
     let payload =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    let decoded: ModelTaskCommand = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decoded.context_manifest.as_ref(), Some(&expected));
+    assert_eq!(
+        serde_json::from_value::<ModelTaskCommand>(serde_json::to_value(&decoded).unwrap())
+            .unwrap(),
+        decoded
+    );
     Ok((task, fence, command, payload))
 }
 
@@ -206,24 +223,15 @@ fn command_requests_use_manifest_not_live_catalog() {
                                     "done".into(),
                                 )]));
                             let (reference, tools) = manifest(&fixture, selected, &text).await?;
-                            let reader = reader(&fixture)?;
-                            let commands = runtime
-                                .commands()
-                                .with_model(
-                                    &model()?,
-                                    provider.clone(),
-                                    &ContextPipeline::default(),
-                                    &CompactionPolicy::Disabled,
-                                    None,
-                                )?
-                                .with_context_manifest(
-                                    reference,
-                                    reader.as_ref(),
-                                    Limits::default(),
-                                )
-                                .await?;
+                            let commands = runtime.commands().with_model(
+                                &model()?,
+                                provider.clone(),
+                                &ContextPipeline::default(),
+                                &CompactionPolicy::Disabled,
+                                None,
+                            )?;
                             let (task, fence, command, payload) =
-                                retained_command(&fixture, &runtime).await?;
+                                retained_command(&fixture, &runtime, reference).await?;
                             let context = runtime.task_context(task, fence.clone()).await?;
                             assert!(matches!(
                                 commands.execute(context, fence, command, payload).await?,
@@ -259,19 +267,14 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
         "done".into(),
     )]));
     let (reference, tools) = manifest(&fixture, true, "retained instructions").await?;
-    let reader = reader(&fixture)?;
-    let (task, fence, command, payload) = retained_command(&fixture, &runtime).await?;
-    let commands = runtime
-        .commands()
-        .with_model(
-            &model()?,
-            provider.clone(),
-            &ContextPipeline::default(),
-            &CompactionPolicy::Disabled,
-            None,
-        )?
-        .with_context_manifest(reference.clone(), reader.as_ref(), Limits::default())
-        .await?;
+    let (task, fence, command, payload) = retained_command(&fixture, &runtime, reference).await?;
+    let commands = runtime.commands().with_model(
+        &model()?,
+        provider.clone(),
+        &ContextPipeline::default(),
+        &CompactionPolicy::Disabled,
+        None,
+    )?;
     let context = runtime.task_context(task, fence.clone()).await?;
     assert!(matches!(
         commands
@@ -283,17 +286,13 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
     drop(runtime);
     change_live_revision(&mut fixture, 3)?;
     let reopened = fixture.runtime(None).await?;
-    let commands = reopened
-        .commands()
-        .with_model(
-            &model()?,
-            provider.clone(),
-            &ContextPipeline::default(),
-            &CompactionPolicy::Disabled,
-            None,
-        )?
-        .with_context_manifest(reference, reader.as_ref(), Limits::default())
-        .await?;
+    let commands = reopened.commands().with_model(
+        &model()?,
+        provider.clone(),
+        &ContextPipeline::default(),
+        &CompactionPolicy::Disabled,
+        None,
+    )?;
     let context = reopened.task_context(task, fence.clone()).await?;
     assert!(matches!(
         commands.execute(context, fence, command, payload).await?,
@@ -312,10 +311,10 @@ async fn reopened_commands_keep_the_manifest_and_reconcile_without_resending() -
 #[tokio::test]
 async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    change_live_revision(&mut fixture, 2)?;
     fixture.machine.native.store(true, Ordering::SeqCst);
-    let (reference, tools) = manifest(&fixture, true, "native pinned instructions").await?;
-    let reader = reader(&fixture)?;
+    let reference = recovery::publish_sources(&fixture).await?;
+    let tools = fixture.tools.definitions(None)?;
+    change_live_revision(&mut fixture, 2)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
@@ -326,10 +325,15 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         .native_lease_command(
             &runtime,
             MODEL_TASK_COMMAND_KIND,
-            serde_json::to_value(command()).map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::to_value(ModelTaskCommand {
+                context_manifest: Some(reference),
+                ..command()
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?,
             &work,
         )
         .await?;
+    recovery::mutate_sources(&fixture, true).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let provider = Arc::new(PendingModel {
@@ -337,17 +341,13 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
-    let commands = runtime
-        .commands()
-        .with_model(
-            &model()?,
-            provider.clone(),
-            &ContextPipeline::default(),
-            &CompactionPolicy::Disabled,
-            None,
-        )?
-        .with_context_manifest(reference, reader.as_ref(), Limits::default())
-        .await?;
+    let commands = runtime.commands().with_model(
+        &model()?,
+        provider.clone(),
+        &ContextPipeline::default(),
+        &CompactionPolicy::Disabled,
+        None,
+    )?;
     let (attempt, custody) = runtime
         .resume_task_with_native_work(lease, custody, &commands, 2, &work)
         .await?;
@@ -373,13 +373,34 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&inspection)?;
-    let (journal, operation) = runtime
-        .readonly_execution_journal_with_native_work(
+    // This admitted workflow has a retained lease, not a process-preparation
+    // journal. Authenticate its original reservation rather than inventing one.
+    let turn = OperationId::from_bytes([105; 16]);
+    let operation = super::super::execution_operation(task, turn, Some(&io))?;
+    let owner = runtime
+        .task_host()
+        .original_journal_owner(
             task,
-            OperationId::from_bytes([105; 16]),
-            &inspection,
+            original.operation.operation_id,
+            &LeaseFence::from(&original.reservation),
+            &io,
         )
         .await?;
+    let verifier =
+        crate::executor::with_history_io(Some(&io), |work| fixture.issuer.verifier(work))?;
+    let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+        owner,
+        operation,
+        turn,
+        fixture.filesystem.clone(),
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &fixture.volume,
+            verifier: &verifier,
+            scope: &fixture.signed,
+            maximum_bytes: 65_536,
+            io: Some(&io),
+        },
+    )?;
     let records = journal.replay(operation, 0, 64, Some(&io))?.await?;
     let reference = records
         .iter()
@@ -392,67 +413,29 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
     let request: ModelRequest =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(request.tools, tools);
-    assert_eq!(
-        request.messages[0].content,
-        ModelContent::Text("native pinned instructions".into())
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn rejects_unbound_duplicate_and_funded_manifest_replacement() -> Result<()> {
-    let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime(None).await?;
-    let (reference, _) = manifest(&fixture, true, "pinned").await?;
-    let reader = reader(&fixture)?;
-    let provider = Arc::new(ScriptedModelProvider::new([]));
-    assert!(matches!(
-        runtime
-            .commands()
-            .with_context_manifest(reference.clone(), reader.as_ref(), Limits::default())
-            .await,
-        Err(Error::Unsupported(_))
-    ));
-    let commands = runtime
-        .commands()
-        .with_model(
-            &model()?,
-            provider.clone(),
-            &ContextPipeline::default(),
-            &CompactionPolicy::Disabled,
-            None,
-        )?
-        .with_context_manifest(reference.clone(), reader.as_ref(), Limits::default())
-        .await?;
-    assert!(matches!(
-        commands
-            .with_context_manifest(reference.clone(), reader.as_ref(), Limits::default())
-            .await,
-        Err(Error::Conflict(_))
-    ));
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work =
-        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let commands = runtime.commands().with_model(
-        &model()?,
-        provider.clone(),
-        &ContextPipeline::default(),
-        &CompactionPolicy::Disabled,
-        Some(&io),
-    )?;
-    let before = work.receipt();
-    assert!(matches!(
-        commands
-            .with_context_manifest(reference, reader.as_ref(), Limits::default())
-            .await,
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            ..
+    let files: Vec<_> = request
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(crate::model::ModelContentPart::File { file, .. }) => Some(file),
+            _ => None,
         })
-    ));
-    assert!(work.receipt().backend_read_operations == before.backend_read_operations);
-    assert!(provider.requests().is_empty());
+        .collect();
+    assert_eq!(
+        files.iter().map(|file| file.path()).collect::<Vec<_>>(),
+        ["AGENTS.md", "CLAUDE.md"]
+    );
+    for (file, expected) in files
+        .into_iter()
+        .zip(["ORIGINAL AGENTS", "ORIGINAL CLAUDE"])
+    {
+        assert_eq!(
+            reader(&fixture)?.read(file, 65_536, None)?.await?.as_ref(),
+            expected.as_bytes()
+        );
+    }
+    assert!(request.messages.iter().any(|message| matches!(
+        &message.content, ModelContent::Text(text) if text.contains("ORIGINAL SKILL")
+    )));
     Ok(())
 }

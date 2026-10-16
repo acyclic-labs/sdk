@@ -436,6 +436,7 @@ pub(super) async fn worker_restart_with_options(
                     })
                 } else {
                     serde_json::to_value(ModelTaskCommand {
+                        context_manifest: None,
                         input: if with_model_approval {
                             let file = payloads.stage(operation, "model-input", b"hello", None)?.await?;
                             let mut turns = vec![ScriptedTurn::Events(vec![

@@ -135,6 +135,15 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        let (pipeline, tools) = BoundedContentFuture::new(io, || {
+            self.model_context(
+                command.context_manifest.take(),
+                &context,
+                &binding.context,
+                io,
+            )
+        })?
+        .await?;
         let input = TurnInput {
             operation_id: operation,
             input: command.input,
@@ -163,11 +172,8 @@ where
                     &context,
                     &binding.model,
                     Arc::clone(&binding.provider),
-                    &binding.context,
-                    binding
-                        .tools
-                        .as_ref()
-                        .unwrap_or_else(|| self.runtime.tool_registry()),
+                    &pipeline,
+                    tools,
                     journal,
                     work,
                     &binding.compaction,
@@ -201,12 +207,8 @@ where
                     turn,
                     binding.model.clone(),
                     Arc::clone(&binding.provider),
-                    binding.context.clone(),
-                    binding
-                        .tools
-                        .as_ref()
-                        .unwrap_or_else(|| self.runtime.tool_registry())
-                        .clone(),
+                    pipeline,
+                    tools,
                     command.selected_output_volume.as_ref(),
                 )
                 .await?

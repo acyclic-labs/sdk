@@ -143,6 +143,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                         operation,
                         "model",
                         &serde_json::to_vec(&ModelTaskCommand {
+                            context_manifest: None,
                             input: ModelContent::Text("original prompt".into()),
                             selected_context: None,
                             max_steps: 1,
