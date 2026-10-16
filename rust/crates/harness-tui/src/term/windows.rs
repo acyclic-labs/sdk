@@ -49,7 +49,7 @@ fn console_control(event: u32) -> bool {
     if matches!(event, 0 | 1 | 2 | 5 | 6)
         && let Some(owner) = CONSOLE.get()
     {
-        let _ = owner.close(ConsoleIo::restore);
+        let _ = Owner::close(&owner, ConsoleIo::restore);
     }
     #[cfg(test)]
     tests::observe_restored_console(event);
@@ -87,10 +87,10 @@ impl Tty {
             .set(Arc::clone(&owner))
             .map_err(|_| io::ErrorKind::AlreadyExists)?;
         ffi::console_register(console_control)?;
-        if let Err(error) = owner.run(Instant::now() + PROBE_TIMEOUT, |guard| {
+        if let Err(error) = Owner::run(&owner, Instant::now() + PROBE_TIMEOUT, |guard| {
             guard.writer().reapply()
         }) {
-            let _ = owner.close(ConsoleIo::restore);
+            let _ = Owner::close(&owner, ConsoleIo::restore);
             return Err(error);
         }
         Ok(Self {
@@ -113,21 +113,19 @@ impl Tty {
     }
     /// Enable known mutable modes, with all I/O waits outside owner state.
     pub fn setup(&mut self, screen: ScreenMode) -> io::Result<()> {
-        self.owner
-            .run(Instant::now() + PROBE_TIMEOUT, move |guard| {
-                guard.setup(screen)
-            })
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+            guard.setup(screen)
+        })
     }
     /// Enable one known mutable mode under the same journal.
     pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
-        self.owner
-            .run(Instant::now() + PROBE_TIMEOUT, move |guard| {
-                guard.enable_mode(mode)
-            })
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+            guard.enable_mode(mode)
+        })
     }
     /// Fence the worker, then restore DEC/console modes and code pages.
     pub fn restore(&mut self) -> io::Result<()> {
-        self.owner.close(ConsoleIo::restore)
+        Owner::close(&self.owner, ConsoleIo::restore)
     }
     /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
     pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
@@ -145,8 +143,9 @@ impl Tty {
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
         let bytes = bytes[..bytes.len().min(4096)].to_vec();
-        self.owner
-            .run(deadline, move |guard| guard.writer().write(&bytes))
+        Owner::run(&self.owner, deadline, move |guard| {
+            guard.writer().write(&bytes)
+        })
     }
 }
 impl ProbeIo for Tty {
@@ -172,10 +171,9 @@ impl ProbeIo for Tty {
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();
-        self.owner
-            .run(Instant::now() + PROBE_TIMEOUT, move |guard| {
-                guard.detected(&caps)
-            })
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+            guard.detected(&caps)
+        })
     }
 }
 impl Write for Tty {
@@ -183,7 +181,7 @@ impl Write for Tty {
         self.write_until(bytes, Instant::now() + PROBE_TIMEOUT)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.owner.run(Instant::now() + PROBE_TIMEOUT, |guard| {
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
             guard.writer().flush()
         })
     }
@@ -310,7 +308,7 @@ mod tests {
             }
             let setting_up = Arc::clone(&tty.owner);
             let setup = std::thread::spawn(move || {
-                let _ = setting_up.run(Instant::now() + PROBE_TIMEOUT, |guard| {
+                let _ = Owner::run(&setting_up, Instant::now() + PROBE_TIMEOUT, |guard| {
                     guard.enable_mode(1003)
                 });
             });
@@ -325,7 +323,7 @@ mod tests {
             setup_wait = Some(setup);
             let closing = Arc::clone(&tty.owner);
             close_wait = Some(std::thread::spawn(move || {
-                closing.close(ConsoleIo::restore)
+                Owner::close(&closing, ConsoleIo::restore)
             }));
             let start = Instant::now();
             let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));

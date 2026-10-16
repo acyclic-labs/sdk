@@ -79,15 +79,15 @@ impl<W: Write + Send + 'static> Owner<W> {
     }
 
     pub(crate) fn run<R: Send + 'static>(
-        self: &Arc<Self>,
+        this: &Arc<Self>,
         deadline: Instant,
         action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<R> + Send + 'static,
     ) -> io::Result<R> {
-        self.execute(deadline, false, action)
+        Self::execute(this, deadline, false, action)
     }
 
     fn execute<R: Send + 'static>(
-        self: &Arc<Self>,
+        this: &Arc<Self>,
         deadline: Instant,
         restoring: bool,
         action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<R> + Send + 'static,
@@ -95,7 +95,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         // Lock order: owner -> result. Worker and waiter never acquire owner
         // while holding result. Driver calls and acknowledgement waits release
         // owner. Cancellation calls also run outside this lock and the caller.
-        let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
+        let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
         while !state.acknowledged {
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
@@ -103,7 +103,7 @@ impl<W: Write + Send + 'static> Owner<W> {
             let remaining = deadline
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(1));
-            state = self.wait(state, remaining)?;
+            state = this.wait(state, remaining)?;
         }
         if !restoring && state.closed {
             return Err(io::ErrorKind::NotConnected.into());
@@ -120,7 +120,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         state.generation = generation;
         let result = Arc::new(Mutex::new(None));
         let output = Arc::clone(&result);
-        let owner = Arc::clone(self);
+        let owner = Arc::clone(this);
         let worker = move || {
             let mut state = owner
                 .state
@@ -169,7 +169,7 @@ impl<W: Write + Send + 'static> Owner<W> {
             Err(error) => {
                 state.phase = Phase::Cancelled;
                 state.acknowledged = true;
-                self.wake.notify_all();
+                this.wake.notify_all();
                 return Err(error);
             }
         }
@@ -177,10 +177,10 @@ impl<W: Write + Send + 'static> Owner<W> {
             if Instant::now() >= deadline {
                 state.phase = Phase::Cancelled;
                 drop(state);
-                self.cancel_background(generation);
+                Self::cancel_background(this, generation);
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            state = self.wait(state, deadline.saturating_duration_since(Instant::now()))?;
+            state = this.wait(state, deadline.saturating_duration_since(Instant::now()))?;
         }
         let value = result.lock().map_err(|_| io::ErrorKind::Other)?.take();
         if state.closed && !restoring {
@@ -196,8 +196,8 @@ impl<W: Write + Send + 'static> Owner<W> {
         self.quiesce_generation(wait_for_ack, None)
     }
 
-    fn cancel_background(self: &Arc<Self>, generation: u64) {
-        let owner = Arc::clone(self);
+    fn cancel_background(this: &Arc<Self>, generation: u64) {
+        let owner = Arc::clone(this);
         #[cfg(acyclic_harness_tui_loom)]
         let _worker = thread::spawn(move || {
             let _ = owner.quiesce_generation(true, Some(generation));
@@ -238,34 +238,39 @@ impl<W: Write + Send + 'static> Owner<W> {
     }
 
     pub(crate) fn close(
-        self: &Arc<Self>,
+        this: &Arc<Self>,
         os_restore: fn(&mut W) -> io::Result<()>,
     ) -> io::Result<()> {
         {
-            let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
+            let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
             if state.closed {
                 while !state.restored {
-                    state = self.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
+                    state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
                 }
                 return Ok(());
             }
             state.closed = true;
         }
-        self.quiesce(true)?;
-        let result = self.execute(Instant::now() + super::PROBE_TIMEOUT, true, move |guard| {
-            // Cancellation can leave a partial query even with an empty undo
-            // journal. Fence its worker first, then cancel the control string.
-            let cancel = guard.writer().write_all(b"\x18");
-            let dec = guard.restore().or_else(|_| guard.restore());
-            let os = os_restore(guard.writer());
-            cancel.and(dec).and(os)
-        });
+        this.quiesce(true)?;
+        let result = Self::execute(
+            this,
+            Instant::now() + super::PROBE_TIMEOUT,
+            true,
+            move |guard| {
+                // Cancellation can leave a partial query even with an empty undo
+                // journal. Fence its worker first, then cancel the control string.
+                let cancel = guard.writer().write_all(b"\x18");
+                let dec = guard.restore().or_else(|_| guard.restore());
+                let os = os_restore(guard.writer());
+                cancel.and(dec).and(os)
+            },
+        );
         // Even if teardown output blocks, keep cancelling until it returns.
         // OS mode restoration runs after every attempted DEC undo, before ack.
-        self.quiesce(true)?;
-        let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
+        this.quiesce(true)?;
+        let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
         state.restored = true;
-        self.wake.notify_all();
+        this.wake.notify_all();
         result
     }
 }
@@ -306,9 +311,11 @@ mod tests {
             let owner = Owner::new(guard, |_| {});
             let writing = Arc::clone(&owner);
             let caller = thread::spawn(move || {
-                let _ = writing.run(Instant::now() + Duration::from_secs(10), |guard| {
-                    guard.writer().write_all(b"mode")
-                });
+                let _ = Owner::run(
+                    &writing,
+                    Instant::now() + Duration::from_secs(10),
+                    |guard| guard.writer().write_all(b"mode"),
+                );
             });
             thread::yield_now();
             if broken {
@@ -322,12 +329,11 @@ mod tests {
                     .unwrap_or_else(|error| panic!("{error}"));
                 restored.store(true, Ordering::SeqCst);
             } else {
-                owner
-                    .close(|writer| {
-                        writer.restored.store(true, Ordering::SeqCst);
-                        Ok(())
-                    })
-                    .unwrap_or_else(|error| panic!("{error}"));
+                Owner::close(&owner, |writer| {
+                    writer.restored.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap_or_else(|error| panic!("{error}"));
             }
             caller
                 .join()
@@ -354,19 +360,23 @@ mod tests {
                 |_| {},
             );
             let checking = Arc::clone(&owner);
-            let free = owner.run(Instant::now() + Duration::from_secs(10), move |_| {
-                if broken {
-                    // Negative control: the old driver path retained owner
-                    // state while waiting for its setup/restoration I/O.
-                    let _held = checking
-                        .state
-                        .lock()
-                        .unwrap_or_else(|error| panic!("{error:?}"));
-                    Ok(checking.state.try_lock().is_ok())
-                } else {
-                    Ok(checking.state.try_lock().is_ok())
-                }
-            });
+            let free = Owner::run(
+                &owner,
+                Instant::now() + Duration::from_secs(10),
+                move |_| {
+                    if broken {
+                        // Negative control: the old driver path retained owner
+                        // state while waiting for its setup/restoration I/O.
+                        let _held = checking
+                            .state
+                            .lock()
+                            .unwrap_or_else(|error| panic!("{error:?}"));
+                        Ok(checking.state.try_lock().is_ok())
+                    } else {
+                        Ok(checking.state.try_lock().is_ok())
+                    }
+                },
+            );
             assert_eq!(free.ok(), Some(true));
         });
     }
