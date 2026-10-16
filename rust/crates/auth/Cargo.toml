@@ -26,3 +26,7 @@ protoc-bin-vendored = "=3.3.0"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "verify"
+harness = false

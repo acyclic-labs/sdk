@@ -57,6 +57,18 @@ proptest! {
         prop_assert!(verify(&changed, &trust, NOW).is_err());
     }
     #[test]
+    fn signature_checks_detect_what_structural_admission_cannot(index in 0..64usize, bit in 0..8u8) {
+        let trust = Snapshot::default();
+        let bytes = root(|_| {});
+        let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
+        wire.blocks[0].signature[index] ^= 1 << bit;
+        let changed = wire.encode_to_vec();
+        // Negative control: replacing authenticated verification with structural
+        // admission accepts every generated forgery. The signature property fails.
+        prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
+        prop_assert!(verify(&changed, &trust, NOW).is_err());
+    }
+    #[test]
     fn revoking_block_k_invalidates_k_and_every_descendant(k in 0..4usize) {
         let mut trust = Snapshot::default();
         let mut chain = vec![verify(&root(|_| {}), &trust, NOW).unwrap()];
