@@ -11,6 +11,10 @@ pub type Requests = BoxProviderStream<'static, wire::SessionFrame>;
 pub trait Transport: ProviderPlatform {
     /// Opens one bidirectional platform connection from the canonical frame source.
     fn session(&self, source: Requests) -> BoxProviderFuture<'_, Result<Responses, StreamError>>;
+    /// Withdraws an unadmitted write owned wholly by this logical channel.
+    /// Synchronous socket writes need no hook; asynchronous platform queues
+    /// cancel that write without closing the shared physical connection.
+    fn cancel_channel(&self, _channel: wire::SessionChannel) {}
 }
 
 /// Shared endpoint handle retained across reconnects.
