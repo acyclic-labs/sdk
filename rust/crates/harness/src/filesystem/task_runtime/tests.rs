@@ -770,6 +770,7 @@ mod mail_tests;
 
 mod admission;
 mod future_sizes;
+mod manifest;
 mod model;
 mod settlement;
 mod worker;

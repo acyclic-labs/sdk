@@ -330,6 +330,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                 Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(),
+                ToolRegistry::default(),
                 None,
             )
             .await?
@@ -372,6 +373,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        ToolRegistry::default(),
                         None,
                     )
                     .await?
@@ -413,6 +415,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                     Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
                     ContextPipeline::default(),
+                    ToolRegistry::default(),
                     None,
                 )
                 .await?;

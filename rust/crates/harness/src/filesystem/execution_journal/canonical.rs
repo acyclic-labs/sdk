@@ -347,7 +347,9 @@ where
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
-                            ModelEvent::Completed { .. } | ModelEvent::Reasoning { .. } => {}
+                            ModelEvent::Completed { .. }
+                            | ModelEvent::Reasoning { .. }
+                            | ModelEvent::ReasoningBlock { .. } => {}
                             ModelEvent::ToolCall(_) => {
                                 return Err(canonical_boundary(
                                     io,

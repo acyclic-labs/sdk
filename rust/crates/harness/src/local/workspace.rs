@@ -82,21 +82,6 @@ impl LocalWorkspace {
         &self.context_line
     }
 
-    pub(super) fn context_stage(&self) -> Arc<dyn crate::context::ContextStage> {
-        Arc::new(crate::context::SourceStage::new(
-            "workspace_volumes",
-            "1",
-            Arc::new(crate::context::Context {
-                messages: vec![crate::model::ModelMessage {
-                    role: crate::model::ModelRole::System,
-                    content: ModelContent::Text(self.context_line.clone()),
-                }],
-                ..Default::default()
-            }),
-            crate::context::ContextPlacement::Prepend,
-        ))
-    }
-
     /// Binds commands to this workspace's existing serialized view owner.
     pub async fn executor(
         self: &Arc<Self>,

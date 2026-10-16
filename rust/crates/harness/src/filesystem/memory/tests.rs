@@ -35,12 +35,11 @@ fn synthetic_token_count(
         })
         .collect::<Result<Vec<_>>>()?;
     let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(fixed)
-            .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(fixed).map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
         message_tokens,
-    })
+    ))
 }
 
 fn text_model(turns: usize) -> ScriptedModelProvider {

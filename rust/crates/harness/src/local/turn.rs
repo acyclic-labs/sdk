@@ -18,7 +18,6 @@ impl LocalHarness {
         self.runtime.commands().with_model(
             &self.model,
             self.provider.clone(),
-            &self.context,
             &self.compaction,
             None,
         )
@@ -46,6 +45,7 @@ impl LocalHarness {
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
         let model = crate::filesystem::ModelTaskCommand {
+            context_manifest: self.context_manifest.clone(),
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -268,4 +268,32 @@ fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+// One content-addressed default file per effective catalog, shared by every
+// prompt opened with that catalog. Admission retains its exact immutable ref.
+pub(super) async fn default_manifest(
+    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
+    tools: &ToolRegistry,
+    limits: Limits,
+    mounts: Option<&str>,
+) -> Result<crate::conversation::FileRef> {
+    let mut manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
+    if let Some(mounts) = mounts {
+        manifest.conventions.push(mounts.to_owned());
+    }
+    let bytes = manifest.encode(limits)?;
+    let digest = blake3::hash(&bytes);
+    let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());
+    Ok(publisher
+        .stage_once(
+            operation,
+            &format!("inputs/context/{digest}.json"),
+            &bytes,
+            "application/json",
+            "context-manifest.json",
+            None,
+        )?
+        .await?
+        .0)
 }

@@ -1,11 +1,13 @@
 //! Immutable provider-neutral model values and streaming contract.
 
+mod call_id;
 mod content;
 mod inventory;
 mod media;
 mod prefix;
 mod preparation;
 mod provider;
+mod reasoning;
 mod request;
 mod usage;
 pub(crate) use usage::accumulate_usage;
@@ -13,6 +15,8 @@ pub(crate) use usage::accumulate_usage;
 mod tests;
 mod tool_call;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
     ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
 };
@@ -30,6 +34,7 @@ pub(crate) use preparation::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
 pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
+pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
 pub use request::{ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;
 

@@ -301,5 +301,7 @@ fn durable(
     )
 }
 mod compaction;
+#[cfg(not(target_arch = "wasm32"))]
+mod reasoning_compaction;
 mod durable;
 mod pipeline;

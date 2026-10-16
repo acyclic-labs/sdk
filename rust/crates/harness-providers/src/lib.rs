@@ -1,0 +1,62 @@
+//! Shared streaming adapters and immutable model selection.
+
+mod accounting;
+mod adapter;
+mod catalog;
+mod call_ids;
+mod counting;
+mod credentials;
+mod dispatch;
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub mod fuzzing;
+mod http;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+mod projection;
+mod reasoning;
+mod registry;
+mod resolved;
+mod spec;
+mod sse;
+mod stream;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+mod tool_names;
+
+pub use adapter::Adapter;
+pub use catalog::default_catalog;
+pub use counting::wire::{TokenCountField, TokenCounterSpec};
+pub use credentials::Credentials;
+#[cfg(target_arch = "wasm32")]
+pub use http::BrowserTransport;
+#[cfg(not(target_arch = "wasm32"))]
+pub use http::ReqwestTransport;
+pub use http::{HttpRequest, HttpResponse, HttpTransport};
+pub use reasoning::{ProjectedReasoning, project_reasoning};
+pub use registry::Registry;
+pub use resolved::ResolvedModel;
+pub use spec::{Authentication, ProviderSpec};
+
+use acyclic_harness::{Error, Result};
+use serde_json::Value;
+mod sync;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod accounting_properties;
+
+fn invalid(reason: impl Into<String>) -> Error {
+    Error::Invalid(reason.into())
+}
+
+fn http_error(status: u16) -> Error {
+    let message = format!("model HTTP status {status}");
+    match status {
+        401 | 403 => Error::Unauthorized(message),
+        408 | 429 | 500..=599 => Error::Storage(message),
+        _ => Error::Invalid(message),
+    }
+}
+
+fn json(bytes: &[u8]) -> Result<Value> {
+    serde_json::from_slice(bytes).map_err(|error| invalid(error.to_string()))
+}

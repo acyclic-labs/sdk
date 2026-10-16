@@ -44,20 +44,72 @@ impl ToolInvocation {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        crate::executor::with_history_io(io, |work| {
-            limits.validate(work)?;
-            crate::executor::json::json_byte_length_at_depth(
-                &RecordedInvocation {
-                    invocation: self,
-                    metadata,
-                },
-                limits.file_bytes.min(limits.render_bytes),
-                crate::executor::json::RECORD_MAXIMUM_DEPTH,
-                work,
-            )?;
-            Self::validate_identity(&self.call_id, Some(&self.name), work)?;
-            crate::conversation::validate_json_value(&self.arguments, work)?;
-            crate::conversation::validate_json_value(metadata, work)
-        })
+        validate(
+            self,
+            &self.call_id,
+            &self.name,
+            &self.arguments,
+            metadata,
+            limits,
+            io,
+        )
     }
+}
+
+// OperationId's serde representation has a fixed width. The stream boundary can
+// admit the exact envelope size before dispatch derives the actual authority.
+#[derive(Serialize)]
+struct ModelInvocation<'a> {
+    operation_id: OperationId,
+    call_id: &'a str,
+    name: &'a str,
+    arguments: &'a Value,
+}
+
+pub(crate) fn validate_model_call_recorded(
+    call: &crate::model::ToolCall,
+    limits: crate::conversation::Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    let invocation = ModelInvocation {
+        operation_id: OperationId::from_bytes([0; 16]),
+        call_id: &call.call_id,
+        name: &call.name,
+        arguments: &call.arguments,
+    };
+    validate(
+        &invocation,
+        &call.call_id,
+        &call.name,
+        &call.arguments,
+        &call.metadata,
+        limits,
+        io,
+    )
+}
+
+fn validate<I: Serialize>(
+    invocation: &I,
+    call_id: &str,
+    name: &str,
+    arguments: &Value,
+    metadata: &Value,
+    limits: crate::conversation::Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    crate::executor::with_history_io(io, |work| {
+        limits.validate(work)?;
+        crate::executor::json::json_byte_length_at_depth(
+            &RecordedInvocation {
+                invocation,
+                metadata,
+            },
+            limits.file_bytes.min(limits.render_bytes),
+            crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            work,
+        )?;
+        ToolInvocation::validate_identity(call_id, Some(name), work)?;
+        crate::conversation::validate_json_value(arguments, work)?;
+        crate::conversation::validate_json_value(metadata, work)
+    })
 }

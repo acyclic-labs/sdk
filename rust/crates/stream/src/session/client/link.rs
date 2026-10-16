@@ -16,7 +16,7 @@ impl Pool {
     }
     pub(super) fn dial(&mut self, node: wire::SessionNode, channel: Option<TransportChannel>) {
         let name = node.node_id.clone();
-        if self.links.contains_key(&name) || !self.connecting.insert(name.clone()) {
+        if self.links.contains_key(&name) || self.dials.contains_key(&name) {
             return;
         }
         let connect = self.connect.clone();
@@ -24,17 +24,37 @@ impl Pool {
         let authorization = self.authorization.clone();
         let credential = self.credential.clone();
         let epoch = self.dial_epoch;
-        self.dials.push(Box::pin(async move {
-            let outcome = async {
-                let channel = match channel {
-                    Some(channel) => channel,
-                    None => connect(node).await?,
-                };
-                open_link(channel, &name, identity, authorization, credential).await
-            }
-            .await;
-            (name, epoch, outcome)
-        }));
+        // Capture only the subscriber. Neither a dial nor a shared Link owns
+        // an interest's span; physical spans are roots with causal links.
+        let Some(owner) = self.dial_owner(&name) else {
+            return;
+        };
+        let Some(route) = self.routes.get(&owner) else {
+            return;
+        };
+        let context = route
+            .observation
+            .in_scope(|| crate::obs::OperationSpan::new_root(tracing::Span::none()));
+        self.dials.insert(
+            name.clone(),
+            Box::pin(context.scope(async move {
+                let outcome = async {
+                    let channel = match channel {
+                        Some(channel) => channel,
+                        None => connect(node).await?,
+                    };
+                    open_link(channel, &name, identity, authorization, credential).await
+                }
+                .await;
+                (name, epoch, outcome)
+            })),
+        );
+    }
+    pub(super) fn dial_owner(&self, node: &str) -> Option<u64> {
+        self.routes
+            .iter()
+            .find(|(_, route)| route.node == node && route.live())
+            .map(|(id, _)| *id)
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
         let Some(link) = self.links.get(&node) else {
@@ -99,6 +119,11 @@ impl Pool {
             .links
             .get_mut(&route.node)
             .ok_or(StreamError::Unavailable)?;
+        if let Some(observation) = &link.observation {
+            observation
+                .operation
+                .follows_from_same_subscriber(&route.observation);
+        }
         let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
         let subscription = wire::SessionSubscription {
             channel: Some(wire::SessionChannel {
@@ -180,34 +205,42 @@ impl Pool {
         let Some(route) = self.routes.remove(&id) else {
             return Ok(());
         };
-        let Some(link) = self.links.get_mut(&route.node) else {
-            return Ok(());
-        };
-        link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let revision = link.revision;
         let node = route.node.clone();
-        self.send(
-            &node,
-            frame(
-                0,
-                0,
-                Body::Interest(wire::SessionInterest {
-                    revision,
-                    upsert: Vec::new(),
-                    remove: vec![wire::SessionChannel {
-                        channel_id: id,
-                        generation: route.generation,
-                    }],
-                }),
-            ),
-        )
+        if let Some(link) = self.links.get_mut(&node) {
+            link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
+            let revision = link.revision;
+            self.send(
+                &node,
+                frame(
+                    0,
+                    0,
+                    Body::Interest(wire::SessionInterest {
+                        revision,
+                        upsert: Vec::new(),
+                        remove: vec![wire::SessionChannel {
+                            channel_id: id,
+                            generation: route.generation,
+                        }],
+                    }),
+                ),
+            )?;
+        }
+        if !self.node_interested(&node) {
+            self.dials.remove(&node);
+            self.links.remove(&node);
+        }
+        Ok(())
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
         let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
         if let Some(observation) = &mut link.observation {
             observation.finish(Some(&StreamError::Unavailable));
         }
-        for route in self.routes.values_mut().filter(|route| route.node == node) {
+        for route in self
+            .routes
+            .values_mut()
+            .filter(|route| route.node == node && route.live())
+        {
             route.generation = route.progress.fence()?;
             route.observation.in_scope(|| {
                 tracing::debug!(event = "reconnect", generation = route.generation);

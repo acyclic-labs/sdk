@@ -228,11 +228,16 @@ impl ModelProvider for ScriptedModelProvider {
         })
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        let counter = self.token_counter.as_ref().ok_or_else(|| {
-            Error::Unsupported("selected model token counting is unavailable".into())
-        })?;
-        counter(request)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            let counter = self.token_counter.as_ref().ok_or_else(|| {
+                Error::Unsupported("selected model token counting is unavailable".into())
+            })?;
+            counter(request)
+        })
     }
 
     fn generate<'a>(

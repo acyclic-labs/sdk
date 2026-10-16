@@ -1,0 +1,273 @@
+//! The cargo-fuzz entry point uses the same streaming path as model dispatch.
+use crate::{Adapter, stream};
+use acyclic_harness::{
+    OperationId,
+    model::{ModelDispatch, ModelEvent},
+};
+use bytes::Bytes;
+use futures::TryStreamExt as _;
+
+fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
+    parse_at(adapter, input, width, [1; 16])
+}
+
+fn parse_at(
+    adapter: Adapter,
+    input: &[u8],
+    width: usize,
+    operation: [u8; 16],
+) -> Result<Vec<ModelEvent>, String> {
+    let body = Box::pin(futures::stream::iter(
+        input
+            .chunks(width)
+            .map(|part| Ok(Bytes::copy_from_slice(part))),
+    ));
+    let dispatch = ModelDispatch {
+        operation_id: OperationId::from_bytes(operation),
+        step: 0,
+        request_digest: [0; 32],
+    };
+    futures::executor::block_on(stream::events(adapter, body, 4096, dispatch).try_collect())
+        .map_err(|error| error.to_string())
+}
+
+/// Chunking cannot change acceptance, errors or the decoded events. Accepted
+/// events must round-trip through the durable model codec without losing data.
+pub fn assert_stream_invariants(input: &[u8]) {
+    let Some((&kind, input)) = input.split_first() else {
+        return;
+    };
+    if kind == b'K' {
+        use crate::counting::wire::{TokenCountField, TokenCounterSpec, response};
+        for field in [
+            TokenCountField::InputTokens,
+            TokenCountField::TotalTokens,
+            TokenCountField::Count,
+        ] {
+            let spec = TokenCounterSpec {
+                path: "count".into(),
+                adapter: Adapter::Responses,
+                response_field: field,
+                framing_tokens: 0,
+            };
+            if let Ok(count) = response(input, &spec) {
+                let encoded = match field {
+                    TokenCountField::InputTokens => serde_json::json!({"input_tokens":count}),
+                    TokenCountField::TotalTokens => serde_json::json!({"totalTokens":count}),
+                    TokenCountField::Count => serde_json::json!({"count":count}),
+                };
+                assert_eq!(
+                    response(&serde_json::to_vec(&encoded).unwrap(), &spec).unwrap(),
+                    count
+                );
+            }
+        }
+        return;
+    }
+    if kind == b'R' {
+        if let Ok(block) = serde_json::from_slice::<acyclic_harness::model::ReasoningBlock>(input) {
+            let encoded = serde_json::to_vec(&block).unwrap();
+            let replay: acyclic_harness::model::ReasoningBlock =
+                serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(block, replay);
+            for adapter in [crate::Adapter::Responses, crate::Adapter::Anthropic] {
+                if let Some(raw) =
+                    crate::projection::native_reasoning::validated(adapter, &block.continuity)
+                {
+                    assert_eq!(serde_json::to_vec(raw).unwrap(), block.continuity);
+                }
+            }
+            for family in ["anthropic", "responses", "gemini", "chat"] {
+                let mut target = block.origin.clone();
+                target.provider = family.into();
+                assert_eq!(
+                    crate::project_reasoning(&block, &target),
+                    crate::project_reasoning(&replay, &target)
+                );
+            }
+            let event = ModelEvent::ReasoningBlock { block: replay };
+            let encoded = serde_json::to_vec(&event).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<ModelEvent>(&encoded).unwrap(),
+                event
+            );
+        }
+        return;
+    }
+    if kind == b'C' {
+        catalog_round_trip(input);
+        return;
+    }
+    if kind == b'N' {
+        if let Ok(request) = serde_json::from_slice::<acyclic_harness::model::ModelRequest>(input) {
+            crate::tool_names::Names::assert_round_trip(&request);
+            crate::call_ids::CallIds::assert_round_trip(&request);
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let replay = serde_json::from_slice(&encoded).unwrap();
+            crate::tool_names::Names::assert_round_trip(&replay);
+            crate::call_ids::CallIds::assert_round_trip(&replay);
+        }
+        return;
+    }
+    let adapter = [
+        Adapter::Anthropic,
+        Adapter::Responses,
+        Adapter::Chat,
+        Adapter::Gemini,
+    ][usize::from(kind) % 4];
+    let whole = parse(adapter, input, input.len().max(1));
+    assert_eq!(whole, parse(adapter, input, 1));
+    if let Ok(events) = whole {
+        if adapter == Adapter::Gemini {
+            crate::projection::gemini::assert_visible_replay(&events);
+        }
+        // Identical provider bytes in a different turn must never reuse canonical
+        // IDs. Bindings remain byte-for-byte equal, independently of chunking.
+        let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
+        let first: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        let second: Vec<_> = other
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(first.len(), second.len());
+        for (ordinal, (first, second)) in first.iter().zip(&second).enumerate() {
+            let a = ModelDispatch {
+                operation_id: OperationId::from_bytes([1; 16]),
+                step: 0,
+                request_digest: [0; 32],
+            };
+            let b = ModelDispatch {
+                operation_id: OperationId::from_bytes([2; 16]),
+                step: 0,
+                request_digest: [0; 32],
+            };
+            assert_eq!(first.call_id, a.tool_call_id(ordinal as u64));
+            assert_eq!(second.call_id, b.tool_call_id(ordinal as u64));
+            assert_eq!(first.metadata, second.metadata);
+        }
+        let ids: std::collections::BTreeSet<_> =
+            first.iter().map(|call| call.call_id.as_str()).collect();
+        assert!(
+            second
+                .iter()
+                .all(|call| !ids.contains(call.call_id.as_str()))
+        );
+        for event in events {
+            let bytes = serde_json::to_vec(&event).unwrap();
+            let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(restored, event);
+        }
+    }
+}
+
+fn catalog_round_trip(input: &[u8]) -> bool {
+    let Ok(spec) = serde_json::from_slice::<crate::ProviderSpec>(input) else {
+        return false;
+    };
+    let canonical = serde_json::to_vec(&spec).unwrap();
+    let restored: crate::ProviderSpec = serde_json::from_slice(&canonical).unwrap();
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), canonical);
+    true
+}
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use crate::sse;
+    use proptest::prelude::*;
+    use serde_json::json;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn arbitrary_bytes_have_chunk_invariant_stream_results(input in prop::collection::vec(any::<u8>(), 0..2048)) {
+            assert_stream_invariants(&input);
+        }
+
+        #[test]
+        fn catalog_codec_has_an_idempotent_canonical_form(endpoint in "[a-z]{0,32}", maximum in 1usize..65536) {
+            for mut spec in crate::default_catalog().into_values() {
+                spec.base_url = format!("https://example.test/{endpoint}");
+                spec.max_event_bytes = maximum;
+                prop_assert!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()));
+            }
+        }
+
+        #[test]
+        fn unicode_text_round_trips_through_every_adapter(text in ".{0,96}", width in 1usize..64) {
+            let value = json!(text);
+            let streams = [
+                (Adapter::Anthropic, format!("data: {{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":{value}}}}}\n\ndata: {{\"type\":\"message_stop\"}}\n\n")),
+                (Adapter::Responses, format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":{value}}}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n")),
+                (Adapter::Chat, format!("data: {{\"choices\":[{{\"delta\":{{\"content\":{value}}}}}]}}\n\ndata: [DONE]\n\n")),
+                (Adapter::Gemini, format!("data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"text\":{value}}}]}},\"finishReason\":\"STOP\"}}]}}\n\n")),
+            ];
+            for (adapter, input) in streams {
+                let events = parse(adapter, input.as_bytes(), width).unwrap();
+                let decoded: String = events.iter().filter_map(|event| match event {
+                    ModelEvent::Content { delta } => Some(delta.as_str()), _ => None,
+                }).collect();
+                prop_assert_eq!(&decoded, &text);
+                prop_assert_eq!(events, parse(adapter, input.as_bytes(), input.len()).unwrap());
+            }
+        }
+
+        #[test]
+        fn sse_framing_round_trips_unicode_data(lines in prop::collection::vec("[^\\r\\n]{0,64}", 1..8), width in 1usize..64) {
+            let input: String = lines.iter().map(|line| format!("data: {line}\n")).chain(["\n".into()]).collect();
+            let chunks = input.as_bytes().chunks(width).map(|part| Ok(Bytes::copy_from_slice(part)));
+            let frames = futures::executor::block_on(sse::decode(Box::pin(futures::stream::iter(chunks)), 4096).try_collect::<Vec<_>>()).unwrap();
+            prop_assert_eq!(frames, vec![lines.join("\n")]);
+        }
+    }
+
+    #[test]
+    fn checked_in_stream_error_corpus_obeys_the_properties() {
+        for seed in [
+            include_bytes!("../fuzz/corpus/provider_stream/anthropic-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-error.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini-error.sse").as_slice(),
+        ] {
+            assert_stream_invariants(seed);
+        }
+    }
+
+    #[test]
+    fn checked_in_stream_corpus_obeys_the_properties() {
+        assert!(catalog_round_trip(
+            &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
+        ));
+        for input in [
+            include_bytes!("../fuzz/corpus/provider_stream/anthropic.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/responses.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/chat-reused-id.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini.sse").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse").as_slice(),
+        ] {
+            assert_stream_invariants(input);
+            let (&kind, body) = input.split_first().unwrap();
+            let adapter = [
+                Adapter::Anthropic,
+                Adapter::Responses,
+                Adapter::Chat,
+                Adapter::Gemini,
+            ][usize::from(kind) % 4];
+            assert!(
+                parse(adapter, body, 7).is_ok(),
+                "seed {adapter:?} must exercise accepted events"
+            );
+        }
+    }
+}

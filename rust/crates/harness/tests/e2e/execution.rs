@@ -102,11 +102,11 @@ fn configure(
     }
     if let Some(tokens) = case.message_tokens {
         provider = provider.with_token_counter(move |request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 0,
-                message_tokens: vec![tokens; request.request().messages.len()],
-            })
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                0,
+                vec![tokens; request.request().messages.len()],
+            ))
         });
     }
     let provider = Arc::new(provider);

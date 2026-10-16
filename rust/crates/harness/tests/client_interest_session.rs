@@ -5,7 +5,7 @@ use acyclic_harness::{
     client::{InterestTier, SwarmClient, SwarmClientLimits, SwarmUpdate},
     task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{MemoryStream, wire};
+use acyclic_stream::{MemoryStream, StreamProvider as _, wire};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, channel::mpsc};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -181,10 +181,7 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
             Some(wire::session_subscription::Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32)).unwrap();
         let snapshot_cut = snapshots.borrow()[0].cursor.position;
         assert_eq!(content.resume.as_ref().unwrap().next, snapshot_cut);
-        assert_eq!(
-            content.resume.as_ref().unwrap().opaque.as_ref(),
-            snapshots.borrow()[0].cursor.commit
-        );
+        assert!(content.resume.as_ref().unwrap().opaque.is_empty());
         assert_eq!(
             snapshots.borrow()[0].files[0].segments[0].as_ref(),
             b"before"
@@ -196,13 +193,23 @@ async fn file_writes_change_session_interests_without_losing_the_snapshot_cut() 
         let Some(wire::session_subscription::Kind::Follow(follow)) = &content.kind else {
             panic!("follow")
         };
-        let mut tail = acyclic_stream::wire_codec::session::follow_records(
-            provider.as_ref(),
-            follow,
-            content.resume.as_ref().unwrap(),
-        )
-        .await
-        .unwrap();
+        assert_eq!(
+            follow.preceding_commit_id.as_ref(),
+            snapshots.borrow()[0].cursor.commit
+        );
+        let mut tail = provider
+            .follow_checked(
+                path(&follow.path),
+                snapshot_cut,
+                acyclic_stream::wire_codec::session::preceding_follow(
+                    follow,
+                    content.resume.as_ref().unwrap(),
+                )
+                .unwrap()
+                .expect("snapshot anchor"),
+            )
+            .await
+            .unwrap();
         let record = tail.next().await.unwrap().unwrap();
         assert_eq!(record.sequence, snapshot_cut);
         frames

@@ -338,6 +338,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                     CapturedPart::Text(_) => "text", CapturedPart::Call(..) => "call",
                     CapturedPart::Result(..) => "result", CapturedPart::Json(_) => "json",
                     CapturedPart::Media(..) => "media",
+                    CapturedPart::Reasoning(..) => "reasoning",
                 }).collect::<Vec<_>>(), vec!["text", "media", "text", "media", "call", "result", "text", "media", "media"]);
                 assert_eq!(
                     capture

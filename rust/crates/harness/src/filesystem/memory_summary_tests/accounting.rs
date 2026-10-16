@@ -84,19 +84,19 @@ proptest! {
             max_output_tokens: Some(4096),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
-        let count = provider.count_tokens(&prepared).unwrap();
+        let count = futures::executor::block_on(provider.count_tokens(&prepared)).unwrap();
         prop_assert_eq!(count.fixed_tokens, 512);
         prop_assert_eq!(&count.message_tokens, &expected);
         prop_assert_eq!(count.request_digest, prepared.request_digest());
         prop_assert_eq!(count.validate(&prepared, &mut None).unwrap(),
             512 + expected.iter().map(|tokens| u64::from(*tokens)).sum::<u64>());
-        prop_assert_eq!(provider.count_tokens(&prepared).unwrap(), count.clone());
+        prop_assert_eq!(futures::executor::block_on(provider.count_tokens(&prepared)).unwrap(), count.clone());
         request.messages.reverse();
         expected.reverse();
         let reordered = PreparedModelRequest::prepare(request, Limits::default(), None).unwrap();
         prop_assert_eq!(count.validate(&reordered, &mut None).is_err(),
             reordered.request() != prepared.request());
-        let reordered_count = provider.count_tokens(&reordered).unwrap();
+        let reordered_count = futures::executor::block_on(provider.count_tokens(&reordered)).unwrap();
         prop_assert_eq!(&reordered_count.message_tokens, &expected);
         prop_assert_eq!(reordered_count.validate(&reordered, &mut None).unwrap(),
             count.validate(&prepared, &mut None).unwrap());

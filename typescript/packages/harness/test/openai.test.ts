@@ -223,7 +223,7 @@ test("OpenAI-compatible tool data parts preserve ordered text projections", asyn
     content: [{ type: "text", text: "first" }, { type: "text", text: "second" }] }]);
 });
 
-test("OpenAI-compatible accounting requires explicit provider data without dispatch or file reads", () => {
+test("OpenAI-compatible accounting requires explicit provider data without dispatch or file reads", async () => {
   let effects = 0;
   const provider = new OpenAiCompatibleProvider({
     baseUrl: "https://example.test/v1",
@@ -232,21 +232,21 @@ test("OpenAI-compatible accounting requires explicit provider data without dispa
   });
   const model = { provider: "compatible", name: "selected", revision: "1", options: {} };
   expect(() => provider.contextCapacity(model)).toThrow();
-  expect(() => provider.countTokens({ model, messages: [], tools: [], serializedInput: new Uint8Array() }))
-    .toThrow();
+  await expect(provider.countTokens({ model, messages: [], tools: [], serializedInput: new Uint8Array() }))
+    .rejects.toThrow();
   expect(effects).toBe(0);
 });
 
-test("OpenAI-compatible accounting receives the selected model and exact prepared bytes", () => {
+test("OpenAI-compatible accounting receives the selected model and exact prepared bytes", async () => {
   const model = { provider: "compatible", name: "selected", revision: "immutable", options: { framing: 7 } };
   const serializedInput = new Uint8Array([0, 255, 13, 10]);
   const request = { model, messages: [{ role: "user" as const, content: "current" }], tools: [], serializedInput };
   const capacity = { contextTokens: 65_536, outputTokens: 4_096 };
-  const count = { requestDigest: new Uint8Array(32), fixedTokens: 7, messageTokens: [23] };
+  const count = { requestDigest: new Uint8Array(32), inputTokens: 30n, fixedTokens: 7, messageTokens: [23] };
   const provider = new OpenAiCompatibleProvider({
     baseUrl: "https://example.test/v1",
     contextCapacity: selected => { expect(selected).toBe(model); return capacity; },
-    countTokens: prepared => {
+    countTokens: async prepared => {
       expect(prepared.model).toBe(model);
       expect(prepared.serializedInput).toEqual(serializedInput);
       expect(prepared.messages).toEqual(request.messages);
@@ -255,5 +255,5 @@ test("OpenAI-compatible accounting receives the selected model and exact prepare
     fetcher: async () => { throw new Error("accounting must not dispatch"); },
   });
   expect(provider.contextCapacity(model)).toBe(capacity);
-  expect(provider.countTokens(request)).toBe(count);
+  expect(await provider.countTokens(request)).toBe(count);
 });

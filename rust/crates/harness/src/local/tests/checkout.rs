@@ -121,6 +121,10 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
 
     let requests = provider.requests();
     assert_eq!(requests.len(), COMMANDS.len() + 1);
+    assert!(requests[0].messages.iter().any(|message| {
+        matches!(&message.content, ModelContent::Text(text)
+            if text.contains(harness.workspace().unwrap().context_line()))
+    }));
     let results: std::collections::BTreeMap<_, _> = requests
         .iter()
         .flat_map(|request| &request.messages)
