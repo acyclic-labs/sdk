@@ -131,3 +131,5 @@ use allocation::{quota_vector, retire_vector};
 mod defaults_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod copying_tests;
