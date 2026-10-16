@@ -157,33 +157,17 @@ fn with_producer<T>(
             None => cached.insert(resolve_producer()?),
         };
         for &target in required {
-            if producer.targets.contains(target) {
-                continue;
+            if !producer.targets.contains(target) {
+                return Err(ProfileError::UnsupportedTarget {
+                    target: target.to_owned(),
+                });
             }
-            let added = Command::new("rustup")
-                .args([
-                    "target",
-                    "add",
-                    "--toolchain",
-                    RUSTDOC_TOOLCHAIN,
-                    "--",
-                    target,
-                ])
-                .output()
-                .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
-            if !added.status.success() {
-                return Err(ProfileError::InvalidRustdoc(format!(
-                    "cannot install {target} for {RUSTDOC_TOOLCHAIN}: {}",
-                    String::from_utf8_lossy(&added.stderr)
-                )));
-            }
-            producer.targets.insert(target.to_owned());
         }
         Ok(use_producer(producer))
     })
 }
 
-/// Queries and provisions targets on the toolchain producing Rustdoc JSON.
+/// Queries installed targets and rejects unavailable requirements without provisioning.
 pub fn rustdoc_targets(required: &[&str]) -> Result<BTreeSet<String>, ProfileError> {
     with_producer(required, |producer| producer.targets.clone())
 }
@@ -370,7 +354,7 @@ pub fn execute_profile(
 
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
-    let targets = rustdoc_targets(&["wasm32-unknown-unknown"])
+    let targets = rustdoc_targets(&[])
         .unwrap()
         .into_iter()
         .collect::<Vec<_>>();
@@ -381,6 +365,11 @@ fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
             for index in order {
                 nightly_rustdoc_command(&targets[index]).unwrap();
             }
+            let unavailable = "sdk-docs-unavailable-target";
+            proptest::prop_assert_eq!(
+                nightly_rustdoc_command(unavailable).unwrap_err(),
+                ProfileError::UnsupportedTarget { target: unavailable.into() },
+            );
             proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
             Ok(())
         })
