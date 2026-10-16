@@ -17,8 +17,7 @@ std::thread_local! {
 
 #[derive(Clone)]
 pub(crate) struct Code {
-    highlight: HighlightState,
-    parse: ParseState,
+    state: Option<(HighlightState, ParseState)>,
 }
 
 fn theme() -> &'static Theme {
@@ -41,16 +40,21 @@ pub(crate) fn highlighter(language: &str) -> Code {
         .find_syntax_by_token(language)
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
     let (highlight, parse) = HighlightLines::new(syntax, theme()).state();
-    Code { highlight, parse }
+    Code {
+        state: Some((highlight, parse)),
+    }
 }
 
 pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
     #[cfg(test)]
     HIGHLIGHTED.with(|count| count.set(count.get() + 1));
-    let mut highlighter =
-        HighlightLines::from_state(theme(), code.highlight.clone(), code.parse.clone());
-    let mut line = Line::plain("│ ", MUTED);
     let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let (highlight, parse) = code
+        .state
+        .take()
+        .unwrap_or_else(|| HighlightLines::new(syntaxes.find_syntax_plain_text(), theme()).state());
+    let mut highlighter = HighlightLines::from_state(theme(), highlight, parse);
+    let mut line = Line::plain("│ ", MUTED);
     match highlighter.highlight_line(text, syntaxes) {
         Ok(spans) => {
             for (style, text) in spans {
@@ -70,7 +74,7 @@ pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
         }
         Err(_) => line.push(text.trim_end_matches(['\r', '\n']), Style::default(), None),
     }
-    (code.highlight, code.parse) = highlighter.state();
+    code.state = Some(highlighter.state());
     line
 }
 

@@ -1,5 +1,7 @@
 use std::cell::Cell;
 thread_local! {
+    static SOURCE_GROWTH: Cell<usize> = const { Cell::new(0) };
+    static SCAN: Cell<usize> = const { Cell::new(0) };
     static COPY: Cell<usize> = const { Cell::new(0) };
     static VISIBILITY: Cell<usize> = const { Cell::new(0) };
 }
@@ -10,7 +12,7 @@ pub(crate) fn visibility(count: usize) {
     VISIBILITY.set(VISIBILITY.get() + count);
 }
 pub(crate) fn current() -> usize {
-    COPY.get() + VISIBILITY.get() + crate::references::PARSED_BYTES.get()
+    SCAN.get() + COPY.get() + VISIBILITY.get() + crate::references::PARSED_BYTES.get()
 }
 
 pub(crate) fn event(event: &pulldown_cmark::Event<'_>) {
@@ -40,4 +42,16 @@ pub(crate) fn event(event: &pulldown_cmark::Event<'_>) {
         Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => info.len(),
         _ => 0,
     });
+}
+
+pub(crate) fn source_growth() -> usize {
+    SOURCE_GROWTH.get()
+}
+pub(crate) fn grow_source(bytes: usize) {
+    copy(bytes);
+    SOURCE_GROWTH.set(SOURCE_GROWTH.get() + bytes);
+}
+
+pub(crate) fn scan(bytes: usize) {
+    SCAN.set(SCAN.get() + bytes);
 }

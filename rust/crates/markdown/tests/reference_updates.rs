@@ -104,8 +104,75 @@ fn doubling_keeps_the_same_mix_of_affected_blocks() {
     assert_eq!(large, (2 * small.0, 2 * small.1));
 }
 
+#[test]
+fn document_budget_growth_keeps_unrelated_inline_checkpoints() {
+    let references = "![][r]\n\n".repeat(60);
+    let definition = format!("[r]: /{}\n\n", "a".repeat(2000));
+    let padding = "x".repeat(100_001 - references.len() - definition.len());
+    let mut markdown = Markdown::default();
+    let mut consumer = Vec::new();
+    let mut push = |delta: &str, bounded: bool| {
+        let before = references::PARSED_BYTES.get();
+        let changed = markdown.push(delta);
+        let parsed = references::PARSED_BYTES.get() - before;
+        if bounded {
+            assert!(parsed <= 512, "{parsed} parser bytes for {delta:?}");
+        }
+        assert!(changed <= markdown.lines().len());
+        consumer.truncate(changed);
+        consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+        assert_eq!(consumer, full_parse(&markdown.source));
+    };
+    push(&references, false);
+    push(&definition, false);
+    push(&padding, false);
+    push("*x* ", false);
+    for _ in 0..100 {
+        push("*x* ", true);
+    }
+    push(&format!("\n\n{}\n\n", "x".repeat(24_000)), false);
+    for _ in 0..4 {
+        push("![][r]\n\n", true);
+    }
+}
+
+fn expansion_calls(charges: &[usize], mut budget: usize) -> Vec<(usize, usize)> {
+    charges
+        .iter()
+        .enumerate()
+        .map(|(index, charge)| {
+            let admitted = budget > 0;
+            budget = budget.saturating_sub(*charge);
+            (index, if admitted { *charge } else { usize::MAX })
+        })
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn reference_budget_intervals_preserve_every_resolution(
+        charges in prop::collection::vec(0usize..1024, 0..16),
+        budget in 0usize..16384,
+        probe in 0usize..16384,
+        split in 0usize..17,
+    ) {
+        let calls = expansion_calls(&charges, budget);
+        let (cost, interval) = references::expansion(calls.iter());
+        prop_assert!(interval.contains(&budget));
+        let decisions = |limit| expansion_calls(&charges, limit).iter()
+            .map(|(_, cost)| *cost != usize::MAX).collect::<Vec<_>>();
+        for point in [probe, interval.start, interval.start.saturating_sub(1),
+            interval.end.saturating_sub(1), interval.end.min(usize::MAX - 1)] {
+            prop_assert_eq!(interval.contains(&point), decisions(point) == decisions(budget));
+        }
+        let split = split.min(charges.len());
+        let (first, rest) = charges.split_at(split);
+        let (prefix, valid) = references::expansion(expansion_calls(first, budget).iter());
+        let tail = expansion_calls(rest, budget.saturating_sub(prefix));
+        prop_assert_eq!(references::extend_expansion(prefix, &valid, tail.iter()), (cost, interval));
+    }
+
     #[test]
     fn reference_resize_work_is_linear(
         count in 1usize..64,

@@ -1,6 +1,9 @@
 use pulldown_cmark::{BrokenLink, Event, Parser, Tag, TagEnd};
 use std::ops::Range;
 
+type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
+type Charges = Vec<(usize, usize)>;
+
 pub(crate) fn parse(
     source: &str,
     references: &crate::References,
@@ -57,6 +60,49 @@ pub(crate) fn parse_with(
     } else {
         events
     }
+}
+
+// Normalized leaf templates contain no definitions. Charge reference expansion
+// against the document allowance, rather than restarting it for each leaf.
+pub(crate) fn scoped(
+    source: &str,
+    references: &crate::References,
+    options: pulldown_cmark::Options,
+    mut budget: usize,
+) -> (OwnedEvents, Charges) {
+    #[cfg(test)]
+    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    let mut calls = Vec::new();
+    let mut exhausted = false;
+    let mut callback = |link: BrokenLink<'_>| {
+        if budget == 0 {
+            // No allowance remains. Keep a sentinel for the deferred suffix;
+            // a larger document budget will reopen only this leaf.
+            if !exhausted {
+                calls.push((link.span.end, usize::MAX));
+                exhausted = true;
+            }
+            return None;
+        }
+        let (destination, title, _) = references.get(&crate::normalize(&link.reference))?;
+        let cost = destination.len() + title.len();
+        budget = budget.saturating_sub(cost);
+        calls.push((link.span.end, cost));
+        // The real lengths were charged above. Rendering obtains their shared
+        // handles by id; do not also restart the parser's per-input allowance.
+        Some(("".into(), "".into()))
+    };
+    let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
+        .into_offset_iter()
+        .map(|(event, range)| {
+            #[cfg(test)]
+            crate::work::event(&event);
+            (event.into_static(), range)
+        })
+        .collect();
+    #[cfg(test)]
+    crate::work::copy(calls.len() * std::mem::size_of::<(usize, usize)>() * 2);
+    (events, calls)
 }
 
 // The parser suppresses paragraph events in tight list items. Give those inline
@@ -120,5 +166,16 @@ fn inline(event: &Event<'_>) -> bool {
         ),
         Event::Rule => false,
         _ => true,
+    }
+}
+
+impl crate::Markdown {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> OwnedEvents {
+        #[cfg(test)]
+        {
+            crate::work::copy(source.len());
+            self.parsed_bytes += source.len();
+        }
+        parse(source, &self.references)
     }
 }

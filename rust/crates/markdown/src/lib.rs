@@ -8,6 +8,7 @@ mod reference_render;
 mod references;
 mod render;
 mod stream_code;
+mod stream_table;
 mod style;
 mod table;
 mod visibility;
@@ -40,6 +41,9 @@ pub struct Markdown {
     cached: Vec<Cached>,
     fence: Option<Fence>,
     inline: Option<inline::Inline>,
+    table: Option<stream_table::Stream>,
+    reference_cost: usize,
+    reference_limit: usize,
     plain: bool,
     plain_links: bool,
     plain_entity: bool,
@@ -69,6 +73,10 @@ struct Cached {
     template: Template,
     state: render::Renderer,
     lines: Range<usize>,
+    cost: usize,
+    cumulative: usize,
+    prefix: usize,
+    budget: Range<usize>,
 }
 
 impl Cached {
@@ -106,6 +114,10 @@ impl Cached {
             template: Template::new(raw, quotes, events),
             state,
             lines,
+            cost: 0,
+            cumulative: 0,
+            prefix: 0,
+            budget: 0..usize::MAX,
         })
     }
 }
@@ -135,6 +147,7 @@ impl Markdown {
         if self.source.len() == previous {
             return old_len;
         }
+        let budget_line = self.advance_budget();
         let appended = self.source.get(previous..).unwrap_or_default();
         if self.plain
             && plain_text(appended)
@@ -145,7 +158,7 @@ impl Markdown {
             self.plain_entity &= appended
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '#');
-            if let Some(line) = self.lines.get_mut(old_len.saturating_sub(1)) {
+            if let Some(line) = self.lines.get_mut(self.visible_lines.saturating_sub(1)) {
                 let visible = appended.trim_end_matches(' ');
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
@@ -169,18 +182,29 @@ impl Markdown {
                     self.plain_spaces = appended.len() - visible.len();
                 }
             }
-            return old_len.saturating_sub(1);
+            return self.visible_lines.saturating_sub(1).min(budget_line);
         }
         if self.advance_inline(previous) {
-            return self.stable_lines.min(old_len);
+            return self
+                .stable_lines
+                .min(old_len)
+                .min(self.visible_lines)
+                .min(budget_line);
         }
+        if let Some(changed) = self.advance_table() {
+            return changed
+                .min(old_len)
+                .min(self.visible_lines)
+                .min(budget_line);
+        }
+        self.table = None;
         self.inline = None;
         self.plain = false;
-        let mut changed = self.stable_lines.min(old_len);
+        let mut changed = self.stable_lines.min(old_len).min(budget_line);
         self.lines.truncate(self.stable_lines);
         if self.fence.is_some() && !self.advance_fence() {
             self.finish_visible();
-            return changed;
+            return changed.min(self.visible_lines);
         }
         loop {
             let tail = self.source.get(self.offset..).unwrap_or_default();
@@ -195,7 +219,7 @@ impl Markdown {
             }
         }
         self.finish_visible();
-        changed
+        changed.min(self.visible_lines)
     }
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
@@ -256,7 +280,7 @@ impl Markdown {
         if !self.cr && !delta.contains('\r') {
             #[cfg(test)]
             if delta.len() > self.source.capacity() - self.source.len() {
-                work::copy(self.source.len());
+                work::grow_source(self.source.len());
             }
             self.source.push_str(delta);
             return;
@@ -297,12 +321,7 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        #[cfg(test)]
-        {
-            work::copy(source.len());
-            self.parsed_bytes += source.len();
-        }
-        let events = events::parse(&source, &self.references);
+        let events = self.parse_frontier(&source);
         self.seal_leading_definitions(base, &source, &events);
         let following_blocks = self.following_blocks(&source, &events);
         let mut out = self.state.checkpoint();
@@ -310,6 +329,7 @@ impl Markdown {
         let mut candidate = None;
         let mut leaf = None;
         let mut caches: Vec<(usize, Cached)> = Vec::new();
+        let mut cost = self.reference_cost;
         let mut synthetic_leaf = false;
         for (index, (event, range)) in events.iter().enumerate() {
             if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
@@ -355,7 +375,7 @@ impl Markdown {
                 let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
                 if leaf_end
                     && let Some((start, first, state, begin, _)) = leaf.take()
-                    && let Some(cache) = Cached::new(
+                    && let Some(mut cache) = Cached::new(
                         &source,
                         start..range.end,
                         first..self.lines.len() + out.lines.len(),
@@ -363,6 +383,7 @@ impl Markdown {
                         events.get(begin..=index).unwrap_or_default(),
                     )
                 {
+                    self.render_cache(&mut cache, &mut out, &mut cost);
                     caches.push((range.end, cache));
                 }
                 if stack.is_empty() {
@@ -393,6 +414,7 @@ impl Markdown {
         self.finish_tail(candidate, caches, (base, prefix.len()));
         self.finish_definitions(&source, &events, (base, prefix.len()));
         self.begin_inline(&source, &events, base);
+        self.begin_table(&source, &events, base);
         false
     }
 
@@ -497,10 +519,13 @@ impl Markdown {
         self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
     }
 
-    fn cache(&mut self, cache: Cached) {
+    fn cache(&mut self, mut cache: Cached) {
         if cache.template.keys.is_empty() {
             return;
         }
+        cache.prefix = self.reference_cost;
+        self.reference_cost = self.reference_cost.saturating_add(cache.cost);
+        cache.cumulative = self.reference_cost;
         let index = self.cached.len();
         for key in &cache.template.keys {
             self.dependencies

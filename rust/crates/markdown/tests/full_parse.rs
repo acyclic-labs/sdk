@@ -12,7 +12,11 @@ mod reference_updates;
 
 fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
-    let source = source.replace("\r\n", "\n").replace('\r', "\n");
+    let source = if source.contains('\r') {
+        std::borrow::Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    };
     let mut lines = Vec::new();
     for (_, events) in blocks(Parser::new_ext(&source, options()).into_offset_iter()) {
         lines.extend(render::render_styled(&events, Style::default()));
@@ -273,6 +277,7 @@ const LAZY_LIST: &str =
 
 fn check_chunks(source: &str, cuts: &[usize]) {
     let mut streamed = Markdown::default();
+    let mut consumer = Vec::new();
     let mut offset = 0;
     for size in cuts.iter().cycle() {
         if offset == source.len() {
@@ -282,9 +287,12 @@ fn check_chunks(source: &str, cuts: &[usize]) {
         while !source.is_char_boundary(end) {
             end += 1;
         }
-        streamed.push(source.get(offset..end).unwrap_or_default());
+        let changed = streamed.push(source.get(offset..end).unwrap_or_default());
+        assert!(changed <= streamed.lines().len());
+        consumer.truncate(changed);
+        consumer.extend_from_slice(streamed.lines().get(changed..).unwrap_or_default());
         assert_eq!(
-            streamed.lines(),
+            consumer,
             full_parse(source.get(..end).unwrap_or_default()),
             "prefix {:?}, checkpoint {:?}",
             source.get(..end),
@@ -610,7 +618,12 @@ fn linear_work_preserves_quoted_tasks_when_references_resolve() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/full_parse.txt")
+        ))),
+        ..ProptestConfig::with_cases(64)
+    })]
     #[test]
     fn adversarial_reference_total_parser_work_is_linear(
         count in 2usize..20,

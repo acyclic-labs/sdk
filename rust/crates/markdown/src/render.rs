@@ -60,6 +60,14 @@ impl Renderer {
             ..Self::default()
         }
     }
+    pub(super) fn reuse_line(&mut self, mut line: Line) {
+        line.spans.clear();
+        #[cfg(test)]
+        crate::work::copy(self.line.spans.len() * std::mem::size_of::<crate::Span>());
+        line.spans.append(&mut self.line.spans);
+        self.line = line;
+    }
+
     pub(super) fn inline_line(&self) -> &Line {
         &self.line
     }

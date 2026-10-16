@@ -150,15 +150,57 @@ impl Template {
         }
     }
 
-    pub(crate) fn events(&self, references: &References) -> Vec<Event<'static>> {
-        let mut events =
-            crate::events::parse_with(&self.source, references, options(self.paragraph));
+    pub(crate) fn events(
+        &self,
+        references: &References,
+        budget: usize,
+    ) -> (Vec<Event<'static>>, usize, std::ops::Range<usize>) {
+        let (mut events, calls) =
+            crate::events::scoped(&self.source, references, options(self.paragraph), budget);
+        let (cost, interval) = expansion(calls.iter());
         if self.task {
             events.drain(..2);
             events.truncate(events.len().saturating_sub(2));
         }
-        events.into_iter().map(|(event, _)| event).collect()
+        (
+            events.into_iter().map(|(event, _)| event).collect(),
+            cost,
+            interval,
+        )
     }
+}
+
+// The same parse is valid until a budget crosses a reference-attempt boundary.
+// MAX cost marks an exhausted suffix whose full cost is deliberately unknown.
+pub(crate) fn expansion<'a>(
+    calls: impl Iterator<Item = &'a (usize, usize)>,
+) -> (usize, std::ops::Range<usize>) {
+    let (mut cost, mut floor) = (0usize, 0);
+    for (_, charge) in calls {
+        if *charge == usize::MAX {
+            return (usize::MAX, floor..cost.saturating_add(1));
+        }
+        floor = cost.saturating_add(1);
+        cost = cost.saturating_add(*charge);
+    }
+    (cost, floor..usize::MAX)
+}
+
+pub(crate) fn extend_expansion<'a>(
+    cost: usize,
+    interval: &std::ops::Range<usize>,
+    calls: impl Iterator<Item = &'a (usize, usize)>,
+) -> (usize, std::ops::Range<usize>) {
+    let (additional, valid) = expansion(calls);
+    let floor = if valid.start == 0 {
+        0
+    } else {
+        cost.saturating_add(valid.start)
+    };
+    (
+        cost.saturating_add(additional),
+        interval.start.max(floor)..interval.end.min(cost.saturating_add(valid.end)),
+    )
 }
 
 fn options(paragraph: bool) -> pulldown_cmark::Options {
