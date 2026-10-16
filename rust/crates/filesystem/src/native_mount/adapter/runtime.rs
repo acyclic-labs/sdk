@@ -153,6 +153,25 @@ impl CallbackRuntime {
         })
     }
 
+    pub(super) fn prepare_native_wait(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<PreparedCallbackWait, crate::NativeTreeMaterializationError> {
+        let allocation = work.claim(
+            std::mem::size_of::<ParkedCallback>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        Ok(PreparedCallbackWait {
+            parked: Arc::new(ParkedCallback {
+                woken: StdMutex::new(false),
+                changed: std::sync::Condvar::new(),
+                _allocation: Some(allocation),
+            }),
+            bytes: 0,
+        })
+    }
+
     pub(in crate::native_mount) fn verify_callback<
         F: Future<Output = Result<(), NativeMountError>>,
     >(
@@ -160,19 +179,7 @@ impl CallbackRuntime {
         work: &crate::NativeMaterializationWork,
         create: impl FnOnce() -> Result<F, NativeMountError>,
     ) -> Result<(), NativeMountError> {
-        let allocation = work.claim(
-            std::mem::size_of::<ParkedCallback>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let prepared = PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false),
-                changed: std::sync::Condvar::new(),
-                _allocation: Some(allocation),
-            }),
-            bytes: 0,
-        };
+        let prepared = self.prepare_native_wait(work)?;
         self.wait_prepared(prepared, || async { create()?.await })
     }
 
