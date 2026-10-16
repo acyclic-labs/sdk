@@ -41,8 +41,8 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     if (change.kind === "data" && change.overview && views.status("swarm/b")?.values.some(value => value.attention)) notify("attention");
     if (change.kind === "layout") {
       const value = views.layout();
-      if (value.in_view.includes("swarm/a")) notify("visible");
-      else if (value.prefetch.includes("swarm/a")) notify("prefetch");
+      if (value.in_view?.includes("swarm/a")) notify("visible");
+      else if (value.prefetch?.includes("swarm/a")) notify("prefetch");
     }
   }, stop.promise);
   const ended = running.then(() => { throw new Error("swarm ended before its publication"); });
@@ -64,7 +64,7 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     await layout("open-views", { in_view: ["swarm/a"] }); await wait("visible");
     check(views.cursor("swarm/a")!.position === cursor.position, "promotion reset the cursor");
     check(segments("swarm/a")?.join("") === "before live", "promotion lost streaming text");
-    check(views.files("swarm/a")[0].segments === 2n, "text was concatenated instead of segmented");
+    check(views.files("swarm/a")[0]?.segments === 2n, "text was concatenated instead of segmented");
     await layout("open-views", {}); await wait("prefetch");
     await layout("layout", { in_view: ["swarm/b"] }); await wait("snapshot:swarm/b");
     check(views.cursor("swarm/a") === null && segments("swarm/b")?.join("") === "other", "tier switch retained or lost content");
