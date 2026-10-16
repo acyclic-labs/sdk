@@ -54,7 +54,7 @@ fn verify(input: &[u8]) {
     let items = super::super::journal_verification::lexical_items(input);
     let bound = intent_decode_owned_bytes(items, input.len() as u64, 0, true).unwrap();
     let mut result = None;
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         result = Some(serde_json::from_slice::<Intent>(input));
     });
     assert!(measured.bytes_max as u64 <= bound, "{measured:?} > {bound}");
@@ -77,7 +77,7 @@ fn verify_bounded(input: &[u8]) {
     .unwrap();
     let baseline = work.live_allocation_bytes();
     let mut bounded = Ok(());
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         bounded = fuzz_native_preparation_intent(input, &work);
     });
     assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);

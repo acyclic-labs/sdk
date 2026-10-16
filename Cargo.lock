@@ -23,8 +23,8 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
- "allocation-counter",
  "async-trait",
  "bytes",
  "futures",
@@ -88,7 +88,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
  "acyclic-proto-build",
- "allocation-counter",
+ "acyclic-test-support",
  "ed25519-dalek",
  "futures",
  "proptest",
@@ -313,7 +313,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
- "allocation-counter",
+ "acyclic-test-support",
  "arrayvec",
  "async-trait",
  "base64 0.22.1",
@@ -392,7 +392,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-stream",
- "allocation-counter",
+ "acyclic-test-support",
  "blake3",
  "bytes",
  "diffy",
@@ -448,8 +448,8 @@ name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-test-support",
  "alacritty_terminal",
- "allocation-counter",
  "arrayvec",
  "caseless",
  "crossterm",
@@ -748,7 +748,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-proto-build",
- "allocation-counter",
+ "acyclic-test-support",
  "async-trait",
  "base64 0.23.1",
  "bytes",
@@ -809,6 +809,13 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
+]
+
+[[package]]
+name = "acyclic-test-support"
+version = "0.2.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -915,13 +922,6 @@ dependencies = [
  "unicode-width",
  "vte",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "allocation-counter"
-version = "0.8.1"
-dependencies = [
- "proptest",
 ]
 
 [[package]]

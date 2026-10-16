@@ -156,7 +156,7 @@ fn assert_dispatch_allocates_nothing(broken: bool) -> Result<(), Box<dyn std::er
                 ] {
                     let mut event = KeyEvent::new(code, modifiers);
                     event.kind = kind;
-                    let allocation = allocation_counter::measure(|| {
+                    let allocation = acyclic_test_support::measure(|| {
                         if broken {
                             // Negative control: recreate the old heap chord on the hot path.
                             std::hint::black_box(key_chord(event));

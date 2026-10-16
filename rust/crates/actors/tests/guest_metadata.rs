@@ -33,7 +33,7 @@ proptest! {
         let original = key.as_str().ok_or_else(|| TestCaseError::fail("expiry string"))?.as_ptr();
         let bytes = serde_json::to_vec(&raw)?;
         let mut decoded = None;
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             decoded = Some(serde_json::from_value::<AdmittedCaller>(raw));
         });
         prop_assert_eq!((allocation.count_total, allocation.bytes_total), (0, 0));
@@ -41,7 +41,7 @@ proptest! {
         prop_assert_eq!(decoded.expires_at_ms().as_ptr(), original);
         prop_assert_eq!(decoded.expires_at_ms(), expiry.to_string());
         let mut from_bytes = None;
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             from_bytes = Some(serde_json::from_slice::<AdmittedCaller>(&bytes));
         });
         prop_assert_eq!(allocation.count_total, 6 + u64::from(capability), "only the six wire strings and optional capability handle are allocated");
@@ -50,7 +50,7 @@ proptest! {
         let fields = ["a".into(), "o".into(), principal, "c".into(), "i".into()];
         let [account, org, principal, credential, actor] = fields;
         let mut constructed = None;
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             constructed = Some(AdmittedCaller::new(account, org, principal, credential, actor, expiry));
         });
         prop_assert_eq!(allocation.count_total, 1, "only the canonical expiry string is allocated");

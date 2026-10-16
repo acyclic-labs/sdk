@@ -1,0 +1,13 @@
+[package]
+name = "acyclic-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

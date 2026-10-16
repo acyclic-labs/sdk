@@ -54,7 +54,7 @@ proptest! {
             ).unwrap();
             let baseline = work.live_allocation_bytes();
             let mut decoded = Ok(());
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 decoded = super::preparation_record::fuzz_native_preparation_journal(input, &work);
             });
             prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
@@ -115,13 +115,13 @@ proptest! {
             maximum_bytes: compact.len() as u64, maximum_items: 100_000, maximum_depth: 128,
         };
         let mut copied = Vec::with_capacity(compact.len());
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             crate::executor::json::json_write_bounded(&super::journal_encoding::Canonical(&journal), &mut copied, bounds, &mut |_| Ok(())).unwrap();
         });
         prop_assert_eq!(measured.count_total, 0);
         prop_assert_eq!(&copied, &compact);
         let mut identity = Ok(None);
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             identity = crate::executor::json::json_digest_bounded(
                 &super::journal_encoding::Canonical(&journal),
                 None,
@@ -135,7 +135,7 @@ proptest! {
         changed[0] ^= 1;
         for expected in [compact.as_slice(), &compact[..compact.len() / 2], changed.as_slice()] {
             let mut matched = Ok(None);
-            let measured = allocation_counter::measure(|| {
+            let measured = acyclic_test_support::measure(|| {
                 matched = crate::executor::json::json_digest_bounded(
                     &super::journal_encoding::Canonical(&journal), Some(expected), bounds, &mut |_| Ok(()),
                 );
@@ -163,7 +163,7 @@ proptest! {
         let mut tail = std::io::Cursor::new(completed.as_mut_slice());
         tail.set_position(offset as u64);
         let mut result = Ok(());
-        let measured = allocation_counter::measure(|| {
+        let measured = acyclic_test_support::measure(|| {
             result = NativePreparationCompletionTemplate::write_completed_work(&journal.work, &mut tail);
         });
         prop_assert!(result.is_ok());
@@ -172,7 +172,7 @@ proptest! {
         let mut buffer = vec![0; maximum];
         let mut output = std::io::Cursor::new(buffer.as_mut_slice());
         let mut encoded = Ok(());
-        let allocations = allocation_counter::measure(|| {
+        let allocations = acyclic_test_support::measure(|| {
             encoded = NativePreparationCompletionTemplate::write_journal(&journal, &mut output);
         });
         prop_assert!(encoded.is_ok());

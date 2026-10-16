@@ -138,7 +138,7 @@ fn resolution_needs_no_temporary_key(mode: u8) -> Result<()> {
                 let io = None;
                 let mut error = None;
                 let started = std::time::Instant::now();
-                let allocation = allocation_counter::measure(|| {
+                let allocation = acyclic_test_support::measure(|| {
                     for _ in 0..128 {
                         match registry.get(std::hint::black_box(name), revision, io.as_ref()) {
                             Ok(Some(tool)) => {

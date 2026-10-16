@@ -3,7 +3,6 @@
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
   "examples/sdk-services",
-  "rust/vendor/allocation-counter-0.8.1",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
@@ -33,6 +32,7 @@ members = [
   "compatibility",
   "rust/crates/stream",
   "rust/crates/stream-napi",
+  "rust/crates/test-support",
   "rust/crates/harness-tui",
   "rust/crates/workers",
   "rust/fuzz",
@@ -214,6 +214,3 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-
-[patch.crates-io]
-allocation-counter = { path = "rust/vendor/allocation-counter-0.8.1" }

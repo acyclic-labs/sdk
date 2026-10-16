@@ -80,16 +80,20 @@ fn exercise(
             let pointer = allocator.alloc_zeroed(layout);
             assert!(!pointer.is_null());
             assert_eq!((pointer as usize) % alignment, 0);
-            assert!(std::slice::from_raw_parts(pointer, before)
-                .iter()
-                .all(|byte| *byte == 0));
+            assert!(
+                std::slice::from_raw_parts(pointer, before)
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
             std::ptr::write_bytes(pointer, 0x5a, before);
             let replacement = allocator.realloc(pointer, layout, after);
             assert!(!replacement.is_null());
             assert_eq!((replacement as usize) % alignment, 0);
-            assert!(std::slice::from_raw_parts(replacement, before.min(after))
-                .iter()
-                .all(|byte| *byte == 0x5a));
+            assert!(
+                std::slice::from_raw_parts(replacement, before.min(after))
+                    .iter()
+                    .all(|byte| *byte == 0x5a)
+            );
             allocator.dealloc(replacement, next);
         }
     });
@@ -136,9 +140,109 @@ fn failed_native_calls_do_not_invent_allocations_or_release_the_original() {
         });
         FAIL.with(|fail| fail.set(false));
         assert_eq!(info, crate::AllocationInfo::default());
-        assert!(std::slice::from_raw_parts(pointer, 32)
-            .iter()
-            .all(|byte| *byte == 0));
+        assert!(
+            std::slice::from_raw_parts(pointer, 32)
+                .iter()
+                .all(|byte| *byte == 0)
+        );
         allocator.dealloc(pointer, layout);
+    }
+}
+
+#[test]
+fn scopes_restore_after_unwind_and_isolate_threads() {
+    use std::hint::black_box;
+    let other = std::thread::spawn(|| measure(|| drop(black_box(Box::new([0u8; 17])))));
+    let allocation = measure(|| drop(black_box(Box::new([0u8; 9]))));
+    assert_eq!(allocation.bytes_total, 9);
+    assert_eq!(allocation.count_total, 1);
+    assert_eq!(other.join().unwrap().bytes_total, 17);
+    assert!(std::panic::catch_unwind(|| measure(|| panic!("scope unwind"))).is_err());
+    assert_eq!(measure(|| {}), AllocationInfo::default());
+    assert_eq!(COUNTER.get(), None);
+}
+
+#[test]
+fn nested_scopes_accumulate_and_restore_the_parent() {
+    use std::hint::black_box;
+    let mut child = AllocationInfo::default();
+    let parent = measure(|| {
+        drop(black_box(Box::new([0u8; 7])));
+        child = measure(|| drop(black_box(Box::new([0u8; 11]))));
+        drop(black_box(Box::new([0u8; 13])));
+    });
+    assert_eq!(child.count_total, 1);
+    assert_eq!(child.bytes_total, 11);
+    assert_eq!(parent.count_total, 3);
+    assert_eq!(parent.bytes_total, 31);
+    assert_eq!(parent.count_current, 0);
+    assert_eq!(parent.bytes_current, 0);
+    assert_eq!(parent.count_max, 2);
+    assert_eq!(parent.bytes_max, 18);
+    assert_eq!(COUNTER.get(), None);
+}
+
+proptest! {
+    // Every successful raw allocation contributes its size exactly once;
+    // net storage and peaks equal sums and prefix maxima of the lifetime log.
+    #[test]
+    fn accounting_matches_complete_allocation_lifetimes(
+        commands in proptest::collection::vec((0u8..4, 0usize..8, 1usize..257), 0..33),
+    ) {
+        let allocator = CountingAllocator(System);
+        let mut slots = [(std::ptr::null_mut::<u8>(), 0usize); 8];
+        let mut log = Vec::with_capacity(commands.len() * 2);
+        let measured = measure(|| {
+            for &(kind, slot, size) in &commands {
+                let (pointer, previous) = slots[slot];
+                let layout = Layout::from_size_align(previous.max(1), 8).unwrap();
+                // SAFETY: occupied slots contain a live System allocation with
+                // the recorded layout; each replacement retains its new size.
+                unsafe {
+                    match kind {
+                        0 | 1 if pointer.is_null() => {
+                            let layout = Layout::from_size_align(size, 8).unwrap();
+                            let pointer = if kind == 0 { allocator.alloc(layout) } else { allocator.alloc_zeroed(layout) };
+                            assert!(!pointer.is_null());
+                            slots[slot] = (pointer, size);
+                            log.push((1i64, size as i64));
+                        }
+                        2 if !pointer.is_null() => {
+                            let next = allocator.realloc(pointer, layout, size);
+                            assert!(!next.is_null());
+                            slots[slot] = (next, size);
+                            log.push((1, size as i64));
+                            log.push((-1, -(previous as i64)));
+                        }
+                        3 if !pointer.is_null() => {
+                            allocator.dealloc(pointer, layout);
+                            slots[slot] = (std::ptr::null_mut(), 0);
+                            log.push((-1, -(previous as i64)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        // Release survivors outside the measurement, including after a failing
+        // assertion; the property itself owns every live allocation.
+        for (pointer, size) in slots {
+            if !pointer.is_null() {
+                // SAFETY: survivors retain their allocation's original layout.
+                unsafe { allocator.dealloc(pointer, Layout::from_size_align(size, 8).unwrap()) };
+            }
+        }
+        let mut live = (0i64, 0i64);
+        let mut peaks = (0i64, 0i64);
+        for &(count, bytes) in &log {
+            live.0 += count;
+            live.1 += bytes;
+            peaks.0 = peaks.0.max(live.0);
+            peaks.1 = peaks.1.max(live.1);
+        }
+        prop_assert_eq!(measured.count_total, log.iter().filter(|(count, _)| *count > 0).count() as u64);
+        prop_assert_eq!(measured.bytes_total, log.iter().filter(|(count, _)| *count > 0).map(|(_, bytes)| *bytes as u64).sum::<u64>());
+        prop_assert_eq!((measured.count_current, measured.bytes_current), live);
+        prop_assert_eq!((measured.count_max, measured.bytes_max), (peaks.0 as u64, peaks.1 as u64));
     }
 }
