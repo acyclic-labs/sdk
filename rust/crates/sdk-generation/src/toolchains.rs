@@ -26,7 +26,7 @@ pub(super) fn with_toolchain_cache<T>(run: impl FnOnce() -> T) -> T {
 }
 
 fn cached<K: Ord + Clone + 'static, V: Clone + 'static>(
-    slot: &std::thread::LocalKey<std::cell::RefCell<Option<BTreeMap<K, V>>>>,
+    slot: &'static std::thread::LocalKey<std::cell::RefCell<Option<BTreeMap<K, V>>>>,
     key: K,
     probe: impl FnOnce() -> Result<V, CliError>,
 ) -> Result<V, CliError> {
