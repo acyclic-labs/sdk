@@ -47,7 +47,11 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = Arc::clone(context);
+        let context = if io.is_none() {
+            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
+        } else {
+            Arc::clone(context)
+        };
         let turn = command.operation_id;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self

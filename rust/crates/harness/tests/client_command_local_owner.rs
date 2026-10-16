@@ -348,6 +348,7 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
             Box::pin(async move {
                 assert_eq!(invocation.name, "web_search");
                 assert!(context.is_some(), "web command bypassed task executor");
+                context.as_ref().unwrap().task().owned_task_binding(None)?;
                 Ok(ToolResult {
                     value: invocation.arguments,
                 })
