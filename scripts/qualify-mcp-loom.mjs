@@ -10,10 +10,14 @@ export function qualifyGuestLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "guest_loom", [], run);
 }
 
-function qualifyLoom(crate, target, features, run) {
+export function qualifyFsBindingLoom(features = [], run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "native_binding_model", features, run, "acyclic_fs_loom");
+}
+
+function qualifyLoom(crate, target, features, run, cfg = "loom") {
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
-    ...features, "--", "--cfg", "loom",
+    ...features, "--", "--cfg", cfg,
   ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);
@@ -38,5 +42,6 @@ function qualifyLoom(crate, target, features, run) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
   if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
+  else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
 }
