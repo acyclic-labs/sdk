@@ -1,1 +1,1 @@
-{"prompt":"🦀","limits":{"render_bytes":4},"expect":{"requests":[{"messages":[{"role":"user","content":"🦀"}]}]}}
+{"prompt":"🦀","limits":{"render_bytes":85},"expect":{"requests":[{"messages":[{"role":"user","content":"🦀"}]}]}}

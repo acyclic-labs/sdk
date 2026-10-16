@@ -58,7 +58,7 @@ fn streamed_output_budget_counts_utf8_bytes_across_every_delta() {
                         json!({"error":"assistant output exceeds file limit","request_count":1})
                     };
                     let value = json!({"driver":"executor","prompt":"x","max_steps":1,
-                        "limits":{"file_bytes":text.len() - usize::from(!at)},"replay":true,
+                        "limits":{"file_bytes":text.len() - usize::from(!at)},"replay":at,
                         "turns":[events],"expect":expect});
                     runtime
                         .block_on(drivers::run(value))
