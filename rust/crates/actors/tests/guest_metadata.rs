@@ -1,0 +1,109 @@
+//! Downstream metadata construction, immutable fields and validating deserialization.
+use acyclic_actors::guest::*;
+use proptest::prelude::*;
+use serde_json::json;
+#[path = "support/metadata.rs"]
+mod oracle;
+
+fn caller(value: &str, field: usize, expiry: u64) -> Result<AdmittedCaller, GuestMetadataError> {
+    let mut fields = ["a", "o", "p", "c", "i"];
+    fields[field] = value;
+    AdmittedCaller::new(
+        fields[0].into(),
+        fields[1].into(),
+        fields[2].into(),
+        fields[3].into(),
+        fields[4].into(),
+        expiry,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    /// UTF-8 bytes, not character count, bound every constructor and serde route.
+    #[test]
+    fn metadata_boundaries_apply_to_native_and_wire(count in 0usize..=1100, multibyte in any::<bool>(), version in any::<u32>(), field in 0usize..5) {
+        let text = if multibyte { "λ" } else { "a" }.repeat(count);
+        let valid = oracle::text(&text);
+        prop_assert_eq!(CallerCapability::new(version, text.clone()).is_ok(), valid && version != 0);
+        prop_assert_eq!(RuntimeHandle::new(version, text.clone()).is_ok(), valid && version != 0);
+        let handle = json!({"version":version,"handle":text,"future":true});
+        prop_assert_eq!(serde_json::from_value::<CallerCapability>(handle.clone()).is_ok(), valid && version != 0);
+        prop_assert_eq!(serde_json::from_value::<RuntimeHandle>(handle.clone()).is_ok(), valid && version != 0);
+        oracle::check(&serde_json::to_vec(&handle)?);
+        let names = ["accountId","orgId","principal","credentialId","actorId"];
+        let mut raw = json!({"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":"1","capability":null,"future":true});
+        raw[names[field]] = text.clone().into();
+        prop_assert_eq!(caller(&text, field, 1).is_ok(), valid);
+        let decoded = serde_json::from_value::<AdmittedCaller>(raw.clone());
+        prop_assert_eq!(decoded.is_ok(), valid);
+        if let Ok(decoded) = decoded {
+            prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&decoded)?)?, decoded);
+        }
+        oracle::check(&serde_json::to_vec(&raw)?);
+    }
+
+    /// Malformed expiry spellings cannot bypass canonical positive u64 admission.
+    #[test]
+    fn serde_expiry_is_canonical_positive_u64(expiry in ".{0,40}") {
+        let expected = expiry.len() <= 20 && expiry.parse::<u64>().is_ok_and(|n| n > 0 && n.to_string() == expiry);
+        let raw = json!({"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":expiry});
+        prop_assert_eq!(serde_json::from_value::<AdmittedCaller>(raw.clone()).is_ok(), expected);
+        oracle::check(&serde_json::to_vec(&raw)?);
+    }
+}
+
+#[test]
+fn rejected_metadata_never_enters_context() -> Result<(), Box<dyn std::error::Error>> {
+    for invalid in ["", " ", " leading", "trailing ", "line\nfeed"] {
+        let raw = json!({"version":1,"handle":invalid});
+        assert!(serde_json::from_value::<CallerCapability>(raw.clone()).is_err());
+        assert!(serde_json::from_value::<RuntimeHandle>(raw).is_err());
+    }
+    for invalid in ["0", "01", "+1", "-1", "1.0", " 1", "18446744073709551616"] {
+        let raw = json!({"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":invalid});
+        assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
+    }
+    for text in ["a".repeat(1024), "λ".repeat(512)] {
+        let handle = CallerCapability::new(1, text.clone())?;
+        assert_eq!(handle.handle(), text);
+        assert!(CallerCapability::new(1, format!("{text}a")).is_err());
+    }
+    let huge = "a".repeat(1024 * 1024);
+    assert!(CallerCapability::new(1, huge.clone()).is_err());
+    assert!(RuntimeHandle::new(1, huge.clone()).is_err());
+    assert!(caller(&huge, 0, 1).is_err());
+    let caller = AdmittedCaller::new(
+        "a".into(),
+        "o".into(),
+        "p".into(),
+        "c".into(),
+        "i".into(),
+        1,
+    )?
+    .with_capability(CallerCapability::new(1, "cap".into())?)?;
+    assert_eq!(
+        (
+            caller.account_id(),
+            caller.org_id(),
+            caller.principal(),
+            caller.credential_id(),
+            caller.actor_id(),
+            caller.expires_at_ms()
+        ),
+        ("a", "o", "p", "c", "i", "1")
+    );
+    assert_eq!(
+        caller.capability().map(CallerCapability::handle),
+        Some("cap")
+    );
+    let wire = serde_json::to_string(&caller)?;
+    let context = GuestContext::builder((), Box::new(|| 1))
+        .admitted_identity(serde_json::from_str(&wire)?)
+        .build();
+    assert_eq!(context.admitted_identity.as_ref(), Some(&caller));
+    let mut raw = serde_json::to_value(&caller)?;
+    raw["capability"]["version"] = 0.into();
+    assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
+    Ok(())
+}

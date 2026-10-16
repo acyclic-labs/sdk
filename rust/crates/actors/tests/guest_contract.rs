@@ -25,20 +25,20 @@ proptest! {
     /// and nonzero versions/expiries, preserving all admitted values verbatim.
     #[test]
     fn host_metadata_construction_preserves_valid_input(value in ".{0,128}", version in any::<u32>(), expiry in any::<u64>()) {
-        let valid = !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
+        let valid = value.len() <= MAX_GUEST_METADATA_BYTES && !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
         let capability = CallerCapability::new(version, value.clone());
         let runtime = RuntimeHandle::new(version, value.clone());
         prop_assert_eq!(capability.is_ok(), valid && version != 0);
         prop_assert_eq!(runtime.is_ok(), valid && version != 0);
         if let Ok(capability) = capability {
-            prop_assert_eq!(&capability.handle, &value);
-            prop_assert_eq!(capability.version, version);
+            prop_assert_eq!(capability.handle(), value.as_str());
+            prop_assert_eq!(capability.version(), version);
         }
         let caller = AdmittedCaller::new(value.clone(), value.clone(), value.clone(), value.clone(), value.clone(), expiry);
         prop_assert_eq!(caller.is_ok(), valid && expiry != 0);
         if let Ok(caller) = caller {
-            prop_assert_eq!(&caller.principal, &value);
-            prop_assert_eq!(&caller.expires_at_ms, &expiry.to_string());
+            prop_assert_eq!(caller.principal(), &value);
+            prop_assert_eq!(caller.expires_at_ms(), &expiry.to_string());
             prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
         }
     }
@@ -162,10 +162,10 @@ fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std:
         context
             .admitted_identity
             .as_ref()
-            .map(|v| v.expires_at_ms.as_str()),
+            .map(|v| v.expires_at_ms()),
         Some("18446744073709551615")
     );
-    assert_eq!(context.actor.alarms.as_ref().map(|v| v.version), Some(2));
+    assert_eq!(context.actor.alarms.as_ref().map(|v| v.version()), Some(2));
     for invalid in ["", " ", " leading", "trailing ", "nul\0", "line\nfeed"] {
         assert!(CallerCapability::new(1, invalid.into()).is_err());
         assert!(RuntimeHandle::new(1, invalid.into()).is_err());
@@ -185,17 +185,7 @@ fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std:
             );
         }
     }
-    let mut invalid_capability = CallerCapability::new(1, "cap".into())?;
-    invalid_capability.version = 0;
-    let caller = AdmittedCaller::new(
-        "a".into(),
-        "o".into(),
-        "p".into(),
-        "c".into(),
-        "i".into(),
-        1,
-    )?;
-    assert!(caller.with_capability(invalid_capability).is_err());
+    assert!(serde_json::from_str::<CallerCapability>(r#"{"version":0,"handle":"cap"}"#).is_err());
     Ok(())
 }
 
@@ -214,12 +204,16 @@ proptest! {
 
     #[test]
     fn admitted_caller_projection_accepts_extensions_and_round_trips(principal in ".{0,64}", handle in ".{0,64}", expiry in any::<u64>()) {
-        let caller: AdmittedCaller = serde_json::from_value(serde_json::json!({
+        let caller = serde_json::from_value::<AdmittedCaller>(serde_json::json!({
             "accountId":"account", "orgId":"org", "principal":principal,
             "credentialId":"credential", "actorId":"actor", "expiresAtMs":expiry.to_string(),
             "capability":{"version":1,"handle":handle,"future":true}, "future":true
-        }))?;
-        prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
+        }));
+        let valid = |value: &str| !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
+        prop_assert_eq!(caller.is_ok(), valid(&principal) && valid(&handle) && expiry != 0);
+        if let Ok(caller) = caller {
+            prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?, caller);
+        }
     }
 }
 
