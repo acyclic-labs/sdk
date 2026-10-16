@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     context::ContextManifest,
-    conversation::{ContentResidencyVerifier, FileRef},
+    conversation::{ContentResidencyVerifier, FileRef, Limits},
     hooks::{HookFailure, HookRule, HookRun, Hooks},
     native_settings::SettingsConfig,
 };
