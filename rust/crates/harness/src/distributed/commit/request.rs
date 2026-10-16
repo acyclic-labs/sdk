@@ -32,21 +32,28 @@ pub(crate) fn add_condition(
     (request, custody): &mut (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
-    #[cfg(all(
-        test,
-        acyclic_harness_loom,
-        acyclic_loom,
-        feature = "filesystem",
-        not(target_arch = "wasm32")
-    ))]
-    if super::super::tests::model_checking::omit_owner_condition()
-        && matches!(&condition, acyclic_stream::CommitCondition::Tail { path, .. } if path.as_str() == COORDINATOR_PATH)
-    {
-        return Ok(());
-    }
     custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
     request.conditions.push(condition);
     Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn journal_request<'a, 'b, const FENCE: bool>(
+    key: StreamIdempotencyKey,
+    retained_key_bytes: u64,
+    owner: acyclic_stream::CommitCondition,
+    target: acyclic_stream::CommitCondition,
+    path: acyclic_stream::StreamPath,
+    record: OwnedBytes,
+    work: &'a mut Option<&'b mut dyn HistoryIo>,
+) -> Result<(acyclic_stream::CommitRequest, CodecQuota<'a, 'b>)> {
+    let mut request = commit_request(key, retained_key_bytes, work);
+    if FENCE || !cfg!(all(test, acyclic_harness_loom, acyclic_loom)) {
+        add_condition(&mut request, owner)?;
+    }
+    add_condition(&mut request, target)?;
+    add_record(&mut request, path, record)?;
+    Ok(request)
 }
 
 pub(crate) fn add_record(

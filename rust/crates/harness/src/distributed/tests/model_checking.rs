@@ -6,14 +6,6 @@ use futures::TryStreamExt;
 use loom::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use loom::thread;
 
-loom::thread_local! {
-    static OMIT_OWNER_CONDITION: std::cell::Cell<bool> = std::cell::Cell::new(false);
-}
-
-pub(in crate::distributed) fn omit_owner_condition() -> bool {
-    OMIT_OWNER_CONDITION.with(std::cell::Cell::get)
-}
-
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
@@ -134,7 +126,7 @@ fn committed_at(client: &MemoryStream, path: &str, sequence: u64) -> u64 {
     })
 }
 
-fn fencing_model(release: bool, settlement: bool, broken: bool) {
+fn fencing_model<const FENCE: bool>(release: bool, settlement: bool) {
     loom::model(move || {
         let client = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
@@ -179,20 +171,16 @@ fn fencing_model(release: bool, settlement: bool, broken: bool) {
         let mut rival = Box::new(block_on(open(&revoker_client)).unwrap());
         let writer: Pending<bool> = Box::pin(async move {
             let mut work = None;
-            let mut request =
-                commit_request(StreamIdempotencyKey::new("journal").unwrap(), 0, &mut work);
-            add_condition(&mut request, condition).unwrap();
-            add_condition(
-                &mut request,
+            let request = journal_request::<FENCE>(
+                StreamIdempotencyKey::new("journal").unwrap(),
+                0,
+                condition,
                 CommitCondition::Absent {
                     path: StreamPath::new("harness/test/journal").unwrap(),
                 },
-            )
-            .unwrap();
-            add_record(
-                &mut request,
                 StreamPath::new("harness/test/journal").unwrap(),
                 OwnedBytes::from_static(b"result"),
+                &mut work,
             )
             .unwrap();
             let (outcome, _) = commit(request, &writer_client, Some(task), None)
@@ -200,9 +188,7 @@ fn fencing_model(release: bool, settlement: bool, broken: bool) {
                 .unwrap();
             matches!(outcome, CommitOutcome::Committed(_))
         });
-        OMIT_OWNER_CONDITION.with(|fault| fault.set(broken));
         let writer = pause_before_publish(writer, &writer_phase);
-        OMIT_OWNER_CONDITION.with(|fault| fault.set(false));
         let revocation: Pending<()> = Box::pin(async move {
             let event = if release {
                 SchedulerEvent::LeaseReleased {
@@ -272,8 +258,8 @@ fn fencing_model(release: bool, settlement: bool, broken: bool) {
 fn host_publication_cannot_cross_lease_release_or_cancellation() {
     for release in [false, true] {
         for settlement in [false, true] {
-            fencing_model(release, settlement, false);
-            let error = std::panic::catch_unwind(|| fencing_model(release, settlement, true))
+            fencing_model::<true>(release, settlement);
+            let error = std::panic::catch_unwind(|| fencing_model::<false>(release, settlement))
                 .expect_err("omitting the production owner condition must be detected");
             let message = error
                 .downcast_ref::<String>()

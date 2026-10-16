@@ -30,7 +30,7 @@ mod limits;
     feature = "filesystem",
     not(target_arch = "wasm32")
 ))]
-pub(super) mod model_checking;
+mod model_checking;
 #[cfg(all(
     acyclic_harness_loom,
     acyclic_loom,
