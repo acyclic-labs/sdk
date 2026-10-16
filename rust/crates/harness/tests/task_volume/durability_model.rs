@@ -16,8 +16,8 @@ struct Histories {
     replaced: bool,
 }
 
-// Lock order: task-volume index -> histories. Recovery only acquires histories
-// and never enters TaskVolume; a model deadlock detects the reverse dependency.
+// Production never nests the index and provider locks. Recovery only acquires
+// histories; the pause control releases its lock before provider state is read.
 struct Provider(Mutex<Histories>, Option<Arc<Pause>>);
 
 #[async_trait::async_trait]
