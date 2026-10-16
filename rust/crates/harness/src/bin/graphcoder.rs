@@ -130,6 +130,7 @@ fn input_lines()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(feature = "filesystem-local"))]
     use acyclic_harness::Error;
     let Some((selection, headless)) = options::parse()? else {
         return Ok(());
@@ -223,6 +224,7 @@ fn read_request(path: &str) -> acyclic_harness::Result<acyclic_harness::wire::cl
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    #[cfg(not(feature = "filesystem-local"))]
     use acyclic_harness::Error;
     use std::io::Write as _;
 

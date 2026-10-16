@@ -104,7 +104,7 @@ pub struct NativeSession {
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
     context: ContextPipeline,
-    model_provider: Arc<crate::provider::Deterministic>,
+    pub(super) model_provider: Arc<crate::provider::Deterministic>,
 }
 impl NativeSession {
     pub async fn open(config: Config) -> Result<Self> {

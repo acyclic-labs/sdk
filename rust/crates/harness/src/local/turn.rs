@@ -23,7 +23,7 @@ impl LocalHarness {
             None,
         )
     }
-    pub(crate) fn commands(&self) -> Result<commands::CommandOwner<'_>> {
+    pub(super) fn commands(&self) -> Result<commands::CommandOwner<'_>> {
         Ok(commands::CommandOwner(self))
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
