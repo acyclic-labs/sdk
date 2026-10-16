@@ -160,3 +160,9 @@ pub use native::{
 mod test_latency;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "local")
+))]
+mod test_trace;

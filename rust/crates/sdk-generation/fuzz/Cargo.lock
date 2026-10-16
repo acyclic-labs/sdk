@@ -481,6 +481,7 @@ name = "sdk-generation-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "sdk-docs",
  "sdk-generation",
  "serde",
  "serde_json",

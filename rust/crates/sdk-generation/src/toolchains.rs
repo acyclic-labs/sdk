@@ -43,7 +43,7 @@ fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf
     let path = crate::file_cache::get(&declaration, &context, || {
         let output = sdk_docs::command("rustup")
             .args(["which", "cargo", "--toolchain", &toolchain])
-            .output()
+            .run_output()
             .map_err(io_error)?;
         if !output.status.success() {
             return Err(CliError(format!(
@@ -66,11 +66,15 @@ fn select_cargo(root: &Path, declaration: &Path, source: &str) -> Result<PathBuf
 }
 
 pub(super) fn toolchain_identity(cargo: &Path) -> Result<String, CliError> {
-    Ok(
-        cargo_version(cargo, &std::env::current_dir().map_err(io_error)?)?
-            .trim()
-            .to_owned(),
-    )
+    Ok(cargo_version(
+        cargo,
+        &sdk_docs::command_directory()
+            .map(Ok)
+            .unwrap_or_else(std::env::current_dir)
+            .map_err(io_error)?,
+    )?
+    .trim()
+    .to_owned())
 }
 
 pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliError> {
@@ -78,7 +82,7 @@ pub(super) fn cargo_version(cargo: &Path, root: &Path) -> Result<String, CliErro
         let output = sdk_docs::command(cargo)
             .current_dir(root)
             .arg("-vV")
-            .output()
+            .run_output()
             .map_err(io_error)?;
         if !output.status.success() {
             return Err(CliError("pinned Cargo identity query failed".into()));

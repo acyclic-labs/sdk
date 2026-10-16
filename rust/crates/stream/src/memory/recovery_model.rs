@@ -13,6 +13,7 @@ pub(crate) enum Fault {
     RetainReplacedState,
     IgnoreHead,
     OmitPoisonPublication,
+    HoldPublicationDuringMaintenance,
 }
 
 loom::thread_local! {
@@ -351,4 +352,14 @@ pub fn local_path_cancellation(retain: bool) {
 /// Checks that a failure-watch borrow never crosses local visibility acquisition.
 pub fn local_failure_lock_order(hold_borrow: bool) {
     crate::local::follow_model::failure_lock_order(hold_borrow);
+}
+
+/// Accepted readers and watermark queries must not wait for snapshot device I/O.
+pub fn local_compaction_visibility(hold_publication: bool) {
+    crate::local::compaction_model::verify(u8::from(hold_publication));
+}
+
+/// Detect releasing mutation serialization before the snapshot's device cut.
+pub fn local_compaction_cut() {
+    crate::local::compaction_model::verify(2);
 }

@@ -488,7 +488,14 @@ fn broken_publication_lock_cannot_be_hidden_by_another_success() {
     assert!(!failed.stderr.is_empty());
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
     fs::remove_dir(lock).unwrap();
-    let succeeded = run();
+    let succeeded = invoke(&mut generate_command(
+        &fixture.root,
+        &fixture.rustdoc,
+        &fixture.output,
+        "broken-lock",
+        "preview",
+        true,
+    ));
     assert_eq!(
         succeeded.status.code(),
         Some(0),
@@ -962,11 +969,18 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         "raw Rustdoc must retain the relocated dependency artifacts"
     );
     for original in original_dependencies {
-        let relocated = super::paths::rebase(&original, fixture.output.to_str().unwrap(),
-            relocated.output.to_str().unwrap(), cfg!(windows)).unwrap();
-        assert_eq!(sdk_file_identity::stamp(Path::new(&original)).unwrap(),
+        let relocated = super::paths::rebase(
+            &original,
+            fixture.output.to_str().unwrap(),
+            relocated.output.to_str().unwrap(),
+            cfg!(windows),
+        )
+        .unwrap();
+        assert_eq!(
+            sdk_file_identity::stamp(Path::new(&original)).unwrap(),
             sdk_file_identity::stamp(Path::new(&relocated)).unwrap(),
-            "completed compiler artifacts share their native file identity");
+            "completed compiler artifacts share their native file identity"
+        );
     }
     let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
     assert_eq!(
