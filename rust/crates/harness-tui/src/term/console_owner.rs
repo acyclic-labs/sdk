@@ -27,7 +27,10 @@ struct State<W: Write> {
     phase: Phase,
     acknowledged: bool,
     closed: bool,
+    closing: bool,
     restored: bool,
+    #[cfg(test)]
+    fail_next_spawn: bool,
     worker: Option<Arc<JoinHandle<()>>>,
     generation: u64,
 }
@@ -69,7 +72,10 @@ impl<W: Write + Send + 'static> Owner<W> {
                 phase: Phase::Completed,
                 acknowledged: true,
                 closed: false,
+                closing: false,
                 restored: false,
+                #[cfg(test)]
+                fail_next_spawn: false,
                 worker: None,
                 generation: 0,
             }),
@@ -177,6 +183,9 @@ impl<W: Write + Send + 'static> Owner<W> {
                 .state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
+            if restoring && value.is_ok() {
+                state.restored = true;
+            }
             *output.lock().unwrap_or_else(|error| error.into_inner()) = Some(value);
             state.guard = Some(guard);
             if state.phase != Phase::Cancelled {
@@ -185,12 +194,26 @@ impl<W: Write + Send + 'static> Owner<W> {
             state.acknowledged = true;
             owner.wake.notify_all();
         };
-        #[cfg(acyclic_harness_tui_loom)]
-        let spawned: io::Result<_> = Ok(thread::spawn(worker));
-        #[cfg(not(acyclic_harness_tui_loom))]
-        let spawned = thread::Builder::new()
-            .name("terminal-console".into())
-            .spawn(worker);
+        let spawn = || {
+            #[cfg(acyclic_harness_tui_loom)]
+            {
+                Ok(thread::spawn(worker))
+            }
+            #[cfg(not(acyclic_harness_tui_loom))]
+            {
+                thread::Builder::new()
+                    .name("terminal-console".into())
+                    .spawn(worker)
+            }
+        };
+        #[cfg(test)]
+        let spawned = if std::mem::take(&mut state.fail_next_spawn) {
+            Err(io::Error::other("injected console worker spawn failure"))
+        } else {
+            spawn()
+        };
+        #[cfg(not(test))]
+        let spawned = spawn();
         match spawned {
             Ok(worker) => state.worker = Some(Arc::new(worker)),
             Err(error) => {
@@ -263,33 +286,37 @@ impl<W: Write + Send + 'static> Owner<W> {
     ) -> io::Result<()> {
         {
             let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
-            if state.closed {
-                while !state.restored {
-                    state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
-                }
+            while state.closing {
+                state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
+            }
+            if state.restored {
                 return Ok(());
             }
             state.closed = true;
+            state.closing = true;
         }
-        this.quiesce(true)?;
-        let result = Self::execute(
-            this,
-            Instant::now() + super::PROBE_TIMEOUT,
-            true,
-            move |guard| {
-                // Cancellation can leave a partial query even with an empty undo
-                // journal. Fence its worker first, then cancel the control string.
-                let cancel = guard.writer().write_all(b"\x18");
-                let dec = guard.restore().or_else(|_| guard.restore());
-                let os = os_restore(guard.writer());
-                cancel.and(dec).and(os)
-            },
-        );
-        // Even if teardown output blocks, keep cancelling until it returns.
-        // OS mode restoration runs after every attempted DEC undo, before ack.
-        this.quiesce(true)?;
+        let result = this.quiesce(true).and_then(|()| {
+            let result = Self::execute(
+                this,
+                Instant::now() + super::PROBE_TIMEOUT,
+                true,
+                move |guard| {
+                    // Cancellation can leave a partial query even with an empty undo
+                    // journal. Fence its worker first, then cancel the control string.
+                    let cancel = guard.writer().write_all(b"\x18");
+                    let dec = guard.restore().or_else(|_| guard.restore());
+                    let os = os_restore(guard.writer());
+                    cancel.and(dec).and(os)
+                },
+            );
+            // Even if teardown output blocks, keep cancelling until it returns.
+            // OS mode restoration runs after every attempted DEC undo, before ack.
+            this.quiesce(true).and(result)
+        });
         let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
-        state.restored = true;
+        // Finishing an attempt does not imply restoration. Only the successful
+        // restore action above may publish restored, after native completion.
+        state.closing = false;
         this.wake.notify_all();
         result
     }
@@ -298,7 +325,7 @@ impl<W: Write + Send + 'static> Owner<W> {
 #[cfg(all(test, acyclic_harness_tui_loom))]
 mod tests {
     use super::*;
-    use crate::term::Capabilities;
+    use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
 
     struct Console {
@@ -500,5 +527,85 @@ mod tests {
     #[test]
     fn negative_control_detects_cancellation_after_generation_handoff() {
         assert!(std::panic::catch_unwind(handoff_model::<false>).is_err());
+    }
+
+    fn retry_owner() -> Arc<Owner<Vec<u8>>> {
+        let mut caps = Capabilities::default();
+        caps.modes.insert(1049, ModeState::Reset);
+        let mut guard = RestoreGuard::new(Vec::new(), &caps);
+        guard.enable_mode(1049).unwrap_or_else(|e| panic!("{e}"));
+        let owner = Owner::new(guard, |_| {});
+        owner
+            .state
+            .lock()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .fail_next_spawn = true;
+        owner
+    }
+
+    fn restore_os(bytes: &mut Vec<u8>) -> io::Result<()> {
+        bytes.extend_from_slice(b"OS restored");
+        Ok(())
+    }
+
+    fn assert_restored(owner: &Owner<Vec<u8>>) {
+        let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
+        assert!(state.restored);
+        assert!(!state.closing);
+        let bytes = state.guard.as_mut().expect("writer returned").writer();
+        assert!(bytes.windows(8).any(|b| b == b"\x1b[?1049l"));
+        assert!(bytes.ends_with(b"OS restored"));
+    }
+
+    fn retry_model(broken: bool) {
+        loom::model(move || {
+            let owner = retry_owner();
+            assert!(Owner::close(&owner, restore_os).is_err());
+            {
+                let mut state = owner.state.lock().unwrap_or_else(|e| panic!("{e}"));
+                assert!(!state.restored);
+                assert!(!state.closing);
+                assert_eq!(
+                    state.guard.as_mut().expect("writer retained").writer(),
+                    b"\x1b[?1049h"
+                );
+                if broken {
+                    // Negative control: the old close marked a failed spawn as
+                    // restored even though its action never executed.
+                    state.restored = true;
+                }
+            }
+            // Tty::drop calls this same close even after explicit restore failed.
+            Owner::close(&owner, restore_os).unwrap_or_else(|e| panic!("{e}"));
+            assert_restored(&owner);
+        });
+    }
+
+    #[test]
+    fn failed_teardown_spawn_can_be_retried_by_close_or_drop() {
+        retry_model(false);
+    }
+
+    #[test]
+    fn negative_control_detects_restore_completion_without_action() {
+        assert!(std::panic::catch_unwind(|| retry_model(true)).is_err());
+    }
+
+    #[test]
+    fn failed_close_attempt_wakes_concurrent_retry() {
+        loom::model(|| {
+            let owner = retry_owner();
+            let retrying = Arc::clone(&owner);
+            let other = thread::spawn(move || Owner::close(&retrying, restore_os));
+            let first = Owner::close(&owner, restore_os);
+            let second = other
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e));
+            assert_eq!(
+                usize::from(first.is_err()) + usize::from(second.is_err()),
+                1
+            );
+            assert_restored(&owner);
+        });
     }
 }
