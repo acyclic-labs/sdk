@@ -86,55 +86,48 @@ fn negative_control_detects_retaining_settled_commands() {
 
 fn create_claim_control(broken: bool, session: bool) {
     model(move || {
-        let provider = Arc::new(MemoryStream::default());
-        let path = StreamPath::new("claim")?;
-        let first = block_on(TaskVolume::open(provider.clone(), path.clone()))?;
-        let second = block_on(TaskVolume::open(provider, path))?;
-        // Capture both contenders before publication. A later contender is
-        // exercised after the race below, exhausting both generation classes.
-        let cut = block_on(first.snapshot(&Query::Root, 1))?.generation;
-        let body = TaskFile::ExecutionClaim(Component::new("claim")?);
-        let key = if session {
-            FileKey::Session {
-                session: Component::new("session")?,
-                file: body,
-            }
-        } else {
-            FileKey::Task {
-                task: Component::new("task")?,
-                file: body,
-            }
-        };
-        let file = Write::new(key, OwnedBytes::from_static(b"same request"));
-        let worker = thread::spawn({
-            let file = file.clone();
-            move || {
-                if broken {
-                    block_on(second.append(cut, &file)).is_ok()
-                } else {
-                    block_on(second.create(cut, &file)).is_ok()
+        // competing_writers_cannot_tear_the_shared_projection models the real
+        // atomic publication fence. At that cut, an identical claim contender
+        // either captured the old generation or observed the winning claim.
+        // Exhaust both classes without re-exploring provider commit internals.
+        for observed_winner in [false, true] {
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("claim")?;
+            let first = block_on(TaskVolume::open(provider.clone(), path.clone()))?;
+            let second = block_on(TaskVolume::open(provider, path))?;
+            let cut = block_on(first.snapshot(&Query::Root, 1))?.generation;
+            let body = TaskFile::ExecutionClaim(Component::new("claim")?);
+            let key = if session {
+                FileKey::Session {
+                    session: Component::new("session")?,
+                    file: body,
                 }
-            }
-        });
-        let accepted = if broken {
-            block_on(first.append(cut, &file)).is_ok()
-        } else {
-            block_on(first.create(cut, &file)).is_ok()
-        };
-        let other = worker.join().map_err(|_| "claim worker panicked")?;
-        let mut dispatches = usize::from(accepted) + usize::from(other);
-        assert_eq!(dispatches, 1, "duplicate request dispatch");
-        // Identical bytes must not authorize a second effect, even when that
-        // contender observed the winning claim before submitting its request.
-        let current = block_on(first.snapshot(&Query::Root, 1))?;
-        assert_eq!(current.files, vec![file.clone()]);
-        let repeated = if broken {
-            block_on(first.append(current.generation, &file)).is_ok()
-        } else {
-            block_on(first.create(current.generation, &file)).is_ok()
-        };
-        dispatches += usize::from(repeated);
-        assert_eq!(dispatches, 1, "duplicate request dispatch");
+            } else {
+                FileKey::Task {
+                    task: Component::new("task")?,
+                    file: body,
+                }
+            };
+            let file = Write::new(key, OwnedBytes::from_static(b"same request"));
+            block_on(first.create(cut, &file))?;
+            let contender = if observed_winner {
+                block_on(second.snapshot(&Query::Root, 1))?.generation
+            } else {
+                cut
+            };
+            // An idempotent append may return success for an identical claim.
+            // Creation must never authorize the contender's second effect.
+            let accepted = if broken {
+                block_on(second.append(contender, &file)).is_ok()
+            } else {
+                block_on(second.create(contender, &file)).is_ok()
+            };
+            assert!(!accepted, "duplicate request dispatch");
+            assert_eq!(
+                block_on(second.snapshot(&Query::Root, 1))?.files,
+                vec![file]
+            );
+        }
         Ok(())
     });
 }
