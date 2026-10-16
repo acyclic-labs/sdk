@@ -28,7 +28,7 @@ impl LazyNode for crate::LazyShadow {
     }
 }
 
-pub(super) fn lazy_digest<T: Serialize>(
+pub(super) fn lazy_digest<T: LazyNode>(
     value: &T,
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<[u8; 32], LocalCoreStateStoreError> {
