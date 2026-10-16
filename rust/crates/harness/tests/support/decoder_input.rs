@@ -40,12 +40,26 @@ pub fn wire(data: &[u8]) {
     let frame = wire::ClientFrame {
         frame: Some(wire::client_frame::Frame::Acknowledge(wire::Acknowledge {
             authority: None,
-            generation: text,
+            generation: text.clone(),
             through_revision: u64::from_le_bytes(number),
         })),
     };
     assert_eq!(
         jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap(),
+        frame
+    );
+    let frame = wire::ServerFrame {
+        frame: Some(wire::server_frame::Frame::Admission(wire::Admission {
+            operation: Some(wire::OperationIdentity {
+                operation_id: text.clone(),
+                idempotency_key: text,
+            }),
+            state: i32::from_le_bytes(number[..4].try_into().unwrap()),
+            error: None,
+        })),
+    };
+    assert_eq!(
+        jsonl::parse_server_frame(&jsonl::server_frame(&frame).unwrap()).unwrap(),
         frame
     );
 }
@@ -85,10 +99,13 @@ pub fn journal(data: &[u8]) {
         assert_eq!(store.load().unwrap(), records);
     }
     let bytes = std::fs::read(&path).unwrap();
+    let choice = data.iter().fold(0usize, |choice, &byte| {
+        choice.wrapping_mul(257).wrapping_add(usize::from(byte))
+    });
     // Boundaries are observed from the production writer, without duplicating
     // the framing, checksums or decoder's partial-record logic.
     for cut in [
-        usize::from(data.first().copied().unwrap_or(0)) % (bytes.len() + 1),
+        choice % (bytes.len() + 1),
         ends[0] - 1,
         ends[0],
         bytes.len() - 1,
@@ -101,7 +118,7 @@ pub fn journal(data: &[u8]) {
         assert_eq!(store.load().unwrap(), records[..expected]);
     }
     let mut corrupt = bytes;
-    let offset = usize::from(data.last().copied().unwrap_or(0)) % ends[0];
+    let offset = choice % corrupt.len();
     corrupt[offset] ^= 1;
     std::fs::write(&path, &corrupt).unwrap();
     let mut store = FileClientState::open(&path).unwrap();
