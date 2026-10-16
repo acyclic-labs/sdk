@@ -3,6 +3,10 @@ use acyclic_harness::client::{ClientInterests, InterestTier};
 use acyclic_stream::{StreamPath, wire::SessionDelivery};
 use std::collections::BTreeSet;
 
+#[cfg(feature = "filesystem")]
+#[path = "client_interest_session.rs"]
+mod session;
+
 fn path(value: &str) -> StreamPath {
     StreamPath::new(value).unwrap()
 }
@@ -142,6 +146,37 @@ fn ids<'a>(paths: impl Iterator<Item = &'a StreamPath>) -> BTreeSet<u8> {
         .collect()
 }
 
+fn check_changes(
+    before: &BTreeSet<u8>,
+    after: &BTreeSet<u8>,
+    subscribe: &BTreeSet<u8>,
+    unsubscribe: &BTreeSet<u8>,
+) -> bool {
+    *subscribe == after.difference(before).copied().collect()
+        && *unsubscribe == before.difference(after).copied().collect()
+}
+
+#[test]
+fn negative_control_promotion_resubscribe_is_rejected() {
+    let before = layout(&[], &["swarm/1"], 1).unwrap();
+    let after = layout(&["swarm/1"], &[], 1).unwrap();
+    let changes = after.changes(&before).unwrap();
+    let full = BTreeSet::from([1]);
+    assert!(check_changes(
+        &full,
+        &full,
+        &ids(changes.subscribe()),
+        &ids(changes.unsubscribe())
+    ));
+    // Broken transport treats a rendering-tier change as a new subscription.
+    assert!(!check_changes(
+        &full,
+        &full,
+        &BTreeSet::from([1]),
+        &BTreeSet::new()
+    ));
+}
+
 proptest::proptest! {
     // Property: demand is exactly the bounded union of layout selections; visible
     // entries take precedence, and all unselected agents remain at overview.
@@ -184,7 +219,6 @@ proptest::proptest! {
         let before: BTreeSet<_> = old_visible.into_iter().chain(old_nearby).collect();
         let after: BTreeSet<_> = new_visible.into_iter().chain(new_nearby).collect();
         let changes = current.changes(&previous).unwrap();
-        proptest::prop_assert_eq!(ids(changes.subscribe()), after.difference(&before).copied().collect());
-        proptest::prop_assert_eq!(ids(changes.unsubscribe()), before.difference(&after).copied().collect());
+        proptest::prop_assert!(check_changes(&before, &after, &ids(changes.subscribe()), &ids(changes.unsubscribe())));
     }
 }

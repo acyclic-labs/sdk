@@ -1,0 +1,281 @@
+//! File-driven interest orchestration over the platform's multiplexed session.
+
+use super::{ClientInterests, InterestFiles};
+use crate::{Error, Result, conversation::ContentResidencyVerifier, task_volume::HeadSnapshot};
+use acyclic_stream::{StreamPath, wire};
+use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
+use std::{collections::BTreeMap, future::Future, sync::Arc};
+
+/// Admission bounds, independent of how many agents are currently rendered.
+#[derive(Clone, Copy, Debug)]
+pub struct SwarmClientLimits {
+    /// Whole-swarm discovery and status capacity.
+    pub agents: usize,
+    /// Combined visible and prefetched agents.
+    pub selected: usize,
+    /// Combined layout and open-view document bytes.
+    pub layout_bytes: usize,
+    /// Maximum logical files in each selected snapshot.
+    pub snapshot_files: usize,
+}
+
+/// Inputs for the shared ClientViews fold; no renderer or second wire schema.
+pub enum SwarmUpdate {
+    /// Rendering demand changed; prefetch remains followed without rendering.
+    Layout(ClientInterests),
+    /// Exact initial heads; subsequent content starts at this snapshot's cursor.
+    Snapshot {
+        /// Selected agent identity.
+        agent: StreamPath,
+        /// Zero-copy materialized files at C.
+        snapshot: HeadSnapshot,
+    },
+    /// Platform-delivered status or full-fidelity content.
+    Data {
+        /// Source agent.
+        agent: StreamPath,
+        /// True for the always-on latest-value status subscription.
+        overview: bool,
+        /// The exact platform data, including cursor and durability watermarks.
+        data: wire::SessionData,
+    },
+}
+
+/// Client orchestration, using only the filesystem reader and Stream provider.
+/// Agent children have `status` and `files` streams. Platform session I/O owns
+/// connection placement, credit, acknowledgements and resume; this owns demand.
+pub struct SwarmClient {
+    root: StreamPath,
+    reader: Arc<dyn ContentResidencyVerifier>,
+    limits: SwarmClientLimits,
+}
+
+struct Agent {
+    content: Option<u64>,
+}
+
+struct Interests {
+    revision: u64,
+    next_channel: u64,
+    agents: BTreeMap<StreamPath, Agent>,
+    routes: BTreeMap<u64, (StreamPath, bool)>,
+    demand: ClientInterests,
+}
+
+impl Interests {
+    fn update(&self) -> Result<wire::SessionInterest> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("interest revision exhausted".into()))?;
+        Ok(wire::SessionInterest {
+            revision,
+            ..Default::default()
+        })
+    }
+
+    async fn send<S: Sink<wire::SessionInterest, Error = Error> + Unpin>(
+        &mut self,
+        session: &mut S,
+        update: wire::SessionInterest,
+    ) -> Result<()> {
+        if !update.upsert.is_empty() || !update.remove.is_empty() {
+            let revision = update.revision;
+            session.send(update).await?;
+            self.revision = revision;
+        }
+        Ok(())
+    }
+
+    fn channel(&mut self) -> Result<u64> {
+        let channel = self.next_channel;
+        self.next_channel = self
+            .next_channel
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("session channel identity exhausted".into()))?;
+        Ok(channel)
+    }
+
+    fn discover(
+        &mut self,
+        path: StreamPath,
+        maximum: usize,
+        update: &mut wire::SessionInterest,
+    ) -> Result<()> {
+        if self.demand.tier(&path).is_none() || path == *self.demand.root() {
+            return Err(Error::Invalid("discovered agent lies outside swarm".into()));
+        }
+        if self.agents.contains_key(&path) {
+            return Ok(());
+        }
+        if self.agents.len() >= maximum {
+            return Err(Error::Invalid("swarm agent bound reached".into()));
+        }
+        StreamPath::new(format!("{}/status", path.as_str()))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let channel = self.channel()?;
+        update.upsert.push(follow(
+            channel,
+            &path,
+            "status",
+            wire::SessionDelivery::Latest,
+            0,
+        ));
+        self.routes.insert(channel, (path.clone(), true));
+        self.agents.insert(path, Agent { content: None });
+        Ok(())
+    }
+}
+
+fn follow(
+    channel_id: u64,
+    agent: &StreamPath,
+    suffix: &str,
+    delivery: wire::SessionDelivery,
+    next: u64,
+) -> wire::SessionSubscription {
+    wire::SessionSubscription {
+        channel: Some(wire::SessionChannel {
+            channel_id,
+            generation: 1,
+        }),
+        resume: Some(wire::SessionCursor {
+            next,
+            ..Default::default()
+        }),
+        kind: Some(wire::session_subscription::Kind::Follow(
+            wire::SessionFollow {
+                path: format!("{}/{suffix}", agent.as_str()),
+                delivery: delivery as i32,
+            },
+        )),
+    }
+}
+
+impl SwarmClient {
+    /// Binds authenticated providers; construction opens no connection or task.
+    pub fn new(
+        root: StreamPath,
+        reader: Arc<dyn ContentResidencyVerifier>,
+        limits: SwarmClientLimits,
+    ) -> Result<Self> {
+        if limits.agents == 0
+            || limits.selected > limits.agents
+            || limits.layout_bytes == 0
+            || limits.snapshot_files == 0
+        {
+            return Err(Error::Invalid("invalid swarm client bounds".into()));
+        }
+        // Validate the namespace before constructing any subscriptions.
+        StreamPath::new(format!("{}/agent/files", root.as_str()))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(Self {
+            root,
+            reader,
+            limits,
+        })
+    }
+
+    /// Runs one config-volume query and one multiplexed Streams session. `files`
+    /// yields its initial snapshot cut then pushed fs publications. The platform
+    /// session sink accepts canonical interest diffs; incoming data is already
+    /// credit-admitted/fenced by that same platform session, never a harness socket.
+    /// `heads` executes the provider's bounded root query on `<agent>/files`;
+    /// it reuses the query owner's materialized index rather than replaying agent
+    /// history into a second client index.
+    /// Finite sources fail closed rather than returning success with stale views.
+    pub async fn follow<L, S, I, Q, QFut, F, Fut>(
+        &self,
+        files: L,
+        mut session: S,
+        incoming: I,
+        mut heads: Q,
+        mut publish: F,
+    ) -> Result<()>
+    where
+        L: Stream<Item = Result<InterestFiles>>,
+        S: Sink<wire::SessionInterest, Error = Error> + Unpin,
+        I: Stream<Item = Result<wire::SessionFrame>>,
+        Q: FnMut(StreamPath, usize) -> QFut,
+        QFut: Future<Output = crate::task_volume::Result<HeadSnapshot>>,
+        F: FnMut(SwarmUpdate) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let mut state = Interests {
+            revision: 0,
+            next_channel: 2,
+            agents: BTreeMap::new(),
+            routes: BTreeMap::new(),
+            demand: ClientInterests::from_layout(self.root.clone(), [], [], 0)?,
+        };
+        let mut initial = state.update()?;
+        initial.upsert.push(wire::SessionSubscription {
+            channel: Some(wire::SessionChannel {
+                channel_id: 1,
+                generation: 1,
+            }),
+            kind: Some(wire::session_subscription::Kind::Children(
+                wire::ChildrenRequest {
+                    parent: Some(self.root.as_str().into()),
+                    limit: acyclic_stream::MAX_ITEMS as u32,
+                },
+            )),
+            ..Default::default()
+        });
+        state.send(&mut session, initial).await?;
+        let files = files.fuse();
+        let incoming = incoming.fuse();
+        futures::pin_mut!(files, incoming);
+        loop {
+            futures::select! {
+                cut = files.next() => {
+                    let cut = cut.ok_or_else(|| Error::Storage("layout query ended".into()))??;
+                    let demand = cut.read(self.reader.as_ref(), self.root.clone(), self.limits.selected, self.limits.layout_bytes).await?;
+                    let diff = demand.changes(&state.demand)?;
+                    let removed: Vec<_> = diff.unsubscribe().cloned().collect();
+                    let added: Vec<_> = diff.subscribe().cloned().collect();
+                    let mut update = state.update()?;
+                    for path in removed {
+                        if let Some(channel) = state.agents.get_mut(&path).and_then(|agent| agent.content.take()) {
+                            update.remove.push(wire::SessionChannel { channel_id: channel, generation: 1 });
+                            state.routes.remove(&channel);
+                        }
+                    }
+                    for path in added {
+                        state.discover(path.clone(), self.limits.agents, &mut update)?;
+                        let snapshot = heads(path.clone(), self.limits.snapshot_files).await
+                            .map_err(|error| Error::Storage(error.to_string()))?;
+                        let next = snapshot.cursor.position;
+                        publish(SwarmUpdate::Snapshot { agent: path.clone(), snapshot }).await?;
+                        let channel = state.channel()?;
+                        update.upsert.push(follow(channel, &path, "files", wire::SessionDelivery::All, next));
+                        state.agents.get_mut(&path).expect("discovered agent").content = Some(channel);
+                        state.routes.insert(channel, (path, false));
+                    }
+                    state.send(&mut session, update).await?;
+                    publish(SwarmUpdate::Layout(demand.clone())).await?;
+                    state.demand = demand;
+                },
+                frame = incoming.next() => {
+                    let frame = frame.ok_or_else(|| Error::Storage("platform session ended".into()))??;
+                    // Placement/reconnect generations belong to the platform
+                    // session. Its incoming iterator has already fenced stale
+                    // frames; channel identities here are never reused.
+                    if let Some(wire::session_frame::Body::Data(data)) = frame.body {
+                        if frame.channel_id == 1 {
+                            let Some(wire::session_data::Item::Child(child)) = data.item else {
+                                return Err(Error::Invalid("discovery received non-child data".into()));
+                            };
+                            let path = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
+                            let mut update = state.update()?;
+                            state.discover(path, self.limits.agents, &mut update)?;
+                            state.send(&mut session, update).await?;
+                        } else if let Some((agent, overview)) = state.routes.get(&frame.channel_id) {
+                            publish(SwarmUpdate::Data { agent: agent.clone(), overview: *overview, data }).await?;
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
