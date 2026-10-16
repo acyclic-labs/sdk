@@ -15,6 +15,7 @@ struct Interleaved {
     // Counter locks are released before any volume/provider call.
     staged: Mutex<usize>,
     published: Mutex<usize>,
+    fail_open: Mutex<bool>,
 }
 
 #[async_trait::async_trait]
@@ -35,6 +36,12 @@ impl StreamProvider for Interleaved {
         self.inner.bounds(path).await
     }
     async fn append(&self, request: AppendRequest) -> Storage<AppendOutcome> {
+        if request.path.as_str().contains("/files/") {
+            let fail = std::mem::take(&mut *self.fail_open.lock().await);
+            if fail {
+                return Err(StreamError::Unavailable);
+            }
+        }
         self.inner.append(request).await
     }
     async fn fork(&self, request: ForkRequest) -> Storage<ForkReceipt> {
@@ -132,6 +139,7 @@ pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) ->
         parent: StreamPath::new("staging-conflicts").unwrap(),
         staged: Mutex::new(0),
         published: Mutex::new(0),
+        fail_open: Mutex::new(false),
     });
     let volume = TaskVolume::open(stream.clone(), stream.parent.clone())
         .await
@@ -237,6 +245,134 @@ async fn four_interleaved_volume_writes_preserve_completion_and_resume() -> Resu
 #[should_panic(expected = "completed response was not retained")]
 async fn negative_control_detects_staging_on_the_shared_generation() {
     schedule(
+        Arc::new(crate::test_support::ScriptedSearchProvider::new([]).unwrap()),
+        true,
+    )
+    .await
+    .unwrap();
+}
+
+pub(super) async fn failed_open_retry(
+    provider: Arc<dyn SearchProvider>,
+    broken: bool,
+) -> Result<()> {
+    let stream = Arc::new(Interleaved {
+        inner: Arc::new(MemoryStream::default()),
+        parent: StreamPath::new("failed-completion-open").unwrap(),
+        staged: Mutex::new(4),
+        published: Mutex::new(4),
+        fail_open: Mutex::new(true),
+    });
+    let volume = TaskVolume::open(stream.clone(), stream.parent.clone())
+        .await
+        .map_err(storage)?;
+    let task = Component::new("task").unwrap();
+    let id = Component::new("search-open").unwrap();
+    let fence = LeaseFence {
+        reservation_id: "owner".into(),
+        placement: "test".into(),
+    };
+    let generation = volume
+        .snapshot(&Query::Root, 0)
+        .await
+        .map_err(storage)?
+        .generation;
+    let generation = volume
+        .append(
+            generation,
+            &FileValue::new(
+                FileKey::Task {
+                    task: task.clone(),
+                    file: TaskFile::Request(id.clone()),
+                },
+                br#"{"query":"model"}"#.as_slice(),
+            ),
+        )
+        .await
+        .map_err(storage)?;
+    if broken {
+        // Restore the rejected ordering: make the claim irreversible before open.
+        volume
+            .append(
+                generation,
+                &FileValue::new(file(&task, &id, false), encode(&fence, None)?),
+            )
+            .await
+            .map_err(storage)?;
+    }
+    let authorize = |_| std::future::ready(Ok(vec![]));
+    let first = settle(
+        &volume,
+        &task,
+        &id,
+        &fence,
+        &mut || panic!("failed open resolved credentials"),
+        &authorize,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(
+            first,
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                ..
+            })
+        ),
+        "{first:?}"
+    );
+    let claim = volume
+        .snapshot(&Query::File(file(&task, &id, false)), 1)
+        .await
+        .map_err(storage)?;
+    assert!(claim.files.is_empty(), "failed open committed a claim");
+    let reopened = TaskVolume::open(stream.clone(), stream.parent.clone())
+        .await
+        .map_err(storage)?;
+    settle(
+        &reopened,
+        &task,
+        &id,
+        &fence,
+        &mut || Ok(Some(provider.clone())),
+        &authorize,
+        None,
+    )
+    .await?;
+    let terminal = reopened
+        .snapshot(&Query::File(file(&task, &id, true)), 1)
+        .await
+        .map_err(storage)?;
+    assert_eq!(terminal.files.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<SearchOutcome>(&terminal.files[0].bytes).unwrap(),
+        SearchOutcome::Succeeded {
+            response: SearchResponse { results: vec![] }
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_completion_open_leaves_request_retryable() -> Result<()> {
+    use crate::test_support::{ScriptedSearch, ScriptedSearchProvider};
+    let provider = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
+        request: SearchRequest {
+            query: "model".into(),
+            max_results: 5,
+        },
+        response: Some(SearchResponse { results: vec![] }),
+        error: None,
+    }])?);
+    failed_open_retry(provider.clone(), false).await?;
+    assert_eq!(provider.remaining(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "failed open committed a claim")]
+async fn negative_control_detects_claiming_before_open() {
+    failed_open_retry(
         Arc::new(crate::test_support::ScriptedSearchProvider::new([]).unwrap()),
         true,
     )

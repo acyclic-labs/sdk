@@ -326,6 +326,11 @@ where
         let Some(input) = snapshot.files.first() else {
             return Ok(());
         };
+        // A failed open must leave the request unclaimed and safe to retry.
+        let completion = volume
+            .file_volume(&ready(task, id))
+            .await
+            .map_err(storage)?;
         let claim = FileValue::new(started.clone(), encode(fence, work)?);
         match volume
             .append_if(
@@ -341,11 +346,6 @@ where
             Err(error) => return Err(storage(error)),
             Ok(_) => {}
         }
-        // Open the request-scoped file stream before contacting the provider.
-        let completion = volume
-            .file_volume(&ready(task, id))
-            .await
-            .map_err(storage)?;
         let dispatch = async {
             // Tuple fields retire the decoded query before its allocation owner.
             let input = request(&input.bytes, work)?;

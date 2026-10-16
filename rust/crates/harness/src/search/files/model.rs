@@ -419,3 +419,28 @@ fn negative_control_detects_shared_staging_generation() {
         .unwrap();
     });
 }
+
+#[test]
+fn failed_completion_open_leaves_request_retryable() {
+    model(|| {
+        let provider = Arc::new(Provider::new(None));
+        block_on(super::staging_tests::failed_open_retry(
+            provider.clone(),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+#[should_panic(expected = "failed open committed a claim")]
+fn negative_control_detects_claim_before_open() {
+    model(|| {
+        block_on(super::staging_tests::failed_open_retry(
+            Arc::new(Provider::new(None)),
+            true,
+        ))
+        .unwrap();
+    });
+}
