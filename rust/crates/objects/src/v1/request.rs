@@ -83,7 +83,7 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             delete_digest(&decode!(DeleteObjectRequest))?;
         }
         "objects/restore" => {
-            restore_digest(&decode!(RestoreObjectsRequest))?;
+            restore(&decode!(RestoreObjectsRequest))?;
         }
         "objects/list" => {
             list(&decode!(ListObjectsRequest))?;

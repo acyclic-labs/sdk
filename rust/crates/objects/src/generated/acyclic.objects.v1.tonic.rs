@@ -1,7 +1,3 @@
-// @generated
-include!("services/buckets/client.rs");
-include!("services/buckets/server.rs");
-include!("services/objects/client.rs");
-include!("services/objects/server.rs");
-include!("services/multipart/client.rs");
-include!("services/multipart/server.rs");
+include!("acyclic.objects.v1.tonic.part0.rs");
+include!("acyclic.objects.v1.tonic.part1.rs");
+include!("acyclic.objects.v1.tonic.part2.rs");

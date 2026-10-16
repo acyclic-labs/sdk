@@ -630,8 +630,11 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "libfuzzer-sys",
+ "prettyplease 0.2.37",
  "prost",
+ "sdk-proto-codegen",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4913,12 +4916,16 @@ name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
  "cargo_metadata",
+ "prettyplease 0.2.37",
+ "proptest",
  "prost",
  "prost-reflect",
  "protoc-gen-prost",
  "protoc-gen-tonic",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]
