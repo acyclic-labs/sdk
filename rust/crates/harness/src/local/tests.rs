@@ -148,11 +148,15 @@ pub(super) fn volume_config(
     volume: VolumeRef,
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
+    let state = directory
+        .join("state")
+        .join(volume.storage_name(&mut None)?);
     Ok(crate::test_support::local_harness_config(
         directory.join("filesystem"),
         (model()?, provider),
     )?
-    .volume(volume))
+    .volume(volume)
+    .state_directory(state))
 }
 
 pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {

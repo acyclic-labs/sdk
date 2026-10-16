@@ -1,7 +1,13 @@
 use super::*;
 
-async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher)> {
+async fn fixture() -> Result<(
+    tempfile::TempDir,
+    tempfile::TempDir,
+    LocalHarness,
+    CheckoutPublisher,
+)> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
     let model = Model::new(
         "scripted".into(),
         "publication".into(),
@@ -9,10 +15,10 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher
         serde_json::Value::Null,
     )?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model, provider),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model, provider))?
+            .state_directory(state.path()),
+    )
     .await?;
     let tools = Arc::new(
         CheckoutTools::new(
@@ -35,12 +41,12 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher
         &harness.signed,
         harness.limits.file_bytes,
     );
-    Ok((directory, harness, publisher))
+    Ok((directory, state, harness, publisher))
 }
 
 #[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
-    let (directory, harness, publisher) = fixture().await?;
+    let (directory, _state, harness, publisher) = fixture().await?;
     let (file, _) = publisher
         .stage_once(
             OperationId::new(),
@@ -62,7 +68,7 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 
 #[tokio::test]
 async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> {
-    let (_directory, harness, publisher) = fixture().await?;
+    let (_directory, _state, harness, publisher) = fixture().await?;
     let workspace = publisher.tools.workspace.clone();
     let before = workspace
         .selection_reads
@@ -88,7 +94,7 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
 #[tokio::test]
 async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_completed_edits()
 -> Result<()> {
-    let (directory, harness, publisher) = fixture().await?;
+    let (directory, _state, harness, publisher) = fixture().await?;
     let view = harness.workspace.as_ref().unwrap().view();
     let writer = publisher.writer_for(&harness.project, view.workspace())?;
     let operation = OperationId::new();
@@ -242,7 +248,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 
 #[tokio::test]
 async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits() -> Result<()> {
-    let (directory, _harness, publisher) = fixture().await?;
+    let (directory, _state, _harness, publisher) = fixture().await?;
     let operation = OperationId::new();
     let mut files = Vec::new();
     for (path, bytes) in [
@@ -298,7 +304,7 @@ proptest::proptest! {
 #[tokio::test]
 async fn mounted_publication_retries_and_replacements_keep_their_volume_with_negative_control()
 -> Result<()> {
-    let (directory, harness, publisher) = fixture().await?;
+    let (directory, _state, harness, publisher) = fixture().await?;
     let operation = OperationId::new();
     let (file, _) = publisher
         .stage_once(

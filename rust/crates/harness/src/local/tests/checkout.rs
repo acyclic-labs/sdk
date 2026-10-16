@@ -26,6 +26,7 @@ const COMMANDS: [(&str, &str); 8] = [
 #[tokio::test]
 async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = scripted(
         COMMANDS
@@ -34,10 +35,10 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
             .map(|(index, (name, command))| call(index, name, command))
             .chain([ScriptedTurn::Text("commands completed".into())]),
     );
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) = harness
         .submit(OperationId::new(), "edit and inspect the checkout")
@@ -157,12 +158,13 @@ async fn default_bash_and_fs_share_the_published_checkout() -> Result<()> {
 #[tokio::test]
 async fn checkout_commands_require_their_admitted_context_and_never_relaunch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(super::super::storage)?;
     let provider = text();
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =

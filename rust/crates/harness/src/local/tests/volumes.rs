@@ -4,6 +4,7 @@ use super::*;
 #[tokio::test]
 async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(
             0,
@@ -17,10 +18,10 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         super::checked_commands::call(5, "fs", "status --volume ../scratch"),
         ScriptedTurn::Text("inspected".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     assert_eq!(
         harness.run("inspect the bound volumes").await?.text,
@@ -94,6 +95,7 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
 #[tokio::test]
 async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let first = scripted([
         super::checked_commands::call(0, "bash", "printf base > note"),
         super::checked_commands::call(1, "fs", "add note"),
@@ -104,10 +106,10 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
     ]);
     let repository;
     {
-        let harness = LocalHarness::open(crate::test_support::local_harness_config(
-            directory.path(),
-            (model()?, first),
-        )?)
+        let harness = LocalHarness::open(
+            crate::test_support::local_harness_config(directory.path(), (model()?, first))?
+                .state_directory(state_directory.path()),
+        )
         .await?;
         assert_eq!(harness.run("make a branch").await?.text, "branched");
         let workspace = harness.workspace().unwrap();
@@ -122,10 +124,10 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
         super::checked_commands::call(1, "fs", "status"),
         ScriptedTurn::Text("resumed".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, second.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, second.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     let workspace = harness.workspace().unwrap();
     assert_eq!(workspace.view().workspace().id(), repository);
@@ -182,6 +184,7 @@ async fn reopened_checkout_recovers_its_selected_branch_from_the_git_catalog() -
 #[tokio::test]
 async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::create_dir(directory.path().join(".volumes")).map_err(super::super::storage)?;
     std::fs::write(directory.path().join(".volumes/user-owned"), b"retain")
         .map_err(super::super::storage)?;
@@ -204,10 +207,10 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         super::checked_commands::call(2, "fs", "status"),
         ScriptedTurn::Text("composed".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     assert_eq!(
         harness.run("copy across the granted volumes").await?.text,
@@ -336,6 +339,7 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
 #[tokio::test]
 async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state_directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
@@ -354,10 +358,10 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
         ),
         ScriptedTurn::Text("published".into()),
     ]);
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (model()?, provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state_directory.path()),
+    )
     .await?;
     assert_eq!(harness.run("write into scratch").await?.text, "published");
     let requests = provider.requests();
