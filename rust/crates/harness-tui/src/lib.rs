@@ -32,11 +32,13 @@ mod widget;
 
 #[cfg(feature = "tui")]
 pub use completion::{
-    Completion, CompletionKind, CompletionMenu, CompletionProvider, CompletionRequest,
+    Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
     completion_request, fuzzy_score,
 };
 #[cfg(feature = "tui")]
 pub use completion_popup::CompletionPopup;
+#[cfg(feature = "tui")]
+pub use crossterm;
 pub use editor::{Editor, Motion};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};

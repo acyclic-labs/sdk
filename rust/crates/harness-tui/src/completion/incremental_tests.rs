@@ -1,0 +1,99 @@
+use super::*;
+use proptest::prelude::*;
+
+fn unchanged_work(count: usize, repeats: usize, broken: bool) {
+    let editor = Editor::new("@file");
+    let mut menu = CompletionMenu::default();
+    for index in 0..count {
+        menu.set_file(&format!("workspace/file{index}.rs"), Some(b"content"))
+            .unwrap();
+    }
+    menu.refresh(&editor);
+    let before = menu.work;
+    let allocations = allocation_counter::measure(|| {
+        for _ in 0..repeats {
+            if broken {
+                menu.version = None;
+            }
+            menu.refresh(&editor);
+            assert!(menu.active(&editor));
+        }
+    });
+    assert_eq!(menu.work, before, "unchanged refresh must do zero work");
+    assert_eq!(
+        allocations.count_total, 0,
+        "unchanged refresh must allocate nothing"
+    );
+    menu.set_file("workspace/file-new.rs", Some(b"new"))
+        .unwrap();
+    assert_eq!(menu.work.candidates - before.candidates, 1);
+    assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
+    let before = menu.work;
+    menu.set_file("workspace/file-new.rs", Some(b"replacement"))
+        .unwrap();
+    assert_eq!(menu.work.candidates - before.candidates, 2);
+    assert_eq!(menu.work.prompt_bytes, before.prompt_bytes);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 24, ..ProptestConfig::default() })]
+    #[test]
+    fn work_depends_on_changes_not_refreshes(count in 1usize..1001, repeats in 1usize..40) {
+        unchanged_work(count, repeats, false);
+    }
+    #[test]
+    fn edits_only_scan_the_active_token(prefix in 0usize..4096, edits in 1usize..24) {
+        let mut editor = Editor::new(&format!("{} @a", "z".repeat(prefix)));
+        let mut menu = CompletionMenu::default();
+        menu.set_file("workspace/aaaaaaaaaaaaaaaaaaaaaaaa.rs", Some(b"")).unwrap();
+        menu.refresh(&editor);
+        for i in 0..edits {
+            let before = menu.work;
+            editor.insert("a", i as u64);
+            menu.refresh(&editor);
+            prop_assert!(menu.work.prompt_bytes - before.prompt_bytes <= 2 * (i + 4));
+            prop_assert!(menu.work.candidates - before.candidates <= 1);
+            prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+        }
+    }
+    #[test]
+    fn plain_typing_only_examines_inserted_bytes(prefix in 0usize..4096, edits in 1usize..32) {
+        let mut editor = Editor::new(&"z".repeat(prefix));
+        let mut menu = CompletionMenu::default();
+        menu.refresh(&editor);
+        let before = menu.work;
+        for i in 0..edits {
+            editor.insert("z", i as u64);
+            menu.refresh(&editor);
+        }
+        prop_assert_eq!(menu.work.prompt_bytes - before.prompt_bytes, edits);
+        prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+    }
+
+    #[test]
+    fn delta_requests_agree_with_full_parsing(prefix in "[a-z @/\\\"]{0,48}", edits in proptest::collection::vec("[a-z @/\\\"\n]{0,6}", 1..24)) {
+        let mut editor = Editor::new(&prefix);
+        let mut menu = CompletionMenu::default();
+        menu.set_file("workspace/a.rs", Some(b"")).unwrap();
+        menu.set_file("commands/a.md", Some(b"a")).unwrap();
+        menu.refresh(&editor);
+        for (i, text) in edits.iter().enumerate() {
+            editor.insert(text, i as u64);
+            menu.refresh(&editor);
+            prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+            if editor.undo() {
+                menu.refresh(&editor);
+                prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+                editor.redo(); menu.refresh(&editor);
+                prop_assert_eq!(menu.request.clone(), completion_request(&editor));
+            }
+        }
+    }
+
+}
+
+#[test]
+#[should_panic(expected = "unchanged refresh must do zero work")]
+fn negative_control_detects_repeated_scanning() {
+    unchanged_work(1000, 2, true);
+}

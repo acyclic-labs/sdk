@@ -16,3 +16,16 @@ impl Editor {
         true
     }
 }
+
+#[cfg(feature = "tui")]
+impl Editor {
+    pub(crate) fn completion_version(&self) -> (std::rc::Rc<()>, usize, usize) {
+        (self.buffer.revision.clone(), self.cursor(), self.anchor())
+    }
+    pub(crate) fn completion_change(&self) -> Option<&(std::rc::Rc<()>, Range<usize>, usize)> {
+        self.buffer.change.as_ref()
+    }
+    pub(crate) fn is_boundary(&self, offset: usize) -> bool {
+        self.buffer.floor(offset) == offset
+    }
+}

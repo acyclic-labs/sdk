@@ -1,4 +1,4 @@
-//! Completion request parsing, provider contracts and popup snapshots.
+//! Completion parsing, file folds and popup snapshots.
 #![cfg(feature = "tui")]
 
 use acyclic_harness_tui::InputKeymap;
@@ -7,8 +7,7 @@ use acyclic_harness_tui::ratatui::{
     Terminal, backend::TestBackend, buffer::Buffer, layout::Rect, widgets::Widget,
 };
 use acyclic_harness_tui::{
-    Completion, CompletionKind, CompletionMenu, CompletionPopup, CompletionProvider,
-    CompletionRequest, Editor, completion_request, fuzzy_score,
+    CompletionMenu, CompletionPopup, Editor, completion_request, fuzzy_score,
 };
 use proptest::prelude::*;
 
@@ -18,6 +17,7 @@ mod sequences;
 #[test]
 fn completion_regression_corpus() {
     for seed in [
+        include_bytes!("../fuzz/corpus/completion_events/undo-refresh").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/slash").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/mention").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/quotes").as_slice(),
@@ -33,25 +33,36 @@ fn fuzz_negative_control_rejects_a_dropped_mention_marker() {
     assert!(sequences::exercise_broken(b"negative control").is_ok());
 }
 
-struct Files;
-impl CompletionProvider for Files {
-    fn complete(&self, request: &CompletionRequest) -> Vec<Completion> {
-        if request.kind != CompletionKind::Mention {
-            return vec![];
-        }
-        ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"]
-            .into_iter()
-            .map(|path| Completion {
-                label: path.into(),
-                value: path.into(),
-                description: String::new(),
-                tool: false,
-                append_space: true,
-            })
-            .collect()
+fn files(menu: &mut CompletionMenu) {
+    for path in ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"] {
+        menu.set_file(&format!("workspace/{path}"), Some(b""))
+            .unwrap();
     }
 }
-
+fn commands(menu: &mut CompletionMenu) {
+    menu.set_file(
+        "commands/catalog.json",
+        Some(
+            br#"[
+        {"name":"theme"},{"name":"think"},{"name":"thread","tool":true}
+    ]"#,
+        ),
+    )
+    .unwrap();
+}
+fn single(menu: &mut CompletionMenu, value: &str) {
+    menu.clear_files();
+    menu.set_file(&format!("workspace/{value}"), Some(b""))
+        .unwrap();
+}
+fn refresh_files(menu: &mut CompletionMenu, editor: &Editor) {
+    files(menu);
+    menu.refresh(editor);
+}
+fn refresh_commands(menu: &mut CompletionMenu, editor: &Editor) {
+    commands(menu);
+    menu.refresh(editor);
+}
 #[test]
 fn file_completion_is_fuzzy_keeps_at_and_quotes_spaces() {
     for (text, expected) in [
@@ -63,7 +74,7 @@ fn file_completion_is_fuzzy_keeps_at_and_quotes_spaces() {
     ] {
         let mut editor = Editor::new(text);
         let mut menu = CompletionMenu::default();
-        menu.refresh(&editor, &[&Files]);
+        refresh_files(&mut menu, &editor);
         assert!(menu.active(&editor));
         assert!(menu.accept(&mut editor, 0));
         assert_eq!(editor.text(), expected);
@@ -74,7 +85,7 @@ fn file_completion_is_fuzzy_keeps_at_and_quotes_spaces() {
     }
     let editor = Editor::new("@zz");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(!menu.active(&editor));
     for text in [
         "a@b.com",
@@ -97,7 +108,7 @@ fn quoted_and_mid_token_requests_replace_the_whole_token() {
     assert_eq!(request.as_ref().map(|r| r.query.as_str()), Some("src"));
     assert_eq!(request.as_ref().map(|r| r.range.clone()), Some(5..16));
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), "read @src/readme.md old");
     assert_eq!((editor.cursor(), editor.anchor()), (20, 20));
@@ -112,36 +123,17 @@ fn quoted_and_mid_token_requests_replace_the_whole_token() {
         Some("src/a b".into())
     );
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), "@\"src/a b.rs\" ");
-}
-
-struct Commands;
-impl CompletionProvider for Commands {
-    fn complete(&self, request: &CompletionRequest) -> Vec<Completion> {
-        if request.kind != CompletionKind::Command {
-            return vec![];
-        }
-        [("theme", false), ("think", false), ("thread", true)]
-            .into_iter()
-            .filter(|(name, _)| name.starts_with(&request.query))
-            .map(|(name, tool)| Completion {
-                label: format!("/{name}"),
-                value: name.into(),
-                description: String::new(),
-                tool,
-                append_space: false,
-            })
-            .collect()
-    }
 }
 
 #[test]
 fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
     use acyclic_harness_tui::{Action, InputEffect, PromptInput};
     let mut input = PromptInput::new(Editor::new("/th"));
-    input.refresh_completions(&[&Commands]);
+    commands(&mut input.completion);
+    input.refresh_completions();
     assert!(
         input
             .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 0, 80)
@@ -158,7 +150,8 @@ fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
     );
 
     input.editor.set_text("@srm", 2);
-    input.refresh_completions(&[&Files]);
+    files(&mut input.completion);
+    input.refresh_completions();
     assert!(
         input
             .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 3, 80)
@@ -169,7 +162,8 @@ fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
     assert_eq!(input.editor.text(), "@srm");
 
     input.busy = true;
-    input.refresh_completions(&[&Files]);
+    files(&mut input.completion);
+    input.refresh_completions();
     assert!(
         input
             .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 4, 80)
@@ -180,7 +174,8 @@ fn prompt_controller_accepts_completion_before_submit_and_prioritizes_escape() {
         vec![InputEffect::Host(Action::Escape)]
     );
     input.edit_message("old".into(), "/th");
-    input.refresh_completions(&[&Commands]);
+    commands(&mut input.completion);
+    input.refresh_completions();
     assert!(
         input
             .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 6, 80)
@@ -197,7 +192,7 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
     for code in [KeyCode::Tab, KeyCode::Enter] {
         let mut editor = Editor::new("/th");
         let mut menu = CompletionMenu::default();
-        menu.refresh(&editor, &[&Commands]);
+        refresh_commands(&mut menu, &editor);
         let mut key = KeyEvent::new(code, KeyModifiers::NONE);
         key.kind = KeyEventKind::Release;
         assert!(!menu.key(&mut editor, key, &InputKeymap::default(), 0));
@@ -208,7 +203,7 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
     }
     let mut editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Commands]);
+    refresh_commands(&mut menu, &editor);
     let map = InputKeymap::from_json(r#"{"Ctrl+j":"Enter"}"#)?;
     assert!(menu.key(
         &mut editor,
@@ -231,11 +226,11 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
 fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
     let mut editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Commands]);
-    assert!(menu.items[0].tool);
+    refresh_commands(&mut menu, &editor);
+    assert!(menu.items().next().is_some_and(|item| item.tool));
     menu.cycle(true);
     assert_eq!(menu.selected, 2);
-    menu.refresh(&editor, &[&Commands]);
+    refresh_commands(&mut menu, &editor);
     assert_eq!(menu.selected, 2);
     menu.cycle(false);
     assert_eq!(menu.selected, 0);
@@ -244,7 +239,7 @@ fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
     editor.undo();
     assert_eq!(editor.text(), "/th");
     let mut theme = Editor::new("/them");
-    menu.refresh(&theme, &[&Commands]);
+    refresh_commands(&mut menu, &theme);
     assert!(menu.accept(&mut theme, 1));
     assert_eq!(theme.text(), "/theme ");
 }
@@ -253,17 +248,17 @@ fn tools_sort_first_navigation_wraps_and_acceptance_is_one_undo_step() {
 fn stale_results_dismissals_and_folded_pastes_do_not_accept_completion() {
     let mut editor = Editor::new("@src");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     editor.insert("x", 0);
     assert!(!menu.accept(&mut editor, 1));
     assert_eq!(editor.text(), "@srcx");
     editor = Editor::new("@src");
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     menu.dismiss(&editor);
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(!menu.active(&editor));
     editor.insert("/", 2);
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(menu.active(&editor));
     editor.select_all();
     assert_eq!(completion_request(&editor), None);
@@ -276,7 +271,7 @@ fn popup_snapshot_and_geometry_stay_within_terminal_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
     let editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Commands]);
+    refresh_commands(&mut menu, &editor);
     let mut terminal = Terminal::new(TestBackend::new(30, 5))?;
     terminal.draw(|frame| {
         let mut popup = CompletionPopup::new(&menu, &editor);
@@ -312,21 +307,10 @@ fn popup_snapshot_and_geometry_stay_within_terminal_bounds()
 
 #[test]
 fn unicode_popup_rows_are_clipped_by_display_cells() -> Result<(), Box<dyn std::error::Error>> {
-    struct Unicode;
-    impl CompletionProvider for Unicode {
-        fn complete(&self, _: &CompletionRequest) -> Vec<Completion> {
-            vec![Completion {
-                label: "\u{754c}\u{1f469}\u{200d}\u{1f4bb}e\u{301}".into(),
-                value: "file".into(),
-                description: String::new(),
-                tool: false,
-                append_space: true,
-            }]
-        }
-    }
-    let editor = Editor::new("@f");
+    let editor = Editor::new("@");
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Unicode]);
+    single(&mut menu, "界👩‍💻e\u{301}");
+    menu.refresh(&editor);
     for width in 1u16..=12 {
         let mut terminal = Terminal::new(TestBackend::new(width, 3))?;
         terminal.draw(|frame| {
@@ -368,24 +352,20 @@ fn acceptance_reuses_an_existing_separator_and_rejects_invalid_values() {
     let mut editor = Editor::new("read @srm rest");
     editor.set_cursor(9, false);
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), "read @src/readme.md rest");
     for value in ["", "bad\nvalue", "bad\"value", "bad\u{1b}value"] {
-        struct Invalid<'a>(&'a str);
-        impl CompletionProvider for Invalid<'_> {
-            fn complete(&self, _: &CompletionRequest) -> Vec<Completion> {
-                vec![Completion {
-                    label: self.0.into(),
-                    value: self.0.into(),
-                    description: String::new(),
-                    tool: false,
-                    append_space: false,
-                }]
-            }
-        }
         let mut editor = Editor::new("@");
-        menu.refresh(&editor, &[&Invalid(value)]);
+        single(&mut menu, value);
+        menu.refresh(&editor);
+        assert!(!menu.active(&editor));
+        assert!(!menu.key(
+            &mut editor,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &InputKeymap::default(),
+            1
+        ));
         assert!(!menu.accept(&mut editor, 1));
         assert_eq!((editor.text(), editor.cursor()), ("@", 1));
     }
@@ -396,7 +376,8 @@ fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() 
     use acyclic_harness_tui::PromptInput;
     let mut input = PromptInput::new(Editor::new("@srm old"));
     input.editor.set_cursor(4, false);
-    input.refresh_completions(&[&Files]);
+    files(&mut input.completion);
+    input.refresh_completions();
     assert!(
         input
             .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 0, 80)
@@ -427,7 +408,7 @@ fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() 
         let mut editor = Editor::new(&format!("@srm{tail}"));
         editor.set_cursor(4, false);
         let mut menu = CompletionMenu::default();
-        menu.refresh(&editor, &[&Files]);
+        refresh_files(&mut menu, &editor);
         assert!(menu.accept(&mut editor, 0));
         assert_eq!(editor.cursor(), "@src/readme.md".len() + separator.len());
         let expected = if tail.starts_with('\n') {
@@ -442,7 +423,7 @@ fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() 
     editor.paste(&paste, 0);
     editor.set_cursor(4, false);
     let mut menu = CompletionMenu::default();
-    menu.refresh(&editor, &[&Files]);
+    refresh_files(&mut menu, &editor);
     assert!(menu.accept(&mut editor, 1));
     assert_eq!(editor.text(), format!("@src/readme.md {paste}"));
     assert_eq!(editor.collapsed_pastes().len(), 1);
@@ -468,14 +449,7 @@ proptest! {
         let original = format!("before @x{suffix} after");
         let mut editor = Editor::new(&original);
         editor.set_cursor(8, false);
-        struct Single(String);
-        impl CompletionProvider for Single {
-            fn complete(&self, _: &CompletionRequest) -> Vec<Completion> {
-                vec![Completion { label: self.0.clone(), value: self.0.clone(), description: String::new(), tool: false, append_space: true }]
-            }
-        }
-        let provider = Single(path.clone());
-        let mut menu = CompletionMenu::default(); menu.refresh(&editor, &[&provider]);
+        let mut menu = CompletionMenu::default(); single(&mut menu, &path); menu.refresh(&editor);
         prop_assert!(menu.accept(&mut editor, 0));
         let token = if path.chars().any(char::is_whitespace) { format!("@\"{path}\"") } else { format!("@{path}") };
         let accepted = format!("before {token} after");
@@ -493,17 +467,12 @@ proptest! {
     }
 
     #[test]
-    fn fuzzy_matching_agrees_with_a_subsequence_reference(query in ".{0,16}", path in ".{0,32}") {
-        let lowered: Vec<_> = path.chars().flat_map(char::to_lowercase).collect();
-        let mut remaining = lowered.as_slice();
-        let mut matched = true;
-        for character in query.chars().flat_map(char::to_lowercase) {
-            match remaining.iter().position(|c| *c == character) {
-                Some(index) => remaining = &remaining[index + 1..],
-                None => { matched = false; break; }
-            }
-        }
-        prop_assert_eq!(fuzzy_score(&query, &path).is_some(), matched);
+    fn fuzzy_matching_agrees_with_unicode_data(query in ".{0,16}", path in ".{0,24}") {
+        let folded_path = oracle_fold(&path);
+        let folded_query = oracle_fold(&query);
+        let mut remaining = folded_path.chars();
+        let expected = folded_query.chars().all(|c| remaining.by_ref().any(|p| p == c));
+        prop_assert_eq!(fuzzy_score(&query, &path).is_some(), expected);
     }
 
     #[test]
@@ -522,7 +491,7 @@ proptest! {
         x in any::<u16>(), y in any::<u16>(), width in any::<u16>(), height in any::<u16>()
     ) {
         let editor = Editor::new("/th");
-        let mut menu = CompletionMenu::default(); menu.refresh(&editor, &[&Commands]);
+        let mut menu = CompletionMenu::default(); refresh_commands(&mut menu, &editor);
         let screen = Rect::new(3, 4, 80, 24);
         let area = CompletionPopup::new(&menu, &editor).area(Rect::new(x, y, width, height), screen);
         prop_assert!(area.x >= screen.x && area.y >= screen.y);
@@ -532,5 +501,76 @@ proptest! {
     #[test]
     fn arbitrary_completion_sequences_preserve_graphemes_and_atomic_undo(data in prop::collection::vec(any::<u8>(), 0..128)) {
         sequences::exercise(&data)?;
+    }
+}
+
+fn oracle_fold(text: &str) -> String {
+    // Independent Unicode CaseFolding data, not the production folding library.
+    static TABLE: std::sync::OnceLock<std::collections::BTreeMap<char, String>> =
+        std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        include_str!("data/casefold.tsv")
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .flat_map(|line| line.split('|'))
+            .map(|line| {
+                let (from, to) = line.split_once(';').unwrap();
+                (
+                    char::from_u32(u32::from_str_radix(from, 16).unwrap()).unwrap(),
+                    to.split_whitespace()
+                        .map(|s| char::from_u32(u32::from_str_radix(s, 16).unwrap()).unwrap())
+                        .collect(),
+                )
+            })
+            .collect()
+    });
+    text.chars()
+        .map(|c| table.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .collect()
+}
+
+#[test]
+fn unicode_casefold_keeps_the_source_spelling() {
+    for (query, path) in [("Σ", "ς.rs"), ("STRASSE", "Straße.rs"), ("FFI", "ﬃ.rs")] {
+        assert!(fuzzy_score(query, path).is_some());
+        let mut editor = Editor::new(&format!("@{query}"));
+        let mut menu = CompletionMenu::default();
+        single(&mut menu, path);
+        menu.refresh(&editor);
+        assert!(menu.accept(&mut editor, 0));
+        assert_eq!(editor.text(), format!("@{path} "));
+    }
+}
+
+#[test]
+fn leaving_a_dismissed_request_allows_the_same_token_in_a_new_draft() {
+    let mut editor = Editor::new("@src");
+    let mut menu = CompletionMenu::default();
+    files(&mut menu);
+    menu.refresh(&editor);
+    menu.dismiss(&editor);
+    menu.refresh(&editor);
+    assert!(!menu.active(&editor));
+    editor.set_text("", 1);
+    menu.refresh(&editor);
+    editor.paste("@src", 2);
+    menu.refresh(&editor);
+    assert!(menu.active(&editor));
+}
+
+#[test]
+fn unicode_data_mappings_are_matched_in_both_directions() {
+    for record in include_str!("data/casefold.tsv")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .flat_map(|line| line.split('|'))
+    {
+        let (from, _) = record.split_once(';').unwrap();
+        let input = char::from_u32(u32::from_str_radix(from, 16).unwrap())
+            .unwrap()
+            .to_string();
+        let folded = oracle_fold(&input);
+        assert!(fuzzy_score(&input, &folded).is_some(), "{record}");
+        assert!(fuzzy_score(&folded, &input).is_some(), "{record}");
     }
 }

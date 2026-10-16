@@ -1,22 +1,13 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use acyclic_harness_tui::{
-    Completion, CompletionMenu, CompletionProvider, CompletionRequest, Editor, InputEffect,
-    InputKeymap, PromptInput, completion_request, parse_history,
+    CompletionMenu, Editor, InputEffect, InputKeymap, PromptInput, completion_request,
+    parse_history,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-struct Candidate(String);
-
-impl CompletionProvider for Candidate {
-    fn complete(&self, _: &CompletionRequest) -> Vec<Completion> {
-        vec![Completion {
-            label: self.0.clone(),
-            value: self.0.clone(),
-            description: self.0.clone(),
-            tool: false,
-            append_space: true,
-        }]
-    }
+fn candidate(menu: &mut CompletionMenu, path: &str) -> Result<(), std::io::Error> {
+    menu.clear_files();
+    menu.set_file(&format!("workspace/{path}"), Some(b""))
 }
 
 pub fn exercise(data: &[u8]) -> Result<(), std::io::Error> {
@@ -35,12 +26,15 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
     for (step, chunk) in data.chunks(8).enumerate() {
         let op = chunk[0];
         let text = String::from_utf8_lossy(&chunk[1..]);
-        match op % 12 {
+        match op % 14 {
             0 => editor.insert(&text, step as u64),
             1 => editor.paste(&text.repeat(150), step as u64),
             2 => editor.set_cursor(usize::from(chunk.get(1).copied().unwrap_or(0)), false),
             3 => editor.select_all(),
-            4 => menu.refresh(&editor, &[&Candidate(text.into_owned())]),
+            4 => {
+                candidate(&mut menu, &text)?;
+                menu.refresh(&editor);
+            }
             5 => menu.cycle(op > 128),
             6 => {
                 let before = (editor.text().to_owned(), editor.cursor(), editor.anchor());
@@ -85,6 +79,21 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
             10 => {
                 editor.redo();
             }
+            12 => {
+                let before: Vec<_> = menu.items().cloned().collect();
+                if menu
+                    .set_file("commands/fuzz.json", Some(text.as_bytes()))
+                    .is_err()
+                {
+                    assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
+                }
+                menu.refresh(&editor);
+            }
+            13 => {
+                let commands = serde_json::json!([{"name": "theme", "description": text.as_ref()}]);
+                menu.set_file("commands/fuzz.json", Some(&serde_json::to_vec(&commands)?))?;
+                menu.refresh(&editor);
+            }
             _ => {
                 let start = usize::from(chunk.get(1).copied().unwrap_or(0));
                 let end = usize::from(chunk.get(2).copied().unwrap_or(0));
@@ -114,6 +123,20 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
 }
 
 fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error> {
+    // The same file parser used by production must preserve command spelling
+    // and metadata through JSON encoding, independently of current prompt state.
+    let mut commands = CompletionMenu::default();
+    let description = String::from_utf8_lossy(data);
+    let definition = serde_json::json!([{"name":"theme", "description":description.as_ref()}]);
+    commands.set_file(
+        "commands/round-trip.json",
+        Some(&serde_json::to_vec(&definition)?),
+    )?;
+    commands.refresh(&Editor::new("/th"));
+    let items: Vec<_> = commands.items().collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].value, "theme");
+    assert_eq!(items[0].description, description);
     let mut input = PromptInput::default();
     input.keymap = InputKeymap::from_json(r#"{"Ctrl+j":"Enter"}"#)?;
     let history = parse_history(r#"["older\rprompt","newer\r\nhistory"]"#)?;
@@ -130,7 +153,8 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
     } else {
         format!("@{path} ")
     };
-    input.refresh_completions(&[&Candidate(path)]);
+    candidate(&mut input.completion, &path)?;
+    input.refresh_completions();
     let effects = input.key(
         KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
         1,

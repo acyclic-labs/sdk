@@ -9,7 +9,7 @@ use ratatui::{
 /// Command and file-completion popup. Geometry is capped at 60 columns and 12
 /// rows and text is clipped by display width, including on narrow terminals.
 pub struct CompletionPopup<'a> {
-    /// Current provider results and selected row.
+    /// Current file-query results and selected row.
     pub menu: &'a CompletionMenu,
     /// Editor used to reject stale popup contents.
     pub editor: &'a Editor,
@@ -36,7 +36,7 @@ impl<'a> CompletionPopup<'a> {
             .width
             .min(60)
             .min(screen.right().saturating_sub(screen.x));
-        let wanted = self.menu.items.len().saturating_add(2).min(12) as u16;
+        let wanted = self.menu.items().len().saturating_add(2).min(12) as u16;
         let top = prompt.y.clamp(screen.y, screen.bottom());
         let bottom = prompt.bottom().clamp(screen.y, screen.bottom());
         let above = top - screen.y;
@@ -77,8 +77,7 @@ impl Widget for CompletionPopup<'_> {
             .saturating_sub(usize::from(inner.height) - 1);
         for (index, item) in self
             .menu
-            .items
-            .iter()
+            .items()
             .enumerate()
             .skip(first)
             .take(usize::from(inner.height))

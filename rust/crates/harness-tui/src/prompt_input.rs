@@ -3,8 +3,8 @@ use crate::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crate::{
-    Action, CompletionMenu, CompletionProvider, Editor, InputKeymap, Motion, PromptHistory,
-    Viewport, history::Navigation,
+    Action, CompletionMenu, Editor, InputKeymap, Motion, PromptHistory, Viewport,
+    history::Navigation,
 };
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
@@ -98,10 +98,9 @@ impl PromptInput {
         self.history.replace(snapshot);
     }
 
-    /// Refresh after edits or command/file-query updates. Providers own no
-    /// editor state; the host supplies the latest catalog and file snapshots.
-    pub fn refresh_completions(&mut self, providers: &[&dyn CompletionProvider]) {
-        self.completion.refresh(&self.editor, providers);
+    /// Refresh the popup from the editor delta and current file-query fold.
+    pub fn refresh_completions(&mut self) {
+        self.completion.refresh(&self.editor);
     }
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
