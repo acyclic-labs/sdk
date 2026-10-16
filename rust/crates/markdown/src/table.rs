@@ -37,7 +37,11 @@ impl Table {
                 }
             }
             Event::End(TagEnd::TableHead | TagEnd::TableRow) => {}
-            _ => self.cell.push(event.clone().into_static()),
+            _ => {
+                #[cfg(test)]
+                crate::work::event(event);
+                self.cell.push(event.clone().into_static());
+            }
         }
     }
 

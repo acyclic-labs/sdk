@@ -298,9 +298,8 @@ impl Markdown {
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
         #[cfg(test)]
-        work::copy(source.len());
-        #[cfg(test)]
         {
+            work::copy(source.len());
             self.parsed_bytes += source.len();
         }
         let events = events::parse(&source, &self.references);

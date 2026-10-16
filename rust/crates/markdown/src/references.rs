@@ -10,6 +10,8 @@ type Definition = (Arc<str>, Arc<str>, usize);
 // All callers receive labels already normalized by pulldown-cmark. In particular,
 // its ASCII whitespace rules must not be applied again as Unicode whitespace.
 pub(crate) fn normalize(label: &str) -> Key {
+    #[cfg(test)]
+    crate::work::copy(label.len());
     unicase::UniCase::new(label.to_owned())
 }
 
@@ -162,7 +164,11 @@ impl Template {
             Some(&mut callback),
         )
         .into_offset_iter()
-        .map(|(event, range)| (event.into_static(), range))
+        .map(|(event, range)| {
+            #[cfg(test)]
+            crate::work::event(&event);
+            (event.into_static(), range)
+        })
         .collect();
         if self.task {
             events = crate::events::paragraphs(&self.source, &events);

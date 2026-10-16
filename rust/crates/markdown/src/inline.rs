@@ -147,7 +147,7 @@ fn boundary(source: &str, events: &[(Event<'_>, Range<usize>)]) -> usize {
                             }
                         }
                         b'*' | b'_' | b'~' | b'`' | b'&' | b'<' | b'\\' => {
-                            limit = limit.min(offset)
+                            limit = limit.min(offset);
                         }
                         _ => {}
                     }
@@ -161,7 +161,7 @@ fn boundary(source: &str, events: &[(Event<'_>, Range<usize>)]) -> usize {
                         | pulldown_cmark::LinkType::Email
                 ) =>
             {
-                labels.push(range.start)
+                labels.push(range.start);
             }
             _ => {}
         }
