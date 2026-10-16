@@ -6,6 +6,13 @@ pub(super) fn posix_config() -> crate::model::VolumeConfig {
     config
 }
 
+// Construct before returning to the polling frame; a boxed value alone still
+// needs a large construction temporary on its caller's stack.
+#[inline(never)]
+fn boxed_future<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 pub(super) fn memory_checkout(
     config: crate::model::VolumeConfig,
     mode: crate::model::CheckoutMode,
@@ -17,18 +24,20 @@ pub(super) fn memory_checkout(
     let future = Box::pin(async {
         let cancellation = crate::CancellationToken::new();
         let volume =
-            Box::pin(fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation))
+            boxed_future(|| fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation))
                 .await?
                 .value;
         let mut checkouts = Vec::with_capacity(count);
         for _ in 0..count {
             checkouts.push(
-                Box::pin(volume.checkout(
-                    GenerationSelector::Head,
-                    mode,
-                    crate::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                ))
+                boxed_future(|| {
+                    volume.checkout(
+                        GenerationSelector::Head,
+                        mode,
+                        crate::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                })
                 .await?
                 .value,
             );
