@@ -64,6 +64,8 @@ struct Writer<'a, 'b, 'c> {
     written: u64,
     maximum: u64,
     output: Option<&'a mut Vec<u8>>,
+    digest: Option<&'a mut blake3::Hasher>,
+    compare: Option<(&'a [u8], &'a mut bool)>,
 }
 impl Write for Writer<'_, '_, '_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -113,6 +115,12 @@ impl Write for Writer<'_, '_, '_> {
                     bytes: bytes.len() as u64,
                 })?;
                 output.extend_from_slice(bytes);
+            }
+            if let Some(digest) = &mut self.digest {
+                digest.update(bytes);
+            }
+            if let Some((expected, matched)) = &mut self.compare {
+                **matched &= expected.get(self.written as usize..written as usize) == Some(bytes);
             }
             self.written = written;
             Ok(())
@@ -235,6 +243,8 @@ fn write<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
     output: Option<&mut Vec<u8>>,
+    digest: Option<&mut blake3::Hasher>,
+    compare: Option<(&[u8], &mut bool)>,
     maximum: u64,
     canonical: bool,
 ) -> Result<u64> {
@@ -247,6 +257,8 @@ fn write<T: Serialize + ?Sized>(
         written: 0,
         maximum,
         output,
+        digest,
+        compare,
     };
     let result = value.serialize(&mut serde_json::Serializer::with_formatter(
         &mut writer,
@@ -272,7 +284,15 @@ fn output<T: Serialize + ?Sized>(
     scope: &mut Scope<'_>,
     canonical: bool,
 ) -> Result<Vec<u8>> {
-    let size = write(value, scope, None, scope.bounds.maximum_bytes, canonical)?;
+    let size = write(
+        value,
+        scope,
+        None,
+        None,
+        None,
+        scope.bounds.maximum_bytes,
+        canonical,
+    )?;
     let length = usize::try_from(size)
         .map_err(|_| boundary("JSON output exceeds address space", scope.code))?;
     scope.event(JsonCodecCharge::CopyAdmission { bytes: size })?;
@@ -283,7 +303,7 @@ fn output<T: Serialize + ?Sized>(
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length).map_err(Error::Allocation)?;
     scope.retain((bytes.capacity() - length) as u64)?;
-    if write(value, scope, Some(&mut bytes), size, canonical)? != size {
+    if write(value, scope, Some(&mut bytes), None, None, size, canonical)? != size {
         return Err(boundary(
             "JSON serialization changed between admission and encoding",
             scope.code,
@@ -380,6 +400,7 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
     let shape = JsonValueShape {
         input_bytes: bytes.len() as u64,
         lexical_items: scope.lexical.items,
+        containers: scope.lexical.containers,
         virtual_items: 0,
         raw_bytes: 0,
         raw_frames: 0,
@@ -397,7 +418,7 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
     });
 
     let mut value = result.map_err(|error| scope.error(error))?;
-    let actual = json_value_logical_owned_bytes(&value)?;
+    let actual = records::json_value_retained_owned_bytes(&value)?;
     let released = checked(
         owned
             .checked_sub(actual)
@@ -439,6 +460,46 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     scope.retained = 0;
     Ok(bytes)
 }
+/// Sorted-key encoding with funded buffers and Value storage.
+pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    observer: &mut dyn crate::store::HistoryIo,
+) -> Result<[u8; 32]> {
+    let observer = RefCell::new(observer);
+    let mut charge = |event| observer.borrow_mut().codec_charge(event);
+    let mut scope = scope(bounds, code, &mut charge);
+    let value = build(value, &mut scope)?;
+    let size = write(
+        &value,
+        &mut scope,
+        None,
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
+    observer.borrow_mut().hashed_bytes(size)?;
+    let mut digest = blake3::Hasher::new();
+    if write(
+        &value,
+        &mut scope,
+        None,
+        Some(&mut digest),
+        None,
+        size,
+        false,
+    )? != size
+    {
+        return Err(boundary("canonical digest length changed", code));
+    }
+    drop(value);
+    scope.release(scope.retained)?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    Ok(*digest.finalize().as_bytes())
+}
+
 /// Sorted-key encoding with funded buffers and Value storage.
 pub fn canonical_json_bytes_bounded<
     T: Serialize + ?Sized,
@@ -486,7 +547,64 @@ pub(crate) fn count_json_bytes_trusted<
 ) -> Result<u64> {
     let mut scope = scope(bounds, code, charge);
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    let size = write(value, &mut scope, None, bounds.maximum_bytes, false)?;
+    let size = write(
+        value,
+        &mut scope,
+        None,
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     Ok(size)
+}
+
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) fn json_write_bounded<T: Serialize + ?Sized>(
+    value: &T,
+    output: &mut Vec<u8>,
+    bounds: JsonBounds,
+    charge: &mut impl FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<()> {
+    let mut scope = scope(bounds, Some(crate::wire::ErrorCode::Invalid), charge);
+    if !output.is_empty() || (output.capacity() as u64) < bounds.maximum_bytes {
+        return Err(boundary("JSON output lacks admitted capacity", scope.code));
+    }
+    write(
+        value,
+        &mut scope,
+        Some(output),
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })
+}
+
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) fn json_digest_bounded<T: Serialize + ?Sized>(
+    value: &T,
+    expected: Option<&[u8]>,
+    bounds: JsonBounds,
+    charge: &mut impl FnMut(JsonCodecCharge) -> Result<()>,
+) -> Result<Option<(u64, [u8; 32])>> {
+    let mut scope = scope(bounds, Some(crate::wire::ErrorCode::Invalid), charge);
+    let mut matched = true;
+    let mut digest = blake3::Hasher::new();
+    let size = write(
+        value,
+        &mut scope,
+        None,
+        Some(&mut digest),
+        expected.map(|bytes| (bytes, &mut matched)),
+        bounds.maximum_bytes,
+        false,
+    )?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    Ok(
+        (matched && expected.is_none_or(|bytes| size == bytes.len() as u64))
+            .then(|| (size, *digest.finalize().as_bytes())),
+    )
 }

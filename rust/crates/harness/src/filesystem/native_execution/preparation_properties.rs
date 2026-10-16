@@ -80,6 +80,18 @@ fn resource_checks_preserve_original_metadata_and_exact_volume_context() -> Resu
                 };
                 super::verify_binding(&owner, &binding, &context, &resource).await?;
                 let callback = context.volume_callback(&owner, &volume, writable, &resource)?;
+                let ungranted = VolumeRef::new(
+                    fixture.filesystem_provider.clone(),
+                    "ungranted".into(),
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+                    &mut None,
+                )?;
+                prop_assert!(
+                    context
+                        .volume_callback(&owner, &ungranted, writable, &resource)
+                        .is_err()
+                );
                 callback.check(&resource)?.await?;
                 prop_assert_eq!(callback.check_write(&resource)?.await.is_ok(), writable);
                 let sibling = original.native_volume_work(budget(bytes))?;
@@ -95,6 +107,12 @@ fn resource_checks_preserve_original_metadata_and_exact_volume_context() -> Resu
                         .await
                         .is_err()
                 );
+                resource.cancellation().cancel();
+                let cancelled = match callback.check(&resource) {
+                    Ok(future) => future.await.is_err(),
+                    Err(_) => true,
+                };
+                prop_assert!(cancelled);
                 Ok(())
             })
         },

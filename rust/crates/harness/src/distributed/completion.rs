@@ -39,8 +39,8 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
         authority_records_appended: 1,
         authority_bytes_read: maximum_bytes,
         authority_bytes_written: maximum_bytes,
-        bytes_encoded: maximum_bytes,
-        bytes_copied: maximum_bytes,
+        bytes_encoded: maximum_bytes - template.work_offset as u64,
+        bytes_copied: maximum_bytes - template.work_offset as u64,
         items_examined: maximum_bytes + 24,
         ..acyclic_fs::WorkCounters::default()
     })?;
@@ -144,18 +144,20 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             template.set_completed_work(counters)?;
             // The accepted reservation covers every write within this fixed buffer.
             let mut output = std::io::Cursor::new(template.output.writable());
-            let serialized = crate::filesystem::NativePreparationCompletionTemplate::write_journal(
-                &template.journal,
-                &mut output,
-            );
+            output.set_position(template.work_offset as u64);
+            let serialized =
+                crate::filesystem::NativePreparationCompletionTemplate::write_completed_work(
+                    &template.journal.work,
+                    &mut output,
+                );
             let written =
                 usize::try_from(output.position()).map_err(|_| Error::NativeBoundary {
                     code: wire::ErrorCode::Storage,
                     reason: "native completion output position overflows",
                 })?;
             let charged = observer.record_completed(acyclic_fs::WorkCounters {
-                bytes_encoded: written as u64,
-                bytes_copied: written as u64,
+                bytes_encoded: (written - template.work_offset) as u64,
+                bytes_copied: (written - template.work_offset) as u64,
                 ..acyclic_fs::WorkCounters::default()
             });
             serialized.map_err(|source| Error::NativeJson {

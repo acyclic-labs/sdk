@@ -1,6 +1,57 @@
 use super::*;
 use serde::Serialize;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod digest_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn values() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(Value::from),
+            ".{0,16}".prop_map(Value::String)
+        ]
+        .prop_recursive(3, 32, 4, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                prop::collection::btree_map(".{0,8}", inner, 0..4)
+                    .prop_map(|entries| Value::Object(entries.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        // Property: canonical identity and hash charges stay exact, while the
+        // final encoded buffer is absent and all temporary custody is released.
+        #[test]
+        fn observed_digest_preserves_identity_without_an_encoded_copy(value in values()) {
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+            let native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
+            let baseline = native.live_allocation_bytes();
+            let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native).unwrap());
+            let expected = crate::contract::canonical_json_bytes(&value).unwrap();
+            let mut digest = Ok([0; 32]);
+            let measured = allocation_counter::measure(|| {
+                digest = canonical_json_digest(&value, 65_536, &mut Some(&mut work));
+            });
+            prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
+            prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
+            prop_assert_eq!(measured.bytes_current, 0);
+            prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
+            prop_assert_eq!(native.live_allocation_bytes(), baseline);
+            // Negative control: the former full-buffer path performs one extra
+            // encoded copy; it cannot meet the new copy count.
+            let legacy_native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
+            let mut legacy = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&legacy_native).unwrap());
+            let encoded = crate::store::history::canonical_bytes_with_work(&value, 65_536, &mut Some(&mut legacy)).unwrap();
+            prop_assert_eq!(&encoded, &expected);
+            prop_assert_eq!(legacy.receipt().bytes_copied, work.receipt().bytes_copied + encoded.len() as u64);
+        }
+    }
+}
+
 const BOUNDS: JsonBounds = JsonBounds {
     maximum_bytes: 65_536,
     maximum_items: 4_096,

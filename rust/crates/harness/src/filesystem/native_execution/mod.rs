@@ -31,6 +31,8 @@ mod journal_verification;
 mod mounted;
 mod preparation;
 mod preparation_record;
+#[cfg(fuzzing)]
+pub use preparation_record::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
 mod publication;
 pub use allocation::NativePreparationRoot;
 pub(crate) use completion::NativePreparationCompletionTemplate;

@@ -37,6 +37,33 @@ fn journal(original: Vec<u8>, edits: Vec<MaterializationEdit>) -> Materializatio
 }
 
 proptest! {
+    // Property: the real container count funds every successful decoder output,
+    // and error cleanup releases the original ledger's complete reservation.
+    #[test]
+    fn bounded_journal_decoder_funds_containers_instead_of_opaque_bytes(
+        original in prop::collection::vec(any::<u8>(), 0..128),
+        paths in prop::collection::vec(".{0,16}", 0..4),
+        cut in any::<usize>(),
+    ) {
+        let edits = paths.into_iter().map(|path| MaterializationEdit::Install { path, image: original.clone() }).collect();
+        let encoded = serde_json::to_vec(&journal(original, edits)).unwrap();
+        for input in [encoded.as_slice(), &encoded[..cut % (encoded.len() + 1)]] {
+            let work = NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+                &acyclic_fs::CancellationToken::new(),
+            ).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let mut decoded = Ok(());
+            let measured = allocation_counter::measure(|| {
+                decoded = super::preparation_record::fuzz_native_preparation_journal(input, &work);
+            });
+            prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
+            prop_assert_eq!(decoded.is_ok(), serde_json::from_slice::<MaterializationJournal>(input).is_ok());
+            drop(decoded);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+
     // Property: the closed journal bound covers the real decoder's peak heap,
     // including rejected/truncated records; both JSON encodings round-trip.
     #[test]
@@ -84,12 +111,64 @@ proptest! {
         journal.work = serde_json::from_value(counters).unwrap();
         journal.preimages = images.into_iter().map(|image| MaterializationPreimage { image, custody: None }).collect();
         let compact = serde_json::to_vec(&super::journal_encoding::Canonical(&journal)).unwrap();
+        let bounds = crate::executor::json::JsonBounds {
+            maximum_bytes: compact.len() as u64, maximum_items: 100_000, maximum_depth: 128,
+        };
+        let mut copied = Vec::with_capacity(compact.len());
+        let measured = allocation_counter::measure(|| {
+            crate::executor::json::json_write_bounded(&super::journal_encoding::Canonical(&journal), &mut copied, bounds, &mut |_| Ok(())).unwrap();
+        });
+        prop_assert_eq!(measured.count_total, 0);
+        prop_assert_eq!(&copied, &compact);
+        let mut identity = Ok(None);
+        let measured = allocation_counter::measure(|| {
+            identity = crate::executor::json::json_digest_bounded(
+                &super::journal_encoding::Canonical(&journal),
+                None,
+                bounds,
+                &mut |_| Ok(()),
+            );
+        });
+        prop_assert_eq!(measured.count_total, 0);
+        prop_assert_eq!(identity.unwrap(), Some((compact.len() as u64, *blake3::hash(&compact).as_bytes())));
+        let mut changed = compact.clone();
+        changed[0] ^= 1;
+        for expected in [compact.as_slice(), &compact[..compact.len() / 2], changed.as_slice()] {
+            let mut matched = Ok(None);
+            let measured = allocation_counter::measure(|| {
+                matched = crate::executor::json::json_digest_bounded(
+                    &super::journal_encoding::Canonical(&journal), Some(expected), bounds, &mut |_| Ok(()),
+                );
+            });
+            prop_assert_eq!(measured.count_total, 0);
+            prop_assert_eq!(matched.unwrap(), (expected == compact).then(|| (compact.len() as u64, *blake3::hash(&compact).as_bytes())));
+        }
         let counters = journal.work;
+        journal.revision = counter.min(u64::MAX - 1);
+        let current = serde_json::to_vec(&super::journal_encoding::Canonical(&journal)).unwrap();
+        let capacity = super::journal_encoding::completion_capacity(&journal, current.len()).unwrap();
+        journal.revision += 1;
+        journal.work = WorkCounters::UNBOUNDED;
+        prop_assert_eq!(capacity, serde_json::to_vec(&journal).unwrap().len());
         journal.work = WorkCounters::UNBOUNDED;
         journal.revision = u64::MAX;
         let maximum = serde_json::to_vec(&journal).unwrap().len();
         journal.work = counters;
         journal.revision = counter;
+        journal.work = WorkCounters::UNBOUNDED;
+        let mut completed = serde_json::to_vec(&super::journal_encoding::Canonical(&journal)).unwrap();
+        let suffix = serde_json::to_vec(&super::journal_encoding::Canonical(&journal.work)).unwrap();
+        let offset = completed.len() - suffix.len() - 1;
+        journal.work = counters;
+        let mut tail = std::io::Cursor::new(completed.as_mut_slice());
+        tail.set_position(offset as u64);
+        let mut result = Ok(());
+        let measured = allocation_counter::measure(|| {
+            result = NativePreparationCompletionTemplate::write_completed_work(&journal.work, &mut tail);
+        });
+        prop_assert!(result.is_ok());
+        prop_assert_eq!(measured.count_total, 0);
+        prop_assert_eq!(&tail.get_ref()[..tail.position() as usize], &compact);
         let mut buffer = vec![0; maximum];
         let mut output = std::io::Cursor::new(buffer.as_mut_slice());
         let mut encoded = Ok(());
@@ -121,6 +200,20 @@ fn opaque_journal_bytes_fit_the_existing_one_megabyte_ledger() -> Result<()> {
         acyclic_stream::MAX_RECORD_BYTES as u64,
         false,
     )?;
+    let before = work.receipt();
+    let live = work.live_allocation_bytes();
+    let (length, digest) = io
+        .digest(
+            &super::journal_encoding::Canonical(&expected),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            None,
+        )?
+        .unwrap();
+    assert_eq!(length, bytes.len() as u64);
+    assert_eq!(&digest, blake3::hash(&bytes).as_bytes());
+    assert_eq!(work.receipt().bytes_encoded - before.bytes_encoded, length);
+    assert_eq!(work.receipt().bytes_hashed - before.bytes_hashed, length);
+    assert_eq!(work.live_allocation_bytes(), live);
     let (actual, custody) = crate::filesystem::native_decoded(io.decode(
         std::marker::PhantomData::<MaterializationJournal>,
         &bytes,

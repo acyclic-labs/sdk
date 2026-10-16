@@ -111,6 +111,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     acyclic_native_runtime::initialize_native_io_services()?;
+    acyclic_fs::initialize_native_mount_services()?;
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?;
     let files = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);

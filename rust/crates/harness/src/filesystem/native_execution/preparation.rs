@@ -197,9 +197,10 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 volumes: mappings,
             };
             manifest.validate(Some(&io))?;
-            let store = super::journal::Store {
+            let mut store = super::journal::Store {
                 owner: Arc::clone(owner),
                 work: work.clone(),
+                original: None,
             };
             let operation = super::journal::operation(owner.task_binding().0, work)?;
             let retained = store.load(operation).await?;
@@ -239,15 +240,27 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     manifest,
                 }
             };
+            let original = if let Some(retained) = &retained {
+                let MaterializationIntent::NativePreparation { original, .. } =
+                    &retained.plan.intent
+                else {
+                    return Err(invalid());
+                };
+                let (bytes, custody) = work.copy_bytes(original)?;
+                plan_io.absorb_native_custody(custody)?;
+                bytes
+            } else {
+                crate::store::history::canonical_bytes_with_work(
+                    &intent,
+                    acyclic_stream::MAX_RECORD_BYTES as u64,
+                    &mut Some(&mut plan_io.history_io()),
+                )?
+            };
             let plan = MaterializationPlan {
                 operation_id: operation,
                 intent: MaterializationIntent::NativePreparation {
                     selection: selected,
-                    original: crate::store::history::canonical_bytes_with_work(
-                        &intent,
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                        &mut Some(&mut plan_io.history_io()),
-                    )?,
+                    original,
                 },
                 edits,
             };
@@ -258,6 +271,33 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 return Err(invalid());
             }
             drop(retained);
+            // The admitted manifest and owner grants are immutable for this
+            // adapter's lifetime; each action separately accepts the live fence.
+            for mapping in &intent.manifest.volumes {
+                owner.require_volume_grant(
+                    &mapping.volume,
+                    VolumeOperation::Read,
+                    &mut Some(&mut io.history_io()),
+                )?;
+                if mapping.writable {
+                    owner.require_volume_grant(
+                        &mapping.volume,
+                        VolumeOperation::Write,
+                        &mut Some(&mut io.history_io()),
+                    )?;
+                }
+            }
+            let MaterializationIntent::NativePreparation { original, .. } = &plan.intent else {
+                return Err(invalid());
+            };
+            let (encoded, custody) = work.copy_bytes(original)?;
+            let intent_custody = work.claim(
+                (std::mem::size_of::<Intent>() + 2 * std::mem::size_of::<usize>()) as u64,
+                1,
+                WorkCounters::UNCHARGED,
+            )?;
+            let intent = Arc::new(intent);
+            store.original = Some((Arc::clone(&intent), encoded, custody));
             let materializer = JournaledMaterializer::new(store, backend);
             let retained_plan = plan_io.owned_bytes()?;
             let mut journal = materializer
@@ -278,7 +318,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     let Some(generation) = generation else {
                         continue;
                     };
-                    verify().await?;
                     let completion = materializer.store().prepare_action(journal).await?;
                     let identity = materializer
                         .backend()
@@ -303,7 +342,9 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                             &options,
                             journal,
                             volume_work,
-                            &mut { verify },
+                            // This store accepts the live owner fence before
+                            // every physical staging action. Reuse that check.
+                            &mut || std::future::ready(Ok::<(), Error>(())),
                         )
                         .await?;
                 }
@@ -375,6 +416,9 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     callback,
                 });
             }
+            drop(materializer);
+            let intent = Arc::try_unwrap(intent).map_err(|_| invalid())?;
+            drop(intent_custody);
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             io.absorb_native_custody(journal.custody.take().ok_or_else(invalid)?)?;
             verify().await?;

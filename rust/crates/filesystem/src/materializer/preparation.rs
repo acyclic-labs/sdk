@@ -112,9 +112,11 @@ impl<S: MaterializationJournalStore>
                     Before => {
                         authorized.expect("effect authorization").await?;
                         let journal = state.lock().0.take().ok_or_else(invalid)?;
-                        self.verify_effect_context(&journal)
-                            .await
-                            .map_err(E::from)?;
+                        self.check_plan(&journal.plan).map_err(E::from)?;
+                        self.check_custody(&journal).map_err(E::from)?;
+                        // prepare_action checks the current durable journal while
+                        // accepting completion; check physical ownership here.
+                        self.verify_allocation(&journal).await.map_err(E::from)?;
                         let completion = self
                             .store
                             .prepare_action(journal)

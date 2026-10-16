@@ -292,6 +292,7 @@ fn document(
 #[derive(Default)]
 pub(super) struct Lexical {
     pub(super) items: u64,
+    pub(super) containers: u64,
     pub(super) depth: u32,
     pub(super) string: bool,
     escape: bool,
@@ -323,6 +324,7 @@ impl Lexical {
                 true
             }
             b'[' | b'{' => {
+                self.containers += 1;
                 self.depth += 1;
                 self.atom = false;
                 true
@@ -388,6 +390,7 @@ pub(super) fn source(
     finish(
         bytes.len() as u64,
         lexical.items,
+        lexical.containers,
         counts,
         bounds,
         Origin::Slice,
@@ -397,6 +400,7 @@ pub(super) fn source(
 fn finish(
     bytes: u64,
     items: u64,
+    containers: u64,
     counts: Counts,
     bounds: JsonBounds,
     origin: Origin,
@@ -414,6 +418,7 @@ fn finish(
     Ok(JsonValueShape {
         input_bytes: bytes,
         lexical_items: items,
+        containers,
         virtual_items: counts.nodes,
         raw_bytes: counts.bytes,
         raw_frames: counts.frames,

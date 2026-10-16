@@ -55,7 +55,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .append(
                         path.clone(),
                         tail,
-                        &key,
+                        Some(&key),
                         bytes.clone(),
                         crate::distributed::JournalWrite::Fresh,
                         quota.work(),

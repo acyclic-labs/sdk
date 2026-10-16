@@ -11,6 +11,47 @@ use serde::{
 // preserves canonical bytes and idempotency keys without constructing a Value.
 pub(crate) struct Canonical<'a, T: ?Sized>(pub(crate) &'a T);
 
+pub(super) fn completion_capacity(
+    journal: &MaterializationJournal,
+    encoded: usize,
+) -> Option<usize> {
+    let digits = |value: u64| value.checked_ilog10().unwrap_or(0) as usize + 1;
+    let work = &journal.work;
+    let growth = [
+        work.allocation_operations,
+        work.authority_bytes_read,
+        work.authority_bytes_written,
+        work.authority_records_appended,
+        work.authority_records_read,
+        work.backend_read_operations,
+        work.backend_write_operations,
+        work.bytes_copied,
+        work.bytes_encoded,
+        work.bytes_hashed,
+        work.durability_operations,
+        work.items_examined,
+        work.items_returned,
+        work.materializations,
+        work.object_bytes_read,
+        work.object_bytes_written,
+        work.object_probes,
+        work.output_bytes,
+        work.page_reads,
+        work.page_writes,
+        work.peak_allocation_bytes,
+        work.source_bytes_read,
+        work.source_entries_visited,
+        work.source_path_components,
+    ]
+    .into_iter()
+    .map(|value| digits(u64::MAX) - digits(value))
+    .sum::<usize>();
+    encoded
+        .checked_add(growth)?
+        .checked_add(digits(journal.revision.checked_add(1)?))?
+        .checked_sub(digits(journal.revision))
+}
+
 macro_rules! object {
     ($ty:ty, $count:expr, $value:ident, {$($key:literal => $field:expr),+ $(,)?}) => {
         impl Serialize for Canonical<'_, $ty> {

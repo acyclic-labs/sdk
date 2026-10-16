@@ -11,6 +11,22 @@ mod journal_verification;
 
 fuzz_target!(|input: &[u8]| {
     if input.len() <= 65_536 {
-        journal_verification::verify_decode(input);
+        let accepted = journal_verification::verify_decode(input);
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        let baseline = work.live_allocation_bytes();
+        let mut decoded = Ok(());
+        let measured = allocation_counter::measure(|| {
+            decoded = acyclic_harness::filesystem::fuzz_native_preparation_journal(input, &work);
+        });
+        assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
+        if accepted {
+            assert!(decoded.is_ok());
+        }
+        drop(decoded);
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
 });

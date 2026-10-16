@@ -52,7 +52,7 @@ fn intent(labels: &[String], key: &[u8], owner: u8) -> Intent {
 
 fn verify(input: &[u8]) {
     let items = super::super::journal_verification::lexical_items(input);
-    let bound = intent_decode_owned_bytes(items, input.len() as u64, 0).unwrap();
+    let bound = intent_decode_owned_bytes(items, input.len() as u64, 0, true).unwrap();
     let mut result = None;
     let measured = allocation_counter::measure(|| {
         result = Some(serde_json::from_slice::<Intent>(input));
@@ -69,7 +69,69 @@ fn verify(input: &[u8]) {
     }
 }
 
+fn verify_bounded(input: &[u8]) {
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .unwrap();
+    let baseline = work.live_allocation_bytes();
+    let mut bounded = Ok(());
+    let measured = allocation_counter::measure(|| {
+        bounded = fuzz_native_preparation_intent(input, &work);
+    });
+    assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
+    let accepted = bounded.is_ok();
+    drop(bounded);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(accepted, serde_json::from_slice::<Intent>(input).is_ok());
+}
+
 proptest! {
+    // Property: both previously admitted struct representations preserve every
+    // independent budget field; new compact writes do not change old reads.
+    #[test]
+    fn compact_and_legacy_intent_preserve_every_budget_field(counters in prop::collection::vec(any::<u64>(), 24..=24)) {
+        let mut expected = intent(&["/root/volume".into()], &[1; 32], 0);
+        let mut budget = serde_json::to_value(acyclic_fs::WorkCounters::default()).unwrap();
+        for (slot, value) in budget.as_object_mut().unwrap().values_mut().zip(counters) { *slot = value.into(); }
+        expected.manifest.options.work_per_volume = serde_json::from_value(budget).unwrap();
+        let compact = serde_json::to_vec(&expected).unwrap();
+        let mut legacy = serde_json::to_value(&expected).unwrap();
+        legacy["manifest"] = serde_json::to_value(&expected.manifest).unwrap();
+        let legacy = serde_json::to_vec(&legacy).unwrap();
+        prop_assert!(compact.len() < legacy.len());
+        for bytes in [compact, legacy] {
+            let actual: Intent = serde_json::from_slice(&bytes).unwrap();
+            prop_assert_eq!(&actual.manifest, &expected.manifest);
+            prop_assert_eq!(&actual.original_fence, &expected.original_fence);
+            prop_assert_eq!(actual.task, expected.task);
+            verify_bounded(&bytes);
+        }
+    }
+
+    // Same real decoder and ledger as the fuzz target. Bound the input tree
+    // rather than reducing the case count; retain the larger raw-heap property.
+    #[test]
+    fn bounded_intent_decoder_funds_allocations_and_releases_errors(
+        labels in prop::collection::vec(".{0,16}", 0..4),
+        key in prop::collection::vec(any::<u8>(), 1..32),
+        owner in any::<u8>(),
+        cut in any::<usize>(),
+        scratch in prop::collection::vec(prop::collection::vec(".{0,16}", 0..4), 0..4),
+    ) {
+        let intent = intent(&labels, &key, owner);
+        let encoded = serde_json::to_vec(&intent).unwrap();
+        verify_bounded(&encoded);
+        verify_bounded(&encoded[..cut % (encoded.len() + 1)]);
+        let mut malformed = serde_json::to_value(&intent).unwrap();
+        malformed["manifest"] = serde_json::to_value(&intent.manifest).unwrap();
+        for mapping in malformed["manifest"]["volumes"].as_array_mut().unwrap() {
+            mapping["volume"]["owner"] = serde_json::json!({"id": scratch, "kind": "project"});
+        }
+        verify_bounded(&serde_json::to_vec(&malformed).unwrap());
+    }
+
     // Property: the closed Intent allowance covers actual decoder peak heap
     // and retained capacities, including rejected owner content and truncation.
     #[test]
@@ -85,6 +147,7 @@ proptest! {
         verify(&encoded);
         verify(&encoded[..cut % (encoded.len() + 1)]);
         let mut malformed = serde_json::to_value(&intent).unwrap();
+        malformed["manifest"] = serde_json::to_value(&intent.manifest).unwrap();
         for mapping in malformed["manifest"]["volumes"].as_array_mut().unwrap() {
             // Sorted keys put id before kind, forcing the real adjacent-tag
             // decoder to buffer nested Content before rejecting its type.

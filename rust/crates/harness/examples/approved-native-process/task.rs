@@ -44,7 +44,7 @@ impl ResumableMachine for Machine {
         input: &Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        copy_state(input, work)
+        copy_state(input, work, size_of::<Value>())
     }
     fn transition_with_native_work(
         &self,
@@ -52,8 +52,7 @@ impl ResumableMachine for Machine {
         _: Value,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
-        let (state, mut custody) = copy_state(state, work)?;
-        custody.grow((size_of::<MachineTransition>() - size_of::<Value>()) as u64)?;
+        let (state, custody) = copy_state(state, work, size_of::<MachineTransition>())?;
         Ok((
             MachineTransition {
                 state,
@@ -68,11 +67,12 @@ impl ResumableMachine for Machine {
 fn copy_state(
     state: &Value,
     work: &acyclic_fs::NativeMaterializationWork,
+    header_bytes: usize,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let remaining = work.remaining()?;
     let mut io =
         HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
-    io.retain_owned(size_of::<Value>() as u64)?;
+    io.retain_owned(header_bytes as u64)?;
     let state = acyclic_harness::executor::json::json_value_bounded(
         state,
         acyclic_harness::executor::json::JsonBounds {
