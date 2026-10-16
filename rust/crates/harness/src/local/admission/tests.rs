@@ -107,10 +107,10 @@ async fn cancellation_at_each_head_admission_await_resumes_the_retained_input_on
         );
         drop(old_attach);
         drop(harness);
-        let mut config = crate::test_support::local_harness_config(&project.0, model)?
+        let config = crate::test_support::local_harness_config(&project.0, model)?
             .volume(project.1)
-            .compaction(CompactionPolicy::Disabled);
-        config.goal_continuations = None;
+            .compaction(CompactionPolicy::Disabled)
+            .goal_continuations(None);
         let reopened = LocalHarness::open(config).await?;
         assert_eq!(reopened.resume(task).await?.text, "done");
         assert_eq!(reopened.resume(task).await?.text, "done");

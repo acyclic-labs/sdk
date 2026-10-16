@@ -2,6 +2,10 @@ use super::*;
 use crate::{conversation::FileDescriptor, core::AggregateKind};
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "isolation_properties.rs"]
+mod isolation_properties;
+
 fn seed() -> Result<ForkSeed> {
     serde_json::from_str(include_str!("../../fixtures/v2/fork-seed.json"))
         .map_err(|error| Error::Invalid(error.to_string()))
