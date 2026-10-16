@@ -35,7 +35,10 @@ fn file(task: &Component, id: &Component, result: bool) -> FileKey {
     }
 }
 
-fn storage(_: crate::task_volume::Error) -> Error {
+fn storage(error: crate::task_volume::Error) -> Error {
+    if let crate::task_volume::Error::Accounting(error) = error {
+        return error;
+    }
     Error::NativeBoundary {
         code: crate::wire::ErrorCode::Storage,
         reason: "cannot access search request files",
@@ -61,10 +64,20 @@ fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::
     }
     let (decoded, custody) = if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let decoded: SearchRequest = io.decode_json(bytes).map_err(|error| match error {
-            Error::NativeJson { .. } => super::rejection(Some(work), "invalid search request file"),
-            error => error,
-        })?;
+        let decoded: SearchRequest =
+            io.decode_json(bytes).map_err(|error| match error {
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason:
+                        "invalid JSON nesting"
+                        | "incomplete JSON document"
+                        | "JSON nesting limit exceeded",
+                }
+                | Error::NativeJson { .. } => {
+                    super::rejection(Some(work), "invalid search request file")
+                }
+                error => error,
+            })?;
         let retained = (std::mem::size_of::<SearchRequest>() + decoded.query.capacity()) as u64;
         (decoded, Some(io.into_native_custody(retained)?))
     } else {
@@ -229,7 +242,13 @@ where
         };
         let claim = FileValue::new(started.clone(), encode(fence, work)?);
         match volume
-            .append_if(snapshot.generation, &claim, authorize(false).await?, None)
+            .append_if(
+                snapshot.generation,
+                &claim,
+                authorize(false).await?,
+                None,
+                work,
+            )
             .await
         {
             Err(crate::task_volume::Error::Conflict(_)) => continue,
@@ -282,7 +301,16 @@ where
         .await;
         match dispatch {
             Ok(encoded) => {
-                publish(volume, task, result, encoded, authorize, maximum_files).await?;
+                publish(
+                    volume,
+                    task,
+                    result,
+                    encoded,
+                    authorize,
+                    work,
+                    maximum_files,
+                )
+                .await?;
                 return Ok(());
             }
             Err(Error::ToolRejected(_) | Error::Invalid(_)) => break SearchOutcome::Rejected,
@@ -303,6 +331,7 @@ where
         result,
         encode(&outcome, work)?,
         authorize,
+        work,
         maximum_files,
     )
     .await
@@ -314,6 +343,7 @@ async fn publish<P, A, Fut>(
     key: FileKey,
     bytes: OwnedBytes,
     authorize: &A,
+    work: NativeWork<'_>,
     maximum_files: usize,
 ) -> Result<()>
 where
@@ -335,6 +365,7 @@ where
                 &FileValue::new(key.clone(), bytes.clone()),
                 authorize(true).await?,
                 None,
+                work,
             )
             .await
         {

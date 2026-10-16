@@ -324,7 +324,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence.clone(),
                     expected: 1
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::FenceConflict)
@@ -339,6 +340,7 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                 expected: 2,
             }],
             Some(101),
+            None,
         )
         .await?;
     clock.0.store(102, Ordering::SeqCst);
@@ -351,7 +353,8 @@ async fn execution_fence_and_deadline_are_checked_in_the_publication_commit() ->
                     path: fence,
                     expected: 2
                 }],
-                Some(101)
+                Some(101),
+                None,
             )
             .await,
         Err(Error::Storage(StreamError::DeadlineElapsed))

@@ -22,6 +22,9 @@ use uuid::Uuid;
 /// Task-volume failure; reset requires a fresh bounded snapshot.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Original publication accounting failure, retaining its cause and custody.
+    #[error(transparent)]
+    Accounting(#[from] crate::Error),
     /// Underlying durable storage failure.
     #[error(transparent)]
     Storage(StreamError),
@@ -291,16 +294,19 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     /// Accepts one file event in its own append, without a batching boundary.
     pub async fn append(&self, expected: Generation, write: &Write) -> Result<Generation> {
-        self.append_if(expected, write, Vec::new(), None).await
+        self.append_if(expected, write, Vec::new(), None, None)
+            .await
     }
 
     /// Accepts one delta, tool event or status change in its own append.
+    /// Native callers supply their original ledger for packing and retained bytes.
     pub async fn append_if(
         &self,
         expected: Generation,
         write: &Write,
         mut conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Generation> {
         let mut index = self.index.lock().await;
         self.refresh(&mut index).await?;
@@ -311,9 +317,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.files.get(&write.key) == Some(write) {
             return Ok(self.generation(&index));
         }
-        let segment = segment::encode(write)?;
-        // Decode before durable action, so the accepted event is locally applicable.
-        let files = segment::decode(&segment)?;
+        let (segment, files) = segment::encode(write, work)?;
         conditions.push(CommitCondition::Head {
             path: self.path.clone(),
             expected: expected.position,

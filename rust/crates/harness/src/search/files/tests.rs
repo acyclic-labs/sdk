@@ -402,12 +402,19 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         )
         .await
         .map_err(storage)?;
+    let response = SearchResponse {
+        results: vec![super::super::SearchResult {
+            url: "https://example.com".into(),
+            title: "source".into(),
+            snippet: "x".repeat(65_536),
+        }],
+    };
     let script = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
         request: SearchRequest {
             query: "test".into(),
             max_results: 5,
         },
-        response: Some(SearchResponse { results: vec![] }),
+        response: Some(response.clone()),
         error: None,
     }])?);
     let backend = Arc::new(NativeOnly(script.clone()));
@@ -433,12 +440,22 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         .unwrap();
     assert_eq!(
         serde_json::from_slice::<SearchOutcome>(&result.bytes).unwrap(),
-        SearchOutcome::Succeeded {
-            response: SearchResponse { results: vec![] }
-        }
+        SearchOutcome::Succeeded { response }
     );
+    for published in &snapshot.files {
+        if matches!(
+            published.key,
+            FileKey::Task {
+                file: TaskFile::RequestStarted(_) | TaskFile::RequestResult(_),
+                ..
+            }
+        ) {
+            assert!(published.bytes.matches_meter(&work.runtime_meter()));
+        }
+    }
     assert!(work.receipt().source_bytes_read > 0);
     assert!(work.receipt().bytes_encoded > 0);
+    assert!(work.receipt().bytes_copied >= 2 * 65_536);
     assert!(
         follow(
             &volume,
@@ -501,5 +518,123 @@ async fn request_file_types_keep_host_ownership_and_reset_legacy_cursors() -> Re
         .map_err(storage)?;
     assert!(reset.reset);
     assert!(reset.snapshot.unwrap().files.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_native_requests_publish_rejections_and_worker_keeps_following() -> Result<()> {
+    let stream = Arc::new(MemoryStream::default());
+    let fixture = Fixture::new(
+        stream.clone(),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        None,
+        &[],
+    )
+    .await?;
+    let running = fixture.running(1).await?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let owner = fixture
+        .host
+        .journal_owner(running.task_id(), running.task_binding().1, Some(&io))
+        .await?;
+    let volume = TaskVolume::open(stream, StreamPath::new("malformed-search-files").unwrap())
+        .await
+        .map_err(storage)?;
+    let task = Component::new(hex::encode(owner.task_id().into_bytes())).unwrap();
+    let deep = format!("{{\"query\":{}0{}}}", "[".repeat(258), "]".repeat(258));
+    let requests = [
+        "{",
+        "]",
+        "{\"query\":}",
+        deep.as_str(),
+        r#"{"query":"test"}"#,
+    ];
+    for (index, bytes) in requests.iter().enumerate() {
+        let snapshot = volume.snapshot(&Query::Root, 15).await.map_err(storage)?;
+        volume
+            .append(
+                snapshot.generation,
+                &FileValue::new(
+                    FileKey::Task {
+                        task: task.clone(),
+                        file: TaskFile::Request(Component::new(format!("search-{index}")).unwrap()),
+                    },
+                    bytes.as_bytes().to_vec(),
+                ),
+            )
+            .await
+            .map_err(storage)?;
+    }
+    let script = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
+        request: SearchRequest {
+            query: "test".into(),
+            max_results: 5,
+        },
+        response: Some(SearchResponse { results: vec![] }),
+        error: None,
+    }])?);
+    let worker = follow(
+        &volume,
+        &owner,
+        || {
+            Ok(Some(
+                Arc::new(NativeOnly(script.clone())) as Arc<dyn SearchProvider>
+            ))
+        },
+        Some(&work),
+        15,
+    )
+    .now_or_never();
+    assert!(
+        worker.is_none(),
+        "worker stopped on malformed input: {worker:?}"
+    );
+    assert_eq!(script.remaining(), 0);
+    let snapshot = volume.snapshot(&Query::Root, 15).await.map_err(storage)?;
+    assert_eq!(snapshot.files.len(), 15);
+    for index in 0..requests.len() {
+        let key = file(
+            &task,
+            &Component::new(format!("search-{index}")).unwrap(),
+            true,
+        );
+        let result = snapshot
+            .files
+            .iter()
+            .find(|value| value.key == key)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SearchOutcome>(&result.bytes).unwrap(),
+            if index == requests.len() - 1 {
+                SearchOutcome::Succeeded {
+                    response: SearchResponse { results: vec![] },
+                }
+            } else {
+                SearchOutcome::Rejected
+            }
+        );
+    }
+    // A fixed syntax rejection must not hide exhaustion of the original ledger.
+    for read_denial in [true, false] {
+        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        if read_denial {
+            budget.source_bytes_read = 0;
+        } else {
+            budget.items_examined = 0;
+        }
+        let denied = acyclic_fs::NativeMaterializationWork::new(
+            budget,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let failure = request(b"{", Some(&denied)).unwrap_err();
+        assert!(failure.is_native_failure(), "{failure:?}");
+    }
     Ok(())
 }
