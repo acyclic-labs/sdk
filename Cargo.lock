@@ -169,7 +169,7 @@ dependencies = [
  "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-stream",
- "allocation-counter",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "base64 0.23.1",

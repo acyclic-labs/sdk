@@ -4,9 +4,9 @@
 use acyclic_fs::{
     CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters, WorkspaceName,
 };
-fn measured<T>(operation: impl FnOnce() -> T) -> (T, allocation_counter::AllocationInfo) {
+fn measured<T>(operation: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationInfo) {
     let mut result = None;
-    let allocations = allocation_counter::measure(|| result = Some(operation()));
+    let allocations = acyclic_test_support::measure(|| result = Some(operation()));
     (result.unwrap(), allocations)
 }
 
