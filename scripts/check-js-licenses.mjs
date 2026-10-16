@@ -7,7 +7,9 @@ const allowed = new Set(["Apache-2.0", "MIT", "ISC", "BSD-2-Clause", "BSD-3-Clau
 const failures = [];
 const seen = new Set();
 const glob = new Bun.Glob("node_modules/**/package.json");
-for await (const path of glob.scan({ cwd: root, onlyFiles: true })) {
+const installedManifest = /(?:^|[\\/])node_modules[\\/](?:@[^\\/]+[\\/])?[^@.\\/][^\\/]*[\\/]package\.json$/;
+for await (const path of glob.scan({ cwd: root, onlyFiles: true, dot: true, followSymlinks: true })) {
+  if (!installedManifest.test(path)) continue;
   const metadata = JSON.parse(await readFile(join(root, path), "utf8"));
   const key = `${metadata.name}@${metadata.version}`;
   if (seen.has(key) || metadata.private) continue;
