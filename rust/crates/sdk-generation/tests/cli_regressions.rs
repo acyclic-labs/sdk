@@ -782,7 +782,7 @@ fn run_historical_generate_mode_with_authority(
     }
     let result = command.output().unwrap();
     let version = fixture.output.join("releases/1.0.0");
-    if version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
+    if result.status.success() || version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
         let releases: Value = serde_json::from_slice(
             &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
         )
