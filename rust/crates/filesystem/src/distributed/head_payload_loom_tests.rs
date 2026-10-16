@@ -280,8 +280,8 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         let reader_provider = provider.clone();
         let reader_cancel = cancellation.clone();
         let read = move || {
-            let completed_at_entry = matches!(change, Change::Fence)
-                && reader_provider.completed.load(Ordering::SeqCst);
+            let completed_at_entry =
+                matches!(change, Change::Fence) && reader_provider.completed.load(Ordering::SeqCst);
             let store = StreamAuthorityStore::new(reader_provider);
             FAULT.with(|fault| {
                 fault.set(if broken {
