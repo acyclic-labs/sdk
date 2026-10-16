@@ -7,7 +7,6 @@ use crate::{
         ModelRole, PreparedModelRequest,
     },
 };
-use futures::StreamExt as _;
 use serde_json::json;
 
 fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {

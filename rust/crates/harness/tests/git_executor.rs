@@ -201,6 +201,41 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             GitCommandOutput::Filesystem(_)
         ));
     }
+    let missing = run(&fs, &store, &main, repo, &["apply", "missing.patch"]).await;
+    let error = missing
+        .err()
+        .ok_or("missing patch unexpectedly succeeded")?;
+    assert!(matches!(
+        error.downcast_ref::<acyclic_harness::Error>(),
+        Some(acyclic_harness::Error::NativeSource { source, .. })
+            if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    main.write(
+        "/.volumes/user.txt",
+        bytes::Bytes::from_static(b"user-owned\n").into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) = run(
+        &fs,
+        &store,
+        &main,
+        repo,
+        &["check-ignore", ".volumes/user.txt"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected check-ignore paths".into());
+    };
+    assert_eq!(value["paths"], serde_json::json!([]));
+    run(&fs, &store, &main, repo, &["clean", "-f"]).await?;
+    assert!(matches!(
+        main.read("/.volumes/user.txt", 64, &mut work).await,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
     child
         .write(
             "/.gitattributes",
@@ -219,15 +254,29 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             &mut work,
         )
         .await?;
-    let ignore = acyclic_harness::filesystem::WorkspacePolicy::load_ignore(&child).await?;
-    assert!(!ignore.eligible("ignored/child.txt", false, false));
-    assert!(!ignore.eligible(".acyclic-sdk/state", false, false));
-    assert!(ignore.eligible("result.txt", false, false));
+    for path in ["/ignored/child.txt", "/.acyclic-sdk/state", "/result.txt"] {
+        child
+            .write(
+                path,
+                bytes::Bytes::from_static(b"child\n").into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    let plan =
+        acyclic_harness::filesystem::plan_agent_merge(&fs, &store, &child, main.workspace(), repo)
+            .await?;
     assert!(
-        acyclic_harness::filesystem::WorkspacePolicy::load(&child)
-            .await
-            .is_err()
+        plan.child_wins_bindings
+            .contains(&"/ignored/child.txt".to_owned())
     );
+    assert!(
+        plan.child_wins_bindings
+            .contains(&"/.acyclic-sdk/state".to_owned())
+    );
+    assert!(!plan.child_wins_bindings.contains(&"/result.txt".to_owned()));
     Ok(())
 }
 
@@ -412,7 +461,7 @@ async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
 
 #[tokio::test]
 async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<()> {
-    let (_temp, _root, _fs, _store, main) = fixture().await?;
+    let (_temp, _root, fs, store, main) = fixture().await?;
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     main.write(
@@ -431,11 +480,70 @@ async fn publication_merge_drivers_do_not_read_unused_ignore_rules() -> Result<(
         &mut work,
     )
     .await?;
+    let error = run(&fs, &store, &main, main.workspace().id(), &["status"])
+        .await
+        .err()
+        .ok_or("oversized ignore rules unexpectedly loaded")?;
     assert!(
-        acyclic_harness::filesystem::WorkspacePolicy::load_ignore(&main)
-            .await
-            .is_err()
+        matches!(
+            error.downcast_ref::<acyclic_harness::Error>(),
+            Some(acyclic_harness::Error::NativeSource { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::LazyWorkspaceError::TooLarge)
+        ),
+        "{error:?}"
     );
-    acyclic_harness::filesystem::WorkspacePolicy::load_merge_drivers(&main).await?;
+    acyclic_harness::filesystem::workspace_publication_coordinator(
+        fs,
+        store,
+        Default::default(),
+        [(acyclic_fs::WorkspaceRootId::from_bytes([3; 16]), &main)],
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_identity_change_after_guard_preserves_conflict_code() -> Result<()> {
+    use acyclic_fs::{
+        MaterializeOptions, NativeMaterializationWork, NativeTreeMaterializationError,
+    };
+    let (_temp, root, _fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let work = NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &stop)
+        .map_err(|(cause, _)| cause)?;
+    let generation = main.workspace().head(&work, &stop).await?;
+    let identity = work.root_identity(&root)?;
+    let publication = acyclic_harness::filesystem::CheckoutPublication::new(
+        &root,
+        identity,
+        OperationId::new(),
+        &work,
+    )?;
+    let options = MaterializeOptions {
+        destination: publication.directory().join("target"),
+        expected_root_identity: None,
+        maximum_directory_entries: 32,
+        maximum_extent_spans: 32,
+        transfer_bytes: 4096,
+    };
+    let mut guards = 0;
+    let error = publication
+        .publish(&generation, &generation, &store, &options, &work, || {
+            guards += 1;
+            let changed = std::fs::rename(&root, root.with_extension("original"))
+                .and_then(|()| std::fs::create_dir(&root));
+            std::future::ready(changed.map_err(acyclic_fs::NativeWorkspacePublicationError::from))
+        })
+        .await
+        .expect_err("the checkout identity changed after authorization");
+    assert_eq!(guards, 1);
+    assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Conflict);
+    assert!(matches!(
+        error,
+        acyclic_harness::Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationChanged { expected, actual },
+            ..
+        } if expected == identity && actual != identity
+    ));
     Ok(())
 }

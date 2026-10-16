@@ -43,6 +43,8 @@ pub mod grpc;
 pub mod hooks;
 pub mod interaction;
 pub mod live;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub mod local;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
@@ -84,6 +86,7 @@ pub mod turn;
 mod wasm;
 pub mod wire_api;
 pub mod wire_codec;
+pub mod workspace;
 pub use wire_codec::encode_error;
 #[cfg(test)]
 #[path = "../tests/support/stream/mod.rs"]
@@ -158,6 +161,8 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{LocalHarness, LocalHarnessConfig};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]

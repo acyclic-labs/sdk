@@ -288,12 +288,6 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ));
         }
         if selected.authority.is_some() {
-            let bytes = host
-                .read_pinned_io(file, request.maximum_bytes, Some(io))
-                .await?;
-            let held = io.guard_bytes(&bytes)?;
-            drop(bytes);
-            drop(held);
             if granted.insert(file.read_capability(&mut None)?) {
                 selected.reference_files.push(file.clone());
             }

@@ -49,6 +49,7 @@ impl<A, O> FilesystemHost<A, O> {
 
 mod content;
 mod keys;
+mod ranges;
 mod reads;
 mod volumes;
 mod workspaces;

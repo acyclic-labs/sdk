@@ -268,10 +268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Ok(metadata) => {
                 let staged: FileRef = crate::contract::json_from_slice(&metadata)
                     .map_err(|_| Error::Storage("private file metadata is corrupt".into()))?;
-                if staged.volume() != volume
-                    || staged.path() != path
-                    || staged.version() != "pending"
-                {
+                if staged.volume() != volume || staged.path() != path {
                     return Err(Error::Storage(
                         "private file metadata does not match the file".into(),
                     ));

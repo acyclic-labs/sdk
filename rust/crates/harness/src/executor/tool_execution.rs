@@ -16,6 +16,9 @@ impl StockExecution<'_> {
         let _capability;
         let mut context;
         (context, _capability) = self.authorize_tool_invocation(tool, &invocation)?;
+        if let Some(context) = &mut context {
+            context.model_step = step;
+        }
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;

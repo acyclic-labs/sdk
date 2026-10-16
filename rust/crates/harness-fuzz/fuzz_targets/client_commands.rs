@@ -1,0 +1,116 @@
+#![no_main]
+
+use acyclic_harness::{
+    Error, OperationId, Result,
+    client::{
+        CommandCatalog, CommandFileChange, CommandFileSnapshot, CommandPaletteState,
+        CommandResolution,
+    },
+    conversation::ContentResidencyVerifier,
+};
+use libfuzzer_sys::fuzz_target;
+
+#[path = "../command_oracle.rs"]
+mod command_oracle;
+#[path = "../../harness/src/client/commands/syntax.rs"]
+mod syntax;
+struct NoReads;
+impl ContentResidencyVerifier for NoReads {}
+
+fuzz_target!(|input: &[u8]| {
+    if let Ok(query) = serde_json::from_slice::<acyclic_harness::task_volume::Query>(input) {
+        let encoded = serde_json::to_vec(&query).unwrap();
+        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&encoded).unwrap(), query);
+    }
+    if let Ok(catalog) = CommandCatalog::from_bytes(input, 8192) {
+        let specs: Vec<_> = catalog.commands().collect();
+        let encoded = serde_json::to_vec(&specs).unwrap();
+        let round_trip = CommandCatalog::from_bytes(&encoded, encoded.len() as u64).unwrap();
+        assert_eq!(round_trip.commands().collect::<Vec<_>>(), specs);
+    }
+    let catalog = CommandCatalog::builtins().unwrap();
+    if let Ok(state) = serde_json::from_slice::<CommandPaletteState>(input) {
+        let palette = catalog.palette(&state);
+        for state in [palette.next(), palette.previous()] {
+            assert!(state.selected < palette.entries().len().max(1) as u64);
+            let encoded = serde_json::to_vec(&state).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<CommandPaletteState>(&encoded).unwrap(),
+                state
+            );
+        }
+    }
+    let snapshot: CommandFileSnapshot = serde_json::from_slice(input).unwrap_or_else(|_| serde_json::from_value(serde_json::json!({
+            "config":{"settings.json":{"diff_mode":"auto","diff_modes":["auto","unified","split"]}},
+            "task":{"settings.json":{"agent_mode":"code","agent_modes":["code","plan"]}},
+            "session":{"layout.json":{"selected_task":"00000000-0000-0000-0000-000000000005"},"attention.json":{"tasks":["00000000-0000-0000-0000-000000000003"]}}
+        })).unwrap());
+    if let Ok(resolution) = serde_json::from_slice::<CommandResolution>(input) {
+        if let Ok(changes) = resolution.file_changes(&snapshot, OperationId::new()) {
+            assert!(changes.len() <= 1);
+            let encoded = serde_json::to_vec(&changes).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Vec<CommandFileChange>>(&encoded).unwrap(),
+                changes
+            );
+        }
+    }
+    if let Ok(request) = serde_json::from_slice::<acyclic_harness::client::CommandRequest>(input) {
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::client::CommandRequest>(&encoded).unwrap(),
+            request
+        );
+    }
+    let Ok(input) = std::str::from_utf8(input) else {
+        return;
+    };
+    if let Ok(query) = acyclic_harness::task_volume::Query::folder(input) {
+        assert_eq!(serde_json::from_slice::<acyclic_harness::task_volume::Query>(&serde_json::to_vec(&query).unwrap()).unwrap(), query);
+    }
+    if let Ok(key) = acyclic_harness::task_volume::FileKey::parse(input) {
+        assert_eq!(
+            acyclic_harness::task_volume::FileKey::parse(&key.path()).unwrap(),
+            key
+        );
+        let encoded = serde_json::to_vec(&key).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::task_volume::FileKey>(&encoded).unwrap(),
+            key
+        );
+    }
+    let maximum = input.len() as u64;
+    let result = syntax::split(input, maximum);
+    assert!(command_oracle::accepts(input, maximum, &result));
+    let bounded = maximum.saturating_sub(1);
+    assert!(command_oracle::accepts(
+        input,
+        bounded,
+        &syntax::split(input, bounded)
+    ));
+    if input.is_empty() {
+        assert!(result.is_err());
+    } else if let Some((name, arguments)) = result.expect("positive exact input bound") {
+        let normalized = format!("/{name} {arguments}");
+        assert_eq!(
+            syntax::split(&normalized, normalized.len() as u64).unwrap(),
+            Some((name, arguments))
+        );
+    } else {
+        assert!(!input.trim_start().starts_with('/'));
+    }
+    assert!(syntax::split(input, 0).is_err());
+    if !input.is_empty() {
+        assert!(syntax::split(input, maximum - 1).is_err());
+    }
+    let index =
+        input.as_bytes().first().copied().unwrap_or_default() as usize % catalog.commands().count();
+    let name = &catalog.commands().nth(index).unwrap().name;
+    let command = format!("/{name} {input}");
+    if let Ok(resolution) = futures::executor::block_on(catalog.resolve(&command, &NoReads, 8192)) {
+        assert!(!matches!(&resolution, CommandResolution::Prompt { .. }));
+        if let Ok(changes) = resolution.file_changes(&snapshot, OperationId::new()) {
+            assert!(changes.len() <= 1);
+        }
+    }
+});

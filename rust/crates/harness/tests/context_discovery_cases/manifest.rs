@@ -7,24 +7,14 @@ use acyclic_harness::{
     filesystem::FilesystemContentPublisher,
     model::{Model, ModelRole},
     runtime::RuntimeScope,
-    tool::{ToolRegistry, plan, schema::ProjectionMode, text::ReadOptions, text_files},
+    tool::{ToolRegistry, files, plan},
 };
 use acyclic_stream::MemoryStream;
 use serde_json::Value;
 
 fn tools() -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
-    for tool in [
-        plan::update_plan()?,
-        text_files::read_file_range(
-            ReadOptions {
-                maximum_input_bytes: 512,
-                maximum_text_bytes: 512,
-            },
-            8192,
-            ProjectionMode::Full,
-        )?,
-    ] {
+    for tool in [plan::update_plan()?, files::read()?] {
         tools.register((tool, None), &mut None, None)?;
     }
     Ok(tools)

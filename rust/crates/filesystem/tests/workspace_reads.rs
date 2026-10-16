@@ -167,3 +167,133 @@ async fn whole_file_read_preserves_volume_read_limit() -> Result<(), Box<dyn Err
     );
     Ok(())
 }
+
+async fn unchanged_range_case(
+    body: Vec<u8>,
+    left: u16,
+    right: u16,
+    mutate: bool,
+) -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("unchanged-range"))?;
+    workspace
+        .write("/entry", Bytes::copy_from_slice(&body))
+        .await?;
+    let original = unbounded!(workspace, head())?;
+    workspace
+        .write_text("/unrelated", "later generation")
+        .await?;
+    if mutate {
+        let mut changed = body.clone();
+        if let Some(first) = changed.first_mut() {
+            *first ^= 0xff;
+        } else {
+            changed.push(1);
+        }
+        workspace.write("/entry", Bytes::from(changed)).await?;
+    }
+    let current = unbounded!(workspace, head())?;
+    let left = usize::from(left) % (body.len() + 1);
+    let right = usize::from(right) % (body.len() + 1);
+    let (start, end) = (left.min(right), left.max(right));
+    let range = acyclic_fs::ByteRange {
+        offset: start as u64,
+        length: (end - start) as u64,
+    };
+    let selected = current
+        .read_range_if_unchanged(
+            &original,
+            "/entry",
+            range,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await;
+    if mutate {
+        assert!(
+            matches!(selected, Err(failure) if matches!(failure.error, WorkspaceError::StaleIdentity))
+        );
+    } else {
+        assert_eq!(selected?.value.bytes.as_ref(), &body[start..end]);
+    }
+    let pinned = unbounded!(
+        original,
+        read_range_if_unchanged(&original, "/entry", range)
+    )?;
+    assert_eq!(pinned.bytes.as_ref(), &body[start..end]);
+    Ok(())
+}
+
+proptest::proptest! {
+    // Every selected range is exact across unrelated generations; any payload
+    // change is rejected, including empty ranges and changes outside the range.
+    #[test]
+    fn unchanged_payload_ranges_remain_generation_exact(
+        body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4096),
+        left in proptest::prelude::any::<u16>(),
+        right in proptest::prelude::any::<u16>(),
+        mutate in proptest::prelude::any::<bool>(),
+    ) {
+        let result = futures::executor::block_on(unchanged_range_case(body, left, right, mutate));
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
+}
+
+#[tokio::test]
+async fn unchanged_range_reads_do_not_copy_the_body() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("large-range"))?;
+    workspace
+        .write("/entry", Bytes::from(vec![7; 2 * 1024 * 1024]))
+        .await?;
+    let original = unbounded!(workspace, head())?;
+    workspace.write_text("/unrelated", "changed").await?;
+    let current = unbounded!(workspace, head())?;
+    let selected = current
+        .read_range_if_unchanged(
+            &original,
+            "/entry",
+            acyclic_fs::ByteRange {
+                offset: 1024,
+                length: 16,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert_eq!(selected.value.bytes.as_ref(), &[7; 16]);
+    assert!(
+        selected.work.bytes_copied < 64 * 1024,
+        "{:?}",
+        selected.work
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unchanged_range_rejects_a_foreign_deployment() -> Result<(), Box<dyn Error>> {
+    let first = Fs::memory();
+    let second = Fs::memory();
+    let first = unbounded!(first, create_workspace("same-name"))?;
+    let second = unbounded!(second, create_workspace("same-name"))?;
+    first.write_text("/entry", "same bytes").await?;
+    second.write_text("/entry", "same bytes").await?;
+    let original = unbounded!(first, head())?;
+    let other = unbounded!(second, head())?;
+    let result = other
+        .read_range_if_unchanged(
+            &original,
+            "/entry",
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 1,
+            },
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(failure) if matches!(failure.error, WorkspaceError::ForeignGeneration))
+    );
+    Ok(())
+}

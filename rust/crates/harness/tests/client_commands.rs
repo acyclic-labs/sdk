@@ -27,7 +27,7 @@ mod client_command_session;
 #[path = "../src/client/commands/name_index.rs"]
 mod command_name_index;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../fuzz/command_oracle.rs"]
+#[path = "../../harness-fuzz/command_oracle.rs"]
 mod command_oracle;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../src/client/commands/syntax.rs"]

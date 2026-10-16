@@ -13,7 +13,7 @@ impl WorkspaceGitExecutor<'_> {
                 )
                 .await
                 .map(|receipt| receipt.value)
-                .map_err(|failure| display(failure.error).into()),
+                .map_err(|failure| Error::from(failure.error).into()),
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let lazy = self
@@ -23,39 +23,37 @@ impl WorkspaceGitExecutor<'_> {
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let snapshot_bytes = snapshot.id.into_bytes();
                 let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
                 let mut identity = [0; 16];
                 identity.copy_from_slice(&snapshot_bytes[..16]);
-                let exact = lazy
-                    .exactify_snapshot(
-                        snapshot,
+                let (child, initial) = lazy
+                    .fork_snapshot(
                         &destination,
+                        snapshot,
                         IdempotencyKey::from_bytes(identity),
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 WorkspaceGraph::new(self.store.clone())
-                    .register_existing_child(
+                    .register_existing_child_at_generation(
                         lazy.workspace(),
-                        &self
-                            .fs
-                            .open_workspace(
-                                &destination,
-                                WorkBudget::UNBOUNDED,
-                                &CancellationToken::new(),
-                            )
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(display)?,
+                        child.workspace(),
                         snapshot.authored_generation,
+                        initial.authored_generation,
                     )
                     .await
-                    .map_err(display)?;
-                Ok(exact)
+                    .map_err(Error::from)?;
+                child
+                    .exactify(
+                        "/",
+                        PublicationPermit::Unrestricted,
+                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                    )
+                    .await
+                    .map_err(Error::from)
             }
         }
     }
@@ -86,6 +84,6 @@ impl WorkspaceGitExecutor<'_> {
             workspace_id,
         )
         .await
-        .map_err(display)
+        .map_err(Error::from)
     }
 }

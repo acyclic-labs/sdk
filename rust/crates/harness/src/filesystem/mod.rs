@@ -79,9 +79,9 @@ mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-mod native_process;
+pub(crate) mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider};
+pub use native_process::{NativeProcessAuthority, NativeProcessObserver, NativeProcessProvider};
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(
@@ -100,7 +100,7 @@ pub use native_contract::{
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use native_directory::NativeDirectory;
+pub(crate) use native_directory::NativeDirectory;
 mod configured_recursive_tools;
 mod default_tools;
 mod mailbox_machine;
@@ -111,9 +111,7 @@ pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
     ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
 };
-pub use default_tools::{
-    MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_default_tools,
-};
+pub use default_tools::{MergeToolArguments, MergeToolSelection, MergeToolSide, recursive_tools};
 pub(in crate::filesystem) use default_tools::{
     RecursiveForkSourceIntent, RecursiveForkToolBinding, RecursiveForkToolPlan,
     RecursiveMergeToolBinding, RecursiveMergeToolPlan,
@@ -214,11 +212,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let descriptor = crate::executor::with_history_io(io, |work| {
             FileDescriptor::from_bytes(bytes, media_type, work)
         })?;
+        let operation = fork_preparer_io::operation_key(idempotency_key, io)?;
         let provisional = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 volume.copy(work)?,
                 stock_string_copy(path, io)?,
-                stock_string_copy("pending", io)?,
+                fork_preparer_io::hex_key(&operation.into_bytes(), io)?,
                 FileDescriptor::new(
                     *descriptor.sha256(),
                     descriptor.byte_length(),
@@ -285,59 +284,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
         let prior = crate::conversation::BoundedContentFuture::new(io, || async {
-            let opened = match io {
-                Some(io) => (self).open(&workspace, Some(io)).await?,
-                None => self.open(&workspace, None).await?,
+            let owned;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
             };
-            Ok(match io {
-                Some(io) => {
-                    let hash = acyclic_fs::WorkCounters {
-                        bytes_hashed: idempotency_key.as_str().len() as u64,
-                        ..Default::default()
-                    };
-                    io.preflight(hash)?;
-                    let key = filesystem_key(idempotency_key);
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(original) = io.original_native_work() {
-                        original.spent(hash).map_err(|cause| Error::NativeWork {
-                            cause,
-                            custody: None,
-                        })?;
-                        opened
-                            .operation_generation(key, original, io.cancellation())
-                            .await
-                            .map_err(|source| Error::NativeWorkspace {
-                                source: Box::new(source),
-                                custody: None,
-                            })?
-                    } else {
-                        io.charge(hash)?;
-                        io.receive(
-                            opened
-                                .operation_generation(key, io.remaining()?, io.cancellation())
-                                .await,
-                        )?
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        io.charge(hash)?;
-                        io.receive(
-                            opened
-                                .operation_generation(key, io.remaining()?, io.cancellation())
-                                .await,
-                        )?
-                    }
-                }
-                None => opened
-                    .operation_generation(
-                        filesystem_key(idempotency_key),
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &acyclic_fs::CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| map_error(failure.error))?,
-            })
+            let opened = self.open(&workspace, Some(io)).await?;
+            io.sdk(
+                opened
+                    .operation_generation(operation, io, io.cancellation())
+                    .await,
+            )
         })?
         .await?;
         if let Some(prior) = prior {
@@ -637,10 +596,46 @@ use crate::executor::{stock_boundary, stock_string_copy};
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-mod workspace_policy;
+pub(crate) mod workspace_policy;
+
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub use workspace_policy::{RESERVED_IGNORE_RULES, WorkspacePolicy};
+pub(crate) mod workspace_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use workspace_publication::{
+    CheckoutRoot, WorkspacePublicationCoordinator, WorkspacePublicationPublisher,
+    WorkspaceRootMaterializer, workspace_publication_coordinator,
+};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod agent_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use agent_publication::{plan_agent_merge, record_agent_publication};
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod checkout_publication;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use checkout_publication::CheckoutPublication;

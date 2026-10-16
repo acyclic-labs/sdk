@@ -52,9 +52,11 @@ blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
 diffy = "0.5.2"
 divan = "0.1.21"
+dirs = "6.0.0"
 bytes = "1.10.1"
 fs2 = "0.4.3"
 futures = "0.3.31"
+getrandom = "0.3.4"
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }

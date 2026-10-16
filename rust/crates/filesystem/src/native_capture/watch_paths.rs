@@ -28,24 +28,30 @@ pub(super) fn watch_ancestor_candidates<'a>(
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, ())>, CaptureError> {
     let mut ancestors = Vec::new();
+    let mut additional_paths = 0;
     for path in paths {
         for depth in (1..path.depth()).rev() {
             let parent = clone_capture_prefix(path, depth, limits, meter)?;
-            if capture_position(ordinary, &parent, meter)?.is_err()
-                && match capture_position(rename_records, &parent, meter)? {
-                    Ok(index) => rename_records
-                        .get(index)
-                        .ok_or(WorkError::Overflow)?
-                        .1
-                        .is_none(),
-                    Err(_) => true,
-                }
-                && !capture_excludes(policy, &parent, meter)?
+            let ordinary_parent = capture_position(ordinary, &parent, meter)?.is_ok();
+            if match capture_position(rename_records, &parent, meter)? {
+                Ok(index) => rename_records
+                    .get(index)
+                    .ok_or(WorkError::Overflow)?
+                    .1
+                    .is_none(),
+                Err(_) => true,
+            } && !capture_excludes(policy, &parent, meter)?
                 && capture_position(&ancestors, &parent, meter)?.is_err()
             {
-                if combined_path_count_exceeds(ancestors.len() + ordinary.len(), 1, maximum_paths) {
+                let additional = usize::from(!ordinary_parent);
+                let selected = ordinary
+                    .len()
+                    .checked_add(additional_paths)
+                    .ok_or(WorkError::Overflow)?;
+                if combined_path_count_exceeds(selected, additional, maximum_paths) {
                     return Err(CaptureError::InvalidOptions);
                 }
+                additional_paths += additional;
                 capture_replace(&mut ancestors, parent, (), meter)?;
             } else {
                 capture_drop_path(parent, meter)?;
@@ -116,7 +122,7 @@ fn below_replaced_parent(
 
 pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
-    ordinary: &mut [(NamespacePath, (CurrentRecord, CaptureIntent))],
+    ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,
@@ -146,6 +152,12 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         if current.is_some_and(|record| record.kind == FileKind::Directory) {
             capture_drop_path(path, meter)?;
         } else {
+            // A create hint does not make the directory exist in the candidate.
+            // Hydrate it before renames, and retire its ordinary entry so it is
+            // created exactly once in the same transaction.
+            if let Some((key, _)) = capture_remove(ordinary, &path, meter)? {
+                capture_drop_path(key, meter)?;
+            }
             if combined_path_count_exceeds(ordinary.len(), missing.len() + 1, maximum_paths) {
                 return Err(CaptureError::InvalidOptions);
             }
@@ -209,6 +221,7 @@ pub(super) fn remap_renamed_directory_path(
 pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
+    rename_records: &[(NamespacePath, Option<FileRecord>)],
     source_root: &HostRoot,
     maximum_paths: u32,
     policy: &CapturePolicy,
@@ -268,12 +281,8 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     }
     let paths_bytes = vector_bytes(&paths);
     for (path, ()) in paths {
-        capture_entry(
-            ordinary,
-            path,
-            (CurrentRecord::Lookup, CaptureIntent::Complete),
-            meter,
-        )?;
+        let current = current_record(rename_records, &path, meter)?;
+        capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
     }
     meter
         .clone()

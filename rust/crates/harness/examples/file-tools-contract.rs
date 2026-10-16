@@ -9,17 +9,13 @@ use acyclic_harness::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
         files::{self, FileProjection, FileResult, ReadFileInput},
         schema::ProjectionMode,
-        text::{self, ReadOptions, SearchOptions, TextRange},
-        text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
+        text::{self, SearchOptions, TextRange},
+        text_files::{self, SearchInput, SearchResult},
     },
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
-const READ: ReadOptions = ReadOptions {
-    maximum_input_bytes: 4096,
-    maximum_text_bytes: 32,
-};
 const SEARCH: SearchOptions = SearchOptions {
     maximum_input_bytes: 4096,
     maximum_query_bytes: 16,
@@ -49,30 +45,24 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 }
 
 fn definitions() -> Result<Vec<Value>> {
-    let mut reference_read = files::read_file()?;
+    let mut reference_read = files::read()?;
     let read_projector = FileProjection::Read(ProjectionMode::Reference);
     reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
-    let mut reference_write = files::write_file()?;
+    let mut reference_write = files::write()?;
     let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
     reference_write.definition.projection_schema =
         ProjectionMode::Reference.schema::<FileResult>()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
-        definition("exact_read_full", files::read_file()?)?,
-        definition("exact_read_reference", reference_read)?,
-        definition("write_full", files::write_file()?)?,
+        definition("exact_read_full", files::read()?)?,
+        definition("exact_read_reference", reference_read.clone())?,
+        definition("write_full", files::write()?)?,
         definition("write_reference", reference_write)?,
-        definition("exact_edit_full", files::edit_file()?)?,
+        definition("exact_edit_full", files::edit()?)?,
         definition("patch_edit_full", files::patch_file(4096, 16)?)?,
-        definition(
-            "range_read_full",
-            text_files::read_file_range(READ, MAXIMUM_RESULT_BYTES, ProjectionMode::Full)?,
-        )?,
-        definition(
-            "range_read_reference",
-            text_files::read_file_range(READ, MAXIMUM_RESULT_BYTES, ProjectionMode::Reference)?,
-        )?,
+        definition("range_read_full", files::read()?)?,
+        definition("range_read_reference", reference_read)?,
         definition(
             "literal_search_full",
             text_files::search_file(SEARCH, MAXIMUM_RESULT_BYTES, ProjectionMode::Full)?,
@@ -105,20 +95,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         "source.txt".into(),
         &mut None,
     )?;
-    let read_input = ReadInput {
+    let read_input = ReadFileInput {
         file: file.clone(),
-        range: TextRange { start: 5, end: 9 },
+        range: Some(TextRange { start: 5, end: 9 }),
     };
-    let read = ReadResult {
-        file: file.clone(),
-        selection: text::TextSelection {
-            range: read_input.range,
-            text: "🦀".into(),
-            omitted_before: 5,
-            omitted_after: 9,
-        },
-    };
-    let read_invocation = invocation("acyclic.read_file_range", value(&read_input)?);
+    let read = "🦀";
+    let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
         value: value(&read)?,
     };
@@ -140,15 +122,18 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let search_result = ToolResult {
         value: value(&search)?,
     };
-    let exact_input = ReadFileInput { file: file.clone() };
-    let exact_invocation = invocation("acyclic.read_file", value(&exact_input)?);
+    let exact_input = ReadFileInput {
+        file: file.clone(),
+        range: None,
+    };
+    let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
         value: value(source)?,
     };
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,
     };
-    let file_invocation = invocation("acyclic.write_file", json!({}));
+    let file_invocation = invocation("write", json!({}));
     let definitions = definitions()?;
     println!(
         "{}",
@@ -157,8 +142,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "source":{"file":file,"text":source},
             "range_read":{
                 "input":read_input,"canonical":read,
-                "full":FileProjection::Range(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
-                "reference":FileProjection::Range(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
+                "full":FileProjection::Read(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
+                "reference":FileProjection::Read(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },
             "literal_search":{
                 "input":search_input,"canonical":search,

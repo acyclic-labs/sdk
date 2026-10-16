@@ -7,6 +7,51 @@ struct Machine {
     schema: Value,
 }
 impl ResumableMachine for Machine {
+    fn supports_native_work(&self) -> bool {
+        true
+    }
+    fn identity_with_native_work<'a>(
+        &'a self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<&'a MachineIdentity> {
+        work.remaining()?;
+        Ok(&self.identity)
+    }
+    fn initialize_with_native_work(
+        &self,
+        input: &Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
+        let Value::Number(number) = input else {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "native example state must be numeric",
+            });
+        };
+        let custody = work.claim(
+            std::mem::size_of::<Value>() as u64,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        Ok((Value::Number(number.clone()), custody))
+    }
+    fn transition_with_native_work(
+        &self,
+        state: &Value,
+        _: Value,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
+        let (state, mut custody) = self.initialize_with_native_work(state, work)?;
+        custody.resize(std::mem::size_of::<MachineTransition>() as u64)?;
+        Ok((
+            MachineTransition {
+                state,
+                commands: Vec::new(),
+                status: MachineStatus::Suspended,
+            },
+            custody,
+        ))
+    }
     fn identity(&self) -> &MachineIdentity {
         &self.identity
     }
@@ -31,12 +76,15 @@ pub(super) async fn open<P, A, O>(
     volume: VolumeRef,
     issuer: &AuthorityIssuer,
     scope: &Scope,
-) -> Result<Runtime<P, A, O>>
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> std::result::Result<Runtime<P, A, O>, Box<dyn std::error::Error>>
 where
     P: StreamProvider,
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
     let machine = Arc::new(Machine {
         identity: MachineIdentity {
             name: "example.native".into(),
@@ -53,9 +101,9 @@ where
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
+    tasks.register(definition.publish(&work)?)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine, &mut None)?;
+    let _machine_metadata = machines.register_with_native_work(machine, &work)?;
     let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
     let runtime = Runtime::open(
         stream,
@@ -79,7 +127,7 @@ where
         None,
         &[],
         &Default::default(),
-        None,
+        Some(&io),
     )
     .await?;
     runtime

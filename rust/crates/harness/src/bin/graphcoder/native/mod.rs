@@ -174,9 +174,8 @@ pub(super) async fn runtime(
         )?;
         source.with_project_source_policy(issuer, policy)?;
     }
-    let toolset = acyclic_harness::filesystem::recursive_default_tools(
-        Some(source.clone()),
-        MAX_FRAME_BYTES as u64,
+    let toolset = acyclic_harness::tools::defaults()?.extend(
+        acyclic_harness::filesystem::recursive_tools(Some(source.clone()), MAX_FRAME_BYTES as u64)?,
     )?;
     let (toolset, context) = if let Some(reference) = &config.context_manifest {
         let reader = FilesystemContentVerifier::new(

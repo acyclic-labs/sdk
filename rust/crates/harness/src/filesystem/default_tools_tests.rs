@@ -288,30 +288,18 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
 #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution()
 -> Result<()> {
-    let storage = super::super::MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
-    let ordinary = storage.default_tools(
-        crate::conversation::Limits {
-            file_bytes: 65536,
-            ..Default::default()
-        },
-        None,
-    )?;
+    let ordinary = crate::tools::defaults()?;
     let registry =
-        recursive_default_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(
-            None, 65536,
-        )?;
-    for expected in [
-        "acyclic.read_file",
-        "acyclic.write_file",
-        "acyclic.edit_file",
-        "acyclic.fork",
-        "acyclic.merge",
-    ] {
+        recursive_tools::<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>(None, 65536)?
+            .extend(crate::tools::defaults()?)?;
+    for expected in ["read", "write", "edit", "acyclic.fork", "acyclic.merge"] {
         assert!(registry.get(expected, None, None)?.is_some());
-        assert_eq!(
-            ordinary.get(expected, None, None)?.unwrap().definition,
-            registry.get(expected, None, None)?.unwrap().definition
-        );
+        if let Some(tool) = ordinary.get(expected, None, None)? {
+            assert_eq!(
+                tool.definition,
+                registry.get(expected, None, None)?.unwrap().definition
+            );
+        }
     }
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = registry

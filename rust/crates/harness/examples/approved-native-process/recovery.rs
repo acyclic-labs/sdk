@@ -31,12 +31,14 @@ where
 {
     let issuer = issuer();
     let files = FilesystemHost::new(filesystem, seed.destination.provider(), None)?;
+    let work = capture::work()?;
     let runtime = task::open(
         stream.clone(),
         files.clone(),
         seed.results_volume.clone(),
         &issuer,
         &seed.scope,
+        &work,
     )
     .await?;
     let (owner, effects, content) =
@@ -81,7 +83,7 @@ where
                 .await?,
             journal,
             true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
+            matches!(recovered_status, EffectStatus::Succeeded { .. }),
         )
         .await?;
     }
@@ -106,7 +108,7 @@ where
     if mcp {
         verify_mcp_calls(&seed.request, seed.applied)?;
     }
-    verify_publication(&files, &seed.destination, seed.applied && !lost_response).await?;
+    verify_publication(&files, &seed.destination, seed.applied).await?;
     if receipt_fault.is_none() && !lost_response {
         println!(
             "approved {} execution, SDK publication and receipt-only recovery passed",
