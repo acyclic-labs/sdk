@@ -1,3 +1,4 @@
+import { fetchLocked } from "./cargo-fetch.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -845,6 +846,7 @@ function rustMetadata() {
 
 /** Explicit production generation gate; use before building or refreshing trusted source inventory. */
 function assertCurrentNativeFamily() {
+  fetchLocked(root);
   const actual = JSON.parse(execFileSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, family.key], { cwd: root, encoding: "utf8" }));
   if (JSON.stringify(actual) !== JSON.stringify(family)) throw new Error("Rust native family metadata drift");
 }

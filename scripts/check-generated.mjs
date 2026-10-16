@@ -1,3 +1,4 @@
+import { fetchLocked } from "./cargo-fetch.mjs";
 import { wasmSurfaceComparison } from "./tracked-wasm-surfaces.mjs";
 import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
@@ -14,6 +15,7 @@ if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Erro
 const sourceOnly = args.includes("--source-only");
 const compareWasmSurfaces = wasmSurfaceComparison(root);
 for (const key of ["actors", "stream"]) {
+  fetchLocked(root);
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
@@ -127,6 +129,7 @@ const checkWasmPackage = async ([packageName, basename]) => {
 // through its installed node_modules without copying or inventing codec packages.
 const temporary = mkdtempSync(join(root, "target-sdk-codegen-"));
 try {
+  fetchLocked(root);
   const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8" });
   if (readonly.error) throw readonly.error;
   if (readonly.status !== 0) throw new Error(`Rust readonly projection failed: ${readonly.stderr}`);

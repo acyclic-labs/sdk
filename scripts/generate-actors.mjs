@@ -1,3 +1,4 @@
+import { fetchLocked } from "./cargo-fetch.mjs";
 import { spawnSync } from "node:child_process";
 import { cp, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -44,12 +45,14 @@ export async function assertTreeEqual(expected, actual, label) {
 
 async function rustGenerate(output, protoRoot) {
   await mkdir(protoRoot, { recursive: true });
+  fetchLocked(root);
   run("cargo", [
     "run", "--offline", "--locked", "-p", "acyclic-actors", "--example", "actors-http-routes", "--",
     output, "--proto-out", protoRoot,
   ]);
   run(buf, ["format", "-w", join(protoRoot, "actors/v1/actors.proto")]);
   await serviceGenerate("Actors", dirname(output), output);
+  fetchLocked(root);
   const readonly = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "readonly"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
   if (readonly.error) throw readonly.error;
   if (readonly.status !== 0) throw new Error(`Rust readonly projection exited with ${readonly.status ?? "unknown"}`);
@@ -154,6 +157,7 @@ export async function serviceGenerate(family, directory, output) {
   const lower = family.toLowerCase();
   const descriptor = join(directory, `${family}.service.bin`);
   const names = join(directory, `${family}.semantic-names.json`);
+  fetchLocked(root);
   const generated = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "service",
     descriptor, names, `acyclic.${lower}.v1.${family}Service`, family,
     `../../generated/proto/${lower}/v1/${lower}_pb.js`, `./semantic/${lower}/index.js`, "../client.js"],
@@ -162,6 +166,7 @@ export async function serviceGenerate(family, directory, output) {
   if (generated.status !== 0) throw new Error(`${family} semantic service projection failed`);
   await writeFile(output, generated.stdout);
   const importer = family === "Actors" ? "../client.js" : "../binding.js";
+  fetchLocked(root);
   const absence = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-absence",
     "../generated/native/binding.cjs", importer, `@acyclic-labs/${lower}-`],
     { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], windowsHide: true });

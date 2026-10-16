@@ -1,3 +1,4 @@
+import { fetchLocked } from "./cargo-fetch.mjs";
 import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
@@ -15,6 +16,7 @@ const auth = spawnSync("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-au
 if (auth.error) throw auth.error;
 if (auth.status !== 0) process.exit(auth.status ?? 1);
 for (const key of ["actors", "stream"]) {
+  fetchLocked(root);
   const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
   if (facts.error) throw facts.error;
   if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
