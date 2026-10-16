@@ -77,7 +77,20 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
 /// # Panics
 /// Panics on a violated model invariant.
 pub fn check(run: impl Fn() -> Result + Send + Sync + 'static) {
+    check_with_bound(None, run);
+}
+
+/// Checks a model with its explicit context bound. `LOOM_MAX_PREEMPTIONS` can
+/// override that bound for diagnostic comparisons; no permutation/time cap applies.
+///
+/// # Panics
+/// Panics on a violated model invariant.
+pub fn check_with_bound(
+    preemptions: Option<usize>,
+    run: impl Fn() -> Result + Send + Sync + 'static,
+) {
     let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = builder.preemption_bound.or(preemptions);
     builder.max_permutations = None;
     builder.max_duration = None;
     builder.check(move || {

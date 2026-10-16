@@ -1,6 +1,6 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
-use crate::verification::{block_on, check};
+use crate::verification::{block_on, check, check_with_bound};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 // Keep executor scheduling outside the model, but execute the entire production
@@ -65,7 +65,7 @@ pub(super) fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
 pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(
     omit_wake: bool,
 ) {
-    check(move || {
+    check_with_bound(Some(6), move || {
         let stream = fixture(omit_wake)?;
         let keeper = std::mem::ManuallyDrop::new(stream.clone());
         let path = StreamPath::new("model")?;

@@ -4,7 +4,7 @@ use acyclic_harness::task_volume::model_checking::{Fault, assert_index_matches, 
 use acyclic_harness::task_volume::{
     Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
 };
-use acyclic_stream::verification::{block_on, check as model};
+use acyclic_stream::verification::{block_on, check as model, check_with_bound};
 use acyclic_stream::{
     AppendRequest, CommitCondition, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamPath, StreamProvider,
@@ -160,7 +160,7 @@ fn initialized(
 }
 
 fn snapshot_follow_and_publish(fault: Fault) {
-    model(move || {
+    check_with_bound(Some(6), move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
@@ -209,7 +209,7 @@ fn snapshot_follow_and_publish(fault: Fault) {
 }
 
 fn competing_writers(fault: Fault) {
-    model(move || {
+    check_with_bound(Some(8), move || {
         let volume = Arc::new(block_on(TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("model")?,
@@ -284,7 +284,7 @@ fn platform_head_recovery() {
 }
 
 fn recovery_and_refresh(fault: Fault) {
-    model(move || {
+    check_with_bound(Some(7), move || {
         let provider = Arc::new(MemoryStream::default());
         let (volume, old) = initialized(provider.clone(), b"old")?;
         let replacement = MemoryStream::default();
@@ -321,7 +321,7 @@ fn recovery_and_refresh(fault: Fault) {
 }
 
 fn recovery_and_acknowledgement(fault: Fault) {
-    model(move || {
+    check_with_bound(Some(4), move || {
         let provider = Arc::new(MemoryStream::default());
         let (volume, old) = initialized(provider.clone(), b"old")?;
         let expected = old.generation;
@@ -381,7 +381,7 @@ fn fenced_publication(expiry: bool, broken: bool) {
             }
         }
     }
-    model(move || {
+    check_with_bound(Some(9), move || {
         let clock = Arc::new(Clock {
             now: AtomicU64::new(1),
             tick: !expiry,
