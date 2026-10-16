@@ -123,6 +123,13 @@ proptest! {
         trust.issuers.push(key(5).verifying_key().to_bytes());
         let cap = verify(&root(|_| {}), &trust, NOW).unwrap();
         prop_assert!(matches!(cap.attenuate(vec![], &[seed;32]), Err(VerifyError::RepeatedKey)));
+        // Bypass the append API and sign an otherwise valid child by hand.
+        let mut wire = CapabilityProto::decode(cap.encode().as_slice()).unwrap();
+        let payload = BlockProto::from(Block { certificates: None, caveats: vec![], next_public_key: key(seed).verifying_key().to_bytes().to_vec() }).encode_to_vec();
+        let message = acyclic_auth::crypto::block_transcript(1, &cap.block_ids()[0], &payload);
+        wire.blocks.push(SignedBlockProto { payload, signature: key(4).sign(&message).to_bytes().to_vec() });
+        wire.proof = Some(TipProofProto::Secret(vec![seed;32]));
+        prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::RepeatedKey)));
     }
     #[test]
     fn cached_admission_allocates_nothing_per_caveat(repetitions in 0..32usize) {
@@ -184,6 +191,22 @@ fn effective_filters_keep_the_declaring_subject() {
     let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
     let usage = limits(None);
     child.authorize(&trust, &request("fs:/public", &attributes, &usage), PolicyDecision::Allow).unwrap();
+}
+
+#[test]
+fn valid_blocks_cannot_be_spliced_reordered_or_truncated() {
+    let trust = Snapshot::default();
+    let parent = verify(&root(|_| {}), &trust, NOW).unwrap();
+    let child = parent.attenuate(vec![], &[5;32]).unwrap().attenuate(vec![], &[6;32]).unwrap();
+    let original = CapabilityProto::decode(child.encode().as_slice()).unwrap();
+    let other = root(|block| block.caveats.push(Caveat { kind: CaveatKind::Label("different root".into()) }));
+    let other = CapabilityProto::decode(other.as_slice()).unwrap();
+    let mut spliced = original.clone(); spliced.blocks[0] = other.blocks[0].clone();
+    let mut reordered = original.clone(); reordered.blocks.swap(1,2);
+    let mut truncated = original; truncated.blocks.pop();
+    for wire in [spliced,reordered,truncated] {
+        assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
+    }
 }
 
 #[test]
