@@ -1,4 +1,4 @@
-use crate::task_volume::{FileKey, FileValue};
+use crate::task_volume::FileKey;
 use std::{cell::Cell, collections::BTreeMap, ops::RangeBounds};
 
 thread_local! {
@@ -36,11 +36,16 @@ pub(crate) fn examined() {
 
 // The same BTreeMap and access operations as production. Charge iterator items
 // before consumer filters, including entries a full scan eventually discards.
-#[derive(Default)]
-pub(crate) struct Files(BTreeMap<FileKey, FileValue>);
+pub(crate) struct Files<V>(BTreeMap<FileKey, V>);
 
-impl Files {
-    pub fn get(&self, key: &FileKey) -> Option<&FileValue> {
+impl<V> Default for Files<V> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<V> Files<V> {
+    pub fn get(&self, key: &FileKey) -> Option<&V> {
         examined();
         self.0.get(key)
     }
@@ -50,7 +55,7 @@ impl Files {
         self.0.contains_key(key)
     }
 
-    pub fn insert(&mut self, key: FileKey, value: FileValue) -> Option<FileValue> {
+    pub fn insert(&mut self, key: FileKey, value: V) -> Option<V> {
         examined();
         self.0.insert(key, value)
     }
@@ -58,7 +63,7 @@ impl Files {
     pub fn range<R: RangeBounds<FileKey>>(
         &self,
         range: R,
-    ) -> impl DoubleEndedIterator<Item = (&FileKey, &FileValue)> {
+    ) -> impl DoubleEndedIterator<Item = (&FileKey, &V)> {
         self.0.range(range).inspect(|_| examined())
     }
 }

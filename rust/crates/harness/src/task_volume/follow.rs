@@ -85,7 +85,7 @@ fn query_id(query: &Query) -> Result<[u8; 32]> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
-    fn cursor(
+    pub(super) fn cursor(
         &self,
         query: &Query,
         generation: Generation,
@@ -115,12 +115,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             for (_, file) in index
                 .files
                 .range(range)
-                .filter(|(_, file)| query.matches_file(file))
+                .filter(|(_, file)| query.matches_file(&file.file))
             {
                 if files.len() == maximum_files {
                     return Err(Error::LimitExceeded);
                 }
-                files.push(file.clone());
+                files.push(file.file.clone());
             }
         }
         Ok(Snapshot {
@@ -149,21 +149,22 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         {
             return Err(Error::ResetRequired);
         }
-        {
-            let mut records = self
-                .provider
-                .read(ReadRequest {
-                    path: self.path.clone(),
-                    from: cursor.position - 1,
-                    limit: 1,
-                })
-                .await?;
-            let record = records.next().await.ok_or(Error::ResetRequired)??;
-            if record.sequence != cursor.position - 1
-                || record.commit_id.as_bytes() != &cursor.commit
-            {
-                return Err(Error::ResetRequired);
-            }
+        self.validate_anchor(cursor.position, &cursor.commit).await
+    }
+
+    pub(super) async fn validate_anchor(&self, position: u64, commit: &[u8; 32]) -> Result<()> {
+        let sequence = position.checked_sub(1).ok_or(Error::ResetRequired)?;
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: sequence,
+                limit: 1,
+            })
+            .await?;
+        let record = records.next().await.ok_or(Error::ResetRequired)??;
+        if record.sequence != sequence || record.commit_id.as_bytes() != commit {
+            return Err(Error::ResetRequired);
         }
         Ok(())
     }

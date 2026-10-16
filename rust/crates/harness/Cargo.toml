@@ -285,3 +285,7 @@ workspace = true
 name = "client-diff"
 path = "tests/client_diff.rs"
 required-features = ["filesystem"]
+
+[[test]]
+name = "client-file-submit"
+path = "tests/client_file_submit.rs"

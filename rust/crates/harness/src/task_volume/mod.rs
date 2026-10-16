@@ -1,5 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
 
+mod durability;
 mod files;
 mod follow;
 mod heads;
@@ -32,9 +33,9 @@ use uuid::Uuid;
 type NativeWork<'a> = Option<&'a ()>;
 
 #[cfg(feature = "test-support")]
-use crate::test_support::TaskVolumeFiles as FileIndex;
+type FileIndex = crate::test_support::TaskVolumeFiles<StoredFile>;
 #[cfg(not(feature = "test-support"))]
-type FileIndex = std::collections::BTreeMap<FileKey, FileValue>;
+type FileIndex = std::collections::BTreeMap<FileKey, StoredFile>;
 
 #[inline]
 fn item_examined() {
@@ -178,6 +179,11 @@ struct Header {
     schema: u32,
 }
 
+struct StoredFile {
+    file: FileValue,
+    position: u64,
+}
+
 #[derive(Default)]
 struct Index {
     volume: [u8; 32],
@@ -273,6 +279,24 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         Ok(volume)
     }
 
+    /// Current publication fence without copying the file index.
+    pub async fn head(&self) -> Result<Generation> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        Ok(self.generation(&index))
+    }
+
+    /// Current query cut without copying the materialized files.
+    pub async fn cut(&self, query: &Query) -> Result<Cursor> {
+        let mut index = self.index.lock().await;
+        self.refresh(&mut index).await?;
+        self.cursor(
+            query,
+            self.generation(&index),
+            self.provider.watermarks(self.path.clone()).await?,
+        )
+    }
+
     fn generation(&self, index: &Index) -> Generation {
         Generation {
             volume: index.volume,
@@ -318,9 +342,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 }
                 let files = segment::decode(&record.value)?;
                 validate_file(index, &files)?;
-                apply(index, files);
+                let next = index.next.checked_add(1).ok_or(Error::LimitExceeded)?;
+                apply(index, files, next);
                 index.commit = record.commit_id;
-                index.next += 1;
+                index.next = next;
             }
             if index.next == tail {
                 return Ok(());
@@ -353,9 +378,17 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             return Err(Error::Conflict(self.generation(&index)));
         }
         validate_file(&index, write)?;
-        if index.files.get(&write.key) == Some(write) {
+        if index
+            .files
+            .get(&write.key)
+            .is_some_and(|stored| &stored.file == write)
+        {
             return Ok(self.generation(&index));
         }
+        let next = expected
+            .position
+            .checked_add(1)
+            .ok_or(Error::LimitExceeded)?;
         let (segment, files) = segment::encode(write, work)?;
         conditions.push(CommitCondition::Head {
             path: self.path.clone(),
@@ -382,14 +415,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         match outcome {
             CommitOutcome::Committed(envelope) => {
                 if self.generation(&index) == expected {
-                    apply(&mut index, files);
-                    index.next = expected.position + 1;
+                    apply(&mut index, files, next);
+                    index.next = next;
                     index.commit = envelope.commit_id;
                 }
                 Ok(Generation {
                     volume: expected.volume,
                     epoch: expected.epoch,
-                    position: expected.position + 1,
+                    position: next,
                     commit: *envelope.commit_id.as_bytes(),
                 })
             }
@@ -407,7 +440,12 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     file.validate()?;
-    if !file.key.mutable() && index.files.get(&file.key).is_some_and(|old| old != file) {
+    if !file.key.mutable()
+        && index
+            .files
+            .get(&file.key)
+            .is_some_and(|old| &old.file != file)
+    {
         return Err(Error::ImmutableConflict(file.key.clone()));
     }
     if !index.files.contains_key(&file.key)
@@ -424,6 +462,8 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     Ok(())
 }
 
-fn apply(index: &mut Index, file: FileValue) {
-    index.files.insert(file.key.clone(), file);
+fn apply(index: &mut Index, file: FileValue, position: u64) {
+    index
+        .files
+        .insert(file.key.clone(), StoredFile { file, position });
 }
