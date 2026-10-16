@@ -10,6 +10,10 @@ use acyclic_harness::{
 };
 use serde_json::{Value, json};
 
+fn volume_error(error: acyclic_harness::task_volume::Error) -> acyclic_harness::Error {
+    acyclic_harness::Error::Storage(error.to_string())
+}
+
 mod client_command_files;
 #[cfg(not(target_arch = "wasm32"))]
 mod client_command_owners;

@@ -25,12 +25,8 @@ mod session;
 mod sources;
 pub use sources::CommandSources;
 mod syntax;
-pub use session::CommandSession;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-mod host_tools;
 pub use files::*;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use host_tools::execute_host_command;
+pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

@@ -216,7 +216,8 @@ impl LocalHarness {
                     Arc::clone(&stream),
                     acyclic_stream::StreamPath::new("task-files").map_err(storage)?,
                 )
-                .await?,
+                .await
+                .map_err(storage)?,
             );
             let (runtime, signed) = runtime::open(runtime::Configuration {
                 files: files.clone(),

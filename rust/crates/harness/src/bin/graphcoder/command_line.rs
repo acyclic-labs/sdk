@@ -131,6 +131,10 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     let mut plans: Option<plans::Plans> = None;
     #[cfg(feature = "filesystem-local")]
     let mut workers = tokio::task::JoinSet::<Result<String>>::new();
+    #[cfg(feature = "filesystem-local")]
+    let mut effects = futures::stream::FuturesUnordered::<
+        futures::future::LocalBoxFuture<'static, Result<Option<Value>>>,
+    >::new();
     writeln!(output, "terminal-mode stdin-is-terminal={} interactive={interactive} headless={headless} process-id={}", std::io::stdin().is_terminal(), std::process::id()).map_err(invalid)?;
     writeln!(
         output,
@@ -165,6 +169,53 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 .is_ok_and(|resolution| matches!(resolution, CommandResolution::Sdk { .. }));
             #[cfg(feature = "filesystem-local")]
             let owned_result = if !sdk && let Some(owner) = owner.as_ref() {
+                let resolution = serde_json::from_slice::<CommandResolution>(&request.bytes)
+                    .or_else(|_| {
+                        serde_json::from_slice(&request.bytes)
+                            .map(|request| CommandResolution::Submit { request })
+                    })
+                    .map_err(invalid)?;
+                if matches!(
+                    resolution,
+                    CommandResolution::Tool {
+                        tool: acyclic_harness::client::CommandTool::Bash
+                            | acyclic_harness::client::CommandTool::WebSearch
+                            | acyclic_harness::client::CommandTool::UrlFetch,
+                        ..
+                    } | CommandResolution::Submit {
+                        request: acyclic_harness::client::CommandRequest::Compact { .. }
+                    }
+                ) {
+                    let owner = Arc::clone(owner);
+                    let volume = Arc::clone(&volume);
+                    effects.push(Box::pin(async move {
+                        let mut consumer = CommandSession::open(
+                            volume,
+                            session,
+                            terminal::MAX_FRAME_BYTES as u64,
+                            4096,
+                        )
+                        .await?;
+                        loop {
+                            match acyclic_harness::client::consume_local_command(
+                                &mut consumer,
+                                &owner,
+                                &request,
+                            )
+                            .await
+                            {
+                                Err(Error::Conflict(message))
+                                    if message
+                                        == "command query advanced; retry from the new cut" =>
+                                {
+                                    continue;
+                                }
+                                result => return result,
+                            }
+                        }
+                    }));
+                    continue;
+                }
                 Some(
                     acyclic_harness::client::consume_local_command(&mut client, owner, &request)
                         .await,
@@ -209,6 +260,11 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 Err(Error::Indeterminate(operation)) => {
                     writeln!(output, "request outcome uncertain operation={operation}; inspect its files before reconciliation").map_err(invalid)?;
                 }
+                Err(Error::Conflict(message))
+                    if message == "command query advanced; retry from the new cut" =>
+                {
+                    continue;
+                }
                 Err(error) if interactive => {
                     writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?
                 }
@@ -241,11 +297,18 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 if client.output_sequence() != previous_output && let Some(value) = client.output_page(0)? { render_record(&mut output, &value)?; }
                 continue;
             }
+            outcome = futures::StreamExt::next(&mut effects), if !effects.is_empty() => {
+                match outcome.ok_or_else(|| Error::Conflict("command worker missing".into()))? {
+                    Ok(_) => {} // The session follow renders the saved outcome.
+                    Err(error) => writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?,
+                }
+                continue;
+            }
             changed = async {
                 match sources.as_mut() { Some(sources) => sources.changed().await, None => std::future::pending().await }
             } => {
                 changed?;
-                if let Some(sources) = &mut sources { sources.refresh(&mut client).await?; }
+                if let Some(sources) = &mut sources && let Err(error) = sources.refresh(&mut client).await { writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?; }
                 continue;
             }
             update = futures::StreamExt::next(&mut documents) => {
@@ -305,7 +368,26 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             }
             _ => Arc::new(NoReads),
         };
-        if let Err(error) = client.submit(text, reader.as_ref()).await {
+        let confirming = matches!(
+            text.trim().to_ascii_lowercase().as_str(),
+            "yes" | "y" | "no" | "n"
+        );
+        let submitted = loop {
+            match client.submit(text, reader.as_ref()).await {
+                Err(Error::Conflict(message))
+                    if !confirming
+                        && matches!(
+                            message.as_str(),
+                            "command query advanced; retry from the new cut"
+                                | "command query advanced during resolution; retry from the new cut"
+                        ) =>
+                {
+                    continue;
+                }
+                result => break result,
+            }
+        };
+        if let Err(error) = submitted {
             if interactive {
                 writeln!(output, "{}", terminal::text(&error.to_string())).map_err(invalid)?;
             } else {
@@ -313,6 +395,21 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
             }
         } else {
             let layout = client.state(CommandFileRoot::Session, "layout.json")?;
+            if layout
+                .as_ref()
+                .and_then(|layout| layout.get("confirmation"))
+                .is_some_and(|value| !value.is_null())
+            {
+                let question = match layout
+                    .as_ref()
+                    .and_then(|layout| layout["confirmation"]["request"]["kind"].as_str())
+                {
+                    Some("delete") => "Delete this conversation?",
+                    Some("clear_all") => "Clear all conversations?",
+                    _ => "Confirm this command?",
+                };
+                writeln!(output, "{question} Type yes or no.").map_err(invalid)?;
+            }
             if layout
                 .as_ref()
                 .and_then(|layout| layout.get("view_request"))

@@ -18,6 +18,16 @@ impl LocalHarness {
         target: Option<TaskId>,
         resolution: CommandResolution,
     ) -> Result<Value> {
+        self.dispatch_configured_command(operation, target, resolution, &json!({}))
+            .await
+    }
+    pub(crate) async fn dispatch_configured_command(
+        &self,
+        operation: OperationId,
+        target: Option<TaskId>,
+        resolution: CommandResolution,
+        settings: &Value,
+    ) -> Result<Value> {
         match resolution {
             CommandResolution::Tool {
                 tool: CommandTool::Spawn,
@@ -26,53 +36,23 @@ impl LocalHarness {
                 let prompt = input["task"]
                     .as_str()
                     .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
-                self.queue_prompt(operation, target, prompt).await
-            }
-            CommandResolution::Tool {
-                tool: tool @ (CommandTool::WebSearch | CommandTool::UrlFetch),
-                input,
-            } => {
-                let mut settings = json!({});
-                for directory in std::iter::once("config".to_owned())
-                    .chain(target.map(|task| format!("task-{task}")))
-                {
-                    let key = FileKey::Ui {
-                        directory: Component::new(directory)?,
-                        name: Component::new("settings.json")?,
-                    };
-                    let snapshot = self.task_files.snapshot(&Query::File(key), 1).await?;
-                    if let Some(file) = snapshot.files.first() {
-                        let value: Value = serde_json::from_slice(&file.bytes).map_err(storage)?;
-                        settings
-                            .as_object_mut()
-                            .ok_or_else(|| Error::Invalid("settings must be an object".into()))?
-                            .extend(
-                                value
-                                    .as_object()
-                                    .ok_or_else(|| {
-                                        Error::Invalid("settings must be an object".into())
-                                    })?
-                                    .clone(),
-                            );
-                    }
-                }
-                crate::client::execute_host_command(
-                    tool,
-                    &input,
-                    &settings,
-                    usize::try_from(self.limits.render_bytes).map_err(storage)?,
-                )
-                .await
+                self.queue_prompt(operation, target, prompt, settings).await
             }
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
             CommandResolution::Prompt { text, .. } => {
-                self.queue_prompt(operation, target, &text).await
+                self.queue_prompt(operation, target, &text, settings).await
             }
             CommandResolution::Submit {
                 request: CommandRequest::New,
             } => Ok(json!({"selected_task":null})),
+            CommandResolution::Submit {
+                request: CommandRequest::Delete,
+            } => self.delete_commands(Some(required(target)?)).await,
+            CommandResolution::Submit {
+                request: CommandRequest::ClearAll,
+            } => self.delete_commands(None).await,
             CommandResolution::Submit {
                 request: CommandRequest::Export,
             } => self.export(operation, target).await,
@@ -122,7 +102,7 @@ impl LocalHarness {
             )),
         }
     }
-    async fn command_lineage(&self, task: Option<TaskId>) -> Result<Vec<TaskId>> {
+    pub(super) async fn command_lineage(&self, task: Option<TaskId>) -> Result<Vec<TaskId>> {
         match task {
             Some(task) => {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
@@ -145,7 +125,8 @@ impl LocalHarness {
             let snapshot = self
                 .task_files
                 .snapshot(&Query::File(compact_key(task)?), 1)
-                .await?;
+                .await
+                .map_err(storage)?;
             if let Some(file) = snapshot.files.first() {
                 let value: Value = serde_json::from_slice(&file.bytes).map_err(storage)?;
                 let summary = value["summary"]
@@ -164,12 +145,122 @@ impl LocalHarness {
         }
         Ok(prompt.into())
     }
+    async fn delete_commands(&self, target: Option<TaskId>) -> Result<Value> {
+        let mut tasks = std::collections::BTreeSet::new();
+        if let Some(task) = target {
+            tasks.insert(task);
+        } else {
+            let snapshot = self
+                .task_files
+                .snapshot(&Query::Root, self.limits.context_messages)
+                .await
+                .map_err(storage)?;
+            for file in snapshot.files {
+                if let FileKey::Ui { directory, name } = file.key
+                    && name.as_str() == "settings.json"
+                    && let Some(task) = directory.as_str().strip_prefix("task-")
+                {
+                    tasks.insert(TaskId::parse(task)?);
+                }
+            }
+        }
+        let mut deleted = Vec::new();
+        for task in &tasks {
+            match self.runtime.task_host().cancel(*task).await {
+                Ok(()) => {}
+                Err(Error::NotFound(_)) => continue,
+                Err(error) => return Err(error),
+            }
+            let key = FileKey::Ui {
+                directory: Component::new(format!("task-{task}")).map_err(storage)?,
+                name: Component::new("settings.json").map_err(storage)?,
+            };
+            loop {
+                let snapshot = self
+                    .task_files
+                    .snapshot(&Query::File(key.clone()), 1)
+                    .await
+                    .map_err(storage)?;
+                let mut settings: Value = snapshot
+                    .files
+                    .first()
+                    .map(|file| serde_json::from_slice(&file.bytes))
+                    .transpose()
+                    .map_err(storage)?
+                    .unwrap_or_else(|| json!({}));
+                settings
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Invalid("settings must be an object".into()))?
+                    .insert("deleted".into(), json!(true));
+                let bytes = serde_json::to_vec(&settings).map_err(storage)?;
+                match self
+                    .task_files
+                    .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(crate::task_volume::Error::Conflict(_)) => continue,
+                    Err(error) => return Err(storage(error)),
+                }
+            }
+            CommandControl::change(
+                &self.task_files,
+                Some(*task),
+                &[*task],
+                Some(false),
+                self.limits.file_bytes,
+            )
+            .await?;
+            deleted.push(*task);
+        }
+        Ok(json!({"selected_task":null,"deleted":deleted,"cleared":target.is_none()}))
+    }
     async fn queue_prompt(
         &self,
         operation: OperationId,
         target: Option<TaskId>,
         prompt: &str,
+        settings: &Value,
     ) -> Result<Value> {
+        if !settings.is_object() {
+            return Err(Error::Invalid("settings must be an object".into()));
+        }
+        if settings.get("deleted").and_then(Value::as_bool) == Some(true) {
+            return Err(Error::Invalid("conversation was deleted".into()));
+        }
+        let bytes = serde_json::to_vec(settings).map_err(storage)?;
+        if bytes.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid("settings exceed file bound".into()));
+        }
+        let task = crate::runtime::task_id_for_admission(operation);
+        let key = FileKey::Ui {
+            directory: Component::new(format!("task-{task}")).map_err(storage)?,
+            name: Component::new("settings.json").map_err(storage)?,
+        };
+        // Publish the execution selection before admission can become runnable.
+        // Reconciliation keeps the first saved binding for this operation.
+        loop {
+            let snapshot = self
+                .task_files
+                .snapshot(&Query::File(key.clone()), 1)
+                .await
+                .map_err(storage)?;
+            if !snapshot.files.is_empty() {
+                break;
+            }
+            match self
+                .task_files
+                .create(
+                    snapshot.generation,
+                    &FileValue::new(key.clone(), bytes.clone()),
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(crate::task_volume::Error::Conflict(_)) => continue,
+                Err(error) => return Err(storage(error)),
+            }
+        }
         let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
         Ok(json!({"task":task,"selected_task":task}))
     }
@@ -183,7 +274,7 @@ impl LocalHarness {
         let name = match tool {
             CommandTool::Bash => "bash",
             CommandTool::WebSearch => "web_search",
-            CommandTool::UrlFetch => "url_fetch",
+            CommandTool::UrlFetch => "web_search",
             _ => return Err(Error::Invalid("delegate is a prompt admission".into())),
         };
         let definition = self
@@ -259,13 +350,14 @@ impl LocalHarness {
     }
     async fn export(&self, operation: OperationId, target: Option<TaskId>) -> Result<Value> {
         let query = match target {
-            Some(task) => Query::Task(Component::new(task.to_string())?),
+            Some(task) => Query::Task(Component::new(task.to_string()).map_err(storage)?),
             None => Query::Root,
         };
         let snapshot = self
             .task_files
             .snapshot(&query, self.limits.context_messages)
-            .await?;
+            .await
+            .map_err(storage)?;
         let records: Vec<_> = snapshot
             .files
             .iter()
@@ -277,13 +369,14 @@ impl LocalHarness {
             return Err(Error::Invalid("diagnostics exceed file bound".into()));
         }
         let key = FileKey::Ui {
-            directory: Component::new("exports")?,
-            name: Component::new(format!("{operation}.json"))?,
+            directory: Component::new("exports").map_err(storage)?,
+            name: Component::new(format!("{operation}.json")).map_err(storage)?,
         };
         let path = key.path();
         self.task_files
             .create(snapshot.generation, &FileValue::new(key, bytes))
-            .await?;
+            .await
+            .map_err(storage)?;
         Ok(json!({"export":path,"files":records.len()}))
     }
     async fn compact(
@@ -319,10 +412,11 @@ impl LocalHarness {
         let snapshot = self
             .task_files
             .snapshot(
-                &Query::Turns(Component::new(target.to_string())?),
+                &Query::Turns(Component::new(target.to_string()).map_err(storage)?),
                 self.limits.context_messages,
             )
-            .await?;
+            .await
+            .map_err(storage)?;
         for file in snapshot.files {
             if matches!(
                 file.key,
@@ -352,7 +446,8 @@ impl LocalHarness {
         let cut = self
             .task_files
             .snapshot(&Query::File(key.clone()), 1)
-            .await?;
+            .await
+            .map_err(storage)?;
         let bytes = serde_json::to_vec(
             &json!({"summary":summary,"source":snapshot.generation,"operation":operation}),
         )
@@ -362,14 +457,15 @@ impl LocalHarness {
         }
         self.task_files
             .append(cut.generation, &FileValue::new(key, bytes))
-            .await?;
+            .await
+            .map_err(storage)?;
         Ok(json!({"compacted":target,"summary":summary}))
     }
 }
 fn compact_key(task: TaskId) -> Result<FileKey> {
     Ok(FileKey::Ui {
-        directory: Component::new(format!("task-{task}"))?,
-        name: Component::new("context.json")?,
+        directory: Component::new(format!("task-{task}")).map_err(storage)?,
+        name: Component::new("context.json").map_err(storage)?,
     })
 }
 fn required(target: Option<TaskId>) -> Result<TaskId> {
@@ -399,7 +495,8 @@ impl TaskCommandHost for CommandOwner<'_> {
             let lineage = context.lineage(task).await?;
             CommandControl::wait(&self.0.task_files, &lineage, self.0.limits.file_bytes).await?;
             self.0
-                .stock_commands()?
+                .stock_commands(Some(task))
+                .await?
                 .execute(context, fence, command, payload)
                 .await
         })
@@ -412,8 +509,10 @@ impl TaskCommandHost for CommandOwner<'_> {
         payload: Value,
     ) -> BoxProviderFuture<'a, Result<TaskCommandProgress>> {
         Box::pin(async move {
+            let task = context.durable_task_id();
             self.0
-                .stock_commands()?
+                .stock_commands(task)
+                .await?
                 .reconcile(context, fence, command, payload)
                 .await
         })

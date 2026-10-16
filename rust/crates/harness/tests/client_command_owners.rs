@@ -20,7 +20,8 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
             Arc::new(MemoryStream::default()),
             StreamPath::new("sources")?,
         )
-        .await?,
+        .await
+        .map_err(volume_error)?,
     );
     let mut client =
         CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 128).await?;
@@ -50,13 +51,20 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
             "Changed now",
         ),
     ] {
-        let cut = volume.snapshot(&Query::Root, 128).await?;
+        let cut = volume
+            .snapshot(&Query::Root, 128)
+            .await
+            .map_err(volume_error)?;
         volume
             .append(
                 cut.generation,
-                &FileValue::new(FileKey::parse(path)?, body.as_bytes().to_vec()),
+                &FileValue::new(
+                    FileKey::parse(path).map_err(volume_error)?,
+                    body.as_bytes().to_vec(),
+                ),
             )
-            .await?;
+            .await
+            .map_err(volume_error)?;
         loop {
             sources.changed().await?;
             sources.refresh(&mut client).await?;
@@ -73,13 +81,20 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
     for description in ["new skill", "modified skill"] {
         let path = "skills/added/SKILL.md";
         let body = format!("---\nname: drawing\ndescription: {description}\n---\nDraw");
-        let cut = volume.snapshot(&Query::Root, 128).await?;
+        let cut = volume
+            .snapshot(&Query::Root, 128)
+            .await
+            .map_err(volume_error)?;
         volume
             .append(
                 cut.generation,
-                &FileValue::new(FileKey::parse(path)?, body.into_bytes()),
+                &FileValue::new(
+                    FileKey::parse(path).map_err(volume_error)?,
+                    body.into_bytes(),
+                ),
             )
-            .await?;
+            .await
+            .map_err(volume_error)?;
         loop {
             sources.changed().await?;
             sources.refresh(&mut client).await?;
@@ -93,16 +108,20 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
         }
     }
     // Restart must rescan declarations even though a catalog is already installed.
-    let cut = volume.snapshot(&Query::Inputs, 128).await?;
+    let cut = volume
+        .snapshot(&Query::Inputs, 128)
+        .await
+        .map_err(volume_error)?;
     volume
         .append(
             cut.generation,
             &FileValue::new(
-                FileKey::parse(".claude/commands/added.md")?,
+                FileKey::parse(".claude/commands/added.md").map_err(volume_error)?,
                 b"Restart $ARGUMENTS".to_vec(),
             ),
         )
-        .await?;
+        .await
+        .map_err(volume_error)?;
     let mut reopened =
         CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 128).await?;
     let _sources = CommandSources::observe(
@@ -134,7 +153,7 @@ async fn source_add_and_modify_are_followed_after_first_catalog_install() -> Res
     Ok(())
 }
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
 #[path = "client_command_local_owner.rs"]
 mod local_owner;
 
@@ -203,7 +222,8 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
             Arc::new(MemoryStream::default()),
             StreamPath::new("catalog-edits")?,
         )
-        .await?,
+        .await
+        .map_err(volume_error)?,
     );
     let mut client = CommandSession::open(volume.clone(), uuid::Uuid::new_v4(), 32_768, 64).await?;
     let mut catalog: Value = client
@@ -253,13 +273,17 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
             true,
         ),
     ] {
-        let cut = volume.snapshot(&Query::Inputs, 64).await?;
+        let cut = volume
+            .snapshot(&Query::Inputs, 64)
+            .await
+            .map_err(volume_error)?;
         volume
             .append(
                 cut.generation,
-                &FileValue::new(FileKey::parse(path)?, body.to_vec()),
+                &FileValue::new(FileKey::parse(path).map_err(volume_error)?, body.to_vec()),
             )
-            .await?;
+            .await
+            .map_err(volume_error)?;
         sources.changed().await?;
         let result = sources.refresh(&mut client).await;
         assert_eq!(result.is_ok(), valid);
@@ -283,4 +307,39 @@ async fn catalog_alias_edits_survive_source_reload_and_bad_source_can_be_correct
         );
     }
     Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Confirmation serialization preserves the captured target and creates a
+    // request exactly when accepted, regardless of later UI navigation.
+    #[test]
+    fn confirmation_target_and_acceptance_survive_file_round_trip(target in any::<[u8;16]>(), other in any::<[u8;16]>(), delete in any::<bool>(), accepted in any::<bool>()) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let target = acyclic_harness::TaskId::from_bytes(target);
+            let other = acyclic_harness::TaskId::from_bytes(other);
+            let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("confirmation-property").unwrap()).await.unwrap());
+            let mut client = CommandSession::open(volume.clone(), uuid::Uuid::from_bytes([1;16]), 32_768, 64).await.unwrap();
+            client.write_state(CommandFileRoot::Session, "layout.json", &json!({"selected_task":target})).await.unwrap();
+            client.submit(if delete { "/delete" } else { "/clearall" }, &NoReads).await.unwrap();
+            prop_assert!(client.take_request().is_none());
+            let mut layout = client.state(CommandFileRoot::Session, "layout.json").unwrap().unwrap();
+            let encoded = serde_json::to_vec(&layout).unwrap();
+            layout = serde_json::from_slice(&encoded).unwrap();
+            layout["selected_task"] = json!(other);
+            client.write_state(CommandFileRoot::Session, "layout.json", &layout).await.unwrap();
+            client.submit(if accepted { "yes" } else { "no" }, &NoReads).await.unwrap();
+            let request = client.take_request();
+            prop_assert_eq!(request.is_some(), accepted);
+            if let Some(request) = request {
+                let decoded: acyclic_harness::client::CommandRequest = serde_json::from_slice(&request.bytes).unwrap();
+                prop_assert_eq!(decoded, if delete { acyclic_harness::client::CommandRequest::Delete } else { acyclic_harness::client::CommandRequest::ClearAll });
+                if delete { prop_assert!(matches!(&request.key, FileKey::Task { task, .. } if task.as_str() == target.to_string()), "confirmation target changed"); }
+                else { prop_assert!(matches!(&request.key, FileKey::Session { .. }), "clear request lost session identity"); }
+            }
+            prop_assert!(client.state(CommandFileRoot::Session, "layout.json").unwrap().unwrap().get("confirmation").is_none());
+            Ok(())
+        })?;
+    }
 }

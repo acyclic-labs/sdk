@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
 #[path = "session_archive.rs"]
 mod archive;
+#[path = "session_confirmation.rs"]
+mod confirmation;
 
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
@@ -142,13 +144,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// One archive page from immutable outcome files, newest first. Selection
     /// lives in layout.json; the index is reconstructed from file-query snapshots.
     pub fn output_page(&self, back: usize) -> Result<Option<Value>> {
-        if back >= self.outputs.len() {
-            return Ok(None);
-        }
+        let after = self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|value| value.get("history_after").and_then(Value::as_u64))
+            .unwrap_or(0);
         self.outputs
-            .values()
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
             .rev()
             .nth(back)
+            .map(|(_, key)| key)
             .and_then(|key| self.files.get(key))
             .map(|file| serde_json::from_slice(&file.bytes).map_err(codec))
             .transpose()
@@ -190,7 +194,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             files::FileKey::Task { task, .. } => {
                 ui(&format!("task-{}", task.as_str()), "settings.json")?
             }
-            files::FileKey::Session { .. } => ui("config", "settings.json")?,
+            files::FileKey::Session { .. } => {
+                ui(&format!("session-{}", self.session), "task-settings.json")?
+            }
             _ => return Err(Error::Invalid("not a command request".into())),
         };
         let task: Value = self
@@ -298,6 +304,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         input: &str,
         reader: &dyn ContentResidencyVerifier,
     ) -> Result<OperationId> {
+        if let Some(confirmation) = self
+            .state(CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout.get("confirmation").cloned())
+            .filter(|value| !value.is_null())
+        {
+            match input.trim().to_ascii_lowercase().as_str() {
+                "yes" | "y" => return self.confirm_request(confirmation, true).await,
+                "no" | "n" => return self.confirm_request(confirmation, false).await,
+                _ => {}
+            }
+        }
         let cut = self.generation;
         let resolution = self
             .catalog

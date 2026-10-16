@@ -144,10 +144,11 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
     let snapshot = local
         .task_files()
         .snapshot(
-            &Query::File(FileKey::parse(export["export"].as_str().unwrap())?),
+            &Query::File(FileKey::parse(export["export"].as_str().unwrap()).map_err(volume_error)?),
             1,
         )
-        .await?;
+        .await
+        .map_err(volume_error)?;
     let diagnostic: Value = serde_json::from_slice(&snapshot.files[0].bytes).unwrap();
     assert!(
         diagnostic["files"]
@@ -242,5 +243,157 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
         std::fs::read_to_string(directory.path().join("marker")).unwrap(),
         "parent"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns() -> Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = provider([
+        ScriptedTurn::Text("first".into()),
+        ScriptedTurn::Text("child".into()),
+    ]);
+    let local = local(directory.path(), provider.clone()).await?;
+    let mut client = CommandSession::open(
+        local.task_files().clone(),
+        uuid::Uuid::new_v4(),
+        65_536,
+        256,
+    )
+    .await?;
+    client.submit("/model other", &NoReads).await?;
+    let root = send(&local, &mut client, "root prompt").await?;
+    let root = TaskId::parse(root["task"].as_str().unwrap())?;
+    assert_eq!(local.resume(root).await?.text, "first");
+    assert_eq!(provider.requests()[0].model.name, "other");
+    let child = send(&local, &mut client, "child prompt").await?;
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    // The task is already admitted; dispatch must read the followed selection.
+    client.submit("/model child-model", &NoReads).await?;
+    assert_eq!(local.resume(child).await?.text, "child");
+    assert_eq!(provider.requests()[1].model.name, "child-model");
+    Ok(())
+}
+
+#[tokio::test]
+async fn confirmed_delete_keeps_its_target_and_clear_cancels_conversations() -> Result<()> {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = provider([]);
+    let local = local(directory.path(), provider.clone()).await?;
+    let mut client = CommandSession::open(
+        local.task_files().clone(),
+        uuid::Uuid::new_v4(),
+        65_536,
+        256,
+    )
+    .await?;
+    let root = send(&local, &mut client, "root prompt").await?;
+    let root = TaskId::parse(root["task"].as_str().unwrap())?;
+    client.submit("/delete", &NoReads).await?;
+    assert!(client.take_request().is_none());
+    client.submit("no", &NoReads).await?;
+    assert!(client.take_request().is_none());
+    assert!(
+        !client
+            .state(CommandFileRoot::Task, "settings.json")?
+            .unwrap()["deleted"]
+            .as_bool()
+            .unwrap_or(false)
+    );
+    client.submit("/delete", &NoReads).await?;
+    let child = send(&local, &mut client, "child prompt").await?;
+    let child = TaskId::parse(child["task"].as_str().unwrap())?;
+    client.submit("yes", &NoReads).await?;
+    let request = client.next_request().await?;
+    assert!(
+        matches!(&request.key, FileKey::Task { task, .. } if task.as_str() == root.to_string())
+    );
+    consume_local_command(&mut client, &local, &request).await?;
+    assert!(local.resume(root).await.is_err());
+    assert!(
+        consume_local_command(&mut client, &local, &request)
+            .await?
+            .is_none()
+    );
+    assert!(provider.requests().is_empty());
+    client.submit("/clearall", &NoReads).await?;
+    assert!(client.take_request().is_none());
+    client.submit("yes", &NoReads).await?;
+    let request = client.next_request().await?;
+    consume_local_command(&mut client, &local, &request).await?;
+    assert!(local.resume(child).await.is_err());
+    assert!(client.selected_task()?.is_none());
+    assert!(
+        client.output_page(0)?.is_none(),
+        "clear left the transcript visible"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch() -> Result<()> {
+    use acyclic_harness::tool::{
+        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
+    };
+    struct Web;
+    impl ToolExecutor for Web {
+        fn execute<'a>(
+            &'a self,
+            invocation: ToolInvocation,
+            context: Option<acyclic_harness::runtime::ToolContext>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
+            Box::pin(async move {
+                assert_eq!(invocation.name, "web_search");
+                assert!(context.is_some(), "web command bypassed task executor");
+                Ok(ToolResult {
+                    value: invocation.arguments,
+                })
+            })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<acyclic_harness::runtime::ToolContext>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let schema = json!({"type":"object"});
+    let web = Tool {
+        hook_names: &[],
+        definition: ToolDefinition {
+            name: "web_search".into(),
+            revision: "1".into(),
+            description: "Registered web executor".into(),
+            input_schema: schema.clone(),
+            output_schema: schema.clone(),
+            projection_schema: acyclic_harness::tool::json_projection_schema(schema),
+        },
+        executor: Arc::new(Web),
+        projection: Arc::new(JsonToolProjection),
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let provider = provider([]);
+    let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
+    let local = LocalHarness::open(
+        LocalHarnessConfig::new(directory.path(), (model, provider.clone())).tool(web),
+    )
+    .await?;
+    let mut client = CommandSession::open(
+        local.task_files().clone(),
+        uuid::Uuid::new_v4(),
+        65_536,
+        256,
+    )
+    .await?;
+    assert_eq!(
+        send(&local, &mut client, "/search needle").await?,
+        json!({"query":"needle"})
+    );
+    assert_eq!(
+        send(&local, &mut client, "/fetch https://example.test/page").await?,
+        json!({"url":"https://example.test/page"})
+    );
+    assert!(provider.requests().is_empty());
     Ok(())
 }

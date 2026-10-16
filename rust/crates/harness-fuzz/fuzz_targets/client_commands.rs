@@ -31,7 +31,8 @@ fuzz_target!(|input: &[u8]| {
                     Arc::new(acyclic_stream::MemoryStream::default()),
                     acyclic_stream::StreamPath::new("fuzz-sources").unwrap(),
                 )
-                .await?,
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
             );
             let mut client = acyclic_harness::client::CommandSession::open(
                 volume.clone(),
@@ -40,12 +41,28 @@ fuzz_target!(|input: &[u8]| {
                 64,
             )
             .await?;
+            if let Ok(layout) = serde_json::from_slice::<serde_json::Value>(input) {
+                if layout.is_object() {
+                    client
+                        .write_state(
+                            acyclic_harness::client::CommandFileRoot::Session,
+                            "layout.json",
+                            &layout,
+                        )
+                        .await?;
+                    let _ = client.submit("yes", &NoReads).await;
+                    let _ = client.submit("no", &NoReads).await;
+                }
+            }
             let (path, bytes) = if input.first() == Some(&1) {
                 ("skills/fuzz/SKILL.md", &input[1..])
             } else {
                 (".codex/prompts/fuzzed.md", input)
             };
-            let cut = volume.snapshot(&Query::Inputs, 64).await?;
+            let cut = volume
+                .snapshot(&Query::Inputs, 64)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
             volume
                 .append(
                     cut.generation,
@@ -54,7 +71,8 @@ fuzz_target!(|input: &[u8]| {
                         bytes.to_vec(),
                     ),
                 )
-                .await?;
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
             let _source = acyclic_harness::client::CommandSources::observe(
                 &mut client,
                 &volume,

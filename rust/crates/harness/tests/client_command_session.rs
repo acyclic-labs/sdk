@@ -43,7 +43,12 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", unix))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    feature = "test-support",
+    unix
+))]
 #[tokio::test]
 async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
     use acyclic_harness::{
@@ -97,9 +102,13 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem-local", unix))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    feature = "test-support"
+))]
 #[tokio::test]
-async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
+async fn graphcoder_stop_shell_resume_and_quit_keep_input_and_file_follows_live()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     use std::{io::Write as _, process::Stdio, time::Duration};
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -195,22 +204,59 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
     let config_path = directory.path().join("config.json");
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     let mut input = tempfile::NamedTempFile::new_in(directory.path())?;
-    input.write_all(
-        b"/SH printf hi > cli-effect.txt; printf hi\n/KEYS\n/KEYS\n/back 0\n/back 0\n/q\n",
-    )?;
+    input.write_all(b"/does-not-exist\n")?;
+    let script = if cfg!(windows) {
+        "/SH [System.IO.File]::WriteAllText('cli-effect.txt','hi'); Write-Output shell-completed\n/KEYS\n"
+    } else {
+        "/SH printf hi > cli-effect.txt; printf shell-completed\n/KEYS\n"
+    };
+    let mut stage = 0;
+    let mut observed = String::new();
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
         .args(["--session", config_path.to_str().unwrap(), "--headless"])
-        .stdin(Stdio::from(std::fs::File::open(input.path())?))
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let result = acyclic_native_runtime::ProcessTree::spawn(&mut command)?
         .wait_with_output(
             Duration::from_secs(5),
             65_536,
-            None,
+            Some(acyclic_native_runtime::CaptureInput::Exchange {
+                initial: b"seed prompt\n",
+                maximum: 4096,
+            }),
             || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+            |chunk| {
+                observed.push_str(&String::from_utf8_lossy(chunk));
+                let next = match stage {
+                    0 if observed.contains("command-json=")
+                        && observed.contains("selected_task") =>
+                    {
+                        Some("/stop\n")
+                    }
+                    1 if observed.contains("\"paused\":true") => Some(script),
+                    2 if observed.contains("/greet ") => {
+                        assert!(
+                            !checkout.join("cli-effect.txt").exists(),
+                            "paused shell ran before resume"
+                        );
+                        Some("/resume\n")
+                    }
+                    3 if observed.contains("shell-completed") => Some(
+                        "/KEYS\n/back 0\n/back 0\n/stop\n/shell echo never > quit-effect.txt\n/q\n",
+                    ),
+                    _ => None,
+                };
+                let bytes = next.map_or_else(Vec::new, |text| {
+                    stage += 1;
+                    text.as_bytes().to_vec()
+                });
+                Ok(acyclic_native_runtime::ProcessInput {
+                    bytes,
+                    complete: false,
+                })
+            },
             None,
             None,
         )
@@ -236,10 +282,18 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
     );
     assert_eq!(
         rendered.matches("command-json=").count(),
-        3,
+        7,
         "repeated archive renders: {rendered}"
     );
+    assert_eq!(
+        stage, 4,
+        "client failed to process the complete control sequence: {observed}"
+    );
     assert_eq!(std::fs::read(checkout.join("cli-effect.txt"))?, b"hi");
+    assert!(
+        !checkout.join("quit-effect.txt").exists(),
+        "quit dispatched a paused effect"
+    );
     assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
     config["command_workspace"] = Value::Null;
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
@@ -273,8 +327,12 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         stream,
         StreamPath::new(format!("graphcoder-files/{}", digest.to_hex()))?,
     )
-    .await?;
-    let snapshot = files.snapshot(&Query::Root, 64).await?;
+    .await
+    .map_err(volume_error)?;
+    let snapshot = files
+        .snapshot(&Query::Root, 64)
+        .await
+        .map_err(volume_error)?;
     let exits: Vec<_> = snapshot.files.iter().filter(|file| matches!(&file.key, FileKey::Ui { directory, name } if directory.as_str().starts_with("session-") && name.as_str() == "layout.json"))
         .map(|file| serde_json::from_slice::<Value>(&file.bytes).unwrap()["exit_requested"].as_bool().unwrap()).collect();
     assert_eq!(
@@ -498,10 +556,8 @@ proptest! {
     prop_assert!(client.take_request().is_none(), "stale action was published");
     client.submit(&input, &DeniedReader).await?;
     let request = client.next_request().await?;
-    prop_assert_eq!(
-        serde_json::from_slice::<Value>(&request.bytes).unwrap()["tool"],
-        "web_search"
-    );
+    let resolution: Value = serde_json::from_slice(&request.bytes).unwrap();
+    prop_assert_eq!(resolution["tool"].as_str(), Some("web_search"));
     Ok(())
     })?;
     }

@@ -38,16 +38,21 @@ impl CheckoutTools {
                         work: &work,
                         cancellation: &cancellation,
                     };
+                    owner.verify_owner(None)?.await?;
                     let name = format!("task-{task}");
                     let (view, _) = parent
                         .view()
                         .fork(
                             &name,
                             IdempotencyKey::from_bytes(task.into_bytes()),
+                            // This lazy fork has no mount-operation lease. The
+                            // authority still rejects an active reservation.
+                            PublicationPermit::Unrestricted,
                             &mut accounting,
                         )
                         .await
                         .map_err(storage)?;
+                    owner.verify_owner(None)?.await?;
                     let path = self.workspace.mount_directory.join(task.to_string());
                     std::fs::create_dir_all(&path).map_err(storage)?;
                     let mounted = Arc::new(

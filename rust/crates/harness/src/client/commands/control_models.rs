@@ -74,3 +74,122 @@ fn resume_publication_cannot_cross_the_control_snapshot_follow_cut() {
 fn negative_control_detects_subscribing_after_the_pause_snapshot() {
     resume_wakeup(true);
 }
+
+fn worker_keeps_resume_input_live(broken: bool) {
+    check(move || {
+        let volume = Arc::new(block_on(TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("worker-control-model")?,
+        ))?);
+        let task = TaskId::from_bytes([1; 16]);
+        block_on(CommandControl::change(
+            &volume,
+            Some(task),
+            &[task],
+            Some(true),
+            1024,
+        ))?;
+        block_on(async {
+            let lineage = [task];
+            let mut effects = futures::stream::FuturesUnordered::new();
+            effects.push(Box::pin(CommandControl::wait(&volume, &lineage, 1024)));
+            if broken {
+                // Previous ordering cannot reach input while the real owner
+                // wait is pending, so no command can publish its resume file.
+                let mut waiting = Box::pin(effects.next());
+                assert!(
+                    matches!(
+                        waiting
+                            .as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                        Poll::Ready(_)
+                    ),
+                    "resume input blocked by paused owner"
+                );
+            }
+            let input = CommandControl::change(&volume, Some(task), &lineage, Some(false), 1024);
+            tokio::pin!(input);
+            tokio::select! {
+                biased;
+                outcome = effects.next() => { outcome.unwrap()?; input.await?; }
+                resumed = &mut input => { resumed?; effects.next().await.unwrap()?; }
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
+        Ok(())
+    });
+}
+#[test]
+fn owner_worker_keeps_resume_input_live_through_real_control_files() {
+    worker_keeps_resume_input_live(false);
+}
+#[test]
+#[should_panic(expected = "resume input blocked by paused owner")]
+fn negative_control_detects_awaiting_a_paused_owner_before_input() {
+    worker_keeps_resume_input_live(true);
+}
+
+fn control_claim_race(broken: bool) {
+    check(move || {
+        let volume = Arc::new(block_on(TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("control-claim-model")?,
+        ))?);
+        let task = TaskId::from_bytes([1; 16]);
+        block_on(CommandControl::change(
+            &volume,
+            Some(task),
+            &[task],
+            Some(true),
+            1024,
+        ))?;
+        let cut = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?.generation;
+        let writer = loom::thread::spawn({
+            let volume = volume.clone();
+            move || {
+                block_on(volume.append(
+                    cut,
+                    &FileValue::new(
+                        FileKey::parse(".ui/session-worker/execution-claim.json").unwrap(),
+                        b"{}".to_vec(),
+                    ),
+                ))
+            }
+        });
+        let success = if broken {
+            // Previous control publication returned a stale cut as a failure,
+            // losing the user's resume when an owner claimed another file.
+            let snapshot = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?;
+            let mut control = CommandControl::from_bytes(&snapshot.files[0].bytes, 1024)?;
+            control.set(Some(task), snapshot.generation.position, false);
+            block_on(volume.append(
+                snapshot.generation,
+                &FileValue::new(CommandControl::key()?, serde_json::to_vec(&control)?),
+            ))
+            .is_ok()
+        } else {
+            block_on(CommandControl::change(
+                &volume,
+                Some(task),
+                &[task],
+                Some(false),
+                1024,
+            ))
+            .is_ok()
+        };
+        let _competing_claim = writer.join().map_err(|_| "claim publisher panicked")?;
+        assert!(success, "resume publication lost to competing claim");
+        let snapshot = block_on(volume.snapshot(&Query::File(CommandControl::key()?), 1))?;
+        assert!(!CommandControl::from_bytes(&snapshot.files[0].bytes, 1024)?.paused(&[task]));
+        Ok(())
+    });
+}
+#[test]
+fn control_publications_survive_concurrent_owner_claims() {
+    control_claim_race(false);
+}
+#[test]
+#[should_panic(expected = "resume publication lost to competing claim")]
+fn negative_control_detects_a_lost_resume_on_claim_conflict() {
+    control_claim_race(true);
+}

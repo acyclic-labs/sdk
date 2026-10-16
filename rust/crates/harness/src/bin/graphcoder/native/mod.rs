@@ -143,7 +143,8 @@ impl NativeSession {
                 ))
                 .map_err(storage)?,
             )
-            .await?,
+            .await
+            .map_err(storage)?,
         );
         let mut binding = acyclic_harness::LocalHarnessConfig::new(
             &config.filesystem_root,

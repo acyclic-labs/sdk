@@ -160,64 +160,29 @@ async fn command_requests_and_sdk_controls_share_the_native_runtime_without_a_ch
 }
 
 #[tokio::test]
-async fn command_owner_reads_settings_written_by_the_native_client() -> Result<()> {
-    use acyclic_harness::client::{CommandFileRoot, CommandSession, consume_local_command};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+async fn native_search_requires_the_registered_tool_executor() -> Result<()> {
+    use acyclic_harness::client::{CommandSession, consume_local_command};
     struct NoReads;
     impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
     let directory = tempfile::tempdir().map_err(storage)?;
     let native = NativeSession::open(configuration(directory.path()).await?).await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(storage)?;
-    let endpoint = format!("http://{}/find", listener.local_addr().map_err(storage)?);
-    let server = tokio::spawn(async move {
-        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
-            .await
-            .map_err(storage)?
-            .map_err(storage)?;
-        let mut request = [0; 4096];
-        let count = connection.read(&mut request).await.map_err(storage)?;
-        assert!(
-            std::str::from_utf8(&request[..count])
-                .map_err(storage)?
-                .starts_with("GET /find?q=needle ")
-        );
-        connection
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfound")
-            .await
-            .map_err(storage)?;
-        Ok::<_, Error>(())
-    });
-    // Reopen through the same provider/path as the production client, rather
-    // than borrowing the owner's disposable in-memory index.
-    let identity = serde_json::to_vec(&native.config.private_volume).map_err(storage)?;
-    let volume = Arc::new(
-        acyclic_harness::task_volume::TaskVolume::open(
-            native.stream.clone(),
-            acyclic_stream::StreamPath::new(format!(
-                "graphcoder-files/{}",
-                blake3::hash(&identity).to_hex()
-            ))
-            .map_err(storage)?,
-        )
-        .await?,
-    );
-    let mut client = CommandSession::open(volume, uuid::Uuid::new_v4(), 65_536, 64).await?;
-    client
-        .write_state(
-            CommandFileRoot::Config,
-            "settings.json",
-            &serde_json::json!({"search_endpoint":endpoint}),
-        )
-        .await?;
+    let mut client = CommandSession::open(
+        native.owner.task_files().clone(),
+        uuid::Uuid::new_v4(),
+        65_536,
+        64,
+    )
+    .await?;
     client.submit("/search needle", &NoReads).await?;
     let request = client.next_request().await?;
-    let result = consume_local_command(&mut client, &native.owner, &request).await;
-    server.await.map_err(storage)??;
-    assert_eq!(
-        result?.ok_or_else(|| invalid("unclaimed request"))?["stdout"],
-        "found"
+    let error = consume_local_command(&mut client, &native.owner, &request)
+        .await
+        .expect_err("no registered web_search executor");
+    assert!(
+        error
+            .to_string()
+            .contains("tool web_search is not installed"),
+        "{error}"
     );
     Ok(())
 }

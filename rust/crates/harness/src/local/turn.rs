@@ -5,8 +5,9 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    pub(super) fn stock_commands(
+    pub(super) async fn stock_commands(
         &self,
+        task: Option<TaskId>,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
             '_,
@@ -15,8 +16,41 @@ impl LocalHarness {
             LocalObjectBackend,
         >,
     > {
+        let mut model = self.model.clone();
+        let mut lineage = self.command_lineage(task).await?;
+        lineage.reverse();
+        for directory in std::iter::once("config".to_owned())
+            .chain(lineage.into_iter().map(|task| format!("task-{task}")))
+        {
+            let key = crate::task_volume::FileKey::Ui {
+                directory: crate::task_volume::Component::new(directory).map_err(storage)?,
+                name: crate::task_volume::Component::new("settings.json").map_err(storage)?,
+            };
+            let snapshot = self
+                .task_files
+                .snapshot(&crate::task_volume::Query::File(key), 1)
+                .await
+                .map_err(storage)?;
+            if let Some(file) = snapshot.files.first() {
+                if file.bytes.len() as u64 > self.limits.file_bytes {
+                    return Err(Error::Invalid("settings exceed file bound".into()));
+                }
+                let settings: serde_json::Value =
+                    serde_json::from_slice(&file.bytes).map_err(storage)?;
+                if !settings.is_object() {
+                    return Err(Error::Invalid("settings must be an object".into()));
+                }
+                if let Some(name) = settings.get("model") {
+                    model.name = name
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("model must be text".into()))?
+                        .into();
+                }
+            }
+        }
+        model.validate()?;
         self.runtime.commands().with_model(
-            &self.model,
+            &model,
             self.provider.clone(),
             &self.context,
             &self.compaction,

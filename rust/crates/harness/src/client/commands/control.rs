@@ -51,28 +51,33 @@ impl CommandControl {
         maximum: u64,
     ) -> Result<bool> {
         let key = Self::key()?;
-        let snapshot = volume
-            .snapshot(&Query::File(key.clone()), 1)
-            .await
-            .map_err(storage)?;
-        let mut control = snapshot
-            .files
-            .first()
-            .map(|file| Self::from_bytes(&file.bytes, maximum))
-            .transpose()?
-            .unwrap_or_default();
-        let paused = paused.unwrap_or_else(|| !control.paused(lineage));
-        control.set(task, snapshot.generation.position, paused);
-        let bytes =
-            serde_json::to_vec(&control).map_err(|error| Error::Invalid(error.to_string()))?;
-        if bytes.len() as u64 > maximum {
-            return Err(Error::Invalid("control file exceeds bound".into()));
+        loop {
+            let snapshot = volume
+                .snapshot(&Query::File(key.clone()), 1)
+                .await
+                .map_err(storage)?;
+            let mut control = snapshot
+                .files
+                .first()
+                .map(|file| Self::from_bytes(&file.bytes, maximum))
+                .transpose()?
+                .unwrap_or_default();
+            let desired = paused.unwrap_or_else(|| !control.paused(lineage));
+            control.set(task, snapshot.generation.position, desired);
+            let bytes =
+                serde_json::to_vec(&control).map_err(|error| Error::Invalid(error.to_string()))?;
+            if bytes.len() as u64 > maximum {
+                return Err(Error::Invalid("control file exceeds bound".into()));
+            }
+            match volume
+                .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
+                .await
+            {
+                Ok(_) => return Ok(desired),
+                Err(crate::task_volume::Error::Conflict(_)) => continue,
+                Err(error) => return Err(storage(error)),
+            }
         }
-        volume
-            .append(snapshot.generation, &FileValue::new(key, bytes))
-            .await
-            .map_err(storage)?;
-        Ok(paused)
     }
     /// Subscribe before testing the snapshot. No polling, task-local flag or
     /// separate wake channel survives across suspension or process restart.
