@@ -1,4 +1,4 @@
-use super::swarm_wire::Counts;
+use super::swarm_wire::{Counts, Fault};
 use acyclic_stream::*;
 use futures::StreamExt as _;
 use std::sync::{Arc, Mutex};
@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 pub(super) struct Observed {
     pub memory: Arc<MemoryStream>,
     pub counts: Arc<Mutex<Counts>>,
+    pub fault: Fault,
+    pub agents: usize,
 }
 
 struct Lease(Arc<Mutex<Counts>>);
@@ -17,6 +19,20 @@ impl Drop for Lease {
 
 impl Observed {
     fn observed(&self, path: &StreamPath, records: RecordStream) -> RecordStream {
+        if path.as_str().ends_with("/status") {
+            // Fault the actual provider open invoked by session::serve, before
+            // any SwarmClient delivery or fixture callback can run.
+            let copies = match self.fault {
+                Fault::LogarithmicProviderWork => {
+                    64 * self.agents.next_power_of_two().ilog2() as usize
+                }
+                Fault::QuadraticProviderWork => self.agents,
+                _ => 0,
+            };
+            for _ in 0..copies {
+                std::hint::black_box(vec![0u8; 64]);
+            }
+        }
         // Instrumentation has one lock; it is never nested or held over a poll.
         let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
         counts.server_follows += 1;

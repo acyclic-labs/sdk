@@ -15,10 +15,14 @@ use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
 use std::{future::Future as _, sync::Arc, task::Poll};
 
 pub(super) async fn run(case: SwarmCase) -> TestResult {
-    run_with_fault(case, Fault::None).await.map(|_| ())
+    run_with_fault(case, Fault::None, false).await.map(|_| ())
 }
 
-pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<serde_json::Value> {
+pub(super) async fn run_with_fault(
+    case: SwarmCase,
+    fault: Fault,
+    paced: bool,
+) -> TestResult<serde_json::Value> {
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());
     let config = Arc::new(TaskVolume::open(provider.clone(), publish::path("config/files")).await?);
@@ -41,11 +45,12 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<
         incoming,
         sender,
         counts,
-    } = Wire::open(provider.clone(), fault)?;
+    } = Wire::open(provider.clone(), fault, case.agents)?;
     let (phases, receive_phases) = mpsc::unbounded();
     let (receipts, receive_receipts) = mpsc::unbounded();
     let (gates, mut paused) = mpsc::unbounded();
-    let mut state = State::new(&case, receipts, fault);
+    let (status_receipts, receive_status_receipts) = mpsc::unbounded();
+    let mut state = State::new(&case, receipts, fault, paced.then_some(status_receipts));
     let mut measured = Vec::new();
     let records = case.turns.iter().map(Vec::len).sum::<usize>();
     let selected = case
@@ -54,6 +59,12 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<
         .map(|layout| layout.selected().count())
         .max()
         .unwrap();
+    let frames =
+        case.agents * (2 + 4 * case.layouts.len()) + records * selected * case.layouts.len();
+    if paced {
+        counts.lock().unwrap_or_else(|p| p.into_inner()).root_credit = frames;
+        protocol::root_window(&sender, frames as u32)?;
+    }
     let client = SwarmClient::new(
         publish::path("swarm"),
         SwarmClientLimits {
@@ -119,6 +130,7 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<
         volumes: &volumes,
         phases: receive_phases,
         receipts: receive_receipts,
+        status_receipts: paced.then_some(receive_status_receipts),
         gates,
         measured: &mut measured,
     }
@@ -140,19 +152,18 @@ pub(super) async fn run_with_fault(case: SwarmCase, fault: Fault) -> TestResult<
     if gate.phase != 0 {
         return Err("swarm credit phase differs".into());
     }
-    // One finite receive window covers the declared history. Per-channel
-    // credits still advance on each record; the initial zero-credit phase
-    // exercises backpressure without a global gate transition per delta.
-    let frames =
-        case.agents * (2 + 4 * case.layouts.len()) + records * selected * case.layouts.len();
-    {
-        let mut counts = counts.lock().unwrap_or_else(|p| p.into_inner());
-        if counts.root_credit != 0 {
+    // Ordinary scenarios retain their initial zero-credit conflation exercise.
+    // Scaling scenarios acknowledge every status publication with the same finite
+    // window, making delivered histories identical at both population sizes.
+    if !paced {
+        let mut observed = counts.lock().unwrap_or_else(|p| p.into_inner());
+        if observed.root_credit != 0 {
             return Err("backpressure did not exhaust root credit".into());
         }
-        counts.root_credit = frames;
+        observed.root_credit = frames;
+        drop(observed);
+        protocol::root_window(&sender, frames as u32)?;
     }
-    protocol::root_window(&sender, frames as u32)?;
     gate.resume
         .send(())
         .map_err(|_| "producer credit gate ended")?;

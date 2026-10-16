@@ -17,7 +17,7 @@ fn case(agents: usize, attention_every: usize) -> TestResult<SwarmCase> {
 }
 
 fn measured(case: SwarmCase, fault: Fault) -> TestResult<Work> {
-    let report = futures::executor::block_on(swarm::run_with_fault(case, fault))?;
+    let report = futures::executor::block_on(swarm::run_with_fault(case, fault, true))?;
     let mut work = Work::new();
     for key in [
         "allocations",
@@ -35,22 +35,11 @@ fn measured(case: SwarmCase, fault: Fault) -> TestResult<Work> {
     Ok(work)
 }
 
-fn units(work: &Work) -> u64 {
-    [
-        "server_follows",
-        "server_records",
-        "delivered_records",
-        "discovered_children",
-    ]
-    .iter()
-    .map(|key| work[key])
-    .sum()
-}
-
-fn linear(small: &Work, doubled: &Work) -> TestResult {
+fn linear_counts(small: &Work, doubled: &Work) -> TestResult {
     for name in [
         "server_follows",
         "server_records",
+        "delivered_records",
         "discovered_children",
         "attention",
         "full_records",
@@ -61,20 +50,9 @@ fn linear(small: &Work, doubled: &Work) -> TestResult {
             return Err(format!("nonlinear {name}: {before} -> {after}").into());
         }
     }
-    // Latest-value conflation can change the number of forwarded records when
-    // discovery crosses the server's 1,024-frame window. Each input record may
-    // be delivered at most once. Allocation work per actual processed item must
-    // not grow; these items are bounded by follows + 2*input records + children.
     for work in [small, doubled] {
-        if work["delivered_records"] > work["server_records"] {
-            return Err("wire delivered more records than the provider produced".into());
-        }
-    }
-    for name in ["allocations", "allocated_bytes"] {
-        if small[name] == 0 || doubled[name] * units(small) > small[name] * units(doubled) {
-            return Err(
-                format!("nonlinear {name} per processed item: {small:?} -> {doubled:?}").into(),
-            );
+        if work["delivered_records"] != work["server_records"] {
+            return Err("paced delivery conflated or duplicated a provider record".into());
         }
     }
     if doubled["attention"] != 2 * small["attention"]
@@ -87,32 +65,55 @@ fn linear(small: &Work, doubled: &Work) -> TestResult {
     Ok(())
 }
 
+fn linear(small: &Work, doubled: &Work) -> TestResult {
+    linear_counts(small, doubled)?;
+    // Same delivered history per agent: compare raw heap work, with no
+    // normalization that could admit n*log(n) growth across this size change.
+    for name in ["allocations", "allocated_bytes"] {
+        if small[name] == 0 || doubled[name] > 2 * small[name] {
+            return Err(format!("nonlinear {name}: {small:?} -> {doubled:?}").into());
+        }
+    }
+    Ok(())
+}
+
 #[test]
-fn one_and_two_thousand_agents_have_linear_work_and_reject_quadratic_copies() -> TestResult {
+fn one_and_two_thousand_agents_have_linear_work() -> TestResult {
     let started = Instant::now();
     let small = measured(case(1_000, 100)?, Fault::None)?;
     let doubled = measured(case(2_000, 100)?, Fault::None)?;
     linear(&small, &doubled)?;
     assert!(small["server_follows"] >= 1_000);
     assert!(doubled["server_follows"] >= 2_000);
-    let broken_small = measured(case(256, 1)?, Fault::CloneSwarmPerStatus)?;
-    let broken_doubled = measured(case(512, 1)?, Fault::CloneSwarmPerStatus)?;
-    let error =
-        linear(&broken_small, &broken_doubled).expect_err("accepted quadratic status copies");
-    assert!(error.to_string().contains("allocated_bytes"), "{error}");
     println!(
-        "swarm scaling: 1k={small:?} 2k={doubled:?}; quadratic 256={} 512={} allocated bytes; elapsed={:?}",
-        broken_small["allocated_bytes"],
-        broken_doubled["allocated_bytes"],
+        "swarm scaling: 1k={small:?} 2k={doubled:?}; elapsed={:?}",
         started.elapsed()
     );
+    Ok(())
+}
+
+#[test]
+fn provider_n_log_n_and_quadratic_work_require_the_heap_assertion() -> TestResult {
+    for fault in [Fault::LogarithmicProviderWork, Fault::QuadraticProviderWork] {
+        let small = measured(case(128, 1)?, fault)?;
+        let doubled = measured(case(256, 1)?, fault)?;
+        // Mutation control: deleting the heap assertion leaves every protocol,
+        // fidelity and persisted-byte assertion green on these same real runs.
+        linear_counts(&small, &doubled)?;
+        let error = linear(&small, &doubled).expect_err("accepted nonlinear provider work");
+        assert!(
+            error.to_string().starts_with("nonlinear allocations:"),
+            "{fault:?}: {error}"
+        );
+        println!("{fault:?}: 128={small:?} 256={doubled:?}");
+    }
     Ok(())
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     // Doubling agents with identical history and viewport cannot more than
-    // double admitted follows/records/attention or increase heap work per item.
+    // double actual follows, records, attention or raw heap work.
     #[test]
     fn doubling_swarm_size_preserves_the_linear_work_bound(agents in 24usize..65) {
         let small = case(agents, 1).and_then(|case| measured(case, Fault::None))

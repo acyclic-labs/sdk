@@ -20,7 +20,8 @@ pub(super) enum Fault {
     IgnoreRemoval,
     CorruptSnapshot,
     ScanRetainedViews,
-    CloneSwarmPerStatus,
+    LogarithmicProviderWork,
+    QuadraticProviderWork,
 }
 
 #[derive(Default, serde::Serialize)]
@@ -91,7 +92,11 @@ pub(super) fn root_window(sender: &Sender, frames: u32) -> acyclic_harness::Resu
 }
 
 impl Wire {
-    pub fn open(provider: Arc<MemoryStream>, fault: Fault) -> acyclic_harness::Result<Self> {
+    pub fn open(
+        provider: Arc<MemoryStream>,
+        fault: Fault,
+        agents: usize,
+    ) -> acyclic_harness::Result<Self> {
         let (sender, receiver) = mpsc::unbounded();
         send(
             &sender,
@@ -109,6 +114,8 @@ impl Wire {
             Arc::new(super::swarm_provider::Observed {
                 memory: provider,
                 counts: counts.clone(),
+                fault,
+                agents,
             }),
             "node".into(),
             Default::default(),
