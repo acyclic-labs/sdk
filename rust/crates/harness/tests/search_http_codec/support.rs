@@ -119,10 +119,21 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     .unwrap();
     assert_eq!(published.key, result);
     let outcome: SearchOutcome = serde_json::from_slice(&published.bytes).unwrap();
-    match expected {
-        Some(response) => assert_eq!(outcome, SearchOutcome::Succeeded { response }),
-        None => assert_eq!(outcome, SearchOutcome::Rejected),
-    }
+    let expected = expected.map_or(SearchOutcome::Rejected, |response| {
+        let success = SearchOutcome::Succeeded { response };
+        // Independently predict admission of the complete packed result file.
+        // Codec acceptance and exact normalization were asserted above, even
+        // when a normalized result exceeds the smaller task-record limit.
+        let metadata =
+            serde_json::to_vec(&serde_json::json!({"key":result,"channel":null})).unwrap();
+        let size = serde_json::to_vec(&success).unwrap().len() + metadata.len() + 12;
+        if size > acyclic_stream::MAX_RECORD_BYTES {
+            SearchOutcome::Rejected
+        } else {
+            success
+        }
+    });
+    assert_eq!(outcome, expected);
     let before = volume
         .snapshot(&Query::Requests(task.clone()), 3)
         .await

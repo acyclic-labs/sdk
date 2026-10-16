@@ -406,7 +406,7 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         results: vec![super::super::SearchResult {
             url: "https://example.com".into(),
             title: "source".into(),
-            snippet: "x".repeat(65_536),
+            snippet: "x".repeat(32_768),
         }],
     };
     let script = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
@@ -418,15 +418,21 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
         error: None,
     }])?);
     let backend = Arc::new(NativeOnly(script.clone()));
-    let first = follow(
+    let mut client = volume
+        .observe(Query::File(file(&task, &id, true)), None, 1)
+        .await
+        .map_err(storage)?;
+    let worker = follow(
         &volume,
         &owner,
         || Ok(Some(backend.clone() as Arc<dyn SearchProvider>)),
         Some(&work),
         3,
-    )
-    .now_or_never();
-    assert!(first.is_none(), "native worker stopped: {first:?}");
+    );
+    tokio::select! { biased;
+        result = worker => panic!("native worker stopped: {result:?}"),
+        result = published(&mut client) => { result?; }
+    }
     assert_eq!(script.remaining(), 0);
     let snapshot = volume
         .snapshot(&Query::Requests(task.clone()), 3)
@@ -455,7 +461,7 @@ async fn file_worker_preserves_native_provider_custody_and_terminal_replay() -> 
     }
     assert!(work.receipt().source_bytes_read > 0);
     assert!(work.receipt().bytes_encoded > 0);
-    assert!(work.receipt().bytes_copied >= 2 * 65_536);
+    assert!(work.receipt().bytes_copied >= 2 * 32_768);
     assert!(
         follow(
             &volume,
@@ -553,10 +559,16 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
         "]",
         "{\"query\":}",
         deep.as_str(),
+        r#"{"query":"large"}"#,
+        r#"{"query":"packed"}"#,
         r#"{"query":"test"}"#,
     ];
+    let maximum_files = requests.len() * 3;
     for (index, bytes) in requests.iter().enumerate() {
-        let snapshot = volume.snapshot(&Query::Root, 15).await.map_err(storage)?;
+        let snapshot = volume
+            .snapshot(&Query::Root, maximum_files)
+            .await
+            .map_err(storage)?;
         volume
             .append(
                 snapshot.generation,
@@ -571,14 +583,75 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
             .await
             .map_err(storage)?;
     }
-    let script = Arc::new(ScriptedSearchProvider::new([ScriptedSearch {
-        request: SearchRequest {
-            query: "test".into(),
-            max_results: 5,
+    let mut packed = SearchResponse {
+        results: vec![super::super::SearchResult {
+            url: "https://example.com".into(),
+            title: "source".into(),
+            snippet: String::new(),
+        }],
+    };
+    let metadata = serde_json::to_vec(
+        &json!({"key":file(&task, &Component::new("search-5").unwrap(), true),"channel":null}),
+    )
+    .unwrap()
+    .len()
+        + 12;
+    let overhead = serde_json::to_vec(&SearchOutcome::Succeeded {
+        response: packed.clone(),
+    })
+    .unwrap()
+    .len();
+    packed.results[0].snippet =
+        "x".repeat(acyclic_stream::MAX_RECORD_BYTES - metadata - overhead + 1);
+    let script = Arc::new(ScriptedSearchProvider::new([
+        ScriptedSearch {
+            request: SearchRequest {
+                query: "large".into(),
+                max_results: 5,
+            },
+            response: Some(SearchResponse {
+                results: vec![super::super::SearchResult {
+                    url: "https://example.com".into(),
+                    title: "source".into(),
+                    snippet: "x".repeat(65_536),
+                }],
+            }),
+            error: None,
         },
-        response: Some(SearchResponse { results: vec![] }),
-        error: None,
-    }])?);
+        ScriptedSearch {
+            request: SearchRequest {
+                query: "packed".into(),
+                max_results: 5,
+            },
+            response: Some(packed),
+            error: None,
+        },
+        ScriptedSearch {
+            request: SearchRequest {
+                query: "test".into(),
+                max_results: 5,
+            },
+            response: Some(SearchResponse { results: vec![] }),
+            error: None,
+        },
+    ])?);
+    let mut clients = Vec::new();
+    for index in 0..requests.len() {
+        clients.push(
+            volume
+                .observe(
+                    Query::File(file(
+                        &task,
+                        &Component::new(format!("search-{index}")).unwrap(),
+                        true,
+                    )),
+                    None,
+                    1,
+                )
+                .await
+                .map_err(storage)?,
+        );
+    }
     let worker = follow(
         &volume,
         &owner,
@@ -588,16 +661,24 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
             ))
         },
         Some(&work),
-        15,
-    )
-    .now_or_never();
-    assert!(
-        worker.is_none(),
-        "worker stopped on malformed input: {worker:?}"
+        maximum_files,
     );
+    let results = async {
+        for client in &mut clients {
+            published(client).await?;
+        }
+        Ok::<_, Error>(())
+    };
+    tokio::select! { biased;
+        result = worker => panic!("worker stopped on malformed input: {result:?}"),
+        result = results => result?,
+    }
     assert_eq!(script.remaining(), 0);
-    let snapshot = volume.snapshot(&Query::Root, 15).await.map_err(storage)?;
-    assert_eq!(snapshot.files.len(), 15);
+    let snapshot = volume
+        .snapshot(&Query::Root, maximum_files)
+        .await
+        .map_err(storage)?;
+    assert_eq!(snapshot.files.len(), maximum_files);
     for index in 0..requests.len() {
         let key = file(
             &task,
@@ -636,5 +717,15 @@ async fn malformed_native_requests_publish_rejections_and_worker_keeps_following
         let failure = request(b"{", Some(&denied)).unwrap_err();
         assert!(failure.is_native_failure(), "{failure:?}");
     }
+    let denied = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            bytes_encoded: 1,
+            ..acyclic_fs::performance::BOUNDARY_BUDGET
+        },
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let failure = encode(&SearchOutcome::Rejected, Some(&denied)).unwrap_err();
+    assert!(failure.is_native_failure(), "{failure:?}");
     Ok(())
 }

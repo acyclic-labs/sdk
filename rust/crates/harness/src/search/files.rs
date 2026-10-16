@@ -46,13 +46,40 @@ fn storage(error: crate::task_volume::Error) -> Error {
 }
 
 fn encode(value: &impl Serialize, work: NativeWork<'_>) -> Result<OwnedBytes> {
-    if let Some(work) = work {
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        return io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false);
-    }
-    serde_json::to_vec(value)
-        .map(Into::into)
-        .map_err(|_| super::rejection(work, "invalid search file"))
+    let io = work
+        .map(crate::executor::PreparationIo::from_native_work)
+        .transpose()?;
+    // Keep the fixed file bound separate from the original work allowance.
+    // The callback admits every codec operation before allocation or copying.
+    let bytes = crate::executor::json::json_bytes_bounded(
+        value,
+        crate::executor::json::JsonBounds {
+            maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+            maximum_items: io
+                .as_ref()
+                .map(|io| io.remaining())
+                .transpose()?
+                .map_or(u64::MAX, |remaining| remaining.items_examined),
+            maximum_depth: 256,
+        },
+        work.map(|_| crate::wire::ErrorCode::Invalid),
+        &mut |charge| {
+            io.as_ref()
+                .map_or(Ok(()), |io| io.codec_charge(charge, true))
+        },
+    )
+    .map_err(|error| match error {
+        Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "JSON exceeds admitted output",
+        }
+        | Error::Invalid(_) => super::rejection(work, "search file exceeds byte limit"),
+        error => error,
+    })?;
+    crate::executor::with_history_io(io.as_ref(), |history| {
+        crate::store::operations::owned_bytes_from_retained_vec(bytes, history)
+            .map(|(bytes, _)| bytes)
+    })
 }
 
 fn request(bytes: &[u8], work: NativeWork<'_>) -> Result<(SearchRequest, crate::NativeCustody)> {
@@ -301,16 +328,20 @@ where
         .await;
         match dispatch {
             Ok(encoded) => {
-                publish(
+                match publish(
                     volume,
                     task,
-                    result,
+                    result.clone(),
                     encoded,
                     authorize,
                     work,
                     maximum_files,
                 )
-                .await?;
+                .await
+                {
+                    Err(Error::ToolRejected(_)) => break SearchOutcome::Rejected,
+                    other => other?,
+                }
                 return Ok(());
             }
             Err(Error::ToolRejected(_) | Error::Invalid(_)) => break SearchOutcome::Rejected,
@@ -371,6 +402,12 @@ where
         {
             Ok(_) => return Ok(()),
             Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(crate::task_volume::Error::LimitExceeded) => {
+                return Err(super::rejection(
+                    work,
+                    "search file exceeds packed byte limit",
+                ));
+            }
             Err(error) => return Err(storage(error)),
         }
     }

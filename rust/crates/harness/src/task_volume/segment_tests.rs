@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn native_publication_funds_packing_and_retains_original_custody()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let payload = vec![b'x'; 65_536];
+    let payload = vec![b'x'; 32_768];
     let write = Write::new(
         FileKey::parse(".tasks/t/requests/search-one/result.json")?,
         payload.clone(),
