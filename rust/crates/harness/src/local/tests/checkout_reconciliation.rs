@@ -1,6 +1,6 @@
 //! Reconciliation and recovered branch switches keep disk and selection aligned.
 use super::*;
-use acyclic_fs::{CancellationToken, WorkBudget};
+use acyclic_fs::{CancellationToken, WorkBudget, facade::FsWork as _};
 
 #[tokio::test]
 async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> Result<()> {
