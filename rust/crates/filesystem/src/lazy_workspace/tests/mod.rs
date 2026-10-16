@@ -308,6 +308,7 @@ async fn native_source(
     )
 }
 mod exactify;
+mod latest;
 mod lookup;
 mod mount;
 mod recovery;
