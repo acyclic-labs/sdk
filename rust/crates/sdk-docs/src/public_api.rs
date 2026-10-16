@@ -9,7 +9,7 @@ use crate::Error;
 use public_api::tokens::Token;
 use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
-use std::path::Path;
+use std::{io::Write, path::Path};
 
 pub(crate) mod decode;
 
@@ -52,7 +52,11 @@ fn extract_uncached(
     let value: Value = serde_json::from_slice(raw)?;
     let adapted = adapt(value, krate)?;
     let mut temp = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(temp.as_file_mut(), &adapted)?;
+    {
+        let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+        serde_json::to_writer(&mut writer, &adapted)?;
+        writer.flush()?;
+    }
     let api = public_api::Builder::from_rustdoc_json(temp.path())
         .include_function_parameter_names(true)
         .build()

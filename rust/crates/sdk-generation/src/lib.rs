@@ -120,7 +120,7 @@ struct ExecutedProfile {
 
 /// Runs the generator command with explicit arguments.
 pub fn run(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
-    with_toolchain_cache(|| sdk_docs::with_rustdoc_cache(|| run_inner(values)))
+    sdk_docs::with_rustdoc_cache(|| run_inner(values))
 }
 
 fn run_inner(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
