@@ -123,8 +123,10 @@ pub(super) fn allocate(counter: &AtomicU64) -> Result<u64, StreamError> {
 }
 
 #[cfg(acyclic_stream_loom)]
+#[path = "progress/model.rs"]
 mod model;
-#[cfg(test)]
+#[cfg(all(test, not(acyclic_stream_loom)))]
+#[path = "progress/tests.rs"]
 mod tests;
 #[cfg(acyclic_stream_loom)]
 pub use model::verify_latest_progress;

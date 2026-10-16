@@ -1,4 +1,4 @@
-use super::swarm_wire::Counts;
+use super::swarm_wire::{Counts, Fault};
 use acyclic_stream::*;
 use futures::StreamExt as _;
 use std::sync::{Arc, Mutex};
@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 pub(super) struct Observed {
     pub memory: Arc<MemoryStream>,
     pub counts: Arc<Mutex<Counts>>,
+    pub fault: Fault,
+    pub agents: usize,
 }
 
 struct Lease(Arc<Mutex<Counts>>);
@@ -17,21 +19,43 @@ impl Drop for Lease {
 
 impl Observed {
     fn observed(&self, path: &StreamPath, records: RecordStream) -> RecordStream {
-        if !path.as_str().ends_with("/files") {
-            return records;
+        if path.as_str().ends_with("/status") {
+            // Fault the actual provider open invoked by session::serve, before
+            // any SwarmClient delivery or fixture callback can run.
+            let copies = match self.fault {
+                Fault::LogarithmicProviderWork => {
+                    64 * self.agents.next_power_of_two().ilog2() as usize
+                }
+                Fault::QuadraticProviderWork => self.agents,
+                _ => 0,
+            };
+            for _ in 0..copies {
+                std::hint::black_box(vec![0u8; 64]);
+            }
         }
         // Instrumentation has one lock; it is never nested or held over a poll.
         let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
-        counts.live_full += 1;
-        counts.peak_full = counts.peak_full.max(counts.live_full);
+        counts.server_follows += 1;
+        let lease = path.as_str().ends_with("/files").then(|| {
+            counts.live_full += 1;
+            counts.peak_full = counts.peak_full.max(counts.live_full);
+            Lease(self.counts.clone())
+        });
         drop(counts);
-        let lease = Lease(self.counts.clone());
-        futures::stream::unfold((records, lease), |(mut records, lease)| async move {
-            records
-                .next()
-                .await
-                .map(|record| (record, (records, lease)))
-        })
+        let counts = self.counts.clone();
+        futures::stream::unfold(
+            (records, lease, counts),
+            |(mut records, lease, counts)| async move {
+                let record = records.next().await?;
+                if record.is_ok() {
+                    counts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .server_records += 1;
+                }
+                Some((record, (records, lease, counts)))
+            },
+        )
         .boxed()
     }
 }

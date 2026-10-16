@@ -17,6 +17,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture;
 use serde_json::{Value, json};
+mod context;
 mod goals;
 use std::{
     path::Path,
@@ -766,6 +767,8 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
 
 #[cfg(feature = "native-execution")]
 mod checked_commands;
+#[cfg(all(feature = "native-execution", windows))]
+mod bash_environment;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
 

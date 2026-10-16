@@ -1,5 +1,5 @@
+use super::super::Arc;
 use super::*;
-use crate::session::sync::Arc;
 
 /// One application thread races one placement fence over the production lock.
 /// No Tokio synchronization or transport state is substituted for this cut.

@@ -20,11 +20,17 @@ pub(super) enum Fault {
     IgnoreRemoval,
     CorruptSnapshot,
     ScanRetainedViews,
+    LogarithmicProviderWork,
+    QuadraticProviderWork,
 }
 
 #[derive(Default, serde::Serialize)]
 pub(super) struct Counts {
     pub sessions: usize,
+    pub server_follows: usize,
+    pub server_records: usize,
+    pub delivered_records: usize,
+    pub discovered_children: usize,
     pub children: usize,
     pub actor_channels: usize,
     pub status_follows: usize,
@@ -86,7 +92,11 @@ pub(super) fn root_window(sender: &Sender, frames: u32) -> acyclic_harness::Resu
 }
 
 impl Wire {
-    pub fn open(provider: Arc<MemoryStream>, fault: Fault) -> acyclic_harness::Result<Self> {
+    pub fn open(
+        provider: Arc<MemoryStream>,
+        fault: Fault,
+        agents: usize,
+    ) -> acyclic_harness::Result<Self> {
         let (sender, receiver) = mpsc::unbounded();
         send(
             &sender,
@@ -104,6 +114,8 @@ impl Wire {
             Arc::new(super::swarm_provider::Observed {
                 memory: provider,
                 counts: counts.clone(),
+                fault,
+                agents,
             }),
             "node".into(),
             Default::default(),
@@ -188,8 +200,18 @@ impl Wire {
                         Some(Body::Welcome(_)) => {
                             observed.lock().unwrap_or_else(|p| p.into_inner()).sessions += 1
                         }
-                        Some(Body::Data(_)) => {
+                        Some(Body::Data(data)) => {
                             let mut counts = observed.lock().unwrap_or_else(|p| p.into_inner());
+                            match &data.item {
+                                Some(wire::session_data::Item::Child(_)) => {
+                                    counts.discovered_children += 1
+                                }
+                                Some(
+                                    wire::session_data::Item::Record(_)
+                                    | wire::session_data::Item::LatestValue(_),
+                                ) => counts.delivered_records += 1,
+                                _ => {}
+                            }
                             counts.root_credit = counts
                                 .root_credit
                                 .checked_sub(1)

@@ -23,6 +23,7 @@ mod swarm;
 mod swarm_case;
 mod swarm_publish;
 mod swarm_provider;
+mod swarm_scaling;
 mod swarm_tests;
 mod swarm_views;
 mod swarm_wire;

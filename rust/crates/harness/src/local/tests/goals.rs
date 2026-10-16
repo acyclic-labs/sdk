@@ -45,15 +45,17 @@ async fn run(case: Case) -> Result<()> {
     let script = script(&case);
     let provider = scripted(script);
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = if case.enabled == Some(false) {
+        let policy = if case.enabled == Some(false) {
             None
         } else {
             Some(GoalContinuationPolicy {
                 max_continuations: case.cap.unwrap_or(32),
             })
         };
-        Ok(config)
+        Ok(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .goal_continuations(policy),
+        )
     };
     let harness = LocalHarness::open(config()?).await?;
     if let Some(initial) = &case.initial_goal {
@@ -166,10 +168,9 @@ async fn run(case: Case) -> Result<()> {
     drop(followed);
     drop(stream);
     drop(harness);
-    let mut reopen_config = config()?;
     // Disabling future automatic admissions does not discard an already
     // published ordinary continuation or change the result of its replay.
-    reopen_config.goal_continuations = None;
+    let reopen_config = config()?.goal_continuations(None);
     let reopened = LocalHarness::open(reopen_config).await?;
     assert_eq!(
         reopened.resume(task_id).await?.text,
@@ -310,11 +311,13 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
         ScriptedTurn::Text("recovered".into()),
     ]);
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = Some(GoalContinuationPolicy {
-            max_continuations: 1,
-        });
-        Ok(config)
+        Ok(
+            volume_config(directory.path(), project.clone(), provider.clone())?.goal_continuations(
+                Some(GoalContinuationPolicy {
+                    max_continuations: 1,
+                }),
+            ),
+        )
     };
     let harness = LocalHarness::open(config()?).await?;
     let root = OperationId::new();
@@ -369,11 +372,13 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
         ScriptedTurn::Text("second".into()),
     ]);
     let config = || -> Result<LocalHarnessConfig> {
-        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?;
-        config.goal_continuations = Some(GoalContinuationPolicy {
-            max_continuations: 2,
-        });
-        Ok(config)
+        Ok(
+            volume_config(directory.path(), project.clone(), provider.clone())?.goal_continuations(
+                Some(GoalContinuationPolicy {
+                    max_continuations: 2,
+                }),
+            ),
+        )
     };
     let harness = LocalHarness::open(config()?).await?;
     let root = OperationId::new();

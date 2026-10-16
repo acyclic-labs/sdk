@@ -32,6 +32,7 @@ mod command_views;
 mod commands;
 mod compaction;
 mod config;
+mod context;
 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 mod mcp;
 mod owner;
@@ -65,7 +66,11 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context_manifest: crate::conversation::FileRef,
+    context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(test)]
+    context_read_observer: Option<
+        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    >,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -76,6 +81,8 @@ pub struct LocalHarness {
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
 }
 
 impl LocalHarness {
@@ -285,25 +292,6 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            #[cfg(feature = "native-execution")]
-            let mounts = workspace.as_ref().map(|workspace| workspace.context_line());
-            #[cfg(not(feature = "native-execution"))]
-            let mounts = None;
-            let context_manifest = match config.context_manifest {
-                Some(reference) => reference,
-                None => {
-                    let publisher = FilesystemContentPublisher::new(
-                        files.clone(),
-                        &journal,
-                        &verifier,
-                        &signed,
-                        config.limits.file_bytes,
-                        None,
-                    )?;
-                    turn::default_manifest(publisher.as_ref(), &tools, config.limits, mounts)
-                        .await?
-                }
-            };
             Ok(Self {
                 files,
                 runtime,
@@ -315,7 +303,11 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context_manifest,
+                context_manifest: config.context_manifest,
+                #[cfg(test)]
+                context_read_observer: None,
+                #[cfg(feature = "native-execution")]
+                checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

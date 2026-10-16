@@ -8,7 +8,7 @@ use std::path::{Component, Path};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BashInput {
-    /// Bash source, interpreted without a login shell or inherited environment.
+    /// Bash source, interpreted without a login shell, inheriting the host environment.
     #[schemars(length(min = 1))]
     pub command: String,
     /// Optional directory relative to the task view. Parent traversal is forbidden.

@@ -115,8 +115,24 @@ impl LocalHarness {
         prompt: &str,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
+        self.stage_turn_with(operation, prompt, publisher.as_ref())
+            .await
+    }
+
+    pub(super) async fn stage_turn_with(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
-            context_manifest: self.context_manifest.clone(),
+            context_manifest: match &self.context_manifest {
+                Some(reference) => reference.clone(),
+                None => {
+                    self.stage_context_manifest_with(operation, publisher)
+                        .await?
+                }
+            },
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -137,10 +153,10 @@ impl LocalHarness {
             )?
             .await?
             .0;
-        self.finish_turn_inputs(operation, payload).await
+        self.finish_turn_inputs(operation, payload, publisher).await
     }
 
-    fn input_publisher(
+    pub(super) fn input_publisher(
         &self,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
@@ -169,15 +185,17 @@ impl LocalHarness {
                 "retained model input has another path".into(),
             ));
         }
-        self.finish_turn_inputs(operation, payload).await.map(Some)
+        self.finish_turn_inputs(operation, payload, publisher.as_ref())
+            .await
+            .map(Some)
     }
 
     async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = self.input_publisher()?;
         let model = WorkflowCommand {
             operation_id: operation,
             kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
@@ -341,32 +359,4 @@ fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
-}
-
-// One content-addressed default file per effective catalog, shared by every
-// prompt opened with that catalog. Admission retains its exact immutable ref.
-pub(super) async fn default_manifest(
-    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
-    tools: &ToolRegistry,
-    limits: Limits,
-    mounts: Option<&str>,
-) -> Result<crate::conversation::FileRef> {
-    let mut manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
-    if let Some(mounts) = mounts {
-        manifest.conventions.push(mounts.to_owned());
-    }
-    let bytes = manifest.encode(limits)?;
-    let digest = blake3::hash(&bytes);
-    let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());
-    Ok(publisher
-        .stage_once(
-            operation,
-            &format!("inputs/context/{digest}.json"),
-            &bytes,
-            "application/json",
-            "context-manifest.json",
-            None,
-        )?
-        .await?
-        .0)
 }

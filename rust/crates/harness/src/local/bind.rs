@@ -110,30 +110,6 @@ impl LocalHarness {
         } else {
             runtime
         };
-        #[cfg(feature = "native-execution")]
-        let mounts = workspace.as_ref().map(|workspace| workspace.context_line());
-        #[cfg(not(feature = "native-execution"))]
-        let mounts = None;
-        let context_manifest = match config.context_manifest {
-            Some(reference) => reference,
-            None => {
-                let publisher = FilesystemContentPublisher::new(
-                    files.clone(),
-                    volume,
-                    verifier,
-                    signed,
-                    config.limits.file_bytes,
-                    None,
-                )?;
-                turn::default_manifest(
-                    publisher.as_ref(),
-                    runtime.tool_registry(),
-                    config.limits,
-                    mounts,
-                )
-                .await?
-            }
-        };
         Ok(Self {
             files,
             runtime: Arc::new(runtime),
@@ -145,7 +121,9 @@ impl LocalHarness {
             signed: signed.clone(),
             model,
             provider,
-            context_manifest,
+            context_manifest: config.context_manifest,
+            #[cfg(test)]
+            context_read_observer: None,
             limits: config.limits,
             compaction,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -154,6 +132,8 @@ impl LocalHarness {
             admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
             #[cfg(feature = "native-execution")]
             workspace,
+            #[cfg(feature = "native-execution")]
+            checkout_context: checkout.is_some(),
         })
     }
 
