@@ -18,6 +18,7 @@ mod data;
 mod isolation;
 mod latest;
 mod lifecycle;
+mod local;
 mod outbound;
 mod recovery;
 
