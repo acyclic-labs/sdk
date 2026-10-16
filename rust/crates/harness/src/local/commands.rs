@@ -291,7 +291,30 @@ impl LocalHarness {
         target: TaskId,
         instructions: &str,
     ) -> Result<Value> {
-        self.runtime.task_host().observe_admission(target).await?;
+        let admission = self.runtime.task_host().observe_admission(target).await?;
+        let context = self
+            .runtime
+            .harness()
+            .durable_context(target, admission.operation_id, None)
+            .await?;
+        let mut text = String::new();
+        if let Some(model) = admission.input.get("model") {
+            let command: WorkflowCommand =
+                serde_json::from_value(model.clone()).map_err(storage)?;
+            let bytes = context.read_file(&command.payload, None).await?;
+            let input: crate::filesystem::ModelTaskCommand =
+                serde_json::from_slice(&bytes).map_err(storage)?;
+            text = serde_json::to_string(&input.input).map_err(storage)?;
+        }
+        if let Some(outcome) = self.runtime.task_host().outcome(target).await? {
+            let outcome = serde_json::to_string(&outcome).map_err(storage)?;
+            if text.len().saturating_add(outcome.len()) as u64 > self.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "compaction source exceeds file bound".into(),
+                ));
+            }
+            text.push_str(&outcome);
+        }
         let snapshot = self
             .task_files
             .snapshot(
@@ -299,7 +322,6 @@ impl LocalHarness {
                 self.limits.context_messages,
             )
             .await?;
-        let mut text = String::new();
         for file in snapshot.files {
             if matches!(
                 file.key,

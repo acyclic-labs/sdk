@@ -35,7 +35,7 @@ fuzz_target!(|input: &[u8]| {
             );
             let mut client = acyclic_harness::client::CommandSession::open(
                 volume.clone(),
-                uuid::Uuid::from_bytes(acyclic_harness::OperationId::new().into_bytes()),
+                serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap(),
                 32_768,
                 64,
             )
