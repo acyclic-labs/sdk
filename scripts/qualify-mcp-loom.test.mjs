@@ -13,7 +13,7 @@ test("qualification instruments only the selected target and executes its built 
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom", "--all-features", "--", "--cfg", "loom"]],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness", "--test", "mcp-loom", "--all-features", "--", "--cfg", "acyclic_harness_loom"]],
     ["model-binary", []],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");

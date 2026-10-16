@@ -3,17 +3,17 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", features, run);
+  return qualifyLoom("acyclic-harness", "mcp-loom", features, "acyclic_harness_loom", run);
 }
 
 export function qualifyGuestLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+  return qualifyLoom("acyclic-actors", "guest_loom", [], "loom", run);
 }
 
-function qualifyLoom(crate, target, features, run) {
+function qualifyLoom(crate, target, features, cfg, run) {
   const build = run("cargo", [
     "rustc", "--locked", "--message-format=json", "-p", crate, "--test", target,
-    ...features, "--", "--cfg", "loom",
+    ...features, "--", "--cfg", cfg,
   ], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (build.error) throw build.error;
   if (build.status !== 0) throw new Error(`MCP Loom build failed: ${build.stderr}\n${build.stdout}`);

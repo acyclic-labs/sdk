@@ -11,7 +11,7 @@ cargo-fuzz = true
 members = ["."]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
 
 [features]
 notifications = ["acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]

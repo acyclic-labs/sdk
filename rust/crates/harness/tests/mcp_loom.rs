@@ -1,10 +1,10 @@
-//! `cargo rustc --test mcp-loom ... -- --cfg loom` instruments only this target,
+//! `cargo rustc --test mcp-loom ... -- --cfg acyclic_harness_loom` instruments only this target,
 //! leaving dependencies' runtimes unchanged. Both modules are production source.
-#![cfg(loom)]
+#![cfg(acyclic_harness_loom)]
 
 pub use acyclic_harness::{Error, Result};
 
-#[path = "../src/mcp/sync.rs"]
+#[path = "../src/sync.rs"]
 pub(crate) mod sync;
 mod mcp {
     pub(crate) use crate::sync;
