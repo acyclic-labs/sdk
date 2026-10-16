@@ -13,15 +13,15 @@ const args = process.argv.slice(2);
 if (args.some(arg => arg !== "--source-only") || args.length > 1) throw new Error("usage: check-generated.mjs [--source-only]");
 const sourceOnly = args.includes("--source-only");
 const compareWasmSurfaces = wasmSurfaceComparison(root);
-for (const key of ["actors", "stream"]) {
-  const [command, ...arguments_] = protoCodegenCommand(["native-family", root, key]);
-  const facts = spawnSync(command, arguments_, { cwd: root, encoding: "utf8" });
-  if (facts.error) throw facts.error;
-  if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
-  const expected = `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`;
-  if (readFileSync(join(root, "scripts/generated/native-families", `${key}.json`), "utf8") !== expected) throw new Error(`Rust native-family ${key} generation drift`);
-}
 if (!sourceOnly) {
+  for (const key of ["actors", "stream"]) {
+    const [command, ...arguments_] = protoCodegenCommand(["native-family", root, key]);
+    const facts = spawnSync(command, arguments_, { cwd: root, encoding: "utf8" });
+    if (facts.error) throw facts.error;
+    if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
+    const expected = `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`;
+    if (readFileSync(join(root, "scripts/generated/native-families", `${key}.json`), "utf8") !== expected) throw new Error(`Rust native-family ${key} generation drift`);
+  }
   const actors = spawnSync(process.execPath, [join(root, "scripts", "generate-actors.mjs"), "check"], {
     cwd: root,
     encoding: "utf8",

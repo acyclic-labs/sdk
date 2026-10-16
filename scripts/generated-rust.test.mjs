@@ -118,7 +118,7 @@ test("cached generator dispatch preserves every argument without invoking Cargo"
   }
 });
 
-test("source-only never builds Actors while the full guard retains its Rust projection check", () => {
+test("source-only uses protos while the full guard retains native facts and the Rust projection", () => {
   const source = readFileSync("scripts/check-generated.mjs", "utf8");
   const guard = source.slice(source.indexOf("const args ="), source.indexOf("const generatedFiles ="));
   const verify = (code, sourceOnly) => {
@@ -130,6 +130,7 @@ test("source-only never builds Actors while the full guard retains its Rust proj
       spawnSync: (command, args) => { calls.push([command, ...args]); return { status: 0, stdout: "{}" }; },
       readFileSync: () => "{}\n",
     });
+    assert.equal(calls.filter(([command]) => command === "generator").length, sourceOnly ? 0 : 2);
     assert.deepEqual(calls.filter(([command]) => command === "node"),
       sourceOnly ? [] : [["node", "scripts/generate-actors.mjs", "check"]]);
     assert.ok(calls.every(([command]) => command !== "cargo"));
