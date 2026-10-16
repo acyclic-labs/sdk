@@ -74,10 +74,14 @@ test("installed browser entry executes the ordinary registered runtime", async (
         return { context_tokens: 128, output_tokens: 16 };
       }, (bytes, request_digest) => {
         const request = JSON.parse(new TextDecoder().decode(bytes));
+        expect(JSON.stringify(request.messages)).toContain("installed pinned context");
         return { request_digest, fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
       }, { kind: "disabled" });
     const command = crypto.randomUUID();
-    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
+    const context_manifest = await runtime.stage(crypto.randomUUID(), "stock-context", new TextEncoder().encode(JSON.stringify({
+      conventions: ["installed pinned context"], discovery: { instructions: [], skills: [] }, selected_skills: [], tools: [],
+    })));
+    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ context_manifest, input: "hello", max_steps: 1 })));
     const operation = crypto.randomUUID();
     const receiveOperation = crypto.randomUUID();
     const receivePayload = await runtime.stage(receiveOperation, "stock-receive", new TextEncoder().encode(JSON.stringify({ after: 0 })));
@@ -90,7 +94,8 @@ test("installed browser entry executes the ordinary registered runtime", async (
     if (stock.kind !== "accepted") throw new Error(`stock admission ${stock.kind}`);
     expect(await runtime.admit(operation, "acyclic.stock_turn", "1", input)).toEqual(stock);
     await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, model: { ...input.model, operation_id: crypto.randomUUID() } })).rejects.toThrow();
-    expect((await runtime.runOperation(worker, stock.task_id, 4))?.kind).toBe("completed");
+    const work = await runtime.runOperation(worker, stock.task_id, 4);
+    expect({ kind: work?.kind, modelCalls: generations }).toEqual({ kind: "completed", modelCalls: 1 });
     expect(await runtime.outcome(stock.task_id)).toEqual({ Succeeded: { text: "stock result", metadata: {}, attachments: [], steps: 1n } });
     expect(generations).toBe(1);
     expect(await runtime.runOperation(worker, stock.task_id, 4)).toBeNull();

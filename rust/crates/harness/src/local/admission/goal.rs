@@ -2,9 +2,16 @@ use super::*;
 
 impl LocalHarness {
     pub(super) fn goal_task_path(&self) -> Option<&'static str> {
-        // The current publisher resolves paths inside its one output volume.
-        // Composed mount routing replaces this lookup when #503 lands.
-        (self.runtime.harness().output_volume() == Some(&self.scratch)).then_some("GOAL.md")
+        ["GOAL.md", ".volumes/scratch/GOAL.md"]
+            .into_iter()
+            .find(|path| {
+                self.runtime
+                    .harness()
+                    .output_destination(path)
+                    .is_some_and(|(volume, relative)| {
+                        volume == &self.scratch && relative == "GOAL.md"
+                    })
+            })
     }
 
     pub(super) async fn block_goal(

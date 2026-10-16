@@ -43,9 +43,10 @@ pub use client::Client;
 pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
-    verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_initial_retry_yield,
-    verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
-    verify_registration_deadline, verify_terminal_cursor_dial,
+    verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_follow_data,
+    verify_initial_retry_yield, verify_interest_accounting, verify_link_isolation,
+    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_terminal_cursor_dial,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;

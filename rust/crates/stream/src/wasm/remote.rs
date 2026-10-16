@@ -9,6 +9,9 @@ pub(super) struct Remote {
     sessions: crate::session::Client,
 }
 impl Remote {
+    pub(super) fn session(&self) -> crate::session::Client {
+        self.sessions.clone()
+    }
     pub(super) fn connections(&self) -> crate::session::Connections {
         self.sessions.connections()
     }
@@ -18,19 +21,31 @@ impl Remote {
         Ok(Self { endpoint, sessions })
     }
     fn service(&self) -> Service {
-        use tonic_web_wasm_client::{
-            limits::UnaryResponseLimits,
-            options::{FetchOptions, Redirect},
-        };
+        self.service_with_options(
+            tonic_web_wasm_client::options::FetchOptions::new()
+                .timeout(std::time::Duration::from_secs(1)),
+        )
+    }
+    fn read_service(&self) -> Service {
+        // A history is independently bounded messages, not a unary response with
+        // one total deadline. Keep consuming until EOF, cancellation or I/O error.
+        self.service_with_options(
+            tonic_web_wasm_client::options::FetchOptions::new().streaming_response(),
+        )
+    }
+    fn service_with_options(
+        &self,
+        options: tonic_web_wasm_client::options::FetchOptions,
+    ) -> Service {
+        use tonic_web_wasm_client::options::Redirect;
         Service::new(tonic_web_wasm_client::Client::new_with_options(
             self.endpoint.url.clone(),
-            FetchOptions::new()
-                .redirect(Redirect::Error)
-                .timeout(std::time::Duration::from_secs(1))
+            options
                 .response_limits(
-                    UnaryResponseLimits::new(MAX_COMMAND_BYTES)
+                    tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
                         .expect("fixed positive command bound"),
-                ),
+                )
+                .redirect(Redirect::Error),
         ))
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)
@@ -169,18 +184,26 @@ impl StreamProvider for Remote {
             limit: request.limit,
         };
         let source = self
-            .service()
+            .read_service()
             .read(self.request(body).await?)
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        let state = (source, request.from, request.limit, Vec::new().into_iter());
+        let state = (
+            source,
+            request.from,
+            request.limit,
+            Vec::<Record>::new().into_iter(),
+        );
         Ok(Box::pin(futures::stream::try_unfold(
             state,
             |(mut source, mut next, mut remaining, mut pending)| async move {
                 loop {
                     if let Some(record) = pending.next() {
-                        next += 1;
+                        if record.sequence < next {
+                            continue;
+                        }
+                        next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
                         remaining -= 1;
                         return Ok(Some((record, (source, next, remaining, pending))));
                     }

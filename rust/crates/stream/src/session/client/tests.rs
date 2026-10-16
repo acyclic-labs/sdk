@@ -15,10 +15,12 @@ mod checked_recovery;
 mod connections;
 mod context;
 mod credentials;
+mod data;
 mod isolation;
 mod latest;
 mod lifecycle;
 mod outbound;
+mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 mod fixture {

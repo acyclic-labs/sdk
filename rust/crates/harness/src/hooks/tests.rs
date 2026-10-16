@@ -649,21 +649,11 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
 }
 
 fn registry() -> Result<ToolRegistry> {
-    let mut registry = ToolRegistry::default();
-    let tools: &[(&str, &'static [&'static str])] = &[
-        ("bash", &["Bash"]),
-        ("edit", &["Edit"]),
-        ("write", &["Write"]),
-        ("read", &["Read"]),
-        ("fs", &[]),
-        ("NotebookEdit", &[]),
-    ];
-    for &(name, names) in tools {
-        let mut tool = crate::tool::files::read()?;
-        tool.definition.name = name.into();
-        tool.hook_names = names;
-        registry.register((tool, None), &mut None, None)?;
-    }
+    let mut registry = crate::tools::defaults()?;
+    let mut notebook = crate::tool::files::read()?;
+    notebook.definition.name = "NotebookEdit".into();
+    notebook.hook_names = &[];
+    registry.register((notebook, None), &mut None, None)?;
     Ok(registry)
 }
 
@@ -695,6 +685,44 @@ fn tool_matchers_use_declared_names_and_exact_identifiers() -> Result<()> {
                 .collect::<Vec<_>>(),
             commands
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_catalog_routes_approval_hooks() -> Result<()> {
+    let registry = crate::tools::defaults()?;
+    for spec in crate::tools::catalog() {
+        let mut hooks = Hooks::default();
+        let matcher = spec.hook_names.first().copied().unwrap_or(spec.name);
+        hooks.add_json(
+            json!({"hooks":{"PreToolUse":[{
+                "matcher":matcher,"hooks":[{"type":"command","command":"approve"}]
+            }]}})
+            .to_string()
+            .as_bytes(),
+        )?;
+        let mut calls = 0;
+        let output = hooks
+            .run_commands(
+                HookEvent::PreToolUse,
+                &json!({"tool_name":spec.name}),
+                &registry,
+                |_| {
+                    calls += 1;
+                    std::future::ready(Ok((
+                        Some(0),
+                        br#"{"hookSpecificOutput":{
+                    "permissionDecision":"ask","permissionDecisionReason":"review tool"
+                }}"#
+                        .to_vec(),
+                        vec![],
+                    )))
+                },
+            )
+            .await?;
+        assert_eq!(calls, 1, "{}", spec.name);
+        assert_eq!(output.approval.as_deref(), Some("review tool"));
     }
     Ok(())
 }

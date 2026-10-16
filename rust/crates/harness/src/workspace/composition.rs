@@ -37,6 +37,7 @@ pub struct Mount<T> {
     /// Maximum access anywhere in this mount; paths may be more restrictive.
     pub mode: MountMode,
     access: PathTrie,
+    pub(crate) native_root: Option<PathBuf>,
 }
 
 impl<T> Mount<T> {
@@ -228,7 +229,12 @@ pub fn compose<T>(
                 "foreign mount must select its latest published generation".into(),
             ));
         }
-        entry.insert(Some(Mount { view, mode, access }));
+        entry.insert(Some(Mount {
+            view,
+            mode,
+            access,
+            native_root: None,
+        }));
     }
     Ok(MountTable {
         root,

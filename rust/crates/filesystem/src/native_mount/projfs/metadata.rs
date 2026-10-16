@@ -1,3 +1,4 @@
+use super::probe_guard::{ProbeGuard, with_guard};
 use super::*;
 
 pub(super) fn path_from(pointer: PCWSTR) -> Option<MountPath> {
@@ -57,12 +58,14 @@ pub(super) fn host_windows_metadata(
     root: &HostRoot,
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
+    probes: Option<&Mutex<HashMap<MountPath, usize>>>,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
+    let guard = || probes.map(|probes| MetadataProbeGuard::enter(probes, path));
     let query = |path: &[u16], work: &mut &crate::NativeMaterializationWork| {
-        if let Some(metadata) = query_metadata(root, path, work)? {
+        if let Some(metadata) = query_metadata(root, path, work, &guard)? {
             return Ok(metadata);
         }
-        root.stat(path, work)
+        with_guard(&guard, || root.stat(path, work))
     };
     let metadata = if let Some(units) = super::callback_path::wide_components(path.components()) {
         crate::native_host::with_wide_units(units, &mut &*work, query)?
@@ -94,20 +97,22 @@ pub(super) fn host_windows_metadata(
     })
 }
 
-fn query_metadata(
+fn query_metadata<G>(
     root: &HostRoot,
     path: &[u16],
     work: &mut &crate::NativeMaterializationWork,
+    before_open: impl FnOnce() -> G,
 ) -> Result<Option<crate::native_host::HostStat>, crate::NativeTreeMaterializationError> {
-    query_metadata_using(root, path, work, |name, volume| {
+    query_metadata_using(root, path, work, before_open, |name, volume| {
         crate::native_host::stat_windows_name(&root.directory, name, volume, true)
     })
 }
 
-fn query_metadata_using(
+fn query_metadata_using<G>(
     root: &HostRoot,
     path: &[u16],
     work: &mut &crate::NativeMaterializationWork,
+    before_open: impl FnOnce() -> G,
     query: impl FnOnce(
         &windows::Win32::Foundation::UNICODE_STRING,
         u32,
@@ -127,10 +132,15 @@ fn query_metadata_using(
     {
         return Ok(None);
     }
+    // Name queries do not open files; only held-handle fallbacks can reenter
+    // FILE_OPENED / CLOSED callbacks and need a probe registration.
+    let fallback = |work: &mut &crate::NativeMaterializationWork| {
+        with_guard(before_open, || stat_leaf_metadata(root, path, volume, work))
+    };
     // Two reads fit a held-root open + stat, but cannot also pay for an
     // unsupported name query. Choose that path before attempting any I/O.
     if work.remaining()?.backend_read_operations == 2 {
-        return stat_leaf_metadata(root, path, volume, work).map(Some);
+        return fallback(work).map(Some);
     }
     let charge = crate::WorkCounters {
         items_examined: path.len() as u64,
@@ -144,11 +154,11 @@ fn query_metadata_using(
     };
     match work.attempt_io(charge, || query(&name, volume)) {
         Ok(Some(metadata)) => Ok(Some(metadata)),
-        Ok(None) => stat_leaf_metadata(root, path, volume, &mut &work.recheck_admitted()).map(Some),
+        Ok(None) => fallback(&mut &work.recheck_admitted()).map(Some),
         Err(crate::NativeTreeMaterializationError::Io(error))
             if matches!(error.raw_os_error(), Some(1 | 50 | 87 | 124)) =>
         {
-            stat_leaf_metadata(root, path, volume, &mut &work.recheck_admitted()).map(Some)
+            fallback(&mut &work.recheck_admitted()).map(Some)
         }
         Err(error) => Err(error),
     }
@@ -211,37 +221,7 @@ pub(super) fn capture_missing_host_ancestors(
     Ok(())
 }
 
-pub(super) struct MetadataProbeGuard<'a> {
-    pub(super) probes: &'a Mutex<HashMap<MountPath, usize>>,
-    pub(super) path: &'a MountPath,
-}
-
-impl<'a> MetadataProbeGuard<'a> {
-    pub(super) fn enter(probes: &'a Mutex<HashMap<MountPath, usize>>, path: &'a MountPath) -> Self {
-        let mut active = lock_recover(probes);
-        *active.entry(path.clone()).or_default() += 1;
-        Self { probes, path }
-    }
-
-    pub(super) fn is_active(probes: &Mutex<HashMap<MountPath, usize>>, path: &MountPath) -> bool {
-        lock_recover(probes)
-            .keys()
-            .any(|active| matches!(projfs_path_suffix(active, path), Some([])))
-    }
-}
-
-impl Drop for MetadataProbeGuard<'_> {
-    fn drop(&mut self) {
-        let mut active = lock_recover(self.probes);
-        let Some(count) = active.get_mut(self.path) else {
-            return;
-        };
-        *count -= 1;
-        if *count == 0 {
-            active.remove(self.path);
-        }
-    }
-}
+pub(super) type MetadataProbeGuard<'a> = ProbeGuard<'a, MountPath>;
 
 pub(super) fn probe_host_windows_metadata(
     root: &HostRoot,
@@ -249,8 +229,7 @@ pub(super) fn probe_host_windows_metadata(
     probes: &Mutex<HashMap<MountPath, usize>>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<HostWindowsMetadata, MountSourceError> {
-    let _guard = MetadataProbeGuard::enter(probes, path);
-    host_windows_metadata(root, path, work)
+    host_windows_metadata(root, path, work, Some(probes))
 }
 
 pub(super) fn close_metadata_handle(

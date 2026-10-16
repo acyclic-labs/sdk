@@ -13,33 +13,9 @@ impl FileTool {
             projection_schema,
             projection,
         ) = match self {
-            Self::Read => (
-                "read",
-                "portable-6",
-                "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
-                schema::input::<ReadFileInput>()?,
-                schema::output::<String>()?,
-                mode.schema::<String>()?,
-                FileProjection::Read(mode),
-            ),
-            Self::Write => (
-                "write",
-                "portable-5",
-                "Write bounded UTF-8 through the original owner-bound content publisher",
-                schema::input::<WriteFileInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
-            Self::Edit => (
-                "edit",
-                "portable-5",
-                "Replace one exact UTF-8 match at an authorized pinned source generation",
-                schema::input::<EditFileInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
+            Self::Read => return crate::tools::catalog::READ.bind_with_projection(mode),
+            Self::Write => return crate::tools::catalog::WRITE.bind_with_projection(mode),
+            Self::Edit => return crate::tools::catalog::EDIT.bind_with_projection(mode),
             Self::Patch { .. } => (
                 "acyclic.patch_file",
                 "portable-patch-4",
@@ -70,11 +46,10 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
-            hook_names: match self {
-                Self::Read => &["Read"],
-                Self::Write => &["Write"],
-                Self::Edit | Self::Patch { .. } => &["Edit"],
-                Self::Search { .. } => &[],
+            hook_names: if matches!(self, Self::Patch { .. }) {
+                &["Edit"]
+            } else {
+                &[]
             },
             definition,
             executor: Arc::new(self),

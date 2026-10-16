@@ -7,6 +7,7 @@ use std::{future::Future, sync::Arc};
 
 pub(crate) mod imports;
 use imports::Document;
+mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
 
@@ -37,6 +38,15 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    /// Media type for normalized rules retained as a configuration file.
+    pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.hooks+json";
+
+    /// Whether the selected configuration contains any event bindings.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+    }
+
     /// Adds a Claude settings file or a Codex hooks.json document atomically.
     pub fn add_json(&mut self, document: &[u8]) -> Result<()> {
         let document = serde_json::from_slice(document)

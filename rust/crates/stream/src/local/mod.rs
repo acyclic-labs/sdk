@@ -10,6 +10,8 @@ use std::sync::{Arc, PoisonError};
 use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
+#[cfg(all(not(acyclic_loom), feature = "test-support"))]
+use acyclic_native_runtime::testing::{spawn, spawn_blocking};
 use async_trait::async_trait;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
@@ -18,7 +20,7 @@ use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::mpsc;
-#[cfg(not(acyclic_loom))]
+#[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
 #[cfg(test)]
 use tracing::Instrument as _;
@@ -51,9 +53,9 @@ const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
-pub(crate) mod query_model;
-#[cfg(acyclic_loom)]
 pub(crate) mod discovery_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod query_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =

@@ -1,7 +1,8 @@
 use super::{TestResult, execution, matchers};
 use acyclic_harness::{
-    client::{CommandCatalog, CommandResolution, CommandRoot, CommandScope},
-    context::{ContextDiscoveryLimits, ContextRoot},
+    OperationId,
+    client::{CommandCatalog, CommandFileRoot, CommandResolution, CommandRoot, CommandScope},
+    context::{ContextDiscoveryLimits, ContextRoot, PinnedContextPath},
     filesystem::MemoryHarnessStorage,
 };
 use serde::Deserialize;
@@ -18,6 +19,11 @@ pub(super) struct Composer {
     commands: Vec<Root>,
     #[serde(default)]
     skills: Vec<String>,
+    #[serde(default)]
+    themes: Vec<String>,
+    catalog: Option<String>,
+    #[serde(default)]
+    publish_files: bool,
     #[serde(default)]
     workspace: String,
     #[serde(default)]
@@ -47,6 +53,8 @@ struct Expectations {
     mention_files: Option<Vec<String>>,
     #[serde(default)]
     files: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    file_values: BTreeMap<String, Value>,
 }
 
 fn maximum_bytes() -> u64 {
@@ -97,16 +105,28 @@ impl Composer {
             })
             .collect();
         let skills: Vec<_> = self.skills.into_iter().map(root).collect();
-        let observed = match CommandCatalog::capture(
-            reader,
-            &commands,
-            &skills,
-            self.discovery_limits,
-        )
-        .await
-        {
+        let captured = if let Some(path) = &self.catalog {
+            let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
+            let source = PinnedContextPath {
+                root: root(String::new()),
+                generation,
+                path: path.clone(),
+            };
+            match CommandCatalog::from_file(&source, reader, self.maximum_bytes).await {
+                Ok(catalog) => {
+                    catalog
+                        .with_sources(reader, &commands, &skills, self.discovery_limits)
+                        .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            CommandCatalog::capture(reader, &commands, &skills, self.discovery_limits).await
+        };
+        let observed = match captured {
             Err(error) => Err(error),
             Ok(catalog) => {
+                let catalog = catalog.with_themes(self.themes)?;
                 if let Some(prefix) = &self.complete {
                     let names = || catalog.complete(prefix).map(|spec| spec.name.as_str());
                     if !self
@@ -136,7 +156,78 @@ impl Composer {
                     .await
             }
         };
+        if self.publish_files {
+            if let Ok(resolution) = &observed {
+                let mut snapshot = BTreeMap::new();
+                for (binding, prefix) in [
+                    (CommandFileRoot::Config, "config"),
+                    (CommandFileRoot::Session, "session"),
+                    (CommandFileRoot::Task, "task"),
+                ] {
+                    let mut files = BTreeMap::new();
+                    for name in [
+                        "settings.json",
+                        "layout.json",
+                        "theme.json",
+                        "attention.json",
+                    ] {
+                        match storage
+                            .read_delegated_path(
+                                storage.owner_scope(),
+                                "",
+                                &format!("{prefix}/{name}"),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok((_, bytes)) => {
+                                files.insert(name.into(), serde_json::from_slice(&bytes)?);
+                            }
+                            Err(acyclic_harness::Error::NotFound(_)) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    snapshot.insert(binding, files);
+                }
+                let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")?;
+                for change in resolution.file_changes(&snapshot, operation)? {
+                    let prefix = match change.root {
+                        CommandFileRoot::Config => "config",
+                        CommandFileRoot::Session => "session",
+                        CommandFileRoot::Task => "task",
+                    };
+                    let path = format!("{prefix}/{}", change.path);
+                    if change.create_only {
+                        match storage
+                            .read_delegated_path(storage.owner_scope(), "", &path, None)
+                            .await
+                        {
+                            Err(acyclic_harness::Error::NotFound(_)) => {}
+                            _ => return Err("request file must be a new immutable creation".into()),
+                        }
+                    }
+                    storage
+                        .stage(
+                            change.operation,
+                            &path,
+                            &serde_json::to_vec(&change.contents)?,
+                            "application/json",
+                            path.rsplit('/').next().unwrap_or_default(),
+                        )
+                        .await?;
+                }
+            }
+        }
         check_resolution(&self.expect, observed, &storage).await?;
+        for (path, expected) in &self.expect.file_values {
+            let (_, bytes) = storage
+                .read_delegated_path(storage.owner_scope(), "", path, None)
+                .await?;
+            let actual: Value = serde_json::from_slice(&bytes)?;
+            if actual != *expected {
+                return Err(format!("file {path}: expected {expected}, got {actual}").into());
+            }
+        }
         execution::check_files(&self.expect.files, &storage).await
     }
 }

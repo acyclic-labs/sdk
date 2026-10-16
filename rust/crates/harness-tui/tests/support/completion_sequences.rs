@@ -21,6 +21,36 @@ pub fn exercise_broken(data: &[u8]) -> Result<(), std::io::Error> {
 }
 
 fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
+    let suffix: String = data
+        .iter()
+        .take(24)
+        .map(|byte| char::from(b'a' + byte % 26))
+        .collect();
+    let theme: String = String::from_utf8_lossy(data)
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(48)
+        .collect();
+    catalog_round_trip(
+        &format!("cmd{suffix}"),
+        &format!("alias{suffix}"),
+        &format!("É{theme} X"),
+    )?;
+    // Exercise malformed theme inventories too; replacement must be atomic.
+    let mut probe = CompletionMenu::default();
+    probe.set_file(
+        "commands/base.json",
+        Some(br#"[{"name":"theme","action":{"kind":"theme"}}]"#),
+    )?;
+    probe.set_file("commands/themes.json", Some(b"[\"Theme\"]"))?;
+    probe.refresh(&Editor::new("/theme "));
+    let before: Vec<_> = probe.items().cloned().collect();
+    if probe.set_file("commands/catalog.json", Some(data)).is_err() {
+        assert_eq!(probe.items().cloned().collect::<Vec<_>>(), before);
+    }
+    if probe.set_file("commands/themes.json", Some(data)).is_err() {
+        assert_eq!(probe.items().next().unwrap().value, "Theme");
+    }
     let mut editor = semantic_prelude(data, broken)?;
     let mut menu = CompletionMenu::default();
     for (step, chunk) in data.chunks(8).enumerate() {
@@ -119,6 +149,37 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
             assert!(request.range.start <= editor.cursor() && editor.cursor() <= request.range.end);
         }
     }
+    Ok(())
+}
+
+/// Production JSON file parsing preserves aliases, tool flags and theme spelling.
+/// Shared by shrinking properties and the instrumented completion fuzz target.
+pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
+    let mut menu = CompletionMenu::default();
+    let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"bash"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
+    menu.set_file(
+        "commands/catalog.json",
+        Some(&serde_json::to_vec(&definition)?),
+    )?;
+    let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
+    menu.refresh(&editor);
+    assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
+    let selected = menu.items().position(|item| item.value == alias).unwrap();
+    menu.selected = selected;
+    assert!(menu.items().nth(menu.selected).unwrap().tool);
+    assert!(menu.accept(&mut editor, 0));
+    assert_eq!(editor.text(), format!("/{alias} "));
+    menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
+    editor.set_text("/T ", 1);
+    menu.refresh(&editor);
+    let initial = theme.to_lowercase();
+    editor.insert(&initial, 2);
+    menu.refresh(&editor);
+    assert_eq!(menu.items().len(), 1);
+    assert!(menu.accept(&mut editor, 2));
+    assert_eq!(editor.text(), format!("/T {theme}"));
+    assert!(editor.undo());
+    assert_eq!(editor.text(), format!("/T {initial}"));
     Ok(())
 }
 

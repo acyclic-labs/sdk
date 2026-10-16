@@ -96,13 +96,13 @@ pub(super) async fn publish_status(
     id: usize,
     value: serde_json::Value,
     attention: bool,
-) -> acyclic_harness::Result<()> {
+) -> acyclic_harness::Result<u64> {
     let value = wire::SessionLatestValue {
         key: b"status".to_vec().into(),
         value: serde_json::to_vec(&value).map_err(storage)?.into(),
         attention,
     };
-    provider
+    let outcome = provider
         .append(AppendRequest {
             path: path(&format!("{}/status", agent(id).as_str())),
             records: vec![value.encode_to_vec().into()],
@@ -111,7 +111,10 @@ pub(super) async fn publish_status(
         })
         .await
         .map_err(storage)?;
-    Ok(())
+    match outcome {
+        acyclic_stream::AppendOutcome::Committed(receipt) => Ok(receipt.end),
+        _ => Err(Error::Invalid("status append was not committed".into())),
+    }
 }
 
 pub(super) struct Producer<'a> {
@@ -120,35 +123,52 @@ pub(super) struct Producer<'a> {
     pub volumes: &'a [Volume],
     pub phases: mpsc::UnboundedReceiver<usize>,
     pub receipts: mpsc::UnboundedReceiver<Receipt>,
+    pub status_receipts: Option<mpsc::UnboundedReceiver<Receipt>>,
     pub gates: mpsc::UnboundedSender<Gate>,
     pub measured: &'a mut Vec<u128>,
 }
 
 impl Producer<'_> {
+    async fn status(
+        &mut self,
+        id: usize,
+        value: serde_json::Value,
+        attention: bool,
+    ) -> acyclic_harness::Result<()> {
+        let through = publish_status(self.provider, id, value, attention).await?;
+        if let Some(receipts) = &mut self.status_receipts {
+            if receipts.next().await != Some((id, through)) {
+                return Err(Error::Invalid("status publication receipt differs".into()));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn run(mut self) -> acyclic_harness::Result<()> {
         for expected in 0..self.case.layouts.len() {
             if self.phases.next().await != Some(expected) {
                 return Err(Error::Invalid("producer phase differs".into()));
             }
+            if expected == 0
+                && let Some(receipts) = &mut self.status_receipts
+            {
+                // Consume every initial idle value before publishing new statuses.
+                // State::status already rejects duplicates, reversals and bad IDs.
+                for _ in 0..self.case.agents {
+                    if !receipts.next().await.is_some_and(|(_, next)| next == 1) {
+                        return Err(Error::Invalid("initial status receipt differs".into()));
+                    }
+                }
+            }
             let through = self.case.through(expected);
             for id in 0..self.case.agents {
                 for tokens in [through - 2, through - 1] {
-                    publish_status(
-                        self.provider,
-                        id,
-                        status(expected + 1, "running", tokens),
-                        false,
-                    )
-                    .await?;
+                    self.status(id, status(expected + 1, "running", tokens), false)
+                        .await?;
                 }
                 if id % self.case.attention_every == 0 {
-                    publish_status(
-                        self.provider,
-                        id,
-                        status(expected + 1, "approval", through - 1),
-                        true,
-                    )
-                    .await?;
+                    self.status(id, status(expected + 1, "approval", through - 1), true)
+                        .await?;
                 }
             }
             if expected == 0 {
@@ -196,13 +216,8 @@ impl Producer<'_> {
                 }
             }
             for id in 0..self.case.agents {
-                publish_status(
-                    self.provider,
-                    id,
-                    status(expected + 1, "settled", through),
-                    false,
-                )
-                .await?;
+                self.status(id, status(expected + 1, "settled", through), false)
+                    .await?;
             }
         }
         // Remain attached through the final quiescence check.

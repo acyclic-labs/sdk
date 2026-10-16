@@ -51,6 +51,9 @@ mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod file_query;
 pub use file_query::{FileQueryView, GoalFileView};
+mod model_identity;
+mod model_view;
+pub use model_view::{ModelFileView, ModelQueryView};
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]
@@ -73,7 +76,15 @@ mod query;
 pub use query::ClientQuery;
 mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use file_submit::validate_request_key;
 mod file_error;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod retry;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod waiting_calls;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use retry::submission_retry;
 pub use file_error::FileClientError;
 mod offline;
 pub use offline::validate_offline_request;

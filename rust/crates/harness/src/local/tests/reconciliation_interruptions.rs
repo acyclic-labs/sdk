@@ -28,11 +28,12 @@ async fn capture(harness: &LocalHarness) -> Result<()> {
     } = &mut *state;
     let view = active.as_ref().unwrap_or_else(|| workspace.view());
     Box::pin(tools.capture(
-        view,
+        (workspace, view),
         watcher,
         OperationId::new(),
         0,
         acyclic_fs::PublicationPermit::Unrestricted,
+        None,
     ))
     .await
 }
@@ -53,7 +54,8 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
     let checkout = harness.workspace().unwrap();
     assert_eq!(
         std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
-        expected.as_bytes()
+        expected.as_bytes(),
+        "unpublished rebase"
     );
     let selected = checkout.selected_view().await?.0.unwrap();
     let head = generation(&selected).await?;
@@ -311,7 +313,7 @@ async fn negative_control(text: &str) -> Result<()> {
         },
     )
     .await?;
-    windows
+    let finished = windows
         .finish_workspace(
             selected.workspace(),
             &lease,
@@ -320,11 +322,41 @@ async fn negative_control(text: &str) -> Result<()> {
         )
         .await
         .map_err(super::super::storage)?;
+    assert!(matches!(
+        finished,
+        acyclic_fs::WorkspaceOperationFinish::Reconciled(
+            acyclic_fs::WorkspaceRebase::Rebased(_)
+                | acyclic_fs::WorkspaceRebase::AlreadyRebased(_)
+                | acyclic_fs::WorkspaceRebase::Current(_)
+        )
+    ));
+    // Establish the healthy pre-fault cut: the SDK head has rebased, while
+    // physical publication is still pending. The mutant below removes its fence.
+    assert_eq!(
+        generation(&selected)
+            .await?
+            .read(
+                "/upstream.txt",
+                128,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
+        expected.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
+        b"base"
+    );
     let root = checkout.view().workspace().id();
     let mut state = GitCompatStore::load(&checkout.store, root)
         .await
         .map_err(super::super::storage)?
         .unwrap();
+    assert!(state.checkout_reconciliation.is_some());
     let revision = state.revision;
     state.revision += 1;
     state.checkout_reconciliation = None; // deliberately broken: acknowledge before publishing
@@ -335,37 +367,22 @@ async fn negative_control(text: &str) -> Result<()> {
     );
     drop(harness);
     let harness = open(directory.path(), state_directory.path()).await?;
-    let bytes =
-        std::fs::read(directory.path().join("upstream.txt")).map_err(super::super::storage)?;
-    let failure =
-        std::panic::catch_unwind(|| assert_eq!(bytes, expected.as_bytes(), "unpublished rebase"));
+    // Acknowledging before publication permits capture over the rebased SDK
+    // head. The same complete crash invariant used by the positive sweep must
+    // detect this deliberately broken variant; preservation cannot hold here.
+    let failure = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(assert_published(
+        &harness, &expected,
+    )))
+    .await
+    .expect_err("the crash invariant missed premature acknowledgement");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
     assert!(
-        failure.is_err(),
-        "the crash invariant missed premature acknowledgement"
-    );
-    // No capture is allowed in this deliberately corrupted case.
-    assert_eq!(
-        generation(
-            &harness
-                .workspace()
-                .unwrap()
-                .selected_view()
-                .await?
-                .0
-                .unwrap()
-        )
-        .await?
-        .read(
-            "/upstream.txt",
-            128,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new()
-        )
-        .await
-        .map_err(super::super::storage)?
-        .value
-        .as_ref(),
-        expected.as_bytes()
+        message.contains("unpublished rebase"),
+        "unexpected invariant failure: {message}"
     );
     Ok(())
 }

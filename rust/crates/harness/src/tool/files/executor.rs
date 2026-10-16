@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(in crate::tool) enum FileTool {
+pub(crate) enum FileTool {
     Read,
     Write,
     Edit,

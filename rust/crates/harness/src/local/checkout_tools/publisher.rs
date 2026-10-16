@@ -110,7 +110,7 @@ impl CheckoutPublisher {
                 if let Some(native) = native {
                     native.sync().await?;
                 } else {
-                    self.tools.capture(view, watcher, operation, 0, PublicationPermit::Unrestricted).await?;
+                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted, None).await?;
                 }
             }
             let file = match publication {

@@ -1,0 +1,71 @@
+{
+  "responses":[
+    [
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}",
+      "\n\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use",
+      "\",\"id\":\"call\",\"name\":\"write\",\"input\":{}}}\n\ndata: {\"type\":\"content_block_delta",
+      "\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"p",
+      "lans/a.md\\\",\\\"text\\\":\\\"after\\\\n\\\",\\\"media_type\\\":\\\"text/markdown\\\",\\\"dis",
+      "play_name\\\":\\\"a.md\\\"}\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\ndata",
+      ": {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tok",
+      "ens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+    ],
+    [
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}",
+      "\n\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"t",
+      "ext\":\"done\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}",
+      ",\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+    ]
+  ],
+  "expect":{
+    "text":"done",
+    "requests":[
+      {},
+      {
+        "/messages/1/content/0":{
+          "type":"tool_use",
+          "id":"call",
+          "name":"write",
+          "input":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}
+        },
+        "/messages/2/content/0":{
+          "type":"tool_result",
+          "tool_use_id":"call",
+          "content":{
+            "$json":{
+              "file":{
+                "path":"plans/a.md",
+                "display_name":"a.md",
+                "descriptor":{
+                  "byte_length":6,
+                  "media_type":"text/markdown",
+                  "sha256":[
+                    123,154,114,70,109,57,96,235,42,172,204,252,132,137,57,69,52,144,219,6,
+                    120,189,71,37,222,243,247,137,184,145,201,25
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "/messages/2/content/0/tool_use_id":"call"
+      }
+    ],
+    "events":[
+      [
+        {
+          "kind":"tool_call",
+          "name":"write",
+          "arguments":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"},
+          "metadata":{"provider_call":{"provider":"anthropic","id":"call"}}
+        },
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ],
+      [
+        {"kind":"content","delta":"done"},
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ],
+    "files":{"plans/a.md":"after\n"}
+  }
+}

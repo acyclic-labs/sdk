@@ -120,6 +120,7 @@ mod recovery_control;
 pub(super) use recovery_control::*;
 mod locks;
 use locks::*;
+mod probe_guard;
 mod metadata;
 use metadata::*;
 mod notifications;

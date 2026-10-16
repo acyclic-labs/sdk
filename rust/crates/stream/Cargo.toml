@@ -26,13 +26,14 @@ name = "browser-test-host"
 required-features = ["grpc"]
 
 [features]
+test-support = ["acyclic-native-runtime/test-support"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]
 local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
-wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "tokio/macros"]
+wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -56,10 +57,10 @@ tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
-tracing-subscriber.workspace = true
-web-sys = { workspace = true, features = ["BroadcastChannel", "MessageEvent", "WorkerGlobalScope", "WebSocket", "BinaryType", "Event", "CloseEvent", "Url", "AbortController", "AbortSignal"], optional = true }
+web-sys = { workspace = true, features = ["BroadcastChannel", "MessageEvent", "WorkerGlobalScope", "WebSocket", "BinaryType", "Event", "CloseEvent", "Url"], optional = true }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"], optional = true }
 tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2", optional = true }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"], optional = true }
 indexed_db_futures = { workspace = true, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }

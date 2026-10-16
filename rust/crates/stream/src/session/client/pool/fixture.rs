@@ -3,12 +3,11 @@ use super::*;
 pub(in crate::session::client) fn fixture(
     channel: TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
-    let channel = native::endpoint(channel, Some("Bearer fixture".parse().unwrap()), None);
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
-        connections: crate::session::Connections::new(),
-        executor: std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        connections: super::super::super::Connections::new(),
+        executor: std::sync::Arc::new(super::super::super::runtime::PlatformExecutor),
         identity: Bytes::from_static(b"model"),
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
@@ -17,7 +16,11 @@ pub(in crate::session::client) fn fixture(
         reads: FuturesUnordered::new(),
         dials: BTreeMap::new(),
         pending: VecDeque::new(),
-        home_channel: channel.clone(),
+        home_channel: native::endpoint(
+            channel.clone(),
+            Some("Bearer fixture".parse().unwrap()),
+            None,
+        ),
         next_link: 3,
         active: Arc::new(AtomicU64::new(0)),
         admissions: Arc::new(Admissions::new()),
@@ -40,7 +43,11 @@ pub(in crate::session::client) fn fixture(
                     bytes: crate::MAX_COMMAND_BYTES as u64,
                     frames: 2,
                 },
-                channel: channel.clone(),
+                channel: native::endpoint(
+                    channel.clone(),
+                    Some("Bearer fixture".parse().unwrap()),
+                    None,
+                ),
                 sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
                 revision: 0,
                 applied_revision: 0,
@@ -62,8 +69,8 @@ pub(in crate::session::client) fn fixture(
             3,
             "good",
             Kind::Follow(wire::SessionFollow {
-                path: "healthy".into(),
                 delivery: wire::SessionDelivery::All as i32,
+                path: "healthy".into(),
                 ..Default::default()
             }),
         ),
@@ -75,6 +82,8 @@ pub(in crate::session::client) fn fixture(
         pool.routes.insert(
             id,
             Route {
+                raw: false,
+                watermark: None,
                 node: node.into(),
                 attempt_epoch: 0,
                 kind,

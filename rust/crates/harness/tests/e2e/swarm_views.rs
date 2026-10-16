@@ -41,6 +41,7 @@ pub(super) struct State<'a> {
     fault: Fault,
     full_records: usize,
     receipts: mpsc::UnboundedSender<Receipt>,
+    status_receipts: Option<mpsc::UnboundedSender<Receipt>>,
 }
 
 impl<'a> State<'a> {
@@ -48,6 +49,7 @@ impl<'a> State<'a> {
         case: &'a SwarmCase,
         receipts: mpsc::UnboundedSender<Receipt>,
         fault: Fault,
+        status_receipts: Option<mpsc::UnboundedSender<Receipt>>,
     ) -> Self {
         Self {
             case,
@@ -67,6 +69,7 @@ impl<'a> State<'a> {
             fault,
             full_records: 0,
             receipts,
+            status_receipts,
         }
     }
 
@@ -232,6 +235,11 @@ impl<'a> State<'a> {
             }
             self.settled[id] = phase;
             self.statuses_done += 1;
+        }
+        if let Some(receipts) = &self.status_receipts {
+            receipts
+                .unbounded_send((id, next))
+                .map_err(publish::storage)?;
         }
         Ok(())
     }

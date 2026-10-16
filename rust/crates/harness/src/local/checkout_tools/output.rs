@@ -70,7 +70,7 @@ impl Output {
                 let condition = owner
                     .condition(crate::distributed::JournalWrite::Fresh, &mut None)
                     .await?;
-                Ok((vec![condition], owner.deadline_epoch_ms()))
+                Ok::<_, crate::Error>((vec![condition], owner.deadline_epoch_ms()))
             },
         )
         .await?;

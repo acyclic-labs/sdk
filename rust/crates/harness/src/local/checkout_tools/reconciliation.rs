@@ -106,13 +106,14 @@ where
     if let Some(outcome) = outcome {
         super::git::reconciliation_generation(outcome)?;
     }
-    replay(workspace, view, pending, before_effect).await?;
+    replay(workspace, view, pending, true, before_effect).await?;
     Ok(true)
 }
 
 pub(super) async fn publish<F, Fut>(
     workspace: &LocalWorkspace,
     view: &workspace::View,
+    refresh_mount: bool,
     before_effect: &F,
 ) -> Result<()>
 where
@@ -125,7 +126,9 @@ where
         .map_err(storage)?
         .and_then(|state| state.checkout_reconciliation)
     {
-        replay(workspace, view, pending, before_effect).await?;
+        replay(workspace, view, pending, refresh_mount, before_effect).await?;
+    } else if refresh_mount {
+        advance_mount(workspace, before_effect).await?;
     }
     Ok(())
 }
@@ -134,6 +137,7 @@ async fn replay<F, Fut>(
     workspace: &LocalWorkspace,
     view: &workspace::View,
     pending: Pending,
+    refresh_mount: bool,
     before_effect: &F,
 ) -> Result<()>
 where
@@ -146,37 +150,63 @@ where
             "unpublished reconciliation belongs to another checkout".into(),
         ));
     }
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let from = view
-        .workspace()
-        .generation(
-            source.generation,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(storage)?
-        .value;
-    let to = view
-        .workspace()
-        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map_err(storage)?
-        .value;
-    Box::pin(crate::tools::git::publish_checkout_transition(
-        &workspace.path,
-        workspace.identity,
-        &workspace.store,
-        operation,
-        from,
-        to,
-        before_effect,
-    ))
-    .await?;
+    if workspace.mounted.is_some() {
+        if refresh_mount {
+            advance_mount(workspace, before_effect).await?;
+        }
+    } else {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let from = view
+            .workspace()
+            .generation(
+                source.generation,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        let to = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        Box::pin(crate::tools::git::publish_checkout_transition(
+            &workspace.path,
+            workspace.identity,
+            &workspace.store,
+            operation,
+            from,
+            to,
+            before_effect,
+        ))
+        .await?;
+    }
     // A crash even after Applied leaves this intent. The native journal then
     // acknowledges without replaying over subsequent user edits.
     before_effect().await?;
     replace(workspace, Some(pending), None).await?;
+    Ok(())
+}
+
+pub(super) async fn advance_mount<F, Fut>(
+    workspace: &LocalWorkspace,
+    before_effect: &F,
+) -> Result<()>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<()>> + Send,
+{
+    if let Some(mount) = &workspace.mounted {
+        before_effect().await?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        workspace
+            .mount_advances
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        mount.advance_to_head().await.map_err(storage)?;
+        before_effect().await?;
+    }
     Ok(())
 }
 

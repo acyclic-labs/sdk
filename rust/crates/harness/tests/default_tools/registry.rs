@@ -219,7 +219,7 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
 
 struct Reader;
 impl conversation::ContentResidencyVerifier for Reader {}
-fn content() -> runtime::ContentBindings {
+pub(super) fn content() -> runtime::ContentBindings {
     runtime::ContentBindings {
         reader: Arc::new(Reader),
         writer: None,

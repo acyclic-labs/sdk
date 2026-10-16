@@ -3,12 +3,14 @@ use super::*;
 #[cfg(feature = "filesystem")]
 impl AgentHarness {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    pub(crate) fn output_volume(&self) -> Option<&VolumeRef> {
+    pub(crate) fn output_destination<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Option<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.content
-            .as_ref()?
-            .writer
             .as_ref()
-            .map(|writer| writer.volume())
+            .and_then(|binding| binding.writer.as_ref())
+            .and_then(|writer| writer.destination(None, path, None).ok())
     }
 
     pub(crate) fn bind_output(

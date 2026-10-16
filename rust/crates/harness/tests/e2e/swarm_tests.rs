@@ -97,7 +97,7 @@ async fn retained_server_follows_and_corrupt_retired_snapshots_break_unchanged_e
             "file fold examined 4 items instead of 3",
         ),
     ] {
-        let error = swarm::run_with_fault(case.clone(), fault)
+        let error = swarm::run_with_fault(case.clone(), fault, false)
             .await
             .expect_err("accepted injected fault");
         assert!(error.to_string().contains(reason), "{fault:?}: {error}");
@@ -116,7 +116,9 @@ async fn dropped_attention_missing_boundary_and_duplicate_content_break_unchange
         Fault::DuplicateContent,
     ] {
         assert!(
-            swarm::run_with_fault(case.clone(), fault).await.is_err(),
+            swarm::run_with_fault(case.clone(), fault, false)
+                .await
+                .is_err(),
             "accepted {fault:?}"
         );
     }

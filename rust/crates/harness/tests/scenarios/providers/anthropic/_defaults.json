@@ -1,0 +1,22 @@
+{
+  "protocol":"anthropic",
+  "responses":[
+    [
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}",
+      "\n\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"t",
+      "ext\":\"hé\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"te",
+      "xt_delta\",\"text\":\"🦀\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"",
+      "end_turn\"},\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ],
+    "endpoint":"/messages"
+  }
+}

@@ -32,20 +32,29 @@ impl Pool {
         let Some(route) = self.routes.get(&owner) else {
             return;
         };
+        let recovering = route.generation > 1;
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
-                let outcome = async {
-                    let channel = match channel {
-                        Some(channel) => channel,
-                        None => connect(node).await?,
-                    };
-                    open_link(channel, &name, identity, executor).await
-                }
-                .await;
+                let outcome = loop {
+                    let result = async {
+                        let channel = match &channel {
+                            Some(channel) => channel.clone(),
+                            None => connect(node.clone()).await?,
+                        };
+                        open_link(channel, &name, identity.clone(), executor.clone()).await
+                    }
+                    .await;
+                    match result {
+                        // Existing interests own recovery until cancellation.
+                        // Initial admission and credential rejection stay bounded.
+                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        result => break result,
+                    }
+                };
                 (name, epoch, outcome)
             })),
         );
@@ -114,6 +123,7 @@ impl Pool {
             tracing::debug!(event = "subscribe", generation = route.generation);
         });
         route.opened = false;
+        route.watermark = None;
         route.credit = wire::SessionWindow::default();
         let link = self
             .links
@@ -180,8 +190,9 @@ impl Pool {
         let Some(route) = self.routes.get_mut(&id).filter(|route| route.opened) else {
             return Ok(());
         };
-        let capacity =
-            u32::try_from(route.records.capacity()).map_err(|_| StreamError::Capacity)?;
+        let capacity = u32::try_from(route.records.capacity())
+            .map_err(|_| StreamError::Capacity)?
+            .saturating_sub(u32::from(route.raw));
         let grant = wire::SessionWindow {
             frames: capacity.saturating_sub(route.credit.frames),
             bytes: (u64::from(capacity)

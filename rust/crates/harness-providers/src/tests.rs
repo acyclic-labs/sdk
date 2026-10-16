@@ -17,6 +17,8 @@ use std::{
 };
 #[path = "counting/admission_tests.rs"]
 mod admission_tests;
+#[path = "alloy_tests.rs"]
+mod alloy_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
@@ -33,8 +35,13 @@ mod gemini_replay_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "input/projection_tests.rs"]
+mod input_projection_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 pub(crate) mod native_tests;
+#[path = "input/portable_projection_tests.rs"]
+mod portable_projection_tests;
 #[path = "tool_name_tests.rs"]
 mod tool_name_tests;
 
@@ -461,9 +468,12 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         base_url: "https://example.test/v1".into(),
         models: BTreeMap::from([(
             "org/model".into(),
-            ModelContextCapacity {
-                context_tokens: 8192,
-                output_tokens: 1024,
+            ModelSpec {
+                capacity: ModelContextCapacity {
+                    context_tokens: 8192,
+                    output_tokens: 1024,
+                },
+                features: ModelFeatures::default(),
             },
         )]),
         token_counter: Some(crate::TokenCounterSpec {

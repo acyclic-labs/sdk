@@ -5,6 +5,7 @@ use super::{
     query::WasmTaskVolume,
 };
 use crate::client::mailbox;
+use crate::client::waiting_calls::WaitingCalls;
 use crate::client::{FileClient, FileClientError, FileClientLimits};
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -19,8 +20,9 @@ pub(super) fn admission_error(value: FileClientError) -> JsValue {
 /// One ordered Rust owner of private outbox and remote task publication.
 #[wasm_bindgen]
 pub struct WasmFileClient {
-    commands: mailbox::Sender<Command>,
+    commands: Rc<mailbox::Sender<Command>>,
     state: Rc<State>,
+    waiting: Rc<WaitingCalls>,
 }
 
 #[wasm_bindgen]
@@ -32,39 +34,60 @@ impl WasmFileClient {
         target: &WasmTaskVolume,
         #[wasm_bindgen(unchecked_param_type = "FileClientLimits")] limits: JsValue,
     ) -> Result<WasmFileClient, JsValue> {
-        let inner = FileClient::open(
-            outbox.volume.clone(),
-            target.volume.clone(),
-            from_js::<FileClientLimits>(limits)?,
-        )
-        .await
-        .map_err(admission_error)?;
-        let (commands, state) = start(inner, target).await?;
-        Ok(Self { commands, state })
+        let limits = from_js::<FileClientLimits>(limits)?;
+        let inner = FileClient::open(outbox.volume.clone(), target.volume.clone(), limits)
+            .await
+            .map_err(admission_error)?;
+        let (commands, state) = start(inner, outbox, target).await?;
+        Ok(Self {
+            commands: Rc::new(commands),
+            state,
+            waiting: WaitingCalls::new(limits),
+        })
     }
 
     /// Length admission happens in Rust before this JavaScript handle is copied.
-    #[wasm_bindgen]
-    pub async fn enqueue(
+    #[wasm_bindgen(unchecked_return_type = "Promise<void>")]
+    pub fn enqueue(
         &self,
         #[wasm_bindgen(unchecked_param_type = "FileKey")] key: JsValue,
         bytes: js_sys::Uint8Array,
-    ) -> Result<(), JsValue> {
-        let (reply, result) = mailbox::channel();
-        self.commands
-            .send(Command::Enqueue {
-                key: from_js(key)?,
-                bytes,
-                reply,
-            })
-            .await
-            .map_err(|()| error("client owner stopped"))?;
-        result.await.map_err(|()| error("client owner stopped"))?
+    ) -> js_sys::Promise {
+        let key = match from_js(key) {
+            Ok(key) => key,
+            Err(failure) => return js_sys::Promise::reject(&failure),
+        };
+        if let Err(failure) = crate::client::validate_request_key(&key) {
+            return js_sys::Promise::reject(&admission_error(failure));
+        }
+        // Reserve synchronously, before any future or mailbox waiter retains the buffer.
+        // A small view still retains its entire backing buffer, including permitted growth.
+        let buffer = bytes.buffer();
+        let retained = js_sys::Reflect::get(&buffer, &JsValue::from_str("maxByteLength"))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .unwrap_or(f64::from(buffer.byte_length())) as u64;
+        let reservation = match self.waiting.reserve(retained) {
+            Ok(reservation) => reservation,
+            Err(failure) => return js_sys::Promise::reject(&admission_error(failure)),
+        };
+        let commands = self.commands.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let _reservation = reservation;
+            let (reply, result) = mailbox::channel();
+            commands
+                .send(Command::Enqueue { key, bytes, reply })
+                .await
+                .map_err(|()| error("client owner stopped"))?;
+            result.await.map_err(|()| error("client owner stopped"))??;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// Attempts publication now. Indeterminate requests remain durably pending.
     #[wasm_bindgen]
     pub async fn flush(&self) -> Result<usize, JsValue> {
+        let _reservation = self.waiting.reserve(0).map_err(admission_error)?;
         let (reply, result) = mailbox::channel();
         self.commands
             .send(Command::Flush(reply))
@@ -76,11 +99,15 @@ impl WasmFileClient {
     /// Waits for automatic remote draining, without transport or retry code in JS.
     #[wasm_bindgen(js_name = whenIdle)]
     pub async fn when_idle(&self) -> Result<(), JsValue> {
+        let reservation = self.waiting.reserve(0).map_err(admission_error)?;
         let (reply, result) = mailbox::channel();
         self.commands
             .send(Command::Idle(reply))
             .await
             .map_err(|()| error("client owner stopped"))?;
+        // The owner bounds registered idle waiters separately. Leave capacity for
+        // the flush that makes this wait complete, even at a one-command limit.
+        drop(reservation);
         result.await.map_err(|()| error("client owner stopped"))?
     }
 

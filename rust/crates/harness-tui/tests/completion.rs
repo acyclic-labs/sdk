@@ -15,6 +15,30 @@ use proptest::prelude::*;
 mod sequences;
 
 #[test]
+fn unicode_theme_completion_preserves_the_configured_name() {
+    sequences::catalog_round_trip("shell", "sh", "Éclair Light").unwrap();
+    sequences::catalog_round_trip("shell", "sh", "ΟΣ").unwrap();
+}
+
+#[test]
+fn completion_fuzz_empty_input_is_valid() {
+    sequences::exercise(&[]).unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn command_and_theme_files_round_trip(name in "cmd[a-z]{1,24}", alias in "sh[a-z]{1,24}", theme in "[A-Z][a-z]{1,24} [A-Z][a-z]{1,24}") {
+        prop_assert!(sequences::catalog_round_trip(&name, &alias, &theme).is_ok());
+    }
+    #[test]
+    fn unicode_theme_file_completion_round_trips(chars in proptest::collection::vec(any::<char>().prop_filter("theme text", |c| !c.is_control()), 0..48)) {
+        let theme = format!("É{} X", chars.into_iter().collect::<String>());
+        prop_assert!(sequences::catalog_round_trip("shell", "sh", &theme).is_ok());
+    }
+}
+
+#[test]
 fn completion_regression_corpus() {
     for seed in [
         include_bytes!("../fuzz/corpus/completion_events/undo-refresh").as_slice(),
@@ -22,6 +46,9 @@ fn completion_regression_corpus() {
         include_bytes!("../fuzz/corpus/completion_events/mention").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/quotes").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/unicode").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/catalog-alias").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/themes").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/greek-theme").as_slice(),
     ] {
         assert!(sequences::exercise(seed).is_ok());
     }

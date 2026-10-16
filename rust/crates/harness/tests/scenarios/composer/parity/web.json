@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "tool": "web_search",
+      "kind": "tool",
+      "input": {
+        "query": "echo @missing.txt"
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "tool": "web_search",
+        "kind": "tool",
+        "input": {
+          "query": "echo @missing.txt"
+        }
+      }
+    }
+  },
+  "prompt": "/web echo @missing.txt"
+}

@@ -14,6 +14,10 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+mod provider_case;
+mod provider_http;
+mod provider_tests;
+mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
 mod scenario;
@@ -23,6 +27,7 @@ mod swarm;
 mod swarm_case;
 mod swarm_publish;
 mod swarm_provider;
+mod swarm_scaling;
 mod swarm_tests;
 mod swarm_views;
 mod swarm_wire;

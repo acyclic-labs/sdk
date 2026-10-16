@@ -80,7 +80,6 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

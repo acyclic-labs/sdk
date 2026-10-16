@@ -18,7 +18,10 @@ pub(super) use acyclic_native_runtime::obs::OperationSpan;
 #[path = "runtime/browser.rs"]
 mod browser;
 #[cfg(target_arch = "wasm32")]
-pub(super) use browser::OperationSpan;
+pub(super) use context::OperationSpan;
+#[cfg(any(test, target_arch = "wasm32"))]
+#[path = "runtime/context.rs"]
+mod context;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Executor for PlatformExecutor {

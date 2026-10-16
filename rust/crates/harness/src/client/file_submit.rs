@@ -1,6 +1,6 @@
 //! Ordered request files, with the private volume as the sole outbox.
 
-use super::{FileClientError, query_error};
+use super::FileClientError;
 use crate::{
     Error,
     task_volume::{
@@ -16,6 +16,19 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, FileClientError>;
+
+pub(crate) fn validate_request_key(key: &FileKey) -> Result<()> {
+    if !matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::Request(_),
+            ..
+        }
+    ) {
+        return Err(Error::Invalid("submit requires an immutable task request file".into()).into());
+    }
+    Ok(())
+}
 
 /// The publication prefix required before an outbox entry can be acknowledged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -84,20 +97,24 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         if limits.commands == 0 || limits.bytes == 0 {
             return Err(Error::Invalid("invalid file client bounds".into()).into());
         }
-        let checkpoint = FileKey::parse("workspace/client/outbox.json").map_err(query_error)?;
-        let target_head = target.head().await.map_err(query_error)?;
+        let checkpoint =
+            FileKey::parse("workspace/client/outbox.json").map_err(FileClientError::publication)?;
+        let target_head = target.head().await.map_err(FileClientError::publication)?;
         let target_id = target_head.volume;
         let target_epoch = target_head.epoch;
         let state = outbox
             .snapshot(&Query::File(checkpoint.clone()), 1)
             .await
-            .map_err(query_error)?;
+            .map_err(FileClientError::publication)?;
         if state.generation.volume == target_id {
             return Err(Error::Invalid("outbox and target are the same volume".into()).into());
         }
         let cursor = if let Some(file) = state.files.first() {
             if limits.durability == FileClientDurability::Durable
-                && !outbox.file_is_durable(file).await.map_err(query_error)?
+                && !outbox
+                    .file_is_durable(file)
+                    .await
+                    .map_err(FileClientError::publication)?
             {
                 return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
             }
@@ -114,13 +131,16 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             if !outbox
                 .snapshot(&Query::Tasks, 1)
                 .await
-                .map_err(query_error)?
+                .map_err(FileClientError::publication)?
                 .files
                 .is_empty()
             {
                 return Err(Error::Conflict("outbox requests have no checkpoint".into()).into());
             }
-            let cursor = outbox.cut(&Query::Tasks).await.map_err(query_error)?;
+            let cursor = outbox
+                .cut(&Query::Tasks)
+                .await
+                .map_err(FileClientError::publication)?;
             let bytes = serde_json::to_vec(&Checkpoint {
                 target: target_id,
                 target_epoch,
@@ -131,13 +151,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             outbox
                 .append(state.generation, &Write::new(checkpoint.clone(), bytes))
                 .await
-                .map_err(query_error)?;
+                .map_err(FileClientError::publication)?;
             cursor
         };
         let changes = outbox
             .follow(Query::Tasks, cursor.clone())
             .await
-            .map_err(query_error)?;
+            .map_err(FileClientError::publication)?;
         let mut client = Self {
             outbox,
             target,
@@ -168,7 +188,11 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
     }
 
     async fn catch_up(&mut self) -> Result<()> {
-        let cut = self.outbox.cut(&Query::Tasks).await.map_err(query_error)?;
+        let cut = self
+            .outbox
+            .cut(&Query::Tasks)
+            .await
+            .map_err(FileClientError::publication)?;
         while self.scanned.position < cut.position {
             if self.buffered.is_none() {
                 self.buffered = Some(
@@ -176,7 +200,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                         .next()
                         .await
                         .ok_or_else(|| Error::Storage("outbox follow ended".into()))?
-                        .map_err(query_error)?,
+                        .map_err(FileClientError::publication)?,
                 );
             }
             let change = self
@@ -246,22 +270,12 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
         produce: impl FnOnce() -> crate::Result<acyclic_stream::OwnedBytes>,
     ) -> Result<()> {
         self.catch_up().await?;
-        if !matches!(
-            key,
-            FileKey::Task {
-                file: TaskFile::Request(_),
-                ..
-            }
-        ) {
-            return Err(
-                Error::Invalid("submit requires an immutable task request file".into()).into(),
-            );
-        }
+        validate_request_key(&key)?;
         let existing = self
             .outbox
             .snapshot(&Query::File(key.clone()), 1)
             .await
-            .map_err(query_error)?;
+            .map_err(FileClientError::publication)?;
         if let Some(file) = existing.files.first() {
             if file.bytes.len() as u64 != length {
                 return Err(Error::Conflict("outbox request identity conflict".into()).into());
@@ -288,7 +302,11 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             position: self.scanned.position,
             commit: self.scanned.commit,
         };
-        let publication = self.outbox.append(head, &write).await.map_err(query_error);
+        let publication = self
+            .outbox
+            .append(head, &write)
+            .await
+            .map_err(FileClientError::publication);
         // A failed acknowledgement may follow successful publication. Retain
         // accepted intent even when returning that indeterminate failure.
         let reconciled = self.catch_up().await;
@@ -309,7 +327,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 .outbox
                 .snapshot(&Query::File(self.checkpoint.clone()), 1)
                 .await
-                .map_err(query_error)?;
+                .map_err(FileClientError::publication)?;
             let current: Checkpoint = serde_json::from_slice(
                 &checkpoint
                     .files
@@ -333,25 +351,27 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     .outbox
                     .file_is_durable(&pending.write)
                     .await
-                    .map_err(query_error)?
+                    .map_err(FileClientError::publication)?
             {
                 return Err(Error::Conflict("outbox publication awaits durability".into()).into());
             }
-            let head = self.target.head().await.map_err(query_error)?;
+            let head = self
+                .target
+                .head()
+                .await
+                .map_err(FileClientError::publication)?;
             if head.volume != self.target_id || head.epoch != self.target_epoch {
                 return Err(Error::Conflict("outbox target history differs".into()).into());
             }
             let rejected =
                 match crate::task_volume::publish(&self.target, head, &pending.write, || {
-                    std::future::ready(Ok((Vec::new(), None)))
+                    std::future::ready(Ok::<_, crate::task_volume::Error>((Vec::new(), None)))
                 })
                 .await
                 {
                     Ok(_) => None,
-                    Err(Error::TaskFiles(error)) if terminal_rejection(&error) => {
-                        Some(error.to_string())
-                    }
-                    Err(error) => return Err(error.into()),
+                    Err(error) if terminal_rejection(&error) => Some(error.to_string()),
+                    Err(error) => return Err(FileClientError::publication(error)),
                 };
             if rejected.is_none()
                 && self.limits.durability == FileClientDurability::Durable
@@ -359,7 +379,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     .target
                     .file_is_durable(&pending.write)
                     .await
-                    .map_err(query_error)?
+                    .map_err(FileClientError::publication)?
             {
                 return Err(Error::Conflict("target publication awaits durability".into()).into());
             }
@@ -374,13 +394,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             self.outbox
                 .append(checkpoint.generation, &checkpoint_write)
                 .await
-                .map_err(query_error)?;
+                .map_err(FileClientError::publication)?;
             if self.limits.durability == FileClientDurability::Durable
                 && !self
                     .outbox
                     .file_is_durable(&checkpoint_write)
                     .await
-                    .map_err(query_error)?
+                    .map_err(FileClientError::publication)?
             {
                 return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
             }

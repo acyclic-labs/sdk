@@ -11,6 +11,8 @@ impl LocalStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
+        #[cfg(feature = "test-support")]
+        describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
@@ -87,7 +89,7 @@ impl LocalStream {
                 &original,
                 std::mem::size_of_val(&worker),
             )?;
-            let task = tokio::spawn(async move {
+            let task = spawn(async move {
                 let _allocation = allocation;
                 worker.await
             });
@@ -100,6 +102,13 @@ impl LocalStream {
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!(
+                "native append {} {:?}",
+                request.path, request.idempotency_key
+            )
+        });
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&original, async move {
