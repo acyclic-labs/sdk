@@ -1,5 +1,6 @@
 use super::*;
 use crate::{executor::TurnOutput, runtime::TaskStateProvider};
+use acyclic_stream::BoxProviderFuture;
 
 const TRANSITIONS_PER_SLICE: u32 = 32;
 
@@ -98,7 +99,7 @@ impl LocalHarness {
         &'a self,
         operation: OperationId,
         prompt: &'a str,
-    ) -> impl Future<Output = Result<Admission<RuntimeTask<TurnOutput>>>> + 'a {
+    ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
         Box::pin(async move {
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
@@ -295,7 +296,7 @@ impl LocalHarness {
     }
 
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
-    pub fn resume(&self, task: TaskId) -> impl Future<Output = Result<TurnOutput>> {
+    pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
             let root = self.loop_root(task).await?;
             let mut current = task;
