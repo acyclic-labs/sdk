@@ -5,7 +5,7 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    fn stock_commands(
+    pub(super) fn stock_commands(
         &self,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
