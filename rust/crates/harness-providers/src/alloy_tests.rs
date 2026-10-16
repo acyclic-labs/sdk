@@ -311,6 +311,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             provider,
             prepared.request(),
             &crate::tool_names::Names::new(prepared.request()),
+            &provider.reasoning_origin(None, None),
         )?)
         .unwrap();
         for message in &history {
@@ -340,6 +341,12 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             .generate(prepared, dispatch)
             .try_collect::<Vec<_>>()
             .await?;
+        {
+            let sent = transport.sent.lock().unwrap();
+            let captured = sent.last().expect("captured provider request");
+            assert_eq!(captured.body.as_ref(), body.as_slice());
+            assert_foreign_wire(&captured.body, provider.config.adapter, ordinal);
+        }
         let replay: Vec<ModelEvent> =
             serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();
         assert_eq!(events, replay);
@@ -387,4 +394,94 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
     }
     assert_eq!(transport.sent.lock().unwrap().len(), 5);
     Ok(())
+}
+
+const WIRE_REASONING: [(&str, &str, &[&str]); 4] = [
+    (
+        "anthropic",
+        "readable-anthropic-marker",
+        &["opaque-anthropic-signature"],
+    ),
+    (
+        "responses",
+        "readable-responses-marker",
+        &[
+            "opaque-responses-encrypted",
+            "opaque-responses-no-readable-content",
+        ],
+    ),
+    (
+        "gemini",
+        "readable-gemini-marker",
+        &["opaque-gemini-signature"],
+    ),
+    ("chat", "readable-chat-marker", &[]),
+];
+
+fn assert_foreign_wire(bytes: &[u8], adapter: Adapter, ordinal: u64) {
+    let body: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let field = match adapter {
+        Adapter::Responses => "input",
+        Adapter::Gemini => "contents",
+        _ => "messages",
+    };
+    let mut plain = Vec::new();
+    for message in body[field].as_array().expect("projected messages") {
+        let content = &message[if adapter == Adapter::Gemini {
+            "parts"
+        } else {
+            "content"
+        }];
+        if let Some(text) = content.as_str() {
+            plain.push(text);
+        }
+        for part in content.as_array().into_iter().flatten() {
+            if part["thought"] != true {
+                if let Some(text) = part["text"].as_str() {
+                    plain.push(text);
+                }
+            }
+        }
+    }
+    let plain = plain.join("\n");
+    let wire = std::str::from_utf8(bytes).unwrap();
+    let target = crate::stream::family(adapter);
+    for (index, &(origin, readable, opaque)) in WIRE_REASONING.iter().enumerate() {
+        if origin == target {
+            continue;
+        }
+        if (index as u64) < ordinal {
+            assert!(
+                plain.contains(readable),
+                "foreign readable reasoning missing from plain context: {origin}"
+            );
+            assert!(
+                plain.contains(&format!("<prior-reasoning provider={origin:?}")),
+                "foreign reasoning lacks its delimiter"
+            );
+        }
+        for payload in opaque {
+            assert!(
+                !wire.contains(payload),
+                "foreign opaque reasoning leaked: {origin}"
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "foreign readable reasoning missing from plain context")]
+fn negative_control_dropped_foreign_readable_reasoning_is_detected_on_the_wire() {
+    assert_foreign_wire(
+        br#"{"input":[{"role":"assistant","content":"missing"}]}"#,
+        Adapter::Responses,
+        1,
+    );
+}
+
+#[test]
+#[should_panic(expected = "foreign opaque reasoning leaked")]
+fn negative_control_forwarded_foreign_opaque_reasoning_is_detected_on_the_wire() {
+    let body = serde_json::to_vec(&json!({"input":[{"role":"assistant","content":"<prior-reasoning provider=\"anthropic\">\nreadable-anthropic-marker\n</prior-reasoning>"}], "forged_native":{"signature":"opaque-anthropic-signature"}})).unwrap();
+    assert_foreign_wire(&body, Adapter::Responses, 1);
 }
