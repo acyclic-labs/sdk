@@ -28,6 +28,7 @@ use profiles::*;
 mod toolchains;
 use toolchains::*;
 mod artifacts;
+pub use artifacts::materialize_generated_sources;
 use artifacts::*;
 
 #[derive(Debug)]
@@ -119,6 +120,10 @@ struct ExecutedProfile {
 
 /// Runs the generator command with explicit arguments.
 pub fn run(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
+    sdk_docs::with_rustdoc_cache(|| run_inner(values))
+}
+
+fn run_inner(values: impl IntoIterator<Item = String>) -> Result<(), CliError> {
     let mut args = values.into_iter();
     match args.next().as_deref() {
         Some("generate") => generate(parse_generate(args.collect())?),

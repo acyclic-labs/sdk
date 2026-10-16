@@ -144,12 +144,14 @@ pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
 pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
     let bytes = fs::read(path).map_err(io_error)?;
     let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
-    let hex = digest
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(format!("sha256:{hex}"))
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
+    result.push_str("sha256:");
+    for &byte in digest.as_ref() {
+        result.push(DIGITS[(byte >> 4) as usize] as char);
+        result.push(DIGITS[(byte & 0xf) as usize] as char);
+    }
+    Ok(result)
 }
 
 pub(super) fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {
@@ -177,7 +179,7 @@ pub(super) fn rustdoc_key(root: &Path, path: &Path) -> Result<String, CliError> 
 /// copying its exact bytes to the receipt's recorded path. Missing or
 /// ambiguous files fail closed; the docs projection never silently drops a
 /// source span.
-pub(super) fn materialize_generated_sources(
+pub fn materialize_generated_sources(
     root: &Path,
     rustdoc_files: &[PathBuf],
 ) -> Result<Vec<GeneratedSource>, CliError> {

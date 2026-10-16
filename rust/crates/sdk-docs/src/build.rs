@@ -95,16 +95,16 @@ pub(super) fn build_data_inner(
     }
     let mut family_packages = Vec::new();
     let mut format_versions = std::collections::BTreeSet::new();
-    let mut input_digest = Sha256::new();
+    let mut input_digest = ring::digest::Context::new(&ring::digest::SHA256);
     for path in &rustdoc_files {
         let metadata = package_metadata_for_path(&input.package_metadata, path)?;
         validate_package_metadata(metadata)?;
         input_digest.update(metadata.package_name.as_bytes());
-        input_digest.update([0]);
+        input_digest.update(&[0]);
         input_digest.update(metadata.crate_name.as_bytes());
-        input_digest.update([0]);
+        input_digest.update(&[0]);
         input_digest.update(metadata.version.as_bytes());
-        input_digest.update([0]);
+        input_digest.update(&[0]);
         let bytes = fs::read(path)?;
         // Rustdoc embeds absolute source filenames in spans.  Those paths are
         // producer-local metadata, so normalize them before deriving the
@@ -114,7 +114,7 @@ pub(super) fn build_data_inner(
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
         }
-        input_digest.update([0]);
+        input_digest.update(&[0]);
         input_digest.update(&digest_bytes);
         let krate: Crate = serde_json::from_slice(&bytes).map_err(|e| {
             Error::Invalid(format!(
@@ -175,7 +175,7 @@ pub(super) fn build_data_inner(
                 Error::Invalid("Rustdoc owner source root escapes the captured source root".into())
             })?;
             input_digest.update(normalize_path(relative).as_bytes());
-            input_digest.update([0]);
+            input_digest.update(&[0]);
             source_root
         } else {
             family_root.clone()
@@ -244,7 +244,7 @@ pub(super) fn build_data_inner(
             revision: input.revision.clone(),
             source_state: input.source_state.clone(),
             source_sha256: input.source_sha256.clone(),
-            input_sha256: format!("{:x}", input_digest.finalize()),
+            input_sha256: hex_digest(input_digest.finish().as_ref()),
             rustdoc_format_versions: format_versions.into_iter().collect(),
             generator: format!("sdk-docs/{GENERATOR_VERSION}"),
         },

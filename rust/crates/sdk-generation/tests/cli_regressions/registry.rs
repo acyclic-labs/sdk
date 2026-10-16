@@ -73,6 +73,7 @@ fn archive_locks_override_foreign_automatic_cargo_configuration() {
                 fs::write(config_directory.join("config.toml"), &config).unwrap();
                 // Negative control: maintained Cargo really discovers this automatic config.
                 let mut control = Command::new("cargo");
+                control.env("CARGO_HOME", fixture_cargo_home(&fixture));
                 control
                     .args([
                         "metadata",
@@ -162,6 +163,7 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
                     } else {
                         None
                     },
+                    None,
                 );
                 if !during_profile {
                     let unknown = fixture
@@ -199,10 +201,7 @@ fn imported_initial_extras_and_profile_added_files_cannot_admit_catalog() {
 #[test]
 fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failures_fatal() {
     fn setup(package: &Path) {
-        let manifest = format!(
-            "{}\n[features]\ndefault=['base']\nbase=[]\nextra=[]\n",
-            fs::read_to_string(package.join("Cargo.toml")).unwrap()
-        );
+        let manifest = fs::read_to_string(package.join("Cargo.toml")).unwrap();
         fs::write(
             package.join("Cargo.toml"),
             manifest.replace(
@@ -233,6 +232,7 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
                     } else {
                         setup
                     }),
+                    None,
                 );
                 let result =
                     run_historical_generate_mode(&fixture, &support, Some("registry-archives"));
@@ -309,9 +309,25 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
 
 #[test]
 fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
+    // One immutable initial history prevents incidental wall-clock differences
+    // from creating redundant source frontiers. Each owner still packages and
+    // compiles its own source and complete four-profile historical matrix.
+    let template = historical_fixture(None);
+    let base_revision = git_revision(&template.0.root);
     let fixtures = std::thread::scope(|scope| {
+        let template = &template;
         let jobs = ["demo-a", "demo-b", "demo-c"].map(|name| {
-            scope.spawn(move || registry_archive_fixture_named(false, true, None, true, name))
+            scope.spawn(move || {
+                registry_archive_fixture_configured(
+                    false,
+                    true,
+                    None,
+                    true,
+                    name,
+                    None,
+                    Some(super::replay::copy_historical_fixture(template)),
+                )
+            })
         });
         jobs.map(|job| job.join().unwrap())
     });
@@ -333,6 +349,10 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
                 other_fixture.root.to_str().unwrap(),
                 &revision,
             ],
+        );
+        git(
+            &fixture.root,
+            &["merge-base", "--is-ancestor", &base_revision, &revision],
         );
         anchors.push(revision);
     }
@@ -381,6 +401,8 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         support,
     );
     assert!(drift.status.success(), "{}", output_message(&drift));
+    fs::remove_dir_all(&template.0.root).unwrap();
+    fs::remove_dir_all(&template.0.output).unwrap();
     for (fixture, _) in fixtures {
         let _ = fs::remove_dir_all(fixture.root);
         let _ = fs::remove_dir_all(fixture.output);
@@ -617,6 +639,7 @@ fn historical_native_pipeline_admits_only_executed_source_owned_registry_docs() 
     let result = run_historical_generate(&fixture, &support);
     assert!(result.status.success(), "{}", output_message(&result));
     let version = fixture.output.join("releases/1.0.0");
+    assert_executed_profiles(&version, &version.join(".rustdoc"), &[("demo", 4)]);
     let data: Value =
         serde_json::from_slice(&fs::read(version.join("sdk-docs-data.v1.json")).unwrap()).unwrap();
     assert_eq!(data["source"]["publicationStatus"], "registryReleased");
@@ -717,7 +740,7 @@ fn successful_historical_example_mutating_archived_inputs_cannot_admit_catalog()
 
 #[test]
 fn excluded_published_path_owners_have_executed_api_and_drift() {
-    let fixture = native_profile_fixture();
+    let fixture = feature_profile_fixture();
     let manifest = fixture.root.join("rust/vendor/macros/Cargo.toml");
     fs::create_dir_all(manifest.parent().unwrap().join("src")).unwrap();
     let demo_manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
@@ -801,6 +824,11 @@ pub fn demo_derive(_input: TokenStream) -> TokenStream { TokenStream::new() }
     let generated = run_generate_execute_profiles(&fixture);
     assert!(generated.status.success(), "{}", output_message(&generated));
     assert!(fixture.rustdoc.join("renamed_macro_target.json").is_file());
+    assert_executed_profiles(
+        &fixture.output,
+        &fixture.rustdoc,
+        &[("demo", 5), ("demo-macros", 5), ("demo-helper", 1)],
+    );
     let availability: Value = serde_json::from_slice(
         &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     )

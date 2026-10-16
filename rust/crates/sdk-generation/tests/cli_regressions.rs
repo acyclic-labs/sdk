@@ -172,12 +172,12 @@ fn feature_profile_fixture() -> Fixture {
     fs::write(root.join("release/cargo-crates.json"), "[\"demo\"]\n").unwrap();
     fs::write(
         root.join("rust/crates/demo/Cargo.toml"),
-        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = []\nextra = []\n",
+        "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[features]\ndefault = [\"base\"]\nbase = []\nextra = []\n",
     )
     .unwrap();
     fs::write(
         root.join("rust/crates/demo/src/lib.rs"),
-        "pub struct Always;\n\n#[cfg(not(feature = \"extra\"))]\npub fn overloaded(value: u64) -> u64 { value }\n\n#[cfg(feature = \"extra\")]\npub fn overloaded(value: &str) -> usize { value.len() }\n\n#[cfg(feature = \"extra\")]\npub struct FeatureOnly;\n",
+        "pub struct Always;\n\n#[cfg(feature = \"base\")]\npub fn base_only() {}\n\n#[cfg(feature = \"default\")]\npub fn default_only() {}\n\n#[cfg(not(feature = \"extra\"))]\npub fn overloaded(value: u64) -> u64 { value }\n\n#[cfg(feature = \"extra\")]\npub fn overloaded(value: &str) -> usize { value.len() }\n\n#[cfg(feature = \"extra\")]\npub struct FeatureOnly;\n",
     )
     .unwrap();
     // This dependency-free lockfile is the exact lock input for the fixture;
@@ -357,6 +357,7 @@ fn fixture_path(support: &Path) -> std::ffi::OsString {
 fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Output {
     drift_command(fixture)
         .env("PATH", fixture_path(support))
+        .env("CARGO_HOME", fixture_cargo_home(fixture))
         .output()
         .unwrap()
 }
@@ -523,32 +524,46 @@ fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
     let _ = fs::remove_dir_all(second.root);
 }
 
+fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
+    let mut path = fixture.root.as_os_str().to_owned();
+    path.push("-cargo-home");
+    path.into()
+}
+
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
-        "generate",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--version",
-        "feature-profile-catalog",
-        "--channel",
-        "preview",
-        "--execute-profiles",
-        "--skip-scenarios",
-    ]))
+    invoke(
+        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+            .args([
+                "generate",
+                "--root",
+                fixture.root.to_str().unwrap(),
+                "--output",
+                fixture.output.to_str().unwrap(),
+                "--version",
+                "feature-profile-catalog",
+                "--channel",
+                "preview",
+                "--execute-profiles",
+                "--skip-scenarios",
+            ])
+            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+    )
 }
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
-    invoke(Command::new(env!("CARGO_BIN_EXE_sdk-generation")).args([
-        "drift",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-    ]))
+    invoke(
+        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+            .args([
+                "drift",
+                "--root",
+                fixture.root.to_str().unwrap(),
+                "--output",
+                fixture.output.to_str().unwrap(),
+                "--rustdoc-dir",
+                fixture.rustdoc.to_str().unwrap(),
+            ])
+            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+    )
 }
 
 fn output_message(result: &std::process::Output) -> String {
@@ -559,22 +574,44 @@ fn output_message(result: &std::process::Output) -> String {
     )
 }
 
-fn native_profile_fixture() -> Fixture {
-    let fixture = feature_profile_fixture();
-    let package = fixture.root.join("rust/crates/demo");
-    // Feature combinations are qualified by the feature-profile controls.
-    // Publication/authority controls need one actual native compilation.
-    fs::write(package.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"1.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n").unwrap();
-    fs::write(
-        package.join("src/lib.rs"),
-        "pub struct Always;\npub fn overloaded(value: u64) -> u64 { value }\n",
+fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, usize)]) {
+    let rows: Value = serde_json::from_slice(
+        &fs::read(output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
     )
     .unwrap();
-    fixture
+    let rows = rows.as_array().unwrap();
+    let mut counts = BTreeMap::new();
+    let mut identities = std::collections::BTreeSet::new();
+    for row in rows {
+        assert_eq!(row["rustdocProfilesCovered"], true);
+        *counts.entry(row["package"].as_str().unwrap()).or_insert(0) += 1;
+        assert!(
+            identities.insert(row["profile"].as_str().unwrap()),
+            "duplicate execution receipt"
+        );
+        let relative = row["rustdocFile"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("rustdoc/")
+            .unwrap();
+        assert!(
+            rustdoc.join(relative).is_file(),
+            "every execution must retain its Rustdoc output"
+        );
+        assert!(rustdoc
+            .join(relative)
+            .with_extension("source.sha256")
+            .is_file());
+    }
+    assert_eq!(
+        rows.len(),
+        expected.iter().map(|(_, count)| count).sum::<usize>()
+    );
+    assert_eq!(counts, expected.iter().copied().collect::<BTreeMap<_, _>>());
 }
 
 fn historical_fixture(mutation: Option<&str>) -> (Fixture, PathBuf) {
-    let fixture = native_profile_fixture();
+    let fixture = feature_profile_fixture();
     let package = fixture.root.join("rust/crates/demo");
     fs::create_dir_all(package.join("examples")).unwrap();
     fs::write(package.join("README.md"), "# Historical source guide\n").unwrap();
@@ -703,6 +740,7 @@ fn run_historical_generate_mode_with_authority(
     let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
     command
         .env("PATH", path)
+        .env("CARGO_HOME", fixture_cargo_home(fixture))
         .args(["generate", "--root"])
         .arg(&fixture.root)
         .arg("--output")
@@ -742,7 +780,22 @@ fn run_historical_generate_mode_with_authority(
             command.current_dir(directory);
         }
     }
-    command.output().unwrap()
+    let result = command.output().unwrap();
+    let version = fixture.output.join("releases/1.0.0");
+    if version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
+        let releases: Value = serde_json::from_slice(
+            &fs::read(version.join("sdk-docs-registry-releases.v1.json")).unwrap(),
+        )
+        .unwrap();
+        let expected = releases
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|release| (release["crate"].as_str().unwrap(), 4))
+            .collect::<Vec<_>>();
+        assert_executed_profiles(&version, &version.join(".rustdoc"), &expected);
+    }
+    result
 }
 
 fn registry_archive_fixture(
@@ -768,6 +821,7 @@ fn registry_archive_fixture_named(
         publisher_vcs,
         package_name,
         None,
+        None,
     )
 }
 
@@ -778,8 +832,9 @@ fn registry_archive_fixture_configured(
     publisher_vcs: bool,
     package_name: &str,
     setup: Option<fn(&Path)>,
+    prepared: Option<(Fixture, PathBuf)>,
 ) -> (Fixture, PathBuf) {
-    let (fixture, support) = historical_fixture(None);
+    let (fixture, support) = prepared.unwrap_or_else(|| historical_fixture(None));
     let package = fixture.root.join("rust/crates/demo");
     let manifest = fs::read_to_string(package.join("Cargo.toml"))
         .unwrap()
@@ -835,6 +890,7 @@ fn registry_archive_fixture_configured(
     }
     // Cargo itself creates the normalized manifest and published package lock.
     let packaged = Command::new("cargo")
+        .env("CARGO_HOME", fixture_cargo_home(&fixture))
         .current_dir(&fixture.root)
         .args(["package", "--allow-dirty", "--no-verify", "--manifest-path"])
         .arg(package.join("Cargo.toml"))
@@ -882,3 +938,6 @@ fn registry_archive_fixture_configured(
 mod current;
 #[path = "cli_regressions/registry.rs"]
 mod registry;
+
+#[path = "cli_regressions/replay.rs"]
+mod replay;

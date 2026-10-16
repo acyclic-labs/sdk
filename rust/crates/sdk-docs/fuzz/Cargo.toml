@@ -1,0 +1,23 @@
+[package]
+name = "sdk-docs-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rustdoc-types = "=0.60.0"
+serde = "1"
+serde_json = "1"
+
+[[bin]]
+name = "rustdoc_adapter"
+path = "fuzz_targets/rustdoc_adapter.rs"
+test = false
+doc = false
+bench = false

@@ -11,6 +11,8 @@ use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
 use std::path::Path;
 
+mod decode;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicItemSignature {
     pub id: Id,
@@ -21,8 +23,12 @@ pub struct PublicItemSignature {
 }
 
 pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
+    crate::render_cache::extract(raw, || extract_uncached(json_path, raw))
+}
+
+fn extract_uncached(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
     let value: Value = serde_json::from_slice(raw)?;
-    let krate: Crate = serde_json::from_value(value.clone())?;
+    let krate = decode::from_value(&value)?;
     if krate.format_version != FORMAT_VERSION {
         return Err(Error::Invalid(format!(
             "{} uses unsupported rustdoc format {}; expected {}",

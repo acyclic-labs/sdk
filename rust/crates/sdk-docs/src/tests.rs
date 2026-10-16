@@ -806,3 +806,5 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
 mod projection;
 mod publication;
 mod scratch;
+
+mod rustdoc_adapter;

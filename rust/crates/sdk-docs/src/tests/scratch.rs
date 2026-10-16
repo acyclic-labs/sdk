@@ -17,3 +17,22 @@ proptest::proptest! {
         proptest::prop_assert!(!path.exists());
     }
 }
+
+proptest::proptest! {
+    #[test]
+    fn native_digest_and_chunked_input_keep_sha256_identity(
+        chunks in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512), 0..16),
+    ) {
+        let mut native = ring::digest::Context::new(&ring::digest::SHA256);
+        let mut reference = Sha256::new();
+        let bytes = chunks.concat();
+        for chunk in &chunks {
+            native.update(chunk);
+            reference.update(chunk);
+        }
+        let expected = format!("{:x}", reference.finalize());
+        let one_shot = sha256_hex(&bytes);
+        proptest::prop_assert_eq!(one_shot.as_str(), expected.as_str());
+        proptest::prop_assert_eq!(hex_digest(native.finish().as_ref()), expected);
+    }
+}

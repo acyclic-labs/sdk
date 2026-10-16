@@ -419,6 +419,7 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata",
  "public-api",
+ "ring",
  "rustdoc-types 0.60.0",
  "schemars",
  "semver",

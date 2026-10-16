@@ -16,6 +16,8 @@ use std::path::{Component, Path, PathBuf};
 /// Native projections and immutable identities for historical releases.
 pub mod historical;
 mod public_api;
+mod render_cache;
+pub use render_cache::with_rustdoc_cache;
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;
 /// Rust-owned executable examples and generated consumer projections.

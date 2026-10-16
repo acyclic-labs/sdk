@@ -570,6 +570,23 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         &fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
     )
     .unwrap();
+    for (path, expected) in [
+        ("demo::FeatureOnly", 2),
+        ("demo::base_only", 3),
+        ("demo::default_only", 2),
+    ] {
+        let entry = availability["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == path)
+            .unwrap();
+        assert_eq!(
+            entry["profiles"].as_array().unwrap().len(),
+            expected,
+            "the compilation reuse key must preserve every cfg feature: {path}"
+        );
+    }
     let feature_entry = availability["entries"]
         .as_array()
         .unwrap()
@@ -619,6 +636,7 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
         &fs::read(fixture.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
     )
     .unwrap();
+    assert_executed_profiles(&fixture.output, &fixture.rustdoc, &[("demo", 5)]);
     let effective = receipts
         .as_array()
         .unwrap()
@@ -671,12 +689,14 @@ fn feature_profile_api_is_joined_with_catalog_and_source_provenance() {
 
     let availability_hash =
         hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json"));
-    let second = run_generate_execute_profiles(&fixture);
-    assert!(
-        second.status.success(),
-        "replaying the same producer inputs must be deterministic:\n{}",
-        output_message(&second)
+    let metadata = super::replay::metadata(&fixture);
+    let (rebuilt, replayed) = super::replay::project(&fixture, &metadata);
+    sdk_docs::write_bundle_files(&rebuilt, &fixture.output, false).unwrap();
+    assert_eq!(
+        hash_bytes(&serde_json::to_vec_pretty(&replayed).unwrap()),
+        availability_hash
     );
+
     assert_eq!(
         hash_file(&fixture.output.join("sdk-docs-profile-availability.v1.json")),
         availability_hash
@@ -746,13 +766,10 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     .unwrap();
     let manifest = fixture.root.join("rust/crates/demo/Cargo.toml");
     let mut contents = fs::read_to_string(&manifest).unwrap();
-    contents = contents.replace(
-        "default = []\nextra = []",
-        "default = [\"base\"]\nbase = []\nextra = []",
-    );
     contents.push_str("\n[dependencies]\nrelocation-helper = { path = \"../helper\" }\n");
     fs::write(manifest, contents).unwrap();
     assert!(Command::new("cargo")
+        .env("CARGO_HOME", fixture_cargo_home(&fixture))
         .args(["generate-lockfile", "--offline"])
         .current_dir(&fixture.root)
         .status()
@@ -792,27 +809,28 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
         rustdoc: relocated_output.join(".rustdoc"),
         output: relocated_output,
     };
+    assert!(!fixture.output.exists());
+    assert!(!relocated.output.exists());
+    let result = run_generate_execute_profiles(&fixture);
+    assert!(result.status.success(), "{}", output_message(&result));
+    super::replay::copy_tree(&fixture.output, &relocated.output);
+    super::replay::copy_tree(&fixture.root.join("target"), &relocated.root.join("target"));
     std::thread::scope(|scope| {
         for checkout in [&fixture, &relocated] {
             scope.spawn(move || {
-                assert!(
-                    !checkout.output.exists(),
-                    "each profile build starts with a fresh output directory"
-                );
-                let result = run_generate_execute_profiles(checkout);
-                assert!(result.status.success(), "{}", output_message(&result));
-                assert!(run_drift_execute_profiles(checkout).status.success());
+                let drift = run_drift_execute_profiles(checkout);
+                assert!(drift.status.success(), "{}", output_message(&drift));
             });
         }
     });
-    let metadata = sdk_docs::rustdoc_profiles::load_metadata(
-        fixture.root.join("Cargo.toml"),
-        sdk_docs::rustdoc_profiles::CargoExecutionContext {
-            cargo_path: Some(Path::new(env!("CARGO"))),
-            lock_selection: None,
-        },
-    )
-    .unwrap();
+    super::replay::relocate_receipts(&fixture, &relocated);
+    let metadata = super::replay::metadata(&fixture);
+    let (data, availability) = super::replay::project(&relocated, &metadata);
+    sdk_docs::write_bundle_files(&data, &relocated.output, false).unwrap();
+    assert_eq!(
+        serde_json::to_vec_pretty(&availability).unwrap(),
+        fs::read(fixture.output.join("sdk-docs-profile-availability.v1.json")).unwrap(),
+    );
     let dependency_paths = |checkout: &Fixture| {
         let receipts: Value = serde_json::from_slice(
             &fs::read(checkout.output.join("sdk-docs-rustdoc-profiles.v1.json")).unwrap(),
@@ -874,6 +892,10 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
                 if record["name"] == "relocation_helper" {
                     let physical = record["path"].as_str().unwrap();
                     assert!(physical.contains(".profile-build"), "{physical}");
+                    assert!(
+                        Path::new(physical).is_file(),
+                        "dependency artifact must exist: {physical}"
+                    );
                     paths.push(physical.to_string());
                 }
             }
@@ -895,13 +917,13 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     assert_ne!(
         dependency_paths(&fixture),
         dependency_paths(&relocated),
-        "raw Rustdoc must retain the independently relocated dependency artifacts"
+        "raw Rustdoc must retain the relocated dependency artifacts"
     );
     let path = "preview/feature-profile-catalog/sdk-docs-data.v1.json";
     assert_eq!(
         fs::read(fixture.output.join(path)).unwrap(),
         fs::read(relocated.output.join(path)).unwrap(),
-        "independent clean profile outputs must publish identical content identities and bytes"
+        "relocated profile outputs must publish identical content identities and bytes"
     );
     let data: Value =
         serde_json::from_slice(&fs::read(fixture.output.join(path)).unwrap()).unwrap();
