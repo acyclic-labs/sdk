@@ -79,6 +79,14 @@ proptest! {
     }
     #[test]
     fn all_caveats_round_trip(caveats in prop::collection::vec(caveat(),0..16)) {
+        for caveat in &caveats {
+            let bytes = CaveatProto::from(caveat.clone()).encode_to_vec();
+            prop_assert_eq!(decode_caveat(&bytes), Ok(caveat.clone()));
+            let duplicate = [bytes.as_slice(), bytes.as_slice()].concat();
+            prop_assert!(decode_caveat(&duplicate).is_err());
+            // Removing canonical admission accepts the same duplicate oneof.
+            prop_assert!(CaveatProto::decode(duplicate.as_slice()).is_ok());
+        }
         let mut block=root();block.caveats=caveats;
         let wire:BlockProto=block.clone().into();let bytes=wire.encode_to_vec();
         prop_assert_eq!(decode_block(&bytes),Ok(block));

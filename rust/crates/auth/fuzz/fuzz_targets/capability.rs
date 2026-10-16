@@ -1,8 +1,8 @@
 #![no_main]
 use acyclic_auth::{
-    authority::{Deny, PolicyDecision, Request, Target, decode_block, decode_capability, permits},
+    authority::{Deny, PolicyDecision, Request, Target, decode_block, decode_capability, decode_caveat, permits},
     contract::{
-        BlockProto, CapabilityProto, Limits, RecordAttributes, RecordAttributesProto,
+        BlockProto, CapabilityProto, CaveatProto, Limits, RecordAttributes, RecordAttributesProto,
         SocketHostRule, SocketHostRuleProto,
     },
     decode_component, encode_component,
@@ -12,6 +12,9 @@ use acyclic_auth::{
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
 fuzz_target!(|bytes: &[u8]| {
+    if let Ok(value) = decode_caveat(bytes) {
+        assert_eq!(CaveatProto::from(value).encode_to_vec(), bytes);
+    }
     if let Ok(value) = decode_capability(bytes) {
         assert_eq!(
             decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
