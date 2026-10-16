@@ -22,8 +22,13 @@ fn gauge_publication(publish_before_release: bool, final_owner: bool) {
                     });
                 }
             } else {
+                if publish_before_release {
+                    accounting::publish(dirty);
+                }
                 bytes.fetch_sub(2, Ordering::AcqRel);
-                accounting::publish(dirty);
+                if !publish_before_release {
+                    accounting::publish(dirty);
+                }
             }
         });
         // A second independent publisher can overwrite the first's dirty bit.
@@ -64,4 +69,10 @@ fn publishers_cannot_strand_partial_retirement() {
 #[should_panic(expected = "retirement accounting was stranded")]
 fn publishing_cleanup_before_releasing_the_owner_loses_retirement() {
     gauge_publication(true, true);
+}
+
+#[test]
+#[should_panic(expected = "retirement accounting was stranded")]
+fn publishing_cleanup_before_partial_retirement_loses_bytes() {
+    gauge_publication(true, false);
 }
