@@ -504,8 +504,7 @@ fn publish_fact(
     let mut prefix = state
         .paths
         .get(source)
-        .map(|path| path.prefix.clone())
-        .unwrap_or([None, None]);
+        .map_or([None, None], |path| path.prefix.clone());
     if let CommittedMutation::Fork(fork) = fact {
         for (slot, sequence) in prefix.iter_mut().zip([0_u64, 1]) {
             if sequence >= fork.forked_at {
