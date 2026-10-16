@@ -15,7 +15,7 @@ use serde_json::Value;
 fn tools() -> Result<ToolRegistry> {
     let mut tools = ToolRegistry::default();
     for tool in [
-        files::write_file()?,
+        files::write()?,
         text_files::read_file_range(
             ReadOptions {
                 maximum_input_bytes: 512,
@@ -107,7 +107,7 @@ async fn seed(fixture: &Fixture) -> Result<ContextManifest> {
     let mut manifest = ContextManifest::new(discovered, vec!["inspect".into()], &tools()?)?;
     manifest
         .tools
-        .retain(|tool| tool.name == "acyclic.write_file");
+        .retain(|tool| tool.name == "write");
     Ok(manifest)
 }
 

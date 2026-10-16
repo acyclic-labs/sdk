@@ -7,7 +7,6 @@ use acyclic_harness::{
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent},
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
-    tool::files,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -118,7 +117,7 @@ impl Plans {
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall {
                     call_id: format!("write-{index}"),
-                    name: "acyclic.write_file".into(),
+                    name: "write".into(),
                     arguments: json!({"path":write.path,"text":write.text,"media_type":"text/markdown","display_name":write.path.rsplit('/').next().unwrap_or_default()}),
                 }),
                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
@@ -134,8 +133,7 @@ impl Plans {
                     provider.clone(),
                 )
                 .grant("model:generate")
-                .tool(files::write_file()?)?
-                .grant("tool:call:acyclic.write_file")
+                .grant("tool:call:write")
                 .compaction(CompactionPolicy::Disabled)
                 .build()?;
             let output = storage

@@ -71,6 +71,8 @@ where
     let to = to_generation.id();
     let operation_directory = NativeDirectory(root).publication_directory(operation_id)?;
     let cancellation = CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| Error::from(cause))?;
     let journal = acyclic_fs::load_native_materialization_journal(
         store,
         operation_id,
@@ -80,7 +82,7 @@ where
     .await
     .map_err(|(cause, _)| Error::from(cause))?
     .value;
-    if acyclic_fs::capture_root_identity(root).map_err(Error::from)? != source_root_identity {
+    if work.root_identity(root).map_err(Error::from)? != source_root_identity {
         return Err(Error::Unauthorized(
             "checkout root changed before publication".into(),
         ));
@@ -101,7 +103,7 @@ where
                 .workspace()
                 .generation(original, WorkBudget::UNBOUNDED, &cancellation)
                 .await
-                .map_err(Error::from)?
+                .map_err(|failure| Error::from(failure.error))?
                 .value;
         }
         if completed(journal, source_root_identity, from.id(), to)? {
@@ -119,9 +121,6 @@ where
         .ok_or_else(|| Error::Storage("staging parent is absent".into()))?;
     std::fs::create_dir_all(parent)
         .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
-    let cancellation = CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| Error::from(cause))?;
     let actual =
         acyclic_fs::validate_native_preparation_location(root, &operation_directory, &work)
             .map_err(Error::from)?;
@@ -137,7 +136,6 @@ where
         maximum_extent_spans: 65_536,
         transfer_bytes: 8 * 1024 * 1024,
     };
-    let cancellation = CancellationToken::new();
     acyclic_fs::publish_native_generation_transition(
         &from,
         &to_generation,
@@ -154,8 +152,7 @@ where
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,
         },
-        acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| Error::from(cause))?,
+        work,
         || async {
             before_effect().await.map_err(|error| {
                 acyclic_fs::NativeWorkspacePublicationError::Native(
