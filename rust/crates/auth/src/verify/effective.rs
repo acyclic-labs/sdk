@@ -34,7 +34,7 @@ impl<'a> Effective<'a> {
     }
     /// Every returned filter must hold, using its declaring-block identity.
     pub fn filters(&self) -> impl Iterator<Item=ScopedFilter<'a>> {
-        self.capability.blocks.iter().enumerate().flat_map(|(index, block)| block.caveats.iter().filter_map(move |caveat| match &caveat.kind { CaveatKind::Filter(filter) => Some(ScopedFilter { declaring_block:index, filter, capability: self.capability }), _ => None }))
+        self.capability.blocks.iter().enumerate().flat_map(move |(index, block)| block.caveats.iter().filter_map(move |caveat| match &caveat.kind { CaveatKind::Filter(filter) => Some(ScopedFilter { declaring_block:index, filter, capability: self.capability }), _ => None }))
     }
     /// Per-dimension minimum; metering remains at the root's owning ledger.
     pub fn limits(&self) -> &'a Limits { &self.capability.limits }

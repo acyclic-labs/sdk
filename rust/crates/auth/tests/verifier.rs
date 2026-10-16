@@ -30,7 +30,7 @@ proptest! {
     fn signed_attenuation_never_widens_and_owner_deny_wins(
         before in prop::collection::vec(caveat(), 0..4),
         after in prop::collection::vec(caveat(), 0..4),
-        name in "[a-z]{1,6}", used in 0..12u64,
+        name in prop_oneof![Just("public".to_owned()), "[a-z]{1,6}"], used in 0..12u64,
     ) {
         let trust = Snapshot::default();
         let parent = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(before, &[5;32]).unwrap();
