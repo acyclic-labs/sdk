@@ -2,7 +2,7 @@ use crate::key_decode::{DecodedKey, decode_key, event_chord};
 use crate::key_event::{
     KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use crate::{Action, Editor, InputKeymap, Motion, Viewport};
+use crate::{Action, Editor, InputKeymap, Motion, PromptHistory, Viewport, history::Navigation};
 use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -35,6 +35,7 @@ pub enum InputEffect {
 #[derive(Clone, Debug)]
 struct Search {
     original: Editor,
+    navigation: Navigation,
     query: String,
     matched: bool,
 }
@@ -42,6 +43,7 @@ struct Search {
 #[derive(Clone, Debug)]
 struct MessageEdit {
     message: String,
+    navigation: Navigation,
     draft: Editor,
 }
 
@@ -51,6 +53,9 @@ struct MessageEdit {
 pub struct PromptInput {
     /// Editable prompt state.
     pub editor: Editor,
+    /// Shared input-history file projection; load/save with the history codecs.
+    /// Message edits and search previews never own or replace these entries.
+    pub history: PromptHistory,
     /// Whether a submission is queued behind active host work.
     pub busy: bool,
     /// Whether Tab and empty-input Up/Down navigate approval/question items.
@@ -93,11 +98,14 @@ impl PromptInput {
         self.finish_search(self.last_activity, false);
         if let Some(editing) = self.editing.take() {
             self.editor = editing.draft;
+            self.history.navigation = editing.navigation;
         }
         self.editing = Some(MessageEdit {
             message,
+            navigation: self.history.navigation.clone(),
             draft: self.editor.clone(),
         });
+        self.history.reset();
         self.editor = Editor::new(text);
         effects
     }
@@ -156,7 +164,7 @@ impl PromptInput {
         self.last_activity = now_ms;
         if let Some(search) = self.search.as_mut() {
             search.query.push_str(text);
-            search.original.history().reset();
+            self.history.reset();
             self.search_previous();
         } else {
             self.editor.insert(text, now_ms);
@@ -326,7 +334,7 @@ impl PromptInput {
                             .last()
                             .map_or(0, |(i, _)| i);
                         search.query.truncate(end);
-                        search.original.history().reset();
+                        self.history.reset();
                     }
                     self.search_previous();
                     return effects;
@@ -353,7 +361,7 @@ impl PromptInput {
                     let previous = motion == Motion::Up;
                     let history = !select
                         && matches!(motion, Motion::Up | Motion::Down)
-                        && self.editor.recall(previous, now_ms);
+                        && self.editor.recall(&mut self.history, previous, now_ms);
                     if !history {
                         self.editor.move_cursor(motion, select, width);
                     }
@@ -372,8 +380,10 @@ impl PromptInput {
                 Action::RotateYank => self.editor.rotate_yank(now_ms),
                 Action::Submit => {
                     if let Some(text) = self.editor.enter(false, now_ms) {
+                        self.history.push(text.clone());
                         let edit = self.editing.take().map(|edit| {
                             self.editor = edit.draft;
+                            self.history.navigation = edit.navigation;
                             edit.message
                         });
                         effects.push(InputEffect::Submit {
@@ -445,9 +455,12 @@ impl PromptInput {
                 }
                 Action::ExternalEditor => effects.push(InputEffect::ExternalEditor),
                 Action::ReverseSearch => {
-                    self.editor.history().reset();
+                    let original = self.editor.clone();
+                    let navigation = self.history.navigation.clone();
+                    self.history.reset();
                     self.search = Some(Search {
-                        original: self.editor.clone(),
+                        original,
+                        navigation,
                         query: String::new(),
                         matched: false,
                     });
@@ -456,6 +469,7 @@ impl PromptInput {
                 Action::Escape if self.editing.is_some() => {
                     if let Some(edit) = self.editing.take() {
                         self.editor = edit.draft;
+                        self.history.navigation = edit.navigation;
                     }
                 }
                 Action::Escape if !self.busy && !self.editor.selection().is_empty() => {
@@ -472,7 +486,7 @@ impl PromptInput {
 
     fn search_previous(&mut self) {
         if let Some(search) = self.search.as_mut() {
-            if let Some(text) = search.original.history().reverse_search(&search.query) {
+            if let Some(text) = self.history.reverse_search(&search.query) {
                 self.editor = Editor::new(&text);
                 search.matched = true;
             } else {
@@ -485,8 +499,10 @@ impl PromptInput {
         if let Some(search) = self.search.take() {
             let chosen = self.editor.text().to_owned();
             self.editor = search.original;
+            self.history.navigation = search.navigation;
             if accept && search.matched {
                 self.editor.set_text(&chosen, now_ms);
+                self.history.reset();
             }
         }
     }

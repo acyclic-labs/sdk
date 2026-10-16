@@ -124,7 +124,7 @@ fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn 
 fn reverse_search_is_a_reversible_preview_not_a_series_of_edits() {
     let mut input = PromptInput::new(Editor::new("draft"));
     for text in ["first foo", "bar", "second foo"] {
-        input.editor.history().push(text.into());
+        input.history.push(text.into());
     }
     press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
     input.committed_text("foo", 1);
@@ -304,4 +304,63 @@ fn shift_click_extends_selection_and_release_survives_a_zero_size_area() {
     mouse.column = 7;
     input.mouse(mouse, area, &mut viewport, 3);
     assert_eq!(input.editor.selected_text(), "bc");
+}
+
+#[test]
+fn cancelling_reverse_search_preserves_down_to_the_original_draft() {
+    let mut input = PromptInput::new(Editor::new("working draft"));
+    input.history.push("older".into());
+    input.history.push("newer".into());
+    press(&mut input, KeyCode::Home, M::NONE, 0);
+    press(&mut input, KeyCode::Up, M::NONE, 1);
+    assert_eq!(input.editor.text(), "newer");
+    press(&mut input, KeyCode::End, M::NONE, 2);
+    press(&mut input, KeyCode::Char('r'), M::CONTROL, 3);
+    input.committed_text("older", 4);
+    assert_eq!(input.editor.text(), "older");
+    press(&mut input, KeyCode::Esc, M::NONE, 5);
+    assert_eq!((input.editor.text(), input.editor.cursor()), ("newer", 5));
+    press(&mut input, KeyCode::Down, M::NONE, 6);
+    assert_eq!(input.editor.text(), "working draft");
+}
+
+#[test]
+fn edited_submissions_append_to_the_shared_history_file() -> Result<(), Box<dyn std::error::Error>>
+{
+    use acyclic_harness_tui::{load_history, save_history};
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("input-history.json");
+    std::fs::write(&path, r#"["first"]"#)?;
+    let mut input = PromptInput::new(Editor::new("working draft"));
+    input.history = load_history(&path)?;
+    input.edit_message("old-message".into(), "original");
+    // A live-query snapshot changes history while the prior message is edited.
+    std::fs::write(&path, r#"["first","external"]"#)?;
+    input.history = load_history(&path)?;
+    input.external_result(Some("edited\r\nmessage"), 0);
+    assert_eq!(
+        press(&mut input, KeyCode::Enter, M::NONE, 1),
+        vec![InputEffect::Submit {
+            text: "edited\nmessage".into(),
+            queued: false,
+            edit: Some("old-message".into())
+        }]
+    );
+    assert_eq!(input.editor.text(), "working draft");
+    save_history(&path, &input.history)?;
+    input.history = load_history(&path)?;
+    assert_eq!(
+        input.history.entries(),
+        &["first", "external", "edited\nmessage"]
+    );
+    press(&mut input, KeyCode::Home, M::NONE, 2);
+    press(&mut input, KeyCode::Up, M::NONE, 3);
+    assert_eq!(input.editor.text(), "edited\nmessage");
+    input.edit_message("other".into(), "cancelled");
+    press(&mut input, KeyCode::Esc, M::NONE, 4);
+    press(&mut input, KeyCode::End, M::CONTROL, 5);
+    press(&mut input, KeyCode::Down, M::NONE, 6);
+    assert_eq!(input.editor.text(), "working draft");
+    assert_eq!(load_history(&path)?.entries(), input.history.entries());
+    Ok(())
 }

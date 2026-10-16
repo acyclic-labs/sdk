@@ -59,4 +59,49 @@ proptest! {
         }
         prop_assert_eq!(input.editor.text(), text);
     }
+    #[test]
+    fn edited_and_normal_submissions_share_one_history_projection(
+        submissions in prop::collection::vec((any::<bool>(), any::<bool>(), "[a-z界\r\n]{0,16}"), 0..24)
+    ) {
+        use acyclic_harness_tui::{Editor, InputEffect};
+        let mut input = PromptInput::new(Editor::new("draft"));
+        let mut expected: Vec<String> = vec![];
+        for (step, (edit, cancel, raw)) in submissions.into_iter().enumerate() {
+            let text = format!("entry:{raw}");
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            if edit { input.edit_message("message".into(), &text); }
+            else { input.editor.set_text(&text, step as u64); }
+            // Live snapshots replace the projection, never a saved editor's history.
+            input.history = parse_history(&format_history(&input.history)?)?;
+            if edit && cancel {
+                input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), step as u64, 80);
+            } else {
+                let effects = input.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), step as u64, 80);
+                prop_assert_eq!(effects, vec![InputEffect::Submit { text: normalized.clone(), queued: false, edit: edit.then(|| "message".into()) }]);
+                if expected.last() != Some(&normalized) { expected.push(normalized); }
+            }
+            prop_assert_eq!(input.history.entries(), expected.as_slice());
+            let restored = parse_history(&format_history(&input.history)?)?;
+            prop_assert_eq!(restored.entries(), expected.as_slice());
+        }
+    }
+
+    #[test]
+    fn cancelling_search_restores_history_navigation_and_draft(raw in "[a-z界\r\n]{0,24}", matches in any::<bool>()) {
+        use acyclic_harness_tui::Editor;
+        let draft = format!("draft:{raw}");
+        let expected = draft.replace("\r\n", "\n").replace('\r', "\n");
+        let mut input = PromptInput::new(Editor::new(&draft));
+        input.history.push("older".into()); input.history.push("newer".into());
+        for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL), (1, KeyCode::Up, KeyModifiers::NONE),
+            (2, KeyCode::End, KeyModifiers::NONE), (3, KeyCode::Char('r'), KeyModifiers::CONTROL)] {
+            input.key(KeyEvent::new(code, mods), at, 80);
+        }
+        input.committed_text(if matches { "older" } else { "missing" }, 4);
+        input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 5, 80);
+        prop_assert_eq!((input.editor.text(), input.editor.cursor()), ("newer", 5));
+        input.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), 6, 80);
+        prop_assert_eq!(input.editor.text(), expected);
+    }
+
 }

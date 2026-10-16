@@ -64,7 +64,7 @@ fn exercise_variant(data: &[u8], broken: bool) {
         input.keymap = map;
     }
     if let Some(history) = parsed_history {
-        *input.editor.history() = history;
+        input.history = history;
     }
     for chunk in data.chunks(8) {
         let op = chunk[0];
@@ -214,7 +214,7 @@ fn dispatch(
 fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
     let mut input = PromptInput::new(Editor::default());
     input.keymap = InputKeymap::from_json(r#"{"Super+k":"Home"}"#).expect("valid keymap fixture");
-    *input.editor.history() =
+    input.history =
         parse_history(r#"["older\r\nprompt","newer\rhistory"]"#).expect("valid history fixture");
     let mut viewport = Viewport::default();
     let mut at = 0;
@@ -277,6 +277,37 @@ fn semantic_prelude(data: &[u8], broken: bool) -> (PromptInput, Viewport, u64) {
         "newer\nhistory",
         0,
         "parsed Super override moves instead of killing",
+    );
+    send(&mut input, key(KeyCode::End, KeyModifiers::CONTROL));
+    send(&mut input, key(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    send(&mut input, InputEvent::CommittedText("older".into()));
+    send(&mut input, key(KeyCode::Esc, KeyModifiers::NONE));
+    send(&mut input, key(KeyCode::Down, KeyModifiers::NONE));
+    assert_prompt(
+        &input,
+        "replacement",
+        11,
+        "search cancellation preserves Down-to-draft",
+    );
+    input.edit_message("message".into(), "edited prompt");
+    assert_eq!(
+        send(&mut input, key(KeyCode::Enter, KeyModifiers::NONE)),
+        vec![InputEffect::Submit {
+            text: "edited prompt".into(),
+            queued: false,
+            edit: Some("message".into())
+        }]
+    );
+    assert_eq!(
+        input.history.entries(),
+        &["older\nprompt", "newer\nhistory", "edited prompt"],
+        "edited submissions remain in the shared history file projection"
+    );
+    assert_prompt(
+        &input,
+        "replacement",
+        11,
+        "editing preserves the live draft",
     );
     (input, viewport, at)
 }
