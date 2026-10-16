@@ -129,7 +129,11 @@ fn concurrent_records_keep_the_newest_publication() {
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("an older concurrent record must not replace the newest stamp");
-    let message = error.downcast_ref::<String>().expect("assertion message");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .expect("assertion message");
     assert!(
         message.contains("newest publication was overwritten"),
         "{message}"

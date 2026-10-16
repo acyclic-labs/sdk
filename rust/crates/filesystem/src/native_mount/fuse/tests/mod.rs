@@ -54,17 +54,17 @@ fn projection_core(
 pub(super) fn invalidation_model_fixture() -> (Arc<ProjectionCore>, crate::NativeMaterializationWork)
 {
     let (source, _) = shared_sources(posix_config()).unwrap();
+    invalidation_model_core(Arc::new(source))
+}
+
+#[cfg(acyclic_fs_loom)]
+#[inline(never)]
+fn invalidation_model_core(
+    source: Arc<dyn MountFilesystem>,
+) -> (Arc<ProjectionCore>, crate::NativeMaterializationWork) {
     let work = fuse_fixture_work();
-    let core = ProjectionCore::new(
-        Arc::new(source),
-        directory(FileId::new()),
-        None,
-        true,
-        0,
-        0,
-        &work,
-    )
-    .unwrap();
+    let core =
+        ProjectionCore::new(source, directory(FileId::new()), None, true, 0, 0, &work).unwrap();
     (core, work)
 }
 

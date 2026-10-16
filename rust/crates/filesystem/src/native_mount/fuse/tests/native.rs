@@ -89,6 +89,15 @@ pub(super) fn shared_sources(
         1,
     )?;
     let checkout = checkouts.into_iter().next().ok_or("one checkout")?;
+    shared_sources_from_checkout(checkout, config)
+}
+
+// Do not reserve source construction's large locals while polling the checkout.
+#[inline(never)]
+fn shared_sources_from_checkout(
+    checkout: MemoryCheckout,
+    config: crate::model::VolumeConfig,
+) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     let shared = Arc::new(crate::native_mount::SharedCheckout::new(checkout));
     Ok((
         MemorySource::new(Arc::clone(&shared), config)?,
