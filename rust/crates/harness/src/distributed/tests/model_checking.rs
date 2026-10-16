@@ -1,8 +1,9 @@
+use super::model_provider::{Pending, PublicationCut, pause_before_publish, publish_until_cut};
 use super::*;
 use crate::distributed::JournalWrite;
 use acyclic_stream::{CommitCondition, CommitOutcome, MemoryLimits, StreamPath};
 use futures::TryStreamExt;
-use loom::sync::atomic::{AtomicU64, Ordering};
+use loom::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use loom::thread;
 
 loom::thread_local! {
@@ -162,33 +163,47 @@ fn fencing_model(release: bool, settlement: bool, broken: bool) {
             &mut None,
         ))
         .unwrap();
-        let mut rival = Box::new(block_on(open(&client)).unwrap());
-        let writer = thread::spawn({
-            let client = client.clone();
-            move || {
-                OMIT_OWNER_CONDITION.with(|fault| fault.set(broken));
-                let mut work = None;
-                let mut request =
-                    commit_request(StreamIdempotencyKey::new("journal").unwrap(), 0, &mut work);
-                add_condition(&mut request, condition).unwrap();
-                add_condition(
-                    &mut request,
-                    CommitCondition::Absent {
-                        path: StreamPath::new("harness/test/journal").unwrap(),
-                    },
-                )
-                .unwrap();
-                add_record(
-                    &mut request,
-                    StreamPath::new("harness/test/journal").unwrap(),
-                    OwnedBytes::from_static(b"result"),
-                )
-                .unwrap();
-                let (outcome, _) = block_on(commit(request, &client, Some(task), None)).unwrap();
-                matches!(outcome, CommitOutcome::Committed(_))
-            }
+        let revocation_sequence = original.revision;
+        let writer_phase = Arc::new(AtomicU8::new(0));
+        let writer_client = Arc::new(PublicationCut {
+            inner: (*client).clone(),
+            phase: writer_phase.clone(),
+            omit_condition: false,
         });
-        let revocation = thread::spawn(move || {
+        let revoker_phase = Arc::new(AtomicU8::new(0));
+        let revoker_client = Arc::new(PublicationCut {
+            inner: (*client).clone(),
+            phase: revoker_phase.clone(),
+            omit_condition: false,
+        });
+        let mut rival = Box::new(block_on(open(&revoker_client)).unwrap());
+        let writer: Pending<bool> = Box::pin(async move {
+            let mut work = None;
+            let mut request =
+                commit_request(StreamIdempotencyKey::new("journal").unwrap(), 0, &mut work);
+            add_condition(&mut request, condition).unwrap();
+            add_condition(
+                &mut request,
+                CommitCondition::Absent {
+                    path: StreamPath::new("harness/test/journal").unwrap(),
+                },
+            )
+            .unwrap();
+            add_record(
+                &mut request,
+                StreamPath::new("harness/test/journal").unwrap(),
+                OwnedBytes::from_static(b"result"),
+            )
+            .unwrap();
+            let (outcome, _) = commit(request, &writer_client, Some(task), None)
+                .await
+                .unwrap();
+            matches!(outcome, CommitOutcome::Committed(_))
+        });
+        OMIT_OWNER_CONDITION.with(|fault| fault.set(broken));
+        let writer = pause_before_publish(writer, &writer_phase);
+        OMIT_OWNER_CONDITION.with(|fault| fault.set(false));
+        let revocation: Pending<()> = Box::pin(async move {
             let event = if release {
                 SchedulerEvent::LeaseReleased {
                     operation_id: task,
@@ -200,24 +215,32 @@ fn fencing_model(release: bool, settlement: bool, broken: bool) {
                     recursive: false,
                 }
             };
-            assert!(block_on(publish(&mut rival, "revoke", event)).unwrap());
-            let revoked_at = committed_at(&rival.client, COORDINATOR_PATH, rival.revision - 1);
+            assert!(publish(&mut rival, "revoke", event).await.unwrap());
             if release {
-                let replacement =
-                    block_on(start(&mut rival, &worker("replacement"), "replace")).unwrap();
+                let replacement = start(&mut rival, &worker("replacement"), "replace")
+                    .await
+                    .unwrap();
                 assert_ne!(replacement.reservation.placement, "worker");
             }
-            revoked_at
         });
-        let committed = writer.join().unwrap();
-        let revoked_at = revocation.join().unwrap();
-        assert_eq!(journal_tail(&client), u64::from(committed));
-        if committed {
+        let revocation = pause_before_publish(revocation, &revoker_phase);
+        let writer = thread::spawn(move || publish_until_cut(writer, writer_phase));
+        let revocation = thread::spawn(move || publish_until_cut(revocation, revoker_phase));
+        let writer = writer.join().unwrap();
+        let revocation = revocation.join().unwrap();
+        // Both real storage calls have finished. Acknowledgement/replay cannot
+        // change the linearization order recorded by their committed records.
+        let published = journal_tail(&client);
+        let revoked_at = committed_at(&client, COORDINATOR_PATH, revocation_sequence);
+        if published != 0 {
             assert!(
                 committed_at(&client, "harness/test/journal", 0) < revoked_at,
                 "revoked owner published a journal record"
             );
         }
+        let committed = block_on(writer);
+        block_on(revocation);
+        assert_eq!(published, u64::from(committed));
         let mut reopened = Box::new(block_on(open(&client)).unwrap());
         let verifier = issuer.verifier(&mut None).unwrap();
         assert!(

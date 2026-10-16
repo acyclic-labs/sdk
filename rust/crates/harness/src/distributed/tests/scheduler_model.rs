@@ -1,22 +1,10 @@
+use super::model_provider::{
+    Pending, PublicationCut, block_on, pause_before_publish, publish_until_cut,
+};
 use super::*;
 use crate::conversation::{BoundedContentFuture, ContentIo};
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
-    ReadRequest, RecordStream, StreamBounds, StreamPath,
-};
-use loom::sync::atomic::{AtomicU8, Ordering};
-use std::{
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-type Settlement = Pin<Box<dyn Future<Output = Result<bool>> + Send>>;
-
-fn block_on<F: Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
-}
+use acyclic_stream::StreamPath;
+use loom::sync::atomic::AtomicU8;
 
 struct Contents(Vec<(FileRef, OwnedBytes)>);
 
@@ -83,69 +71,6 @@ impl SchedulerPayloadStore for Contents {
     }
 }
 
-// Only pause at the publication boundary. All storage state, exclusion and
-// wakeups still belong to MemoryStream's production Loom-visible locks.
-struct PublicationCut {
-    inner: MemoryStream,
-    phase: Arc<AtomicU8>,
-    omit_condition: bool,
-}
-
-async fn suspend_once() {
-    let mut suspended = false;
-    futures::future::poll_fn(|cx| {
-        if std::mem::replace(&mut suspended, true) {
-            Poll::Ready(())
-        } else {
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
-}
-
-macro_rules! delegate {
-    ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
-        #[async_trait::async_trait]
-        impl StreamProvider for PublicationCut {
-            $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, StreamError> {
-                self.inner.$name($arg).await
-            })*
-
-            async fn follow(&self, path: StreamPath, from: u64)
-                -> std::result::Result<RecordStream, StreamError>
-            {
-                self.inner.follow(path, from).await
-            }
-
-            async fn append(&self, mut request: AppendRequest)
-                -> std::result::Result<AppendOutcome, StreamError>
-            {
-                self.phase.store(1, Ordering::SeqCst);
-                suspend_once().await;
-                if self.omit_condition {
-                    request.if_tail = None;
-                }
-                let result = self.inner.append(request).await;
-                self.phase.store(2, Ordering::SeqCst);
-                suspend_once().await;
-                result
-            }
-        }
-    };
-}
-
-delegate! {
-    inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<IdempotencyObservation>;
-    tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> StreamBounds;
-    fork(request: ForkRequest) -> ForkReceipt;
-    read(request: ReadRequest) -> RecordStream;
-    children(request: ChildrenRequest) -> ChildStream;
-    commit(request: CommitRequest) -> CommitOutcome;
-    read_commit(id: CommitId) -> CommittedEnvelope;
-}
-
 fn coordinator<P: StreamProvider>(
     client: &Arc<P>,
     contents: &Arc<Contents>,
@@ -210,7 +135,7 @@ fn prepared(
     contents: &Arc<Contents>,
     key: &'static str,
     broken: bool,
-) -> (Settlement, Arc<AtomicU8>) {
+) -> (Pending<Result<bool>>, Arc<AtomicU8>) {
     let phase = Arc::new(AtomicU8::new(0));
     let provider = Arc::new(PublicationCut {
         inner: (**client).clone(),
@@ -218,7 +143,7 @@ fn prepared(
         omit_condition: broken,
     });
     let mut coordinator = coordinator(&provider, contents);
-    let mut future: Settlement = Box::pin(async move {
+    let future: Pending<Result<bool>> = Box::pin(async move {
         Box::pin(coordinator.orchestrate(
             OperationId::from_bytes([1; 16]),
             IdempotencyKey::new(key).unwrap(),
@@ -226,30 +151,8 @@ fn prepared(
         ))
         .await
     });
-    assert!(
-        future
-            .as_mut()
-            .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
-            .is_pending()
-    );
-    assert_eq!(
-        phase.load(Ordering::SeqCst),
-        1,
-        "pause immediately before publication"
-    );
+    let future = pause_before_publish(future, &phase);
     (future, phase)
-}
-
-fn publish_until_cut(mut future: Settlement, phase: Arc<AtomicU8>) -> Settlement {
-    block_on(futures::future::poll_fn(|cx| {
-        assert!(future.as_mut().poll(cx).is_pending());
-        if phase.load(Ordering::SeqCst) == 2 {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }));
-    future
 }
 
 fn settlement_model(join: bool, broken: bool) {
