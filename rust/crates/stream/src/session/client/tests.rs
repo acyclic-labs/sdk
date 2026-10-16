@@ -637,3 +637,5 @@ async fn largest_child_path_fits_its_channel_credit() -> TestResult {
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }
+
+mod tenk;
