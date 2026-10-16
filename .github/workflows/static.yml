@@ -23,3 +23,62 @@ jobs:
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
+  generated:
+    name: SDK Generated Sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Locate generator tools
+        run: |
+          echo "TOOLS_DIR=$RUNNER_TEMP/generated-tools" >> "$GITHUB_ENV"
+          echo "SDK_PROTO_CODEGEN=$RUNNER_TEMP/generated-tools/sdk-proto-codegen" >> "$GITHUB_ENV"
+      - name: Restore source generator
+        id: generator
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/generated-tools/sdk-proto-codegen
+          key: sdk-source-generator-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'rust/crates/proto-codegen/**') }}
+      - uses: ./.github/actions/rust-toolchain
+        if: steps.generator.outputs.cache-hit != 'true'
+      - name: Build descriptor generator only
+        if: steps.generator.outputs.cache-hit != 'true'
+        run: |
+          cargo build --locked -p sdk-proto-codegen --bin sdk-proto-codegen --config profile.dev.debug=0 --config profile.dev.opt-level=0
+          mkdir -p "$TOOLS_DIR"
+          cp target/debug/sdk-proto-codegen "$SDK_PROTO_CODEGEN"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.15.0
+      - name: Restore Bun and package downloads
+        id: bun
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/generated-tools/bun
+          key: sdk-source-bun-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('bun.lock', 'scripts/ensure-bun.sh') }}
+      - name: Install pinned Bun and dependencies
+        run: |
+          source scripts/ensure-bun.sh
+          dirname "$(command -v bun)" >> "$GITHUB_PATH"
+          bun install --frozen-lockfile
+      - name: Check generated sources without rewriting them
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          node scripts/check-workflow-runners.mjs
+          node --test scripts/generated-rust.test.mjs scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs
+          bun scripts/check-generated.mjs --source-only
+      - name: Save source generator on main
+        if: "!cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.generator.outputs.cache-hit != 'true' && steps.generator.outputs.cache-primary-key != ''"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/generated-tools/sdk-proto-codegen
+          key: ${{ steps.generator.outputs.cache-primary-key }}
+      - name: Save Bun downloads on main
+        if: "!cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && steps.bun.outputs.cache-hit != 'true' && steps.bun.outputs.cache-primary-key != ''"
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/generated-tools/bun
+          key: ${{ steps.bun.outputs.cache-primary-key }}

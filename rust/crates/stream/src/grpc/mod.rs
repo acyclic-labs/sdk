@@ -40,7 +40,7 @@ mod credential_tests;
 mod latency_tests;
 mod server;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -225,17 +225,8 @@ impl Client {
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
-        let authorization = if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-            authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?
-        } else {
-            self.authorization
-                .clone()
-                .ok_or_else(|| Status::unauthenticated("missing credential"))?
-        };
+        let authorization =
+            request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);
         request
             .metadata_mut()
@@ -333,6 +324,23 @@ pub(crate) async fn channel_with_verifier(
         .tcp_nodelay(true)
         .connect()
         .await?)
+}
+
+pub(crate) async fn request_authorization(
+    fixed: Option<&MetadataValue<Ascii>>,
+    credential: Option<&CredentialProvider>,
+) -> Result<MetadataValue<Ascii>, Status> {
+    if let Some(provider) = credential {
+        let token = provider
+            .resolve()
+            .await
+            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
+        authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))
+    } else {
+        fixed
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing credential"))
+    }
 }
 
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {

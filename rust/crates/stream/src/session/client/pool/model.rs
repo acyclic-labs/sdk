@@ -5,7 +5,8 @@ fn fixture(channel: TransportChannel) -> (Pool, mpsc::Receiver<Result<Delivery, 
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
         identity: Bytes::from_static(b"model"),
-        authorization: "Bearer fixture".parse().unwrap(),
+        authorization: Some("Bearer fixture".parse().unwrap()),
+        credential: None,
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
         routes: BTreeMap::new(),

@@ -50,9 +50,15 @@ message AppendResponse {
 
 message TailRequest {
   string path = 1;
+  // Observe accepted visibility without waiting for persistence. False retains
+  // the provider's ordinary tail behavior.
+  bool accepted = 2;
 }
 message TailResponse {
   uint64 tail = 1;
+  // Present for an accepted observation: confirmed durable prefix at the same
+  // cut, bounded by tail. Absent means the peer does not support that observation.
+  optional uint64 durable = 3;
   reserved 2;
   reserved "trim_point";
 }

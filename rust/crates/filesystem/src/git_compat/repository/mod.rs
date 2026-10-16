@@ -47,13 +47,17 @@ impl<S> GitCompatRepository<S> {
 }
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
-    /// Returns the workspace selected by the validated durable branch catalog.
-    pub async fn selected_workspace(&self) -> Result<WorkspaceId, GitCompatError<S::Error>> {
-        self.load()
-            .await?
+    /// Reads the selected workspace and its pending native publication at one durable cut.
+    pub async fn checkout_selection(
+        &self,
+    ) -> Result<(WorkspaceId, Option<(OperationId, GitGenerationRef)>), GitCompatError<S::Error>>
+    {
+        let state = self.load().await?;
+        let workspace = state
             .current()
             .map(|branch| branch.workspace_id)
-            .map_err(|_| GitCompatError::InvalidState)
+            .map_err(|_| GitCompatError::InvalidState)?;
+        Ok((workspace, state.checkout_reconciliation))
     }
 
     /// Returns the selected branch's tracked paths.
