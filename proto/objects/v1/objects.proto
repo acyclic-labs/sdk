@@ -164,6 +164,18 @@ message DeleteObjectRequest {
 message DeleteObjectResponse {
   bool existed = 1;
 }
+// Restores the contents covered by prefix at one retained instant. An empty
+// prefix selects the bucket. Retention does not expose public version IDs.
+// The bucket itself is not created or restored by this operation.
+message RestoreObjectsRequest {
+  BucketRef bucket = 1;
+  string prefix = 2;
+  google.protobuf.Timestamp at = 3;
+  MutationIdentity mutation = 4;
+}
+message RestoreObjectsResponse {
+  uint64 restored_objects = 1;
+}
 // Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
 // Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
 message ListObjectsRequest {
@@ -184,6 +196,7 @@ message ListObjectsResponse {
   bool is_truncated = 4;
 }
 service ObjectsService {
+  rpc RestoreObjects(RestoreObjectsRequest) returns (RestoreObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/restore" resource: "objects:/{bucket.name}/{prefix}" }; }
   rpc PutObject(stream PutObjectRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{header.bucket.name}/{header.object_key}" }; }
   rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/{bucket.name}/{object_key}" }; }

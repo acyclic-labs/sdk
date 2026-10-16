@@ -40,7 +40,7 @@ mod credential_tests;
 mod latency_tests;
 mod server;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -73,7 +73,7 @@ pub struct Client {
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
-    sessions: Arc<tokio::sync::OnceCell<crate::session::Client>>,
+    sessions: Arc<crate::session::Cache>,
     session_ca: Option<Arc<[u8]>>,
     session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
@@ -113,7 +113,7 @@ impl Client {
         let mut client = self.clone();
         client.authorization = Some(authorization(bearer_token)?);
         client.credential = None;
-        client.sessions = Arc::new(tokio::sync::OnceCell::new());
+        client.sessions = Arc::new(crate::session::Cache::new());
         Ok(client)
     }
 
@@ -122,7 +122,7 @@ impl Client {
         let mut client = self.clone();
         client.authorization = None;
         client.credential = Some(credential);
-        client.sessions = Arc::new(tokio::sync::OnceCell::new());
+        client.sessions = Arc::new(crate::session::Cache::new());
         client
     }
 
@@ -190,7 +190,7 @@ impl Client {
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
-            sessions: Arc::new(tokio::sync::OnceCell::new()),
+            sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
         }
@@ -205,7 +205,7 @@ impl Client {
             authorization: None,
             credential: Some(credential),
             acknowledge_deliveries: true,
-            sessions: Arc::new(tokio::sync::OnceCell::new()),
+            sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
         }
@@ -225,17 +225,8 @@ impl Client {
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
-        let authorization = if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-            authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?
-        } else {
-            self.authorization
-                .clone()
-                .ok_or_else(|| Status::unauthenticated("missing credential"))?
-        };
+        let authorization =
+            request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);
         request
             .metadata_mut()
@@ -333,6 +324,23 @@ pub(crate) async fn channel_with_verifier(
         .tcp_nodelay(true)
         .connect()
         .await?)
+}
+
+pub(crate) async fn request_authorization(
+    fixed: Option<&MetadataValue<Ascii>>,
+    credential: Option<&CredentialProvider>,
+) -> Result<MetadataValue<Ascii>, Status> {
+    if let Some(provider) = credential {
+        let token = provider
+            .resolve()
+            .await
+            .map_err(|_| Status::unauthenticated("credential provider failed"))?;
+        authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))
+    } else {
+        fixed
+            .cloned()
+            .ok_or_else(|| Status::unauthenticated("missing credential"))
+    }
 }
 
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {

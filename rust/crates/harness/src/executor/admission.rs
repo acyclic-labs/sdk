@@ -48,7 +48,7 @@ impl ModelEventAdmission {
                 "model emitted an event after completion",
             ));
         }
-        let ModelEvent::ToolCall { call_id, name, .. } = event else {
+        let ModelEvent::ToolCall(crate::model::ToolCall { call_id, name, .. }) = event else {
             return Ok(None);
         };
         with_history_io(io, |work| {
@@ -118,7 +118,7 @@ impl ModelEventAdmission {
     ) -> Result<()> {
         let position = self.validate_next(event, limits, io)?;
         match event {
-            ModelEvent::ToolCall { call_id, .. } => {
+            ModelEvent::ToolCall(crate::model::ToolCall { call_id, .. }) => {
                 let position = position.ok_or_else(|| {
                     stock_boundary(io, Invalid, "model call insertion position is missing")
                 })?;

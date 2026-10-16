@@ -178,7 +178,7 @@ impl Selection {
                     continue;
                 }
                 let decoded = name(&binding.name, io)?;
-                if !decoded.ends_with(".md") {
+                if decoded == ".md" || !decoded.ends_with(".md") {
                     continue;
                 }
                 let key = FileKey::parse(&format!("plans/{decoded}"))?;
@@ -301,12 +301,11 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
                 )
                 .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
             io.charge(decoded.work).map_err(crate::Error::from)?;
-            let path = format!("plans/{}", decoded.value);
-            if decoded.value.ends_with(".md") {
+            if decoded.value != ".md" && decoded.value.ends_with(".md") {
                 if entries.len() == maximum_files {
                     return Err(task_volume::Error::LimitExceeded);
                 }
-                let key = FileKey::parse(&path)?;
+                let key = FileKey::parse(&format!("plans/{}", decoded.value))?;
                 entries.push((key, entry.file_id, entry.kind));
             }
         }

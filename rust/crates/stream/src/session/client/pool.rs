@@ -6,20 +6,15 @@ pub(super) mod model;
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
+            self.sync_attempts()?;
             tokio::select! {
+                changed = self.abandoned.changed(false) => changed?,
                 command = self.commands.recv() => match command { Some(command) => self.command(command)?, None => return Ok(()) },
                 released = self.released.next() => { self.released(released?)?; },
                 id = self.removed.next() => self.remove(id?)?,
                 ready = self.dials.next(), if !self.dials.is_empty() => {
-                    let (node,result) = ready.ok_or(StreamError::Unavailable)?;
-                    self.connecting.remove(&node);
-                    match result {
-                        Ok(ready) => {
-                            self.install(ready)?;
-                            self.pending.extend(self.routes.iter().filter(|(_,route)| route.node == node).map(|(id,route)| (*id,route.generation)));
-                        }
-                        Err(error) => self.fail_node(&node,&error),
-                    }
+                    let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
+                    self.dial_ready(node, epoch, result)?;
                 }
                 () = future::ready(()), if !self.pending.is_empty() => {
                     if let Some((id,generation)) = self.pending.pop_front()
@@ -38,7 +33,80 @@ impl Pool {
                     None => return Err(StreamError::Unavailable),
                 }
             }
+            self.close_idle();
         }
+    }
+    fn sync_attempts(&mut self) -> Result<(), StreamError> {
+        // Clear the wake flag before loading the epoch: abandonment either
+        // appears in this load or leaves a wake for the next dispatch turn.
+        self.abandoned.set(false)?;
+        let epoch = self.attempt_epoch.load(Ordering::Acquire);
+        if epoch == self.dial_epoch {
+            return Ok(());
+        }
+        self.dial_epoch = epoch;
+        self.dials.clear();
+        self.connecting.clear();
+        let stale = self
+            .routes
+            .iter()
+            .filter(|(_, route)| !route.opened && route.attempt_epoch != epoch)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in stale {
+            self.reject(id, StreamError::Unavailable);
+        }
+        Ok(())
+    }
+    fn dial_ready(
+        &mut self,
+        node: String,
+        epoch: u64,
+        result: Result<Ready, StreamError>,
+    ) -> Result<(), StreamError> {
+        self.sync_attempts()?;
+        if epoch != self.dial_epoch {
+            // A credential callback may settle after its final owner cancelled.
+            // Neither its failure nor its success belongs to the successor dial.
+            return Ok(());
+        }
+        self.connecting.remove(&node);
+        match result {
+            Ok(ready) => {
+                let installed = self.install(ready)?;
+                if node.is_empty() && self.home.is_empty() {
+                    self.home = installed.clone();
+                    for route in self
+                        .routes
+                        .values_mut()
+                        .filter(|route| route.node.is_empty())
+                    {
+                        route.node = installed.clone();
+                    }
+                }
+                self.pending.extend(
+                    self.routes
+                        .iter()
+                        .filter(|(_, route)| route.node == installed)
+                        .map(|(id, route)| (*id, route.generation)),
+                );
+            }
+            Err(error) => self.fail_node(&node, &error),
+        }
+        Ok(())
+    }
+    fn close_idle(&mut self) {
+        if self.active.load(Ordering::Acquire) == 0 {
+            self.close_links();
+        }
+    }
+    fn close_links(&mut self) {
+        self.links.clear();
+        self.reads.clear();
+        self.dials.clear();
+        self.connecting.clear();
+        self.pending.clear();
+        self.routes.clear();
     }
     fn receive_frame(&mut self, node: &str, value: wire::SessionFrame) -> bool {
         match self.receive(node, value) {
@@ -54,15 +122,21 @@ impl Pool {
         self.fail_node(node, error);
     }
     fn command(&mut self, command: Command) -> Result<(), StreamError> {
+        self.sync_attempts()?;
         match command {
             Command::Open {
                 id,
+                attempt_epoch,
                 acknowledge,
                 kind,
                 progress,
                 records,
                 ready,
             } => {
+                if attempt_epoch != self.dial_epoch {
+                    let _ = ready.send(Err(StreamError::Unavailable));
+                    return Ok(());
+                }
                 if self.routes.len() >= Limits::default().channels {
                     let _ = ready.send(Err(StreamError::Capacity));
                     return Ok(());
@@ -75,6 +149,7 @@ impl Pool {
                     id,
                     Route {
                         node: self.home.clone(),
+                        attempt_epoch,
                         kind,
                         generation: 1,
                         placement_epoch: 0,
@@ -316,7 +391,7 @@ impl Pool {
         for id in ids {
             if let Some(mut route) = self.routes.remove(&id) {
                 if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Ok(id));
+                    let _ = ready.send(Err(error.clone()));
                 }
                 let error = error.clone();
                 let records = route.records;

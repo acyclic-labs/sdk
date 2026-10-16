@@ -486,6 +486,28 @@ export interface SearchMatches {
 export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: ModelDataPart[] };
 
 /**
+ * Complete provider tool call, shared by stream events and replayed context.
+ */
+export interface ToolCall {
+    /**
+     * Provider-owned call identity, scoped by the executor's dispatch.
+     */
+    call_id: string;
+    /**
+     * Registered tool name.
+     */
+    name: string;
+    /**
+     * Schema-defined arguments.
+     */
+    arguments: WasmModelJsonValue;
+    /**
+     * Opaque provider continuation data retained for follow-ups and replay.
+     */
+    metadata?: WasmModelJsonValue;
+}
+
+/**
  * Configuration claim bound to original task admission and code.
  */
 export interface NativeConfigurationBinding {
@@ -1350,7 +1372,7 @@ export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | 
 /**
  * Ordered streaming model event.
  */
-export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | ({ kind: "tool_call" } & ToolCall) | { kind: "completed"; metadata: WasmModelJsonValue };
 
 /**
  * Ordinary configurable threshold compaction; no model-family heuristic.
@@ -1675,7 +1697,7 @@ export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projecti
 /**
  * Structured content requiring an explicit provider projection.
  */
-export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | ({ kind: "tool_call" } & ToolCall) | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
 
 /**
  * Structured parent and stable logical child slot.

@@ -77,6 +77,8 @@ pub use root_source::FsRootProjectSourceProvider;
 mod native_execution;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use native_execution::NativePreparationCompletionTemplate;
+#[cfg(all(fuzzing, feature = "native-execution", not(target_arch = "wasm32")))]
+pub use native_execution::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]

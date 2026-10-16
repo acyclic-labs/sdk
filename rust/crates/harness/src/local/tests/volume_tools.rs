@@ -28,11 +28,11 @@ async fn configured_volume_binds_bash_and_fs_and_reopens_the_selected_branch() -
     }
     let provider = scripted([
         ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall {
-                call_id: "write".into(),
-                name: "write".into(),
-                arguments: json!({"path":"note.txt","text":"volume","media_type":"text/plain","display_name":"note.txt"}),
-            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "write".into(),
+                "write".into(),
+                json!({"path":"note.txt","text":"volume","media_type":"text/plain","display_name":"note.txt"}),
+            ))),
             ScriptedEvent::Event(ModelEvent::Completed {
                 metadata: json!({}),
             }),

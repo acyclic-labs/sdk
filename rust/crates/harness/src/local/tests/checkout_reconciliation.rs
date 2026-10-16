@@ -25,7 +25,7 @@ async fn git_reconciliation_publishes_parent_changes_at_close_and_recovery() -> 
     super::checkout_reopen::run(&harness).await?;
     for (expired, expected) in [(false, "closed"), (true, "recovered")] {
         let checkout = harness.workspace().unwrap();
-        let selected = checkout.selected_view().await?.unwrap();
+        let selected = checkout.selected_view().await?.0.unwrap();
         let windows = acyclic_fs::OperationWindowCoordinator::new(
             checkout.filesystem.operation_window_store(),
         );
@@ -92,7 +92,7 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
-    let selected = checkout.selected_view().await?.unwrap();
+    let selected = checkout.selected_view().await?.0.unwrap();
     let tree = selected
         .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
         .await
@@ -185,9 +185,10 @@ async fn recovered_branch_switch_is_selected_even_when_the_command_needs_retry()
     );
     assert_eq!(
         repository
-            .selected_workspace()
+            .checkout_selection()
             .await
-            .map_err(super::super::storage)?,
+            .map_err(super::super::storage)?
+            .0,
         checkout.view().workspace().id()
     );
     let head = checkout

@@ -348,7 +348,7 @@ where
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
                             ModelEvent::Completed { .. } | ModelEvent::Reasoning { .. } => {}
-                            ModelEvent::ToolCall { .. } => {
+                            ModelEvent::ToolCall(_) => {
                                 return Err(canonical_boundary(
                                     io,
                                     crate::wire::ErrorCode::Invalid,

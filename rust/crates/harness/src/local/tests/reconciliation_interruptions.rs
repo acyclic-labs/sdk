@@ -35,7 +35,7 @@ async fn assert_published(harness: &LocalHarness, expected: &str) -> Result<()> 
         std::fs::read(checkout.path.join("upstream.txt")).map_err(super::super::storage)?,
         expected.as_bytes()
     );
-    let selected = checkout.selected_view().await?.unwrap();
+    let selected = checkout.selected_view().await?.0.unwrap();
     let head = generation(&selected).await?;
     assert_eq!(
         head.read(
@@ -82,7 +82,7 @@ async fn sweep(text: &str) -> Result<()> {
     loop {
         let expected = format!("{text}-{cut}");
         let checkout = harness.workspace().unwrap();
-        let selected = checkout.selected_view().await?.unwrap();
+        let selected = checkout.selected_view().await?.0.unwrap();
         let from = generation(&selected).await?;
         let windows = acyclic_fs::OperationWindowCoordinator::new(
             checkout.filesystem.operation_window_store(),
@@ -199,7 +199,7 @@ async fn negative_control(text: &str) -> Result<()> {
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();
-    let selected = checkout.selected_view().await?.unwrap();
+    let selected = checkout.selected_view().await?.0.unwrap();
     let from = generation(&selected).await?;
     let windows =
         acyclic_fs::OperationWindowCoordinator::new(checkout.filesystem.operation_window_store());
@@ -263,18 +263,26 @@ async fn negative_control(text: &str) -> Result<()> {
     );
     // No capture is allowed in this deliberately corrupted case.
     assert_eq!(
-        generation(&harness.workspace().unwrap().selected_view().await?.unwrap())
-            .await?
-            .read(
-                "/upstream.txt",
-                128,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map_err(super::super::storage)?
-            .value
-            .as_ref(),
+        generation(
+            &harness
+                .workspace()
+                .unwrap()
+                .selected_view()
+                .await?
+                .0
+                .unwrap()
+        )
+        .await?
+        .read(
+            "/upstream.txt",
+            128,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new()
+        )
+        .await
+        .map_err(super::super::storage)?
+        .value
+        .as_ref(),
         expected.as_bytes()
     );
     Ok(())

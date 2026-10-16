@@ -1,6 +1,5 @@
-{"turns":[[{"type":"event","kind":"content","delta":"````\n"},{"type":"event","kind":"content","delta":"```\n"},{"type":
-  "event","kind":"content","delta":"body\n"},{"type":"event","kind":"content","delta":"````\n"},{"type":"event","kind":
-  "completed","metadata":null}]],"expect":{"text":"````\n```\nbody\n````\n","events":[{"kind":"model","event":{"kind":
-  "content","delta":"````\n"}},{"kind":"model","event":{"kind":"content","delta":"```\n"}},{"kind":"model","event":{
-  "kind":"content","delta":"body\n"}},{"kind":"model","event":{"kind":"content","delta":"````\n"}},{"kind":"model",
-  "event":{"kind":"completed","metadata":null}}]}}
+{"turns":[[{"type":"event","kind":"content","delta":"````\n"},{"type":"event","kind":"content","delta":
+  "```\n"},{"type":"event","kind":"content","delta":"body\n"},{"type":"event","kind":"content","delta":
+  "````\n"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"````\n```\nbody\n````\n",
+  "model_events":[{"kind":"content","delta":"````\n"},{"kind":"content","delta":"```\n"},{"kind":"content",
+  "delta":"body\n"},{"kind":"content","delta":"````\n"},{"kind":"completed","metadata":null}]}}

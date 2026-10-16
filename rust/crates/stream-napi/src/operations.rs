@@ -39,7 +39,13 @@ pub(super) async fn tail(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&wire::TailResponse { tail: value }, "tail")
+    encode(
+        &wire::TailResponse {
+            tail: value,
+            ..Default::default()
+        },
+        "tail",
+    )
 }
 
 pub(super) async fn bounds(
@@ -59,7 +65,13 @@ pub(super) async fn bounds(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&wire::TailResponse { tail: value.tail }, "bounds")
+    encode(
+        &wire::TailResponse {
+            tail: value.tail,
+            ..Default::default()
+        },
+        "bounds",
+    )
 }
 
 pub(super) async fn append(

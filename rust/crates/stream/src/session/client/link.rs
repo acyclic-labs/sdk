@@ -1,20 +1,6 @@
 use super::*;
 
 impl Pool {
-    pub(super) async fn add_link(
-        &mut self,
-        channel: TransportChannel,
-        destination: &str,
-    ) -> Result<String, StreamError> {
-        let ready = open_link(
-            channel,
-            destination,
-            self.identity.clone(),
-            self.authorization.clone(),
-        )
-        .await?;
-        self.install(ready)
-    }
     pub(super) fn install(
         &mut self,
         (node, mut link, response): Ready,
@@ -36,16 +22,18 @@ impl Pool {
         let connect = self.connect.clone();
         let identity = self.identity.clone();
         let authorization = self.authorization.clone();
+        let credential = self.credential.clone();
+        let epoch = self.dial_epoch;
         self.dials.push(Box::pin(async move {
             let outcome = async {
                 let channel = match channel {
                     Some(channel) => channel,
                     None => connect(node).await?,
                 };
-                open_link(channel, &name, identity, authorization).await
+                open_link(channel, &name, identity, authorization, credential).await
             }
             .await;
-            (name, outcome)
+            (name, epoch, outcome)
         }));
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
@@ -224,7 +212,8 @@ async fn open_link(
     channel: TransportChannel,
     destination: &str,
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
     for attempt in 0..3 {
         let result = tokio::time::timeout(
@@ -234,6 +223,7 @@ async fn open_link(
                 destination,
                 identity.clone(),
                 authorization.clone(),
+                credential.clone(),
             ),
         )
         .await
@@ -252,8 +242,13 @@ async fn handshake(
     channel: TransportChannel,
     destination: &str,
     identity: Bytes,
-    authorization: MetadataValue<Ascii>,
+    authorization: Option<MetadataValue<Ascii>>,
+    credential: Option<grpc::CredentialProvider>,
 ) -> Result<Ready, StreamError> {
+    // Resolve inside each bounded handshake, including retries and moved-node RPCs.
+    let authorization = grpc::request_authorization(authorization.as_ref(), credential.as_ref())
+        .await
+        .map_err(|error| grpc::status(&error))?;
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,

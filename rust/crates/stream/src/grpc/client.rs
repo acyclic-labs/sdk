@@ -1,28 +1,21 @@
 use super::*;
 
 impl Client {
-    async fn session(&self) -> Result<&crate::session::Client, StreamError> {
-        // Include callers waiting behind another initializer in the deadline.
-        tokio::time::timeout(
-            Duration::from_secs(4),
-            self.sessions.get_or_try_init(|| async {
-                let request = self.request(()).await.map_err(|error| status(&error))?;
-                let authorization = request
-                    .metadata()
-                    .get("authorization")
-                    .cloned()
-                    .ok_or(StreamError::AccessDenied)?;
-                crate::session::Client::open(
-                    self.channel.clone(),
-                    authorization,
-                    self.session_ca.clone(),
-                    self.session_verifier.clone(),
-                )
-                .await
-            }),
-        )
-        .await
-        .map_err(|_| StreamError::Unavailable)?
+    /// Abandons pending Session handshakes when their credential scope ends.
+    /// Existing sessions remain owned by their logical cursors.
+    pub fn abandon_session_attempts(&self) -> Result<(), StreamError> {
+        self.sessions.abandon_pending()
+    }
+    fn session(&self) -> Result<crate::session::Client, StreamError> {
+        self.sessions.get_or_try_init(|| {
+            crate::session::Client::open(
+                self.channel.clone(),
+                self.authorization.clone(),
+                self.credential.clone(),
+                self.session_ca.clone(),
+                self.session_verifier.clone(),
+            )
+        })
     }
     /// Disables automatic ACKs for translating clients.
     #[must_use]
@@ -123,6 +116,7 @@ impl StreamProvider for Client {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),
+            ..Default::default()
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -136,6 +130,20 @@ impl StreamProvider for Client {
         Ok(StreamBounds {
             tail: self.tail(path).await?,
         })
+    }
+
+    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
+        let response = self
+            .unary(
+                ATTEMPT_TIMEOUT,
+                wire::TailRequest {
+                    path: path.to_string(),
+                    accepted: true,
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
+        decode_response(response, crate::wire_codec::watermarks_from_wire)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -181,14 +189,13 @@ impl StreamProvider for Client {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.session()
-            .await?
+        self.session()?
             .follow_with_ack(path, from, self.acknowledge_deliveries)
             .await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.session().await?.children(request).await
+        self.session()?.children(request).await
     }
 
     async fn children_page(

@@ -1,4 +1,5 @@
 use super::*;
+mod reconnect;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
@@ -154,15 +155,8 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
 }
 
 #[tokio::test]
-async fn unavailable_follow_item_is_retried_without_exposing_a_throwable_error() {
-    let record = acyclic_stream::Record {
-        sequence: 0,
-        value: vec![1_u8, 2].into(),
-        commit_id: acyclic_stream::CommitId::default(),
-        committed_at_micros: 0,
-    };
-    let records: acyclic_stream::RecordStream =
-        futures::stream::iter([Err(StreamError::Unavailable), Ok(record)]).boxed();
+async fn terminal_unavailable_is_reported_before_end() {
+    let records = futures::stream::once(async { Err(StreamError::Unavailable) }).boxed();
     let follow = NativeStreamFollow {
         state: FollowState {
             records: Arc::new(Mutex::new(Some(record_frames(records)))),
@@ -170,43 +164,14 @@ async fn unavailable_follow_item_is_retried_without_exposing_a_throwable_error()
             closed: Arc::new(AtomicBool::new(false)),
         },
     };
-
-    let result = follow
-        .next_result()
-        .await
-        .expect("retryable follow read failed");
-    assert!(result.value.is_some());
-    assert!(result.error.is_none());
-    let end = follow.next_result().await.expect("follow end failed");
-    assert!(end.value.is_none());
-    assert!(end.error.is_none());
-}
-
-#[tokio::test]
-async fn repeated_unavailable_follow_items_are_cancellable() {
-    let records: acyclic_stream::RecordStream =
-        futures::stream::repeat(Err(StreamError::Unavailable)).boxed();
-    let follow = Arc::new(NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
-            token: CancellationToken::new(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    });
-    let pending = tokio::spawn({
-        let follow = Arc::clone(&follow);
-        async move { follow.next_result().await }
-    });
-    tokio::time::sleep(Duration::from_millis(1)).await;
-    follow.state.token.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(1), pending)
-        .await
-        .expect("retryable follow read did not cancel")
-        .expect("retryable follow task panicked")
-        .expect("retryable follow read rejected");
+    let result = follow.next_result().await.expect("follow read rejected");
     assert!(result.value.is_none());
-    assert!(result.error.is_none());
-    follow.close().await;
+    assert_eq!(
+        result.error.expect("terminal error swallowed").code,
+        "unavailable"
+    );
+    let end = follow.next_result().await.expect("follow end rejected");
+    assert!(end.value.is_none() && end.error.is_none());
 }
 
 #[tokio::test]
@@ -438,11 +403,15 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             path: "accounts/events".to_owned(),
             from: 0,
         };
-        let opened = client
-            .open_follow_result(Buffer::from(request.encode_to_vec()), None)
-            .await?;
-        assert!(opened.error.is_none(), "open returned an error envelope");
-        let follow = Arc::new(opened.follow.expect("open result omitted follow"));
+        let follow = Arc::new(
+            open_follow(
+                &client.provider,
+                Buffer::from(request.encode_to_vec()),
+                None,
+            )
+            .await
+            .map_err(|error| error.message)?,
+        );
         let pending = tokio::spawn({
             let follow = Arc::clone(&follow);
             async move { follow.next_result().await }
@@ -463,20 +432,19 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             .await
             .map_err(|_| "server follow stream was not dropped after close")?;
 
-        let opened = client
-            .open_children_result(
-                Buffer::from(
-                    wire::ChildrenRequest {
-                        parent: Some("agents".into()),
-                        limit: 1,
-                    }
-                    .encode_to_vec(),
-                ),
-                None,
-            )
-            .await?;
-        assert!(opened.error.is_none());
-        let children = opened.follow.ok_or("children cursor missing")?;
+        let children = open_children(
+            &client.provider,
+            Buffer::from(
+                wire::ChildrenRequest {
+                    parent: Some("agents".into()),
+                    limit: 1,
+                }
+                .encode_to_vec(),
+            ),
+            None,
+        )
+        .await
+        .map_err(|error| error.message)?;
         let value = children.next_result().await?;
         assert!(value.error.is_none());
         let value = value.value.ok_or("child response missing")?;

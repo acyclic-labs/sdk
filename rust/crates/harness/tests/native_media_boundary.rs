@@ -425,7 +425,7 @@ impl ModelProvider for MockAdapter {
                         ModelContentPart::File { file, policy } => {
                             parts.push(self.file(file, policy).await?);
                         }
-                        ModelContentPart::ToolCall { call_id, name, .. } => {
+                        ModelContentPart::ToolCall(acyclic_harness::model::ToolCall { call_id, name, .. }) => {
                             parts.push(CapturedPart::Call(call_id.clone(), name.clone()));
                         }
                         ModelContentPart::ToolResult {
