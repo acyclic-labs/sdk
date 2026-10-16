@@ -9,8 +9,11 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutPublisher
         serde_json::Value::Null,
     )?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
-    let harness =
-        LocalHarness::open(LocalHarnessConfig::new(directory.path(), (model, provider))).await?;
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (model, provider),
+    )?)
+    .await?;
     let tools = Arc::new(
         CheckoutTools::new(
             harness

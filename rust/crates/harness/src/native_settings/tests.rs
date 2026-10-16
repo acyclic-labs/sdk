@@ -2,6 +2,43 @@ use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
 
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "test-support",
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+mod isolation {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Property: workspace spelling never changes the isolated settings roots;
+        // the owned temporary home survives construction and is removed on drop.
+        #[test]
+        fn local_test_config_cannot_resolve_user_settings(workspace in ".{0,64}") {
+            let config = crate::test_support::local_harness_config(
+                PathBuf::from(workspace),
+                (
+                    crate::model::Model::new("test".into(), "settings".into(), "1".into(), Value::Null).unwrap(),
+                    std::sync::Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ),
+            ).unwrap();
+            let settings = config.settings.expect("test configuration must select settings");
+            let temporary = settings._test_home.as_ref().expect("test settings must own their temporary home");
+            prop_assert_eq!(&settings.home, temporary.path());
+            prop_assert_eq!(&settings.codex_home, &temporary.path().join(".codex"));
+            if let Some(home) = dirs::home_dir() {
+                prop_assert_ne!(
+                    std::fs::canonicalize(&settings.home).unwrap(),
+                    std::fs::canonicalize(home).unwrap(),
+                );
+            }
+            let home = settings.home.clone();
+            drop(settings);
+            prop_assert!(!home.exists(), "temporary settings must be cleaned up");
+        }
+    }
+}
 struct Fixture {
     _root: tempfile::TempDir,
     home: PathBuf,

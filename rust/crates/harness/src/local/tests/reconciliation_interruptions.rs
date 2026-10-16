@@ -10,7 +10,11 @@ async fn open(path: &Path, expected: &str) -> Result<LocalHarness> {
         super::checked_commands::call(0, "bash", &format!("test $(cat upstream.txt) = {expected}")),
         ScriptedTurn::Text("done".into()),
     ]);
-    LocalHarness::open(LocalHarnessConfig::new(path, (model()?, provider))).await
+    LocalHarness::open(crate::test_support::local_harness_config(
+        path,
+        (model()?, provider),
+    )?)
+    .await
 }
 
 async fn generation(
@@ -65,10 +69,10 @@ async fn sweep(text: &str) -> Result<()> {
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let mut harness = LocalHarness::open(LocalHarnessConfig::new(
+    let mut harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     // Learn the finite native effect boundaries on the real publication path.
@@ -188,10 +192,10 @@ async fn negative_control(text: &str) -> Result<()> {
         super::checked_commands::call(2, "fs", "checkout -b agents/child"),
         ScriptedTurn::Text("done".into()),
     ]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider),
-    ))
+    )?)
     .await?;
     super::checkout_reopen::run(&harness).await?;
     let checkout = harness.workspace().unwrap();

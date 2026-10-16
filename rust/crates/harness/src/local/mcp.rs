@@ -6,7 +6,7 @@ use crate::{
 
 pub(super) async fn install(
     project: &LocalProject,
-    settings: Option<SettingsConfig>,
+    settings: impl FnOnce(&Path) -> Result<SettingsConfig>,
     tools: ToolRegistry,
     limits: McpClientLimits,
 ) -> Result<McpInstallation> {
@@ -15,18 +15,18 @@ pub(super) async fn install(
         LocalProject::Volume { directory, .. } => directory,
     };
     let workspace = std::fs::canonicalize(path).map_err(Error::process_io)?;
-    let settings = match settings {
-        Some(settings) => settings,
-        None => SettingsConfig::new(
-            &workspace,
-            dirs::home_dir().ok_or_else(|| {
-                Error::Unsupported("user settings directory is unavailable".into())
-            })?,
-        ),
-    };
-    NativeSettings::load(settings)
+    // Selection keeps the configured spelling; process startup uses the canonical root.
+    NativeSettings::load(settings(path)?)
         .await?
         .mcp
         .install(tools, &workspace, limits)
         .await
+}
+
+pub(super) fn user_settings(workspace: &Path) -> Result<SettingsConfig> {
+    Ok(SettingsConfig::new(
+        workspace,
+        dirs::home_dir()
+            .ok_or_else(|| Error::Unsupported("user settings directory is unavailable".into()))?,
+    ))
 }

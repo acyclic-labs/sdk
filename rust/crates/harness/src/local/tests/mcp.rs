@@ -1,5 +1,44 @@
 use super::*;
 
+#[cfg(feature = "mcp-stdio")]
+#[tokio::test]
+async fn default_settings_match_original_and_canonical_workspace_keys() -> Result<()> {
+    use crate::native_settings::SettingsConfig;
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = root.path().join("workspace");
+    let home = root.path().join("home");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir(&home).map_err(super::super::storage)?;
+    let configured = workspace.join("..").join("workspace");
+    let canonical = std::fs::canonicalize(&configured).map_err(super::super::storage)?;
+    assert_ne!(configured, canonical);
+    for key in [&configured, &canonical] {
+        let document = json!({"projects":{key.to_string_lossy().as_ref():{"mcpServers":{
+            "selected":{"command":root.path().join("missing-executable")}
+        }}}});
+        std::fs::write(home.join(".claude.json"), document.to_string())
+            .map_err(super::super::storage)?;
+        let installed = super::super::mcp::install(
+            &super::super::LocalProject::Workspace(configured.clone()),
+            |path| {
+                assert_eq!(path, configured);
+                Ok(SettingsConfig::new(path, &home).codex_home(home.join(".codex")))
+            },
+            crate::tool::ToolRegistry::default(),
+            crate::mcp::McpClientLimits::default(),
+        )
+        .await?;
+        assert_eq!(installed.diagnostics.len(), 1);
+        assert_eq!(installed.diagnostics[0].server, "selected");
+        assert_eq!(
+            installed.diagnostics[0].message,
+            "process not_found: MCP executable was not found in its configured search path"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "mcp-stdio")]
 #[tokio::test]
 async fn configured_server_failures_are_visible_and_required_failures_precede_owner_creation()
 -> Result<()> {
@@ -7,7 +46,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let root = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(root.path()).await?;
         let document = json!({"mcpServers":{"missing":{
-            "command":"__acyclic_missing_mcp_executable__", "required":required,
+            "command":root.path().join("missing-mcp-executable"), "required":required,
         }}});
         std::fs::write(root.path().join(".claude.json"), document.to_string())
             .map_err(super::super::storage)?;
@@ -18,25 +57,33 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let owner = super::super::owner::state_directory(&config.project)?.join("owner.json");
         let opened = LocalHarness::open(config).await;
         if required {
-            assert!(opened.is_err());
+            assert!(
+                matches!(opened, Err(Error::Process { kind: "not_found", message })
+                if message == "MCP executable was not found in its configured search path")
+            );
             assert!(!owner.exists());
         } else {
             let harness = opened?;
             assert_eq!(harness.mcp_diagnostics().len(), 1);
             assert_eq!(harness.mcp_diagnostics()[0].server, "missing");
+            assert_eq!(
+                harness.mcp_diagnostics()[0].message,
+                "process not_found: MCP executable was not found in its configured search path"
+            );
             assert!(harness.tools().get("read", None, None)?.is_some());
         }
     }
     Ok(())
 }
 
+#[cfg(feature = "mcp-stdio")]
 #[tokio::test]
 async fn project_servers_require_explicit_settings_trust() -> Result<()> {
     for trust in [false, true] {
         let root = tempfile::tempdir().map_err(super::super::storage)?;
         let project = volume(root.path()).await?;
         let document = json!({"mcpServers":{"project":{
-            "command":"__acyclic_missing_project_mcp_executable__",
+            "command":root.path().join("missing-project-mcp-executable"),
         }}});
         std::fs::write(root.path().join(".mcp.json"), document.to_string())
             .map_err(super::super::storage)?;
@@ -49,11 +96,16 @@ async fn project_servers_require_explicit_settings_trust() -> Result<()> {
         assert_eq!(harness.mcp_diagnostics().len(), usize::from(trust));
         if trust {
             assert_eq!(harness.mcp_diagnostics()[0].server, "project");
+            assert_eq!(
+                harness.mcp_diagnostics()[0].message,
+                "process not_found: MCP executable was not found in its configured search path"
+            );
         }
     }
     Ok(())
 }
 
+#[cfg(feature = "mcp-http")]
 #[tokio::test]
 async fn configured_http_server_initializes_pages_installs_and_calls_selected_tools() -> Result<()>
 {
