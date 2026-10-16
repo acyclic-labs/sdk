@@ -46,14 +46,21 @@ pub fn expected(bytes: &[u8], exa: bool) -> Option<SearchResponse> {
             }
         } else {
             match byte {
-                b'"' => string = true,
-                b'[' | b'{' => {
-                    depth += 1;
+                b'"' => {
                     if depth > 256 {
                         return None;
                     }
+                    string = true;
+                }
+                b'[' | b'{' => {
+                    if depth > 256 {
+                        return None;
+                    }
+                    depth += 1;
                 }
                 b']' | b'}' => depth = depth.checked_sub(1)?,
+                b':' | b',' | b' ' | b'\n' | b'\r' | b'\t' => {}
+                _ if depth > 256 => return None,
                 _ => {}
             }
         }
@@ -105,6 +112,21 @@ pub fn agrees(expected: &Option<SearchResponse>, actual: Result<&SearchResponse,
 #[test]
 fn oracle_detects_broken_decoding_and_bounds() {
     for exa in [true, false] {
+        // A container's depth is its position before opening it. At depth 256,
+        // an empty container is accepted, while another contained value is not.
+        for arrays in [255, 256, 257] {
+            for leaf in ["", "0", "\"x\""] {
+                let body = format!(
+                    "{{\"results\":[],\"metadata\":{}{leaf}{}}}",
+                    "[".repeat(arrays),
+                    "]".repeat(arrays)
+                );
+                assert_eq!(
+                    expected(body.as_bytes(), exa).is_some(),
+                    arrays < 256 || (arrays == 256 && leaf.is_empty())
+                );
+            }
+        }
         let valid = br#"{"results":[{"url":"https://example.com","title":"source","snippet":"one","highlights":["one","two"]}]}"#;
         let wanted = expected(valid, exa);
         assert!(wanted.is_some());

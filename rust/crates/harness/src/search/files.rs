@@ -142,6 +142,7 @@ async fn condition<P: StreamProvider>(
 /// Follows `requests/search-<id>.json` using the volume's atomic snapshot/cursor.
 /// The host binds this worker to its authorized task volume and execution owner.
 /// The resolver reads host configuration/credentials privately for each dispatch.
+/// `maximum_files` bounds submitted requests; lifecycle outputs use exact file queries.
 pub async fn follow<P: StreamProvider>(
     volume: &TaskVolume<P>,
     owner: &TaskJournalOwner<P>,
@@ -177,7 +178,6 @@ pub async fn follow<P: StreamProvider>(
                     &mut resolve,
                     &authorize,
                     work,
-                    maximum_files,
                 )
                 .await?;
             }
@@ -214,7 +214,6 @@ pub async fn follow<P: StreamProvider>(
                 &mut resolve,
                 &authorize,
                 work,
-                maximum_files,
             )
             .await?;
         }
@@ -229,7 +228,6 @@ async fn settle<P, F, A, Fut>(
     resolve: &mut F,
     authorize: &A,
     work: NativeWork<'_>,
-    maximum_files: usize,
 ) -> Result<()>
 where
     P: StreamProvider,
@@ -240,14 +238,21 @@ where
     let started = file(task, id, false);
     let result = file(task, id, true);
     let outcome = loop {
-        let snapshot = volume
-            .snapshot(&Query::Requests(task.clone()), maximum_files)
+        let completed = volume
+            .snapshot(&Query::File(result.clone()), 1)
             .await
             .map_err(storage)?;
-        if snapshot.files.iter().any(|value| value.key == result) {
+        if !completed.files.is_empty() {
             return Ok(());
         }
-        if let Some(claim) = snapshot.files.iter().find(|value| value.key == started) {
+        let claimed = volume
+            .snapshot(&Query::File(started.clone()), 1)
+            .await
+            .map_err(storage)?;
+        if claimed.generation != completed.generation {
+            continue;
+        }
+        if let Some(claim) = claimed.files.first() {
             if let Some(work) = work {
                 work.charge(acyclic_fs::WorkCounters {
                     source_bytes_read: claim.bytes.len() as u64,
@@ -264,7 +269,14 @@ where
             task: task.clone(),
             file: TaskFile::Request(id.clone()),
         };
-        let Some(input) = snapshot.files.iter().find(|value| value.key == key) else {
+        let snapshot = volume
+            .snapshot(&Query::File(key), 1)
+            .await
+            .map_err(storage)?;
+        if snapshot.generation != claimed.generation {
+            continue;
+        }
+        let Some(input) = snapshot.files.first() else {
             return Ok(());
         };
         let claim = FileValue::new(started.clone(), encode(fence, work)?);
@@ -332,17 +344,7 @@ where
         .await;
         match dispatch {
             Ok(encoded) => {
-                match publish(
-                    volume,
-                    task,
-                    result.clone(),
-                    encoded,
-                    authorize,
-                    work,
-                    maximum_files,
-                )
-                .await
-                {
+                match publish(volume, result.clone(), encoded, authorize, work).await {
                     Err(Error::ToolRejected(_)) => break SearchOutcome::Rejected,
                     other => other?,
                 }
@@ -360,26 +362,15 @@ where
             Err(_) => break SearchOutcome::Failed,
         }
     };
-    publish(
-        volume,
-        task,
-        result,
-        encode(&outcome, work)?,
-        authorize,
-        work,
-        maximum_files,
-    )
-    .await
+    publish(volume, result, encode(&outcome, work)?, authorize, work).await
 }
 
 async fn publish<P, A, Fut>(
     volume: &TaskVolume<P>,
-    task: &Component,
     key: FileKey,
     bytes: OwnedBytes,
     authorize: &A,
     work: NativeWork<'_>,
-    maximum_files: usize,
 ) -> Result<()>
 where
     P: StreamProvider,
@@ -388,10 +379,10 @@ where
 {
     loop {
         let snapshot = volume
-            .snapshot(&Query::Requests(task.clone()), maximum_files)
+            .snapshot(&Query::File(key.clone()), 1)
             .await
             .map_err(storage)?;
-        if snapshot.files.iter().any(|value| value.key == key) {
+        if !snapshot.files.is_empty() {
             return Ok(());
         }
         match volume
@@ -440,17 +431,7 @@ pub async fn drive_for_test<P: StreamProvider>(
         } = input.key
             && id.as_str().starts_with("search-")
         {
-            settle(
-                volume,
-                task,
-                &id,
-                fence,
-                &mut resolve,
-                &authorize,
-                work,
-                maximum_files,
-            )
-            .await?;
+            settle(volume, task, &id, fence, &mut resolve, &authorize, work).await?;
         }
     }
     Ok(())

@@ -77,7 +77,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     let request = FileKey::parse(".tasks/codec/requests/search-codec.json").unwrap();
     let result = FileKey::parse(".tasks/codec/requests/search-codec/result.json").unwrap();
     let initial = volume
-        .snapshot(&Query::Requests(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 3)
         .await
         .unwrap();
     let mut client = volume
@@ -135,7 +135,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
     });
     assert_eq!(outcome, expected);
     let before = volume
-        .snapshot(&Query::Requests(task.clone()), 3)
+        .snapshot(&Query::Task(task.clone()), 3)
         .await
         .unwrap();
     assert_eq!(before.files.len(), 3);
@@ -155,7 +155,7 @@ pub async fn check(bytes: Vec<u8>, exa: bool) {
         .await
         .unwrap();
         let after = volume
-            .snapshot(&Query::Requests(task.clone()), 3)
+            .snapshot(&Query::Task(task.clone()), 3)
             .await
             .unwrap();
         assert_eq!(after.files, before.files);
