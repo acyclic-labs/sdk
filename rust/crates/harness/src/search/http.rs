@@ -1,11 +1,11 @@
 use super::{SearchProvider, SearchRequest, SearchResponse};
 use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
-use reqwest::{Client, Url, header::HeaderValue};
+use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
 use std::time::Duration;
-mod body;
 mod codec;
+mod transport;
 
 const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 
@@ -16,7 +16,7 @@ pub struct Exa(HttpSearch);
 pub struct TinyFish(HttpSearch);
 
 struct HttpSearch {
-    client: Client,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
     endpoint: Url,
     key: HeaderValue,
 }
@@ -40,22 +40,15 @@ impl HttpSearch {
         {
             return Err(Error::Invalid("invalid search endpoint".into()));
         }
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|_| Error::Invalid("cannot create search HTTP client".into()))?;
-        Ok(Self {
-            client,
-            endpoint,
-            key,
-        })
+        let tls = transport::tls(&endpoint)?;
+        Ok(Self { tls, endpoint, key })
     }
 
     async fn send(
         &self,
-        request: reqwest::RequestBuilder,
+        method: http::Method,
+        endpoint: &Url,
+        body: bytes::Bytes,
         work: crate::NativeWork<'_>,
     ) -> Result<(Vec<u8>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -71,35 +64,25 @@ impl HttpSearch {
                 ..Default::default()
             })?;
         }
-        let exchange = request.header("x-api-key", self.key.clone()).send();
-        let response = await_io(exchange, work)
-            .await?
-            .map_err(|_| transport_error(work, "search HTTP request failed"))?;
-        if !response.status().is_success() {
-            // Never expose response bodies or reqwest errors: they can reflect
-            // credentials, headers, or a query-bearing URL.
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return Err(super::rejection(work, "search HTTP request rejected"));
-            }
-            return Err(Error::Invalid(format!(
-                "search HTTP status {}",
-                response.status().as_u16()
-            )));
+        let mut failure = None;
+        let exchange = transport::send(
+            method,
+            endpoint,
+            &self.key,
+            body,
+            self.tls.as_ref(),
+            work,
+            &mut failure,
+        );
+        let result = await_io(
+            tokio::time::timeout(Duration::from_secs(30), exchange),
+            work,
+        )
+        .await?;
+        if let Some(error) = failure {
+            return Err(error);
         }
-        if response
-            .content_length()
-            .is_some_and(|n| n > MAXIMUM_RESPONSE_BYTES as u64)
-        {
-            return Err(super::rejection(work, "search response exceeds byte limit"));
-        }
-        use futures::TryStreamExt as _;
-        let length = response.content_length();
-        let reader = response
-            .bytes_stream()
-            .map_err(std::io::Error::other)
-            .into_async_read();
-        body::read(reader, length, work).await
+        result.map_err(|_| transport_error(work, "search HTTP request timed out"))?
     }
 }
 
@@ -138,14 +121,7 @@ impl Exa {
         let body = request_body(&body, work)?;
         let bytes = self
             .0
-            .send(
-                self.0
-                    .client
-                    .post(self.0.endpoint.clone())
-                    .header("content-type", "application/json")
-                    .body(body),
-                work,
-            )
+            .send(http::Method::POST, &self.0.endpoint, body, work)
             .await?;
         codec::exa(&bytes.0, request.max_results, work)
     }
@@ -192,7 +168,10 @@ impl TinyFish {
         endpoint
             .query_pairs_mut()
             .append_pair("query", &request.query);
-        let bytes = self.0.send(self.0.client.get(endpoint), work).await?;
+        let bytes = self
+            .0
+            .send(http::Method::GET, &endpoint, bytes::Bytes::new(), work)
+            .await?;
         codec::tinyfish(&bytes.0, request.max_results, work)
     }
 }
@@ -213,16 +192,16 @@ struct Contents {
 fn request_body(
     value: &impl serde::Serialize,
     work: crate::NativeWork<'_>,
-) -> Result<reqwest::Body> {
+) -> Result<bytes::Bytes> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let bytes = io.encode(value, MAXIMUM_RESPONSE_BYTES as u64, false)?;
-        return Ok(reqwest::Body::from(bytes::Bytes::from_owner(bytes)));
+        return Ok(bytes::Bytes::from_owner(bytes));
     }
     let _ = work;
     serde_json::to_vec(value)
-        .map(reqwest::Body::from)
+        .map(bytes::Bytes::from)
         .map_err(|_| super::error(work, "cannot encode search request"))
 }
 

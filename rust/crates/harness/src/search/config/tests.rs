@@ -52,7 +52,8 @@ fn credential_precedence_is_lazy_and_blank_keys_fall_through() -> Result<()> {
 }
 
 #[test]
-fn explicit_configuration_never_reads_native_sources_and_hides_unconfigured_tool() -> Result<()> {
+fn explicit_configuration_never_reads_native_sources_and_hides_unconfigured_provider() -> Result<()>
+{
     for provider in [SearchBackend::Exa, SearchBackend::TinyFish] {
         let config = SearchConfig::explicit(provider, BTreeMap::new());
         let key = config.resolve_with(
@@ -60,20 +61,12 @@ fn explicit_configuration_never_reads_native_sources_and_hides_unconfigured_tool
             |_| Err(Error::Invalid("env must not be called".into())),
         )?;
         assert!(key.is_none());
-        assert!(config.tool()?.is_none());
+        assert!(config.provider()?.is_none());
         let config = SearchConfig::explicit(
             provider,
             [(provider.id().into(), "test-only-placeholder".into())].into(),
         );
-        let tool = config
-            .tool()?
-            .ok_or_else(|| Error::Invalid("configured search missing".into()))?;
-        assert_eq!(tool.definition.name, "web_search");
-        assert!(
-            !serde_json::to_string(&tool.definition)
-                .map_err(|e| Error::Invalid(e.to_string()))?
-                .contains("test-only-placeholder")
-        );
+        assert!(config.provider()?.is_some());
     }
     Ok(())
 }

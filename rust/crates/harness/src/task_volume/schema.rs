@@ -7,7 +7,7 @@ use std::sync::Arc;
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 /// A portable, canonical namespace component.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -82,6 +82,10 @@ pub enum ToolFile {
 pub enum TaskFile {
     /// Immutable submitted command, including cancellation and other intents.
     Request(Component),
+    /// Host-owned dispatch claim for an immutable request.
+    RequestStarted(Component),
+    /// Host-owned terminal outcome of an immutable request.
+    RequestResult(Component),
     /// Current task status.
     Status,
     /// Immutable model turn input; turn numbers include retries/attempts.
@@ -140,6 +144,8 @@ impl TaskFile {
     fn path(&self) -> String {
         match self {
             Self::Request(id) => format!("requests/{}.json", id.as_str()),
+            Self::RequestStarted(id) => format!("requests/{}/started.json", id.as_str()),
+            Self::RequestResult(id) => format!("requests/{}/result.json", id.as_str()),
             Self::Status => "status.json".into(),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
@@ -276,6 +282,8 @@ impl FileKey {
         };
         let file = match rest {
             ["requests", request] => TaskFile::Request(json_id(request)?),
+            ["requests", request, "started.json"] => TaskFile::RequestStarted(id(request)?),
+            ["requests", request, "result.json"] => TaskFile::RequestResult(id(request)?),
             ["status.json"] => TaskFile::Status,
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
@@ -486,9 +494,11 @@ impl Query {
             }) => chunks(task, *turn),
             Self::Tools { task, turn } => tools(task, *turn, &minimum, &maximum),
             Self::Tool { task, turn, call } => tools(task, *turn, call, call),
-            Self::Requests(task) => {
-                range(task, TaskFile::Request(minimum), TaskFile::Request(maximum))
-            }
+            Self::Requests(task) => range(
+                task,
+                TaskFile::Request(minimum),
+                TaskFile::RequestResult(maximum),
+            ),
             Self::Turns(task) => range(
                 task,
                 TaskFile::TurnRequest(0),
@@ -571,7 +581,8 @@ impl Query {
                 Self::Requests(t),
                 FileKey::Task {
                     task,
-                    file: TaskFile::Request(_),
+                    file:
+                        TaskFile::Request(_) | TaskFile::RequestStarted(_) | TaskFile::RequestResult(_),
                 },
             )
             | (

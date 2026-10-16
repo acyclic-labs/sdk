@@ -1,5 +1,5 @@
-use super::{Exa, SearchProvider, TinyFish, web_search};
-use crate::{Error, Result, tool::Tool};
+use super::{Exa, SearchProvider, TinyFish};
+use crate::{Error, Result};
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -103,8 +103,8 @@ impl SearchConfig {
             .cloned())
     }
 
-    /// Resolves keychain → environment → config and advertises search only with a key.
-    pub fn tool(&self) -> Result<Option<Tool>> {
+    /// Resolves the worker's private keychain → environment → config credential.
+    pub fn provider(&self) -> Result<Option<Arc<dyn SearchProvider>>> {
         let Some(key) = self.key()? else {
             return Ok(None);
         };
@@ -112,7 +112,7 @@ impl SearchConfig {
             SearchBackend::Exa => Arc::new(Exa::new(&key)?),
             SearchBackend::TinyFish => Arc::new(TinyFish::new(&key)?),
         };
-        web_search(provider).map(Some)
+        Ok(Some(provider))
     }
 }
 

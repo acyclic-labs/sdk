@@ -14,8 +14,6 @@ pub mod files;
 pub mod patch;
 pub mod plan;
 pub mod schema;
-mod spec;
-pub use spec::{BuiltinTool, ToolEffect, ToolSpec};
 pub mod text;
 pub mod text_files;
 

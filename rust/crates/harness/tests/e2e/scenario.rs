@@ -33,7 +33,6 @@ pub struct Scenario {
     pub max_steps: Option<u32>,
     #[serde(default)]
     pub replay: bool,
-    pub search: Option<super::search::Search>,
     pub expect: Expectations,
 }
 
@@ -108,9 +107,6 @@ impl Scenario {
             }
         }
         let scenario: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        if scenario.kind == Kind::Summary && scenario.search.is_some() {
-            return Err("search requires a turn scenario".into());
-        }
         let instruction = match scenario.kind {
             Kind::Summary => &scenario.instruction,
             Kind::Turn => &scenario.prompt,
@@ -181,8 +177,6 @@ fn scenarios_reject_typos_and_vacuous_results() {
         r#"{"kind":"summary","prompt":"x","instruction":"x","turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","max_steps":16,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","max_steps":null,"turns":[],"expect":{"text":"x"}}"#,
-        r#"{"kind":"summary","instruction":"x","turns":[],"search":{"configured":true,"granted":true,"steps":[],"events":[]},"expect":{"text":"x"}}"#,
-        r#"{"prompt":"x","turns":[],"search":{"configured":true,"granted":true,"steps":[],"events":[],"typo":1},"expect":{"text":"x"}}"#,
         r#"{"kind":"summary","instruction":"x","discovery":null,"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"typo":true},"turns":[],"expect":{"text":"x"}}"#,
         r#"{"prompt":"x","discovery":{"instructions":[{"typo":true}]},"turns":[],"expect":{"text":"x"}}"#,

@@ -1,33 +1,27 @@
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness::{
-    AgentId, Capabilities, Error, OperationId, Result,
-    context::ContextPipeline,
-    executor::{
-        ExecutionEvent, ExecutionJournal, ExecutionRecord, Executor, StockExecutor,
-        ToolFailureKind, TurnInput,
-    },
-    filesystem::MemoryHarnessStorage,
-    model::{Model, ModelContent},
-    runtime::RuntimeScope,
+    Error, Result,
+    scheduler::LeaseFence,
     search::{
-        SearchProvider, SearchRequest, SearchResponse, decode_search_http_response, web_search,
+        SearchProvider, SearchRequest, SearchResponse, decode_search_http_response,
+        files::{SearchOutcome, drive_for_test},
     },
-    test_support::ScriptedModelProvider,
-    tool::ToolRegistry,
+    task_volume::{Component, FileKey, FileValue, Query, TaskVolume},
 };
-use acyclic_stream::BoxProviderFuture;
-use serde_json::json;
+use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamPath};
+use futures::StreamExt as _;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+#[path = "oracle.rs"]
+mod oracle;
 
 struct Response {
     bytes: Vec<u8>,
     exa: bool,
     calls: AtomicUsize,
 }
-
 impl SearchProvider for Response {
     fn search<'a>(&'a self, _: &'a SearchRequest) -> BoxProviderFuture<'a, Result<SearchResponse>> {
         Box::pin(async move {
@@ -39,6 +33,13 @@ impl SearchProvider for Response {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
             let result = decode_search_http_response(&self.bytes, 5, self.exa, Some(&work));
+            assert!(
+                oracle::agrees(
+                    &oracle::expected(&self.bytes, self.exa),
+                    result.as_ref().map(|(response, _)| response)
+                ),
+                "codec disagrees with independent oracle: {result:?}"
+            );
             match result {
                 Ok((response, custody)) => {
                     assert!(custody.as_ref().unwrap().work().shares_ledger(&work));
@@ -59,113 +60,94 @@ impl SearchProvider for Response {
     }
 }
 
-// Complete responses must settle once. Replay must preserve the terminal
-// result and must not decode or contact the provider again.
+// The real task-volume worker must publish exactly the independently expected
+// outcome. Both same-owner replay and a replacement owner reuse the file result.
 pub async fn check(bytes: Vec<u8>, exa: bool) {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576)
-        .await
-        .unwrap();
+    let expected = oracle::expected(&bytes, exa);
     let backend = Arc::new(Response {
         bytes,
         exa,
         calls: AtomicUsize::new(0),
     });
-    let mut tools = ToolRegistry::default();
-    tools
-        .register(
-            (web_search(backend.clone()).unwrap(), None),
-            &mut None,
-            None,
-        )
+    let stream = Arc::new(MemoryStream::default());
+    let volume = TaskVolume::open(stream, StreamPath::new("codec-files").unwrap())
+        .await
         .unwrap();
-    let turns: Vec<acyclic_harness::test_support::ScriptedTurn> = serde_json::from_value(json!([
-        [{"type":"event","kind":"tool_call","call_id":"search","name":"web_search","arguments":{"query":"codec"}},
-         {"type":"event","kind":"completed","metadata":null}],
-        "done"
-    ])).unwrap();
-    let provider = Arc::new(ScriptedModelProvider::new(turns));
-    let executor = StockExecutor::new(
-        Model::new(
-            "scripted".into(),
-            "codec".into(),
-            "1".into(),
-            serde_json::Value::Null,
+    let task = Component::new("codec").unwrap();
+    let request = FileKey::parse(".tasks/codec/requests/search-codec.json").unwrap();
+    let result = FileKey::parse(".tasks/codec/requests/search-codec/result.json").unwrap();
+    let initial = volume
+        .snapshot(&Query::Requests(task.clone()), 3)
+        .await
+        .unwrap();
+    let mut client = volume
+        .observe(Query::File(result.clone()), None, 1)
+        .await
+        .unwrap();
+    assert!(client.snapshot.take().unwrap().files.is_empty());
+    volume
+        .append(
+            initial.generation,
+            &FileValue::new(request, br#"{"query":"codec"}"#.as_slice()),
         )
-        .unwrap(),
-        provider,
-        ContextPipeline::default(),
-        tools,
-    )
-    .with_tool_authority(
-        RuntimeScope::new(
-            Capabilities::new(["tool:call:web_search"]),
-            acyclic_harness::conversation::Limits::default(),
-        )
-        .unwrap(),
-        None,
-    )
-    .unwrap();
-    let input = TurnInput {
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("codec".into()),
-        selected_context: None,
-        max_steps: 4,
+        .await
+        .unwrap();
+    let mut fence = LeaseFence {
+        reservation_id: "first".into(),
+        placement: "codec".into(),
     };
-    let journal = storage.journal();
-    let first = executor.execute(input.clone(), journal.as_ref()).await;
-    let records = records(journal.as_ref(), input.operation_id).await;
-    assert_eq!(
-        records
-            .iter()
-            .filter(|r| matches!(r.event, ExecutionEvent::ToolStarted { .. }))
-            .count(),
-        1
-    );
-    let failed = records
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.event,
-                ExecutionEvent::ToolFailed {
-                    reason: ToolFailureKind::ExecutorRejected
-                        | ToolFailureKind::PublicationRejected,
-                    ..
-                }
-            )
-        })
-        .count();
-    let succeeded = records
-        .iter()
-        .filter(|r| matches!(r.event, ExecutionEvent::ToolCompleted { .. }))
-        .count();
-    assert_eq!(failed + succeeded, 1, "{first:?}; {records:?}");
-    assert_eq!(first.is_ok(), succeeded == 1);
-    let replay = executor.execute(input.clone(), journal.as_ref()).await;
-    assert_eq!(replay.is_ok(), first.is_ok());
-    assert_eq!(
-        replay.as_ref().err().map(Error::code),
-        first.as_ref().err().map(Error::code)
-    );
-    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        serde_json::to_value(&records).unwrap(),
-        serde_json::to_value(self::records(journal.as_ref(), input.operation_id).await).unwrap()
-    );
-}
-
-async fn records(journal: &dyn ExecutionJournal, operation: OperationId) -> Vec<ExecutionRecord> {
-    let mut records = Vec::new();
-    loop {
-        let batch = journal
-            .replay(operation, records.len() as u64, 64, None)
-            .unwrap()
+    drive_for_test(
+        &volume,
+        &task,
+        &fence,
+        || Ok(Some(backend.clone())),
+        vec![],
+        None,
+        3,
+    )
+    .await
+    .unwrap();
+    let published = tokio::time::timeout(std::time::Duration::from_secs(1), client.changes.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .file
+        .unwrap();
+    assert_eq!(published.key, result);
+    let outcome: SearchOutcome = serde_json::from_slice(&published.bytes).unwrap();
+    match expected {
+        Some(response) => assert_eq!(outcome, SearchOutcome::Succeeded { response }),
+        None => assert_eq!(outcome, SearchOutcome::Rejected),
+    }
+    let before = volume
+        .snapshot(&Query::Requests(task.clone()), 3)
+        .await
+        .unwrap();
+    assert_eq!(before.files.len(), 3);
+    for replacement in [false, true] {
+        if replacement {
+            fence.reservation_id = "replacement".into();
+        }
+        drive_for_test(
+            &volume,
+            &task,
+            &fence,
+            || panic!("replay resolved credentials or contacted provider"),
+            vec![],
+            None,
+            3,
+        )
+        .await
+        .unwrap();
+        let after = volume
+            .snapshot(&Query::Requests(task.clone()), 3)
             .await
             .unwrap();
-        if batch.is_empty() {
-            return records;
-        }
-        records.extend(batch);
+        assert_eq!(after.files, before.files);
+        assert_eq!(after.generation, before.generation);
     }
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
 }
 
 pub fn fuzz_response(data: &[u8]) -> Vec<u8> {

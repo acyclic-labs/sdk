@@ -99,7 +99,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if header.schema != SCHEMA {
+            if !matches!(header.schema, 2 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -167,6 +167,9 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
+        Arc::ptr_eq(&self.provider, provider)
+    }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {
         let initialize = match provider.watermarks(path.clone()).await {
@@ -207,7 +210,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if header.schema != SCHEMA {
+        if !matches!(header.schema, 2 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();

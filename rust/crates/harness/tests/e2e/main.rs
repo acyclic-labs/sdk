@@ -7,7 +7,6 @@ mod matchers;
 mod notification_history;
 mod notifications;
 mod scenario;
-mod search;
 use acyclic_harness::context::CompactionPolicy;
 use execution::run;
 use futures::{StreamExt as _, stream};

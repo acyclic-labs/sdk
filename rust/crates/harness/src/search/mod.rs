@@ -6,11 +6,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) mod native;
-mod tool;
-pub use tool::{spec, web_search};
+pub mod files;
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
 mod http;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod native;
 #[cfg(test)]
 mod tests;
 #[cfg(all(
@@ -44,7 +44,7 @@ fn default_results() -> u32 {
 }
 
 impl SearchRequest {
-    /// Validates bounds even when called outside the tool registry.
+    /// Validates a request file before provider dispatch.
     pub fn validate(&self) -> Result<()> {
         self.validate_with_work(None)
     }
@@ -92,7 +92,7 @@ pub struct SearchResponse {
 
 /// Replaceable search capability. Dropping its future cancels the request.
 pub trait SearchProvider: acyclic_stream::ProviderPlatform {
-    /// Searches once. Durable replay belongs to the harness tool journal.
+    /// Searches once. Durable replay belongs to the task request/result files.
     fn search<'a>(
         &'a self,
         request: &'a SearchRequest,
