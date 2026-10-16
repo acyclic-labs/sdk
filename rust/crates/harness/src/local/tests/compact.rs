@@ -124,3 +124,78 @@ async fn manual_summary_rejects_tool_calls_while_an_ordinary_turn_executes_them(
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn manual_summary_reserves_actual_input_on_a_small_model() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let capacity = ModelContextCapacity {
+        context_tokens: 8_192,
+        output_tokens: 8_192,
+    };
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("small-model summary".into())])
+            .with_context_capacity(capacity),
+    );
+    let local = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
+    .await?;
+    let target = admitted(
+        local
+            .submit(OperationId::new(), "source".repeat(200))
+            .await?,
+    );
+    let operation = OperationId::new();
+    assert_eq!(
+        local.compact(operation, target, "keep facts").await?["summary"],
+        "small-model summary"
+    );
+    let requests = provider.requests();
+    let request = crate::model::PreparedModelRequest::prepare(
+        requests[0].clone(),
+        crate::conversation::Limits::default(),
+        None,
+    )?;
+    let count = provider.count_tokens(&request).await?;
+    let input = count.validate(&request, &mut None)?;
+    let output = request.request().max_output_tokens.unwrap();
+    assert!(output > 0);
+    assert!(input + u64::from(output) <= u64::from(capacity.context_tokens));
+    assert!(request.request().tools.is_empty());
+    // The old ceiling leaves only two input tokens; the same admission
+    // predicate must reject it for this exact captured request.
+    assert!(input + 8_190 > u64::from(capacity.context_tokens));
+    let requests_before = requests.len();
+    drop(requests);
+    local.compact(operation, target, "keep facts").await?;
+    assert_eq!(provider.requests().len(), requests_before);
+    Ok(())
+}
+
+proptest::proptest! {
+    // Every accepted ceiling leaves room for the complete counted input;
+    // rejection is exactly exhausted input capacity. Values shrink to boundaries.
+    #[test]
+    fn summary_budget_preserves_input_and_output_bounds(
+        context in 1u32..1_000_000,
+        ceiling in 1u32..1_000_000,
+        input in 0u64..1_000_001,
+    ) {
+        let actual = super::super::compact::summary_output_budget(context, ceiling, input);
+        if input >= u64::from(context) {
+            proptest::prop_assert!(actual.is_err());
+        } else {
+            let output = actual.unwrap();
+            proptest::prop_assert_eq!(u64::from(output), u64::from(ceiling).min(u64::from(context) - input));
+            let fits = |output: u32| output > 0 && output <= ceiling
+                && input + u64::from(output) <= u64::from(context);
+            proptest::prop_assert!(fits(output));
+            if u64::from(ceiling) > u64::from(context) - input {
+                // Deliberately omit input reservation; the same detector must fail.
+                proptest::prop_assert!(!fits(ceiling));
+            }
+        }
+    }
+}
