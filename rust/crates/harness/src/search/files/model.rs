@@ -15,7 +15,6 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 fn model(run: impl Fn() + Send + Sync + 'static) {
     let mut builder = loom::model::Builder::new();
     builder.preemption_bound = Some(2);
-    builder.max_permutations = Some(128);
     builder.check(run);
 }
 
