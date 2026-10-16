@@ -3,12 +3,16 @@ use super::*;
 use crate::task_volume::FileKey;
 use acyclic_stream::*;
 use futures::FutureExt as _;
-use futures::{StreamExt as _, executor::block_on};
+use futures::StreamExt as _;
 use loom::{
     sync::{Condvar, Mutex},
     thread,
 };
 use std::sync::Arc;
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    loom::future::block_on(Box::pin(future))
+}
 
 struct Histories {
     original: Vec<Record>,
@@ -388,9 +392,17 @@ fn concurrent_readers_finish_the_tail_captured_at_entry() {
 fn negative_control_partial_peer_advance_cannot_count_as_complete() {
     for snapshot in [false, true] {
         for short_first in [false, true] {
-            assert!(
+            let failure =
                 std::panic::catch_unwind(|| concurrent_refresh::<false>(snapshot, short_first))
-                    .is_err()
+                    .expect_err("the broken refresh unexpectedly reached its accepted tail");
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert!(
+                message.contains("refresh returned a partial accepted prefix"),
+                "unexpected model failure: {message}"
             );
         }
     }
