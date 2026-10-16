@@ -368,8 +368,6 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
         if denied {
             core.invalidation.notify_all();
         }
-        #[cfg(all(test, acyclic_fs_loom))]
-        model_checking::after_invalidator_pass();
         blocked = if denied { Some(wait_key) } else { None };
     }
 }
