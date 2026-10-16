@@ -114,23 +114,28 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
         self.refresh().await?;
         let index = self.index.lock().await;
-        let mut files = Vec::new();
-        for range in query.ranges() {
-            for (_, file) in index
-                .files
-                .range(range)
-                .filter(|(_, file)| query.matches_file(&file.file))
-            {
-                if files.len() == maximum_files {
-                    return Err(Error::LimitExceeded);
+        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+            super::recent::snapshot(&index, query, maximum_files)?
+        } else if let Query::CommandSession { session, recent } = query {
+            super::command_query::snapshot(&index, session, *recent, maximum_files)?
+        } else {
+            let mut files = Vec::new();
+            for range in query.ranges() {
+                for (_, file) in index
+                    .files
+                    .range(range)
+                    .filter(|(_, file)| query.matches_file(&file.file))
+                {
+                    if files.len() == maximum_files {
+                        return Err(Error::LimitExceeded);
+                    }
+                    files.push(file.file.clone());
                 }
-                files.push(file.file.clone());
             }
-        }
+            files
+        };
         let generation = self.generation(&index);
         drop(index);
-        // Stamp the captured cut with post-read durability without excluding
-        // another index operation while the provider answers.
         let watermarks = self.provider.watermarks(self.path.clone()).await?;
         Ok(Snapshot {
             files,

@@ -5,14 +5,14 @@ use proptest::prelude::*;
 #[path = "retention_profile.rs"]
 mod production;
 
-fn fixture(count: u32) -> Result<MemoryStore> {
+pub(super) fn fixture(count: u32) -> Result<MemoryStore> {
     let mut store = super::super::tests::store(1, u64::from(count) + 1)?;
     for index in 0..count {
         store.stage(&format!("files/{index:08}"), b"x", "text/plain", "x", true)?;
     }
     Ok(store)
 }
-fn budget(items: u64, bytes: u64) -> WorkBudget {
+pub(super) fn budget(items: u64, bytes: u64) -> WorkBudget {
     WorkBudget {
         items_examined: items,
         source_bytes_read: bytes,
@@ -82,8 +82,8 @@ fn cancellation_prevents_the_next_charge_but_empty_namespaces_still_succeed() ->
     Ok(())
 }
 
-// Original production loop, used only as a paired accounting benchmark.
-fn scan(store: &MemoryStore, path: &str, io: &PreparationIo) -> Result<()> {
+// Independent original production loop for differential checks and paired profiles.
+pub(super) fn scan(store: &MemoryStore, path: &str, io: &PreparationIo) -> Result<()> {
     for existing in store.paths.keys() {
         let examine = WorkCounters {
             items_examined: 1,
@@ -97,77 +97,6 @@ fn scan(store: &MemoryStore, path: &str, io: &PreparationIo) -> Result<()> {
             return Err(Error::Invalid(
                 "file path conflicts with an existing directory".into(),
             ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn retained_path_with_accounting() -> Result<()> {
-    let store = fixture(4096)?;
-    let path = "files/new";
-    let implementation = std::env::var("HARNESS_PATH_PROFILE").ok();
-    let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
-    for tracing in [false, true] {
-        let dispatch = if tracing {
-            tracing::Dispatch::new(tracing_subscriber::registry())
-        } else {
-            tracing::Dispatch::none()
-        };
-        let _guard = tracing::dispatcher::set_default(&dispatch);
-        for legacy in [true, false] {
-            if implementation
-                .as_deref()
-                .is_some_and(|name| (name == "scan") != legacy)
-            {
-                continue;
-            }
-            let io = PreparationIo::from_budget(
-                budget(1_000_000, 64 * 1024 * 1024),
-                &CancellationToken::default(),
-            )?;
-            let mut times = Vec::with_capacity(64);
-            for _ in 0..64 {
-                if syscalls {
-                    eprintln!("PATH_BEGIN");
-                }
-                let started = std::time::Instant::now();
-                let result = if legacy {
-                    scan(
-                        std::hint::black_box(&store),
-                        std::hint::black_box(path),
-                        &io,
-                    )
-                } else {
-                    store.validate_retained_path(std::hint::black_box(path), Some(&io))
-                };
-                let elapsed = started.elapsed();
-                if syscalls {
-                    eprintln!("PATH_END");
-                }
-                result?;
-                times.push(elapsed);
-            }
-            times.sort_unstable();
-            let mut result = Ok(());
-            let allocation = allocation_counter::measure(|| {
-                result = if legacy {
-                    scan(&store, path, &io)
-                } else {
-                    store.validate_retained_path(path, Some(&io))
-                };
-            });
-            result?;
-            assert_eq!(io.receipt().items_examined, 65 * 4096);
-            assert_eq!(io.receipt().source_bytes_read, 65 * 4096 * 23);
-            eprintln!(
-                "accounted-path tracing={tracing} legacy={legacy} median={:?} alloc={} bytes={} peak={} receipt={:?}",
-                times.get(32),
-                allocation.count_total,
-                allocation.bytes_total,
-                allocation.bytes_max,
-                io.receipt()
-            );
         }
     }
     Ok(())

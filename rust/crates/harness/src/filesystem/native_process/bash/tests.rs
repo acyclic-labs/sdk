@@ -96,6 +96,42 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // A declared native binding may leave the primary root, but resolving a
+    // symlink within it must never leave that binding's own authorized root.
+    #[test]
+    fn bound_volume_cwd_keeps_its_authority(component in "[a-z]{1,12}", escape in proptest::bool::ANY) {
+        use proptest::prelude::*;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("view");
+        let native = temp.path().join("native");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(native.join(&component)).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, native.join(".escape")).unwrap();
+        let native = native.canonicalize().unwrap();
+        let mut mounts = table(root.canonicalize().unwrap()).unwrap();
+        for (relative, mount) in mounts.mounts_mut() {
+            if !relative.is_empty() {
+                mount.native_root = Some(native.clone());
+            }
+        }
+        let suffix = if escape { ".escape" } else { &component };
+        let result = prepare(BashInput {
+            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout: None,
+        }, &mounts, invocation(&mounts.root), 1);
+        if escape {
+            prop_assert!(matches!(result, Err(Error::Invalid(_))));
+        } else {
+            let prepared = result.unwrap();
+            prop_assert_eq!(prepared.cwd, native.join(&component));
+            prop_assert_eq!(prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(), native.to_str().unwrap());
+        }
+    }
+}
+
 #[tokio::test]
 async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> {
     use proptest::prelude::*;

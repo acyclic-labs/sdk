@@ -1,7 +1,9 @@
 #![cfg(all(acyclic_loom, acyclic_harness_loom))]
 use acyclic_harness::task_volume::model_checking::{Fault, assert_index_matches, set_fault};
 
-use acyclic_harness::task_volume::{Error, FileKey, Query, Snapshot, TaskVolume, Write};
+use acyclic_harness::task_volume::{
+    Component, Error, FileKey, Query, Snapshot, TaskFile, TaskVolume, Write,
+};
 use acyclic_stream::verification::{
     assert_negative_control, block_on, check as model, check_with_bound,
 };
@@ -15,6 +17,137 @@ use std::future::Future as _;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+fn active_command_cut_control(broken: bool) {
+    model(move || {
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("command-cut")?;
+        let volume = Arc::new(block_on(TaskVolume::open(provider.clone(), path.clone()))?);
+        let session = Component::new("session")?;
+        let request = Write::new(
+            FileKey::Session {
+                session: session.clone(),
+                file: TaskFile::Request(Component::new("00000000-0000-0000-0000-000000000002")?),
+            },
+            OwnedBytes::from_static(b"request"),
+        );
+        let base = block_on(volume.snapshot(&Query::Root, 0))?.generation;
+        let base = block_on(volume.create(base, &request))?;
+        // Independent owners have independent indexes. Seed both before racing
+        // one publication against one projection; shared-index serialization
+        // and the provider's atomic commit are covered by their lock models.
+        let reader = block_on(TaskVolume::open(provider, path))?;
+        let worker = thread::spawn({
+            let volume = volume.clone();
+            let session = session.clone();
+            move || {
+                block_on(volume.create(
+                    base,
+                    &Write::new(
+                        FileKey::Session {
+                            session,
+                            file: TaskFile::ExecutionResult(Component::new(
+                                "00000000-0000-0000-0000-000000000002",
+                            )?),
+                        },
+                        OwnedBytes::from_static(b"done"),
+                    ),
+                ))
+            }
+        });
+        let query = if broken {
+            Query::Root
+        } else {
+            Query::CommandSession { session, recent: 0 }
+        };
+        let snapshot = block_on(reader.snapshot(&query, 2))?;
+        if snapshot.generation.position == base.position {
+            assert_eq!(snapshot.files, vec![request]);
+        } else {
+            assert_eq!(snapshot.generation.position, base.position + 1);
+            assert!(snapshot.files.is_empty(), "settled request stayed active");
+        }
+        worker.join().map_err(|_| "publisher panicked")??;
+        let settled = block_on(reader.snapshot(&query, 2))?;
+        assert_eq!(settled.generation.position, base.position + 1);
+        assert!(settled.files.is_empty(), "settled request stayed active");
+        Ok(())
+    });
+}
+
+#[test]
+fn active_command_snapshot_and_completion_share_one_cut() {
+    active_command_cut_control(false);
+}
+
+#[test]
+#[should_panic(expected = "settled request stayed active")]
+fn negative_control_detects_retaining_settled_commands() {
+    active_command_cut_control(true);
+}
+
+fn create_claim_control(broken: bool, session: bool) {
+    model(move || {
+        // competing_writers_cannot_tear_the_shared_projection models the real
+        // atomic publication fence. At that cut, an identical claim contender
+        // either captured the old generation or observed the winning claim.
+        // Exhaust both classes without re-exploring provider commit internals.
+        for observed_winner in [false, true] {
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("claim")?;
+            let first = block_on(TaskVolume::open(provider.clone(), path.clone()))?;
+            let second = block_on(TaskVolume::open(provider, path))?;
+            let cut = block_on(first.snapshot(&Query::Root, 1))?.generation;
+            let body = TaskFile::ExecutionClaim(Component::new(
+                "command-00000000-0000-0000-0000-000000000001.00000000-0000-0000-0000-000000000002",
+            )?);
+            let key = if session {
+                FileKey::Session {
+                    session: Component::new("session")?,
+                    file: body,
+                }
+            } else {
+                FileKey::Task {
+                    task: Component::new("task")?,
+                    file: body,
+                }
+            };
+            let file = Write::new(key, OwnedBytes::from_static(b"same request"));
+            block_on(first.create(cut, &file))?;
+            let contender = if observed_winner {
+                block_on(second.snapshot(&Query::Root, 1))?.generation
+            } else {
+                cut
+            };
+            // An idempotent append may return success for an identical claim.
+            // Creation must never authorize the contender's second effect.
+            let accepted = if broken {
+                block_on(second.append(contender, &file)).is_ok()
+            } else {
+                block_on(second.create(contender, &file)).is_ok()
+            };
+            assert!(!accepted, "duplicate request dispatch");
+            assert_eq!(
+                block_on(second.snapshot(&Query::Root, 1))?.files,
+                vec![file]
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn command_claim_create_authorizes_one_dispatch() {
+    for session in [false, true] {
+        create_claim_control(false, session);
+    }
+}
+
+#[test]
+#[should_panic(expected = "duplicate request dispatch")]
+fn negative_control_detects_idempotent_command_claim() {
+    create_claim_control(true, true);
+}
 
 // Control property: one locked increment preserves both updates. Splitting the
 // same operations into separate critical sections must expose a lost update.

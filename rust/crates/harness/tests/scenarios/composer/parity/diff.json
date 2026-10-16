@@ -1,0 +1,20 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "diff"
+    },
+    "file_values": {
+      "config/settings.json": {
+        "diff_modes": [
+          "auto",
+          "unified",
+          "split"
+        ],
+        "diff_mode": "unified",
+        "retained": "settings"
+      }
+    }
+  },
+  "prompt": "/diff"
+}

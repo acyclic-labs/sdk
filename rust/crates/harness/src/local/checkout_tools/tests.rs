@@ -147,3 +147,86 @@ fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
 
 #[path = "tests/fencing.rs"]
 mod fencing;
+
+fn task_cache(broken: bool) {
+    loom::model(move || {
+        let cache = StateArc::new(AsyncMutex::new(std::collections::BTreeMap::new()));
+        let workers: Vec<_> = (1..=2)
+            .map(|value| {
+                let cache = StateArc::clone(&cache);
+                thread::spawn(move || {
+                    complete(serialized(&cache, async |mut cache| {
+                        let key = TaskId::from_bytes([if broken { 1 } else { value }; 16]);
+                        let selected =
+                            task_views::cached_task(&mut cache, key, None, &(), async |_| {
+                                thread::yield_now();
+                                Ok(value)
+                            })
+                            .await
+                            .unwrap();
+                        (*selected, value)
+                    }))
+                })
+            })
+            .collect();
+        for worker in workers {
+            let (actual, expected) = worker.join().unwrap();
+            assert_eq!(actual, expected, "task view alias");
+        }
+    });
+}
+#[test]
+fn concurrent_task_view_selection_never_aliases_another_task() {
+    task_cache(false);
+}
+#[test]
+#[should_panic(expected = "task view alias")]
+fn negative_control_detects_cross_task_cache_selection() {
+    task_cache(true);
+}
+
+fn branch_selection(broken: bool) {
+    loom::model(move || {
+        let parent = StateArc::new(AsyncMutex::new((
+            Some(1u8),
+            std::collections::BTreeMap::new(),
+        )));
+        let switch = StateArc::clone(&parent);
+        let switching = thread::spawn(move || {
+            complete(serialized(&switch, async |mut state| {
+                state.0 = Some(2);
+            }))
+        });
+        let selecting = thread::spawn(move || {
+            complete(serialized(&parent, async |mut state| {
+                let (active, children) = &mut *state;
+                let expected = active.unwrap();
+                let task = TaskId::from_bytes([1; 16]);
+                let child = task_views::cached_task(
+                    children,
+                    task,
+                    if broken { None } else { active.as_ref() },
+                    &0u8,
+                    async |view| {
+                        thread::yield_now();
+                        Ok(*view)
+                    },
+                )
+                .await
+                .unwrap();
+                assert_eq!(*child, expected, "child fork ignored the selected parent");
+            }))
+        });
+        switching.join().unwrap();
+        selecting.join().unwrap();
+    });
+}
+#[test]
+fn child_fork_and_parent_branch_switch_share_one_guard() {
+    branch_selection(false);
+}
+#[test]
+#[should_panic(expected = "child fork ignored the selected parent")]
+fn negative_control_detects_forking_the_original_parent_view() {
+    branch_selection(true);
+}

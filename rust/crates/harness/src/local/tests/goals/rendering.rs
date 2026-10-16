@@ -20,15 +20,7 @@ async fn render_case(case: Case) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
     let project = volume(directory.path()).await?;
     let provider = scripted(script(&case));
-    let policy = if case.enabled == Some(false) {
-        None
-    } else {
-        Some(GoalContinuationPolicy {
-            max_continuations: case.cap.unwrap_or(32),
-        })
-    };
-    let config =
-        volume_config(directory.path(), project, provider.clone())?.goal_continuations(policy);
+    let config = goal_config(&case, directory.path(), project, provider.clone())?;
     let harness = LocalHarness::open(config).await?;
     if let Some(initial) = &case.initial_goal {
         write_goal(&harness, initial).await?;

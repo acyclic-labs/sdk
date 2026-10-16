@@ -27,7 +27,10 @@ impl<T> MountTable<T> {
                     }
                 }
             }
-            let path = self.root.join(relative);
+            let path = mount
+                .native_root
+                .clone()
+                .unwrap_or_else(|| self.root.join(relative));
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;

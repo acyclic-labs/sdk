@@ -297,28 +297,28 @@ fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
         |(growth, attribute)| {
             runtime.block_on(async {
                 for length in [0, 65537] {
+                    let source = tempfile::tempdir().unwrap();
+                    let file = source.path().join("file");
+                    sparse_file(&file, length);
+                    side_data(&file, &attribute);
+                    let options = CaptureOptions {
+                        source_root: source.path().to_owned(),
+                        expected_root_identity: capture_root_identity(source.path()).unwrap(),
+                        maximum_paths: 8,
+                        maximum_extent_spans: 8,
+                    };
+                    let (baseline, seeded, _, _) = run_capture(
+                        &initial,
+                        &path,
+                        &options,
+                        &setup,
+                        (true, false),
+                        (0, growth),
+                        WorkBudget::UNBOUNDED,
+                    )
+                    .await;
+                    seeded.unwrap();
                     for edit in 0..5 {
-                        let source = tempfile::tempdir().unwrap();
-                        let file = source.path().join("file");
-                        sparse_file(&file, length);
-                        side_data(&file, &attribute);
-                        let options = CaptureOptions {
-                            source_root: source.path().to_owned(),
-                            expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                            maximum_paths: 8,
-                            maximum_extent_spans: 8,
-                        };
-                        let (baseline, seeded, _, _) = run_capture(
-                            &initial,
-                            &path,
-                            &options,
-                            &setup,
-                            (true, false),
-                            (0, growth),
-                            WorkBudget::UNBOUNDED,
-                        )
-                        .await;
-                        seeded.unwrap();
                         let mut outcomes = Vec::new();
                         for force_import in [true, false] {
                             if edit != 0 {

@@ -119,8 +119,9 @@ impl Serialize for ClientViews {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut result = serializer.serialize_struct("ClientViews", 5)?;
+        let mut result = serializer.serialize_struct("ClientViews", 6)?;
         result.serialize_field("goals", &super::goal_view::Goals(self))?;
+        result.serialize_field("models", &super::model_view::Models(self))?;
         result.serialize_field("transcripts", &self.transcripts)?;
         result.serialize_field("tools", &self.tools)?;
         result.serialize_field("tasks", &self.tasks)?;

@@ -28,11 +28,12 @@ async fn capture(harness: &LocalHarness) -> Result<()> {
     } = &mut *state;
     let view = active.as_ref().unwrap_or_else(|| workspace.view());
     Box::pin(tools.capture(
-        view,
+        (workspace, view),
         watcher,
         OperationId::new(),
         0,
         acyclic_fs::PublicationPermit::Unrestricted,
+        None,
     ))
     .await
 }

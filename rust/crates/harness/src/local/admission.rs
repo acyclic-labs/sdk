@@ -12,6 +12,10 @@ use record::Turn;
 mod goal;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
+#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+mod poll_sweep;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod snapshot;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 

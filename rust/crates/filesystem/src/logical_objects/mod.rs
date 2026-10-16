@@ -79,6 +79,10 @@ macro_rules! operate {
     }};
 }
 impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
+    fn supports_decoded_cache(&self) -> bool {
+        false
+    }
+
     async fn put(
         &self,
         id: ObjectId,

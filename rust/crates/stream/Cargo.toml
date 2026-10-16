@@ -26,6 +26,7 @@ name = "browser-test-host"
 required-features = ["grpc"]
 
 [features]
+test-support = ["acyclic-native-runtime/test-support"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]

@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     TaskId,
     conversation::{ContentGrant, Limits},
-    goal::{GoalBlockedReason, GoalContinuationPolicy},
+    goal::GoalContinuationPolicy,
 };
 use acyclic_stream::{StreamPath, StreamProvider};
 use futures::TryStreamExt as _;
@@ -20,8 +20,10 @@ struct Case {
     final_goal: Option<String>,
     panel: Vec<String>,
     initial_goal: Option<String>,
+    path: String,
     #[serde(default)]
     unreachable: bool,
+    private_mount: Option<bool>,
 }
 
 #[cfg(feature = "tui")]
@@ -44,19 +46,7 @@ async fn run(case: Case) -> Result<()> {
     let project = volume(directory.path()).await?;
     let script = script(&case);
     let provider = scripted(script);
-    let config = || -> Result<LocalHarnessConfig> {
-        let policy = if case.enabled == Some(false) {
-            None
-        } else {
-            Some(GoalContinuationPolicy {
-                max_continuations: case.cap.unwrap_or(32),
-            })
-        };
-        Ok(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .goal_continuations(policy),
-        )
-    };
+    let config = || goal_config(&case, directory.path(), project.clone(), provider.clone());
     let harness = LocalHarness::open(config()?).await?;
     if let Some(initial) = &case.initial_goal {
         write_goal(&harness, initial).await?;
@@ -114,6 +104,11 @@ async fn run(case: Case) -> Result<()> {
     )
     .await
     .expect("goal scenario stalled")?;
+    if case.tasks > 1 {
+        let requests =
+            serde_json::to_string(&provider.requests()).map_err(super::super::storage)?;
+        assert!(requests.contains("Continue the active goal in .volumes/scratch/GOAL.md."));
+    }
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(provider.remaining(), 0, "{}", case.name);
     let grant = ContentGrant::verify_directory_read(
@@ -138,7 +133,7 @@ async fn run(case: Case) -> Result<()> {
         Some(expected) => assert_eq!(read?.1.as_ref(), expected.as_bytes(), "{}", case.name),
         None => assert!(matches!(read, Err(Error::NotFound(_)))),
     }
-    if let Some(Some(expected)) = case.writes.last() {
+    if let Some(Some(expected)) = case.writes.last().filter(|_| case.path == "GOAL.md") {
         let project = crate::filesystem::workspace_ref(
             harness.project.provider().clone(),
             &harness.project.storage_name(&mut None)?,
@@ -160,7 +155,6 @@ async fn run(case: Case) -> Result<()> {
         );
     }
     if case.unreachable {
-        // Replays recover the file-driven typed reason without more model work.
         check_output(&case, harness.resume(task_id).await)?;
         assert_eq!(provider.requests().len(), case.calls);
     }
@@ -183,17 +177,36 @@ async fn run(case: Case) -> Result<()> {
     Ok(())
 }
 
+fn goal_config(
+    case: &Case,
+    directory: &Path,
+    project: VolumeRef,
+    provider: Arc<dyn ModelProvider>,
+) -> Result<LocalHarnessConfig> {
+    let policy = (case.enabled != Some(false)).then_some(GoalContinuationPolicy {
+        max_continuations: case.cap.unwrap_or(32),
+    });
+    let config = volume_config(directory, project, provider)?.goal_continuations(policy);
+    // Without bash the local host binds the stock project writer without a
+    // scratch mount. Keep that real unreachable route covered after #503.
+    Ok(if case.private_mount == Some(false) {
+        config
+            .without_default_tools()
+            .tool(crate::tool::files::write()?)
+    } else {
+        config
+    })
+}
+
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
     if case.unreachable {
+        let reason = crate::goal::GoalBlockedReason::TaskViewUnreachable;
         assert!(
-            matches!(
-                &output,
-                Err(Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable))
-            ),
+            matches!(&output, Err(Error::GoalBlocked(actual)) if actual == &reason),
             "{}: {output:?}",
             case.name
         );
-        let error = Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable);
+        let error = Error::GoalBlocked(reason);
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
         assert!(!error.is_native_failure());
     } else {
@@ -215,7 +228,7 @@ fn script(case: &Case) -> Vec<ScriptedTurn> {
                 ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                     format!("goal-{index}"),
                     "write".into(),
-                    json!({"path":"GOAL.md", "text":text,
+                    json!({"path":case.path, "text":text,
                         "media_type":"text/markdown", "display_name":"GOAL.md"}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {

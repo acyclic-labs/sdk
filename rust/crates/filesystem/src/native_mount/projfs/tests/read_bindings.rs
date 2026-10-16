@@ -137,7 +137,7 @@ async fn cached_read_close_charges_source_validation_to_its_callback_meter()
         .copied()
         .ok_or("no cached binding")?;
     let before = setup.receipt();
-    host_windows_metadata(&warm.metadata_root, &path, &setup)?;
+    host_windows_metadata(&warm.metadata_root, &path, &setup, None)?;
     let probe_items = setup.receipt().items_examined - before.items_examined;
     let limits = prop_oneof![Just(probe_items), 0_u64..128, any::<u64>()];
     let mut runner = TestRunner::new(ProptestConfig {

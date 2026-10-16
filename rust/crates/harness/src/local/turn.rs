@@ -5,8 +5,9 @@ const TRANSITIONS_PER_SLICE: u32 = 32;
 
 impl LocalHarness {
     /// Stock command bindings for a service-owned fenced worker.
-    pub(crate) fn commands(
+    pub(super) async fn stock_commands(
         &self,
+        task: Option<TaskId>,
     ) -> Result<
         crate::filesystem::FilesystemTaskCommands<
             '_,
@@ -15,12 +16,82 @@ impl LocalHarness {
             LocalObjectBackend,
         >,
     > {
+        let mut model = self.model.clone();
+        let mut lineage = self.command_lineage(task).await?;
+        lineage.reverse();
+        for directory in std::iter::once("config".to_owned())
+            .chain(lineage.into_iter().map(|task| format!("task-{task}")))
+        {
+            let key = crate::task_volume::FileKey::Ui {
+                directory: crate::task_volume::Component::new(directory).map_err(storage)?,
+                name: crate::task_volume::Component::new("settings.json").map_err(storage)?,
+            };
+            let snapshot = self
+                .task_files
+                .inner
+                .snapshot(&crate::task_volume::Query::File(key), 1)
+                .await
+                .map_err(storage)?;
+            if let Some(file) = snapshot.files.first() {
+                if file.bytes.len() as u64 > self.limits.file_bytes {
+                    return Err(Error::Invalid("settings exceed file bound".into()));
+                }
+                let settings: serde_json::Value =
+                    serde_json::from_slice(&file.bytes).map_err(storage)?;
+                if !settings.is_object() {
+                    return Err(Error::Invalid("settings must be an object".into()));
+                }
+                if let Some(name) = settings.get("model") {
+                    model.name = name
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("model must be text".into()))?
+                        .into();
+                }
+            }
+        }
+        model.validate()?;
         self.runtime.commands().with_model(
-            &self.model,
+            &model,
             self.provider.clone(),
             &self.compaction,
             None,
         )
+    }
+    /// Owner-gated stock commands for this same runtime.
+    pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
+        Ok(commands::CommandOwner(self))
+    }
+    pub(super) async fn submit_to(
+        &self,
+        operation: OperationId,
+        parent: Option<TaskId>,
+        prompt: &str,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
+        let Some(parent) = parent else {
+            return self.submit(operation, prompt).await;
+        };
+        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid(
+                "local prompt is empty or exceeds the file limit".into(),
+            ));
+        }
+        let prompt = self.prompt_context(Some(parent), prompt).await?;
+        let (receive, model) = self.stage_turn(operation, &prompt).await?;
+        let definition = self
+            .runtime
+            .harness()
+            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+        let record = self.runtime.task_host().observe_admission(parent).await?;
+        self.runtime
+            .harness()
+            .durable_context(parent, record.operation_id, None)
+            .await?
+            .admit(
+                operation,
+                &definition,
+                serde_json::json!({"receive":receive,"model":model}),
+            )
+            .await
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(
@@ -44,8 +115,24 @@ impl LocalHarness {
         prompt: &str,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let publisher = self.input_publisher()?;
+        self.stage_turn_with(operation, prompt, publisher.as_ref())
+            .await
+    }
+
+    pub(super) async fn stage_turn_with(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
-            context_manifest: self.context_manifest.clone(),
+            context_manifest: match &self.context_manifest {
+                Some(reference) => reference.clone(),
+                None => {
+                    self.stage_context_manifest_with(operation, publisher)
+                        .await?
+                }
+            },
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -66,10 +153,10 @@ impl LocalHarness {
             )?
             .await?
             .0;
-        self.finish_turn_inputs(operation, payload).await
+        self.finish_turn_inputs(operation, payload, publisher).await
     }
 
-    fn input_publisher(
+    pub(super) fn input_publisher(
         &self,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
@@ -98,15 +185,17 @@ impl LocalHarness {
                 "retained model input has another path".into(),
             ));
         }
-        self.finish_turn_inputs(operation, payload).await.map(Some)
+        self.finish_turn_inputs(operation, payload, publisher.as_ref())
+            .await
+            .map(Some)
     }
 
     async fn finish_turn_inputs(
         &self,
         operation: OperationId,
         payload: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let publisher = self.input_publisher()?;
         let model = WorkflowCommand {
             operation_id: operation,
             kind: crate::filesystem::MODEL_TASK_COMMAND_KIND.into(),
@@ -201,6 +290,7 @@ impl LocalHarness {
                 _ => break,
             }
         }
+        self.refresh_command_task(task).await?;
         Ok(())
     }
 
@@ -248,6 +338,7 @@ impl LocalHarness {
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         }
+        self.refresh_command_task(task).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(output) => Ok(output),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
@@ -268,32 +359,4 @@ fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
-}
-
-// One content-addressed default file per effective catalog, shared by every
-// prompt opened with that catalog. Admission retains its exact immutable ref.
-pub(super) async fn default_manifest(
-    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
-    tools: &ToolRegistry,
-    limits: Limits,
-    mounts: Option<&str>,
-) -> Result<crate::conversation::FileRef> {
-    let mut manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
-    if let Some(mounts) = mounts {
-        manifest.conventions.push(mounts.to_owned());
-    }
-    let bytes = manifest.encode(limits)?;
-    let digest = blake3::hash(&bytes);
-    let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());
-    Ok(publisher
-        .stage_once(
-            operation,
-            &format!("inputs/context/{digest}.json"),
-            &bytes,
-            "application/json",
-            "context-manifest.json",
-            None,
-        )?
-        .await?
-        .0)
 }

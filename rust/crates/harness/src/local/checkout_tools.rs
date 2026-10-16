@@ -11,9 +11,12 @@ use acyclic_stream::BoxProviderFuture;
 mod bash;
 mod capture;
 mod git;
+#[cfg(all(test, unix, not(acyclic_harness_loom)))]
+mod git_mount_tests;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
+mod task_views;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 
@@ -28,14 +31,38 @@ pub(super) struct CheckoutTools {
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
+    // Release the owner's flat task index before locking a selected ancestor;
+    // release that guard before publishing its child's cache entry. No path
+    // holds two checkout guards. Bindings share their workspace's guard.
     state: StateArc<AsyncMutex<State>>,
+    selected: bool,
 }
 
 pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
+    initial_view: acyclic_fs::WorkspaceId,
+    workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
+    children: std::collections::BTreeMap<TaskId, Arc<CheckoutTools>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
+}
+
+impl State {
+    pub(in crate::local) fn new(
+        initial_view: acyclic_fs::WorkspaceId,
+        mounts: Arc<workspace::Mounts>,
+    ) -> Self {
+        Self {
+            active: None,
+            initial_view,
+            workspace: None,
+            children: Default::default(),
+            watcher: None,
+            mounts,
+            initialized: false,
+        }
+    }
 }
 
 // Keep the whole command, including its publication and cursor replacement,
@@ -72,6 +99,8 @@ impl CheckoutTools {
                 let (active, pending) = workspace.selected_view().await?;
                 state.active = active;
                 let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+                state.initial_view = view.workspace().id();
+                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
                 reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
                     .await?;
                 state.watcher = if workspace.fresh {
@@ -91,6 +120,7 @@ impl CheckoutTools {
             clock,
             task_files,
             state: shared,
+            selected: false,
         })
     }
 }
@@ -137,6 +167,17 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            if !self.selected
+                && let Some(selected) = self
+                    .select(
+                        context
+                            .as_ref()
+                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
+                    )
+                    .await?
+            {
+                return selected.execute(invocation, context).await;
+            }
             let request = if invocation.name == "bash" {
                 serde_json::to_vec(&invocation).map_err(storage)?
             } else {
@@ -181,11 +222,12 @@ impl ToolExecutor for CheckoutTools {
                     Error::Unauthorized("checkout command has no execution owner".into())
                 })?;
                 owner.verify_owner(None)?.await?;
+                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
                 let view = state
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
-                if reconciliation::recover(&self.workspace, view, &|| async {
+                if reconciliation::recover(&workspace, view, &|| async {
                     owner.verify_owner(None)?.await
                 })
                 .await?
@@ -194,18 +236,19 @@ impl ToolExecutor for CheckoutTools {
                 }
                 workspace::volumes::sync(&state.mounts).await?;
                 if let Some(parsed) = fs {
-                    self.fs(parsed, context, &mut state).await
+                    self.fs(parsed, context, &mut state, &workspace).await
                 } else {
                     let State {
                         active, watcher, ..
                     } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
-                        view,
+                        (&workspace, view),
                         watcher,
                         invocation.operation_id,
                         0,
                         PublicationPermit::Unrestricted,
+                        Some(Arc::clone(owner)),
                     )
                     .await?;
                     let input =
@@ -221,11 +264,12 @@ impl ToolExecutor for CheckoutTools {
                     } = &mut *state;
                     let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
                     self.capture(
-                        view,
+                        (&workspace, view),
                         watcher,
                         invocation.operation_id,
                         1,
                         PublicationPermit::Unrestricted,
+                        Some(Arc::clone(owner)),
                     )
                     .await?;
                     owner.verify_owner(None)?.await?;

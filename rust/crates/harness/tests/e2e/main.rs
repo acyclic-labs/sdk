@@ -14,6 +14,10 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+mod provider_case;
+mod provider_http;
+mod provider_tests;
+mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
 mod scenario;

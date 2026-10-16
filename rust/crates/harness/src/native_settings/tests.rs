@@ -1,11 +1,14 @@
 use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
+#[cfg(feature = "hooks")]
+#[path = "tests/selection.rs"]
+mod selection;
 
 #[cfg(all(
     feature = "filesystem-local",
     feature = "test-support",
-    any(feature = "mcp-stdio", feature = "mcp-http")
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
 ))]
 mod isolation {
     use super::*;

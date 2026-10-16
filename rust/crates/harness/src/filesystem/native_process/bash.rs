@@ -44,12 +44,23 @@ pub(crate) fn prepare<T>(
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
     mount.check(Action::List, &path, now)?;
-    let cwd = std::fs::canonicalize(mounts.root.join(relative))
+    let root = mount.native_root.as_deref().unwrap_or(&mounts.root);
+    let requested = if mount.native_root.is_some() {
+        root.join(&path)
+    } else {
+        mounts.root.join(relative)
+    };
+    let cwd = std::fs::canonicalize(requested)
         .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
     let selected = cwd
-        .strip_prefix(&mounts.root)
+        .strip_prefix(root)
         .map_err(|_| Error::Invalid("bash cwd escapes the task view".into()))?;
-    if selected != relative {
+    if mount.native_root.is_some() {
+        let selected = selected
+            .to_str()
+            .ok_or_else(|| Error::Invalid("bash cwd is not UTF-8".into()))?;
+        mount.check(Action::List, &selected.replace('\\', "/"), now)?;
+    } else if selected != relative {
         let (mount, path) = mounts.resolve(selected)?;
         mount.check(Action::List, &path, now)?;
     }
@@ -68,7 +79,7 @@ pub(crate) fn prepare<T>(
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,
-        &mounts.root,
+        root,
         &invocation.environment,
         &invocation.argv,
     )?;

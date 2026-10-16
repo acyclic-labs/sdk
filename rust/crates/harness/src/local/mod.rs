@@ -24,15 +24,20 @@ use std::{
 };
 
 mod admission;
+mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod command_machine;
+mod command_views;
+mod commands;
 mod compaction;
 mod config;
-#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-mod mcp;
+mod context;
 mod owner;
 mod owner_record;
 mod runtime;
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
@@ -46,7 +51,7 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-pub(crate) type LocalTaskRuntime =
+pub type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.
@@ -61,7 +66,13 @@ pub struct LocalHarness {
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
-    context_manifest: crate::conversation::FileRef,
+    context_manifest: Option<crate::conversation::FileRef>,
+    #[cfg(feature = "hooks")]
+    hooks: crate::hooks::Hooks,
+    #[cfg(test)]
+    context_read_observer: Option<
+        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
+    >,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -72,6 +83,8 @@ pub struct LocalHarness {
     admission: crate::sync::owned::Arc<crate::sync::owned::Mutex<()>>,
     #[cfg(feature = "native-execution")]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
 }
 
 impl LocalHarness {
@@ -121,14 +134,16 @@ impl LocalHarness {
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
             }
+            #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            let settings = settings::load(&config.project, config.settings).await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp::install(
-                &config.project,
-                |path| config.settings.map_or_else(|| mcp::user_settings(path), Ok),
-                tools,
-                config.mcp_limits,
-            )
-            .await?;
+            let mcp_workspace =
+                std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let installation = settings
+                .mcp
+                .install(tools, &mcp_workspace, config.mcp_limits)
+                .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
             let compaction = compaction::select(
@@ -281,25 +296,6 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            #[cfg(feature = "native-execution")]
-            let mounts = workspace.as_ref().map(|workspace| workspace.context_line());
-            #[cfg(not(feature = "native-execution"))]
-            let mounts = None;
-            let context_manifest = match config.context_manifest {
-                Some(reference) => reference,
-                None => {
-                    let publisher = FilesystemContentPublisher::new(
-                        files.clone(),
-                        &journal,
-                        &verifier,
-                        &signed,
-                        config.limits.file_bytes,
-                        None,
-                    )?;
-                    turn::default_manifest(publisher.as_ref(), &tools, config.limits, mounts)
-                        .await?
-                }
-            };
             Ok(Self {
                 files,
                 runtime,
@@ -311,7 +307,13 @@ impl LocalHarness {
                 signed,
                 model,
                 provider,
-                context_manifest,
+                context_manifest: config.context_manifest,
+                #[cfg(test)]
+                context_read_observer: None,
+                #[cfg(feature = "native-execution")]
+                checkout_context: matches!(config.project, LocalProject::Workspace(_)),
+                #[cfg(feature = "hooks")]
+                hooks: settings.hooks,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

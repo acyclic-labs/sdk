@@ -1,0 +1,18 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "scope": "subtree",
+        "kind": "resume"
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "scope": "subtree",
+        "kind": "resume"
+      }
+    }
+  },
+  "prompt": "/resume"
+}

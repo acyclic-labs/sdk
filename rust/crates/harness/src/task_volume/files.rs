@@ -61,6 +61,10 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         })
     }
 
+    pub(crate) const fn maximum_bytes(&self) -> u64 {
+        self.maximum_bytes
+    }
+
     /// Exact private volume whose owner grants authorized this binding.
     #[must_use]
     pub const fn volume(&self) -> &VolumeRef {
@@ -81,6 +85,24 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         maximum_files: usize,
     ) -> super::Result<Observation> {
         self.inner.observe(query, cursor, maximum_files).await
+    }
+}
+
+impl<P: StreamProvider + ?Sized> super::FileQuerySource for TaskFiles<P> {
+    fn observe_files(
+        &self,
+        query: Query,
+        cursor: Option<Cursor>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> acyclic_stream::BoxProviderFuture<'_, super::Result<Observation>> {
+        super::FileQuerySource::observe_files(
+            &self.inner,
+            query,
+            cursor,
+            maximum_files,
+            maximum_bytes,
+        )
     }
 }
 

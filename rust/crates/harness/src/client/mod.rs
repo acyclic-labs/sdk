@@ -51,6 +51,9 @@ mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod file_query;
 pub use file_query::{FileQueryView, GoalFileView};
+mod model_identity;
+mod model_view;
+pub use model_view::{ModelFileView, ModelQueryView};
 mod goal_view;
 pub use goal_view::{GoalProgress, GoalQueryView};
 #[cfg(feature = "tui")]

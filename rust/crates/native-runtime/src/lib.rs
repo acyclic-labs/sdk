@@ -72,6 +72,8 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub(crate) use blocking::{
     BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,

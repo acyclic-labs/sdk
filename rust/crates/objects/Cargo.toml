@@ -15,6 +15,7 @@ categories = ["api-bindings", "filesystem"]
 
 
 [features]
+test-support = ["acyclic-native-runtime/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
