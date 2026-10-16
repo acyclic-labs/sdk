@@ -323,10 +323,13 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
     } else {
         let mut projection = core.state.lock().unwrap_or_else(PoisonError::into_inner);
         while !core.stopping.load(Ordering::Acquire) {
-            projection = core
-                .invalidation
-                .wait(projection)
-                .unwrap_or_else(PoisonError::into_inner);
+            match core.invalidation.wait(projection) {
+                Ok(next) => projection = next,
+                Err(poisoned) => {
+                    projection = poisoned.into_inner();
+                    break;
+                }
+            }
         }
         drop(projection);
     }
