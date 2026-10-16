@@ -1,7 +1,45 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * The `ReadableStreamType` enum.
+ *
+ * *This API requires the following crate features to be activated: `ReadableStreamType`*
+ */
+
+type ReadableStreamType = "bytes";
 export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
 
+
+declare class IntoUnderlyingByteSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableByteStreamController): Promise<any>;
+    start(controller: ReadableByteStreamController): void;
+    readonly autoAllocateChunkSize: number;
+    readonly type: ReadableStreamType;
+}
+export type { IntoUnderlyingByteSource };
+
+declare class IntoUnderlyingSink {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    abort(reason: any): Promise<any>;
+    close(): Promise<any>;
+    write(chunk: any): Promise<any>;
+}
+export type { IntoUnderlyingSink };
+
+declare class IntoUnderlyingSource {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    cancel(): void;
+    pull(controller: ReadableStreamDefaultController): Promise<any>;
+}
+export type { IntoUnderlyingSource };
 
 /**
  * One Rust-backed live follow cursor.
@@ -31,14 +69,30 @@ export class WasmStream {
      */
     children(input: Uint8Array): Promise<Uint8Array[]>;
     /**
+     * Connects canonical platform RPCs and shared push follows. Credentials stay live.
+     */
+    static connect(endpoint: string, credential: Function): WasmStream;
+    /**
      * Executes one finite unary operation over canonical protobuf bytes.
      */
     dispatch(operation: string, input: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Creates an in-process provider.
+     */
     constructor();
+    /**
+     * Pushes the next successful handshake, including reconnects without further records.
+     */
+    nextConnection(after: bigint): Promise<bigint>;
     /**
      * Opens the canonical Rust provider on one durable `IndexedDB` journal.
      */
     static openBrowser(name: string, maximum_commands: number, maximum_journal_bytes: bigint): Promise<WasmStream>;
+    /**
+     * Opens a canonical SessionSubscription, yielding encoded SessionFrame data
+     * and watermarks. Rust owns IDs, ALL/LATEST cursors, anchors and bounded credit.
+     */
+    openData(input: Uint8Array): Promise<WasmFollow>;
     /**
      * Opens live child discovery; each next yields one canonical ChildrenResponse.
      */
@@ -140,19 +194,37 @@ export interface InitOutput {
     readonly wasmfollow_close: (a: number) => void;
     readonly wasmfollow_next: (a: number) => any;
     readonly wasmstream_children: (a: number, b: number, c: number) => any;
+    readonly wasmstream_connect: (a: number, b: number, c: any) => [number, number, number];
     readonly wasmstream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly wasmstream_new: () => number;
+    readonly wasmstream_nextConnection: (a: number, b: bigint) => any;
     readonly wasmstream_openBrowser: (a: number, b: number, c: number, d: bigint) => any;
+    readonly wasmstream_openData: (a: number, b: number, c: number) => any;
     readonly wasmstream_open_children: (a: number, b: number, c: number) => any;
     readonly wasmstream_open_follow: (a: number, b: number, c: number) => any;
     readonly wasmstream_read: (a: number, b: number, c: number) => any;
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___wasm_bindgen_63246afed42a6cf1___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_63246afed42a6cf1___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_63246afed42a6cf1___JsValue___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___js_sys_739a24cbba7c6c91___Function_fn_wasm_bindgen_63246afed42a6cf1___JsValue_____wasm_bindgen_63246afed42a6cf1___sys__Undefined___js_sys_739a24cbba7c6c91___Function_fn_wasm_bindgen_63246afed42a6cf1___JsValue_____wasm_bindgen_63246afed42a6cf1___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___web_sys_f6ee0feff582badb___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke___bool__true_: (a: number, b: number) => number;
-    readonly wasm_bindgen_63246afed42a6cf1___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly __wbg_intounderlyingbytesource_free: (a: number, b: number) => void;
+    readonly intounderlyingbytesource_autoAllocateChunkSize: (a: number) => number;
+    readonly intounderlyingbytesource_cancel: (a: number) => void;
+    readonly intounderlyingbytesource_pull: (a: number, b: any) => any;
+    readonly intounderlyingbytesource_start: (a: number, b: any) => void;
+    readonly intounderlyingbytesource_type: (a: number) => number;
+    readonly __wbg_intounderlyingsource_free: (a: number, b: number) => void;
+    readonly intounderlyingsource_cancel: (a: number) => void;
+    readonly intounderlyingsource_pull: (a: number, b: any) => any;
+    readonly __wbg_intounderlyingsink_free: (a: number, b: number) => void;
+    readonly intounderlyingsink_abort: (a: number, b: any) => any;
+    readonly intounderlyingsink_close: (a: number) => any;
+    readonly intounderlyingsink_write: (a: number, b: any) => any;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___wasm_bindgen_15a8f3186e544560___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_15a8f3186e544560___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___web_sys_8e157a6a32ff42f4___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_15a8f3186e544560___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___js_sys_67453e9d4ad8eaa4___Function_fn_wasm_bindgen_15a8f3186e544560___JsValue_____wasm_bindgen_15a8f3186e544560___sys__Undefined___js_sys_67453e9d4ad8eaa4___Function_fn_wasm_bindgen_15a8f3186e544560___JsValue_____wasm_bindgen_15a8f3186e544560___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___wasm_bindgen_15a8f3186e544560___JsValue______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___web_sys_8e157a6a32ff42f4___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___web_sys_8e157a6a32ff42f4___features__gen_MessageEvent__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke___bool__true_: (a: number, b: number) => number;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke_______true__1_: (a: number, b: number) => void;
+    readonly wasm_bindgen_15a8f3186e544560___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
