@@ -190,3 +190,24 @@ fn object_argument_validation_checks_literals_without_marker_interpretation() {
         assert!(!crate::protocol::strict::object(raw), "accepted {raw}");
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn generated_envelopes_preserve_every_admitted_argument_depth(depth in 0usize..=128) {
+        let input = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let value = crate::projection::arguments::literal(input.as_bytes()).unwrap();
+        crate::projection::arguments::assert_normalization(&value);
+    }
+}
+
+#[test]
+fn checked_in_boundary_depth_runs_the_full_codec_fuzz_oracle() {
+    let seed = include_bytes!("../../fuzz/corpus/provider_stream/arguments-depth-boundary.json");
+    assert_eq!(seed.len(), 258);
+    assert_eq!(seed.iter().filter(|byte| **byte == b'[').count(), 128);
+    crate::projection::arguments::literal(&seed[1..]).unwrap();
+    crate::fuzzing::assert_stream_invariants(seed);
+    let too_deep = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+    assert!(crate::projection::arguments::literal(too_deep.as_bytes()).is_err());
+}

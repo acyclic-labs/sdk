@@ -21,8 +21,15 @@ impl Serialize for Arguments<'_> {
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_normalization(value: &Value) {
+    // At most three generated levels: Gemini part, functionCall and _raw.
+    assert_normalization_with_depth(value, 3);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+fn assert_normalization_with_depth(value: &Value, envelope_depth: u32) {
+    let output = |bytes: &[u8]| literal_at_depth(bytes, 128 + envelope_depth).unwrap();
     let bytes = serde_json::to_vec(&Arguments(value)).unwrap();
-    let normalized = literal(&bytes).unwrap();
+    let normalized = output(&bytes);
     assert_value(value, &normalized);
     assert_eq!(serde_json::to_vec(&Arguments(&normalized)).unwrap(), bytes);
     for adapter in [
@@ -39,7 +46,7 @@ pub(crate) fn assert_normalization(value: &Value) {
             signature: None,
         };
         let encoded = serde_json::to_vec(&call).unwrap();
-        let wire = literal(&encoded).unwrap();
+        let wire = output(&encoded);
         let arguments = match adapter {
             crate::Adapter::Anthropic => wire["input"].clone(),
             crate::Adapter::Gemini => wire["functionCall"]["args"].clone(),
@@ -50,11 +57,10 @@ pub(crate) fn assert_normalization(value: &Value) {
                     &wire["function"]["arguments"]
                 };
                 let raw = raw.as_str().unwrap();
-                assert!(
-                    crate::protocol::strict::object(raw),
-                    "argument validator must accept encoded objects"
-                );
-                literal(raw.as_bytes()).unwrap()
+                // Codec fuzzing includes standalone values deeper than an
+                // admitted ModelRequest. Validate those with the derived output
+                // bound; actual request validator admission is checked separately.
+                output(raw.as_bytes())
             }
         };
         assert_value(value, &arguments);
@@ -83,6 +89,11 @@ pub(crate) fn assert_value(value: &Value, normalized: &Value) {
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness::Result<Value> {
+    literal_at_depth(bytes, 128)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+fn literal_at_depth(bytes: &[u8], maximum_depth: u32) -> acyclic_harness::Result<Value> {
     let raw: &serde_json::value::RawValue =
         serde_json::from_slice(bytes).map_err(|_| crate::invalid("invalid JSON fixture"))?;
     acyclic_harness::json_value_bounded(
@@ -90,7 +101,7 @@ pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness::Result<Value> {
         acyclic_harness::JsonBounds {
             maximum_bytes: bytes.len() as u64,
             maximum_items: bytes.len() as u64,
-            maximum_depth: 128,
+            maximum_depth,
         },
         None,
         &mut |_| Ok(()),
@@ -108,4 +119,20 @@ fn wire_wrapping_collision_leaves_distinct_canonical_arguments_unchanged() {
     assert_ne!(array, object);
     assert_normalization(&array);
     assert_normalization(&object);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+#[should_panic]
+fn negative_control_input_depth_cannot_decode_the_normalized_boundary() {
+    let value = (0..128).fold(serde_json::json!(0), |inner, _| Value::Array(vec![inner]));
+    assert_normalization_with_depth(&value, 0);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+#[should_panic]
+fn negative_control_one_extra_level_cannot_decode_the_call_envelope() {
+    let value = (0..128).fold(serde_json::json!(0), |inner, _| Value::Array(vec![inner]));
+    assert_normalization_with_depth(&value, 1);
 }

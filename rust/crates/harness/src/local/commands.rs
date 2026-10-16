@@ -21,7 +21,18 @@ impl LocalHarness {
         self.dispatch_configured_command(operation, target, resolution, &json!({}))
             .await
     }
-    pub(crate) async fn dispatch_configured_command(
+    pub(crate) fn dispatch_configured_command<'a>(
+        &'a self,
+        operation: OperationId,
+        target: Option<TaskId>,
+        resolution: CommandResolution,
+        settings: &'a Value,
+    ) -> BoxProviderFuture<'a, Result<Value>> {
+        // Cut the concrete admission/tool/compaction future graph here, before
+        // it becomes part of each client owner's dispatch future.
+        Box::pin(self.dispatch_effect(operation, target, resolution, settings))
+    }
+    async fn dispatch_effect(
         &self,
         operation: OperationId,
         target: Option<TaskId>,
