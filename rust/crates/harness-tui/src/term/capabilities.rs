@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 /// Colour encoding selected once at startup.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ColourDepth {
     /// No SGR colour.
     Monochrome,
@@ -242,7 +242,7 @@ impl Environment {
         };
         caps.apply_identity(identity);
         if self.get("TERM").contains("256color") {
-            caps.colour = ColourDepth::Indexed256;
+            caps.colour = caps.colour.max(ColourDepth::Indexed256);
         }
         if matches!(self.get("COLORTERM"), "truecolor" | "24bit") {
             caps.colour = ColourDepth::TrueColour;

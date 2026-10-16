@@ -295,6 +295,26 @@ fn environment_fallback_ladders_and_policy() {
             KeyboardProtocol::Kitty,
         ),
         (
+            vec![("TERM_PROGRAM", "WezTerm"), ("TERM", "xterm-256color")],
+            ColourDepth::TrueColour,
+            KeyboardProtocol::Kitty,
+        ),
+        (
+            vec![("WT_SESSION", "session"), ("TERM", "xterm-256color")],
+            ColourDepth::TrueColour,
+            KeyboardProtocol::Legacy,
+        ),
+        (
+            vec![("KITTY_WINDOW_ID", "1"), ("TERM", "screen-256color")],
+            ColourDepth::TrueColour,
+            KeyboardProtocol::Kitty,
+        ),
+        (
+            vec![("TERM", "screen-256color"), ("COLORTERM", "truecolor")],
+            ColourDepth::TrueColour,
+            KeyboardProtocol::Legacy,
+        ),
+        (
             vec![("WT_SESSION", "session")],
             ColourDepth::TrueColour,
             KeyboardProtocol::Legacy,
@@ -332,6 +352,36 @@ fn environment_fallback_ladders_and_policy() {
     assert!(caps.remote);
     assert_eq!(caps.multiplexer, Multiplexer::Screen);
     assert!(!caps.passthrough);
+}
+
+#[test]
+fn profile_environment_colour_evidence_matrix() -> Result<(), Box<dyn std::error::Error>> {
+    let profiles: Vec<Profile> = serde_json::from_str(include_str!("profiles.json"))?;
+    for profile in profiles {
+        let base = Environment([("TERM_PROGRAM".into(), profile.identity.clone())].into());
+        let known = ProbeReplies::default().capabilities(&base).colour;
+        for term in ["ansi", "xterm-256color", "screen-256color"] {
+            for colorterm in ["", "truecolor", "24bit"] {
+                let mut env = base.clone();
+                env.0.insert("TERM".into(), term.into());
+                env.0.insert("COLORTERM".into(), colorterm.into());
+                let expected = if !colorterm.is_empty() {
+                    ColourDepth::TrueColour
+                } else if term.contains("256color") {
+                    known.max(ColourDepth::Indexed256)
+                } else {
+                    known
+                };
+                assert_eq!(
+                    ProbeReplies::default().capabilities(&env).colour,
+                    expected,
+                    "{} TERM={term} COLORTERM={colorterm}",
+                    profile.name
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -522,6 +572,20 @@ fn every_mode_subset_and_failure_boundary_restores() {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(96))]
+
+    // Adding weaker TERM evidence cannot reduce a known colour capability.
+    #[test]
+    fn term_fallback_colour_is_monotone(
+        program in prop::sample::select(vec!["WezTerm", "kitty", "ghostty", "iTerm2", "alacritty", "foot", "vscode", "Apple_Terminal", "tmux", "screen", ""]),
+        term in prop::sample::select(vec!["ansi", "xterm-256color", "screen-256color", "tmux-256color"]),
+        colorterm in prop::sample::select(vec!["", "truecolor", "24bit"]),
+    ) {
+        let mut env = Environment([("TERM_PROGRAM".into(), program.into())].into());
+        let known = ProbeReplies::default().capabilities(&env).colour;
+        env.0.insert("TERM".into(), term.into());
+        env.0.insert("COLORTERM".into(), colorterm.into());
+        prop_assert!(ProbeReplies::default().capabilities(&env).colour >= known);
+    }
 
     #[test]
     fn restore_after_arbitrary_failure(initial in 0u8..8, at in 0usize..65) {
