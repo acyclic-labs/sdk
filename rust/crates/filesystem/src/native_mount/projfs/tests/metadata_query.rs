@@ -334,11 +334,9 @@ fn fallback_preserves_the_original_tight_budget() -> Result<(), Box<dyn std::err
             (Err(actual), Err(expected)) => assert_eq!(actual.to_string(), expected.to_string()),
             other => return Err(format!("fallback changed result: {other:?}").into()),
         }
-        let mut expected_receipt = receipt;
-        if matches!(path, "leaf" | "missing") {
-            expected_receipt.backend_read_operations = 1;
-        }
-        assert_eq!(limited.receipt(), expected_receipt);
+        // A two-read budget selects the held-leaf fallback before any query;
+        // a missing leaf needs only its one failed open or name query.
+        assert_eq!(limited.receipt(), receipt);
     }
     Ok(())
 }

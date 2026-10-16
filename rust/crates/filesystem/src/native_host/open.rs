@@ -322,9 +322,18 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     );
     #[cfg(windows)]
     let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-    let parent = directory_path(root, parent, false, work)?;
     #[cfg(unix)]
-    return unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work));
+    let empty = parent.as_os_str().is_empty();
     #[cfg(windows)]
-    operation(&parent, leaf, work)
+    let empty = parent.is_empty();
+    let held = if empty {
+        None
+    } else {
+        Some(directory_path(root, parent, false, work)?)
+    };
+    let parent = held.as_ref().unwrap_or(root);
+    #[cfg(unix)]
+    return unix_name(leaf, work, |leaf, work| operation(parent, leaf, work));
+    #[cfg(windows)]
+    operation(parent, leaf, work)
 }
