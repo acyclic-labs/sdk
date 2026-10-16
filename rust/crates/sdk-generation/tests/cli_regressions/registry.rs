@@ -335,6 +335,13 @@ fn archive_feature_profiles_bind_all_generated_aliases_and_keep_required_failure
 #[test]
 fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
     runtime::time_control();
+    fn owner_example(package: &Path) {
+        fs::write(
+            package.join("examples/historical.rs"),
+            "fn main() { println!(\"archive-example-executed:{}\", env!(\"CARGO_PKG_NAME\")); }\n",
+        )
+        .unwrap();
+    }
     // One immutable initial history prevents incidental wall-clock differences
     // from creating redundant source frontiers. Each owner still packages and
     // compiles its own source and complete four-profile historical matrix.
@@ -350,7 +357,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
                     None,
                     true,
                     name,
-                    None,
+                    Some(owner_example),
                     Some(super::replay::copy_historical_fixture(template)),
                 )
             })
@@ -405,7 +412,7 @@ fn three_archive_owners_bind_identical_relative_spans_to_their_own_source() {
         assert_eq!(row["example"]["package"], owner);
         assert_eq!(
             row["stdoutSha256"],
-            hash_bytes(b"archive-example-executed\n")
+            hash_bytes(format!("archive-example-executed:{owner}\n").as_bytes())
         );
         assert_eq!(row["stderrSha256"], hash_bytes(b""));
     }
