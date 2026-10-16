@@ -1,6 +1,10 @@
 use super::*;
 use proptest::prelude::*;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    ops::Bound::{Excluded, Included, Unbounded},
+    rc::Rc,
+};
 
 fn reference<K: Borrow<str> + Ord, V>(paths: &BTreeMap<K, V>, path: &str) -> bool {
     paths
@@ -83,39 +87,148 @@ impl Ord for CountedKey {
         self.name.cmp(&other.name)
     }
 }
+#[path = "old_crossover.rs"]
+mod old_crossover;
+
+fn counted(
+    names: impl IntoIterator<Item = String>,
+    reads: &Rc<Cell<usize>>,
+) -> BTreeMap<CountedKey, ()> {
+    names
+        .into_iter()
+        .map(|name| {
+            (
+                CountedKey {
+                    name,
+                    reads: reads.clone(),
+                },
+                (),
+            )
+        })
+        .collect()
+}
+
+fn compare_reads(
+    paths: &BTreeMap<CountedKey, ()>,
+    query: &str,
+    reads: &Cell<usize>,
+    selector: impl FnOnce(&BTreeMap<CountedKey, ()>, &str) -> bool,
+) -> (usize, usize) {
+    reads.set(0);
+    let expected = reference(paths, query);
+    let old = reads.get();
+    reads.set(0);
+    assert_eq!(selector(paths, query), expected);
+    (old, reads.get())
+}
+
 #[test]
-fn small_namespaces_read_each_key_once_for_misses_and_last_rewrites() {
-    for count in 1..=DIRECT_SCAN_PATHS {
-        let reads = Rc::new(Cell::new(0));
-        let paths: BTreeMap<_, _> = (0..count)
-            .map(|index| {
-                (
-                    CountedKey {
-                        name: format!("files/{index:08}"),
-                        reads: reads.clone(),
-                    },
-                    (),
-                )
-            })
-            .collect();
-        for query in ["files/new".into(), format!("files/{:08}", count - 1)] {
-            reads.set(0);
-            assert!(!conflicts(&paths, &query));
-            assert_eq!(
-                reads.get(),
-                count,
-                "small namespace must not add root seeks"
+fn fixed_zero_to_eighty_sweep_never_exceeds_original_reads_at_any_depth() {
+    for count in 0..=80 {
+        for depth in 0..=16 {
+            let prefix = std::iter::repeat_n("d", depth)
+                .collect::<Vec<_>>()
+                .join("/");
+            let prefix = if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}/")
+            };
+            let reads = Rc::new(Cell::new(0));
+            let paths = counted(
+                (0..count).map(|index| {
+                    if index == 0 {
+                        "a".into()
+                    } else {
+                        format!("{prefix}{index:08}")
+                    }
+                }),
+                &reads,
             );
-            let _ = paths
-                .range::<str, _>((Unbounded, Excluded(query.as_str())))
-                .next_back();
-            assert!(
-                reads.get() > count,
-                "negative control: a redundant seek violates the same bound"
-            );
+            for query in [
+                format!("{prefix}missing"),
+                format!("{prefix}{:08}", count / 2),
+                format!("{prefix}{:08}-", count / 2),
+                format!("{prefix}{:08}/child", count / 2),
+            ] {
+                let (old, new) = compare_reads(&paths, &query, &reads, conflicts);
+                assert!(
+                    new <= old,
+                    "{count} paths, depth {depth}, {query}: {new} > {old}"
+                );
+            }
         }
     }
 }
+
+#[test]
+fn original_crossover_violates_the_same_read_bound() {
+    for (count, depth, query) in [
+        (5, 1, "d/missing"),
+        (41, 4, "d/d/d/d/00000020-"),
+        (41, 16, "d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/d/00000020-"),
+    ] {
+        let reads = Rc::new(Cell::new(0));
+        let prefix = std::iter::repeat_n("d", depth)
+            .collect::<Vec<_>>()
+            .join("/");
+        let paths = counted(
+            (0..count).map(|index| {
+                if index == 0 {
+                    "a".into()
+                } else {
+                    format!("{prefix}/{index:08}")
+                }
+            }),
+            &reads,
+        );
+        let (old, broken) = compare_reads(&paths, query, &reads, old_crossover::conflicts);
+        assert!(
+            broken > old,
+            "old crossover must violate the production bound: {broken} <= {old}"
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    // Every generated tree checks a directory-prefix hit, missing sibling,
+    // exact rewrite and file-prefix hit/miss at each level through depth 16.
+    #[test]
+    fn generated_tree_queries_never_read_more_keys_than_the_original_scan(
+        depth in 0..=16_usize,
+        width in 0..=80_usize,
+        target in 0..=80_usize,
+        padding in 0..=80_usize,
+    ) {
+        let mut names = (0..padding).map(|index| format!("a{index:08}")).collect::<Vec<_>>();
+        let mut prefix = String::new();
+        for _ in 0..depth {
+            names.push(format!("{prefix}a"));
+            names.push(format!("{prefix}f"));
+            prefix.push_str("d/");
+        }
+        names.extend((0..width).map(|index| format!("{prefix}{index:08}")));
+        let reads = Rc::new(Cell::new(0));
+        let paths = counted(names, &reads);
+        let mut prefix = String::new();
+        for _ in 0..=depth {
+            for query in [
+                prefix.trim_end_matches('/').to_owned(),
+                format!("{prefix}b"),
+                format!("{prefix}a"),
+                format!("{prefix}a/child"),
+                format!("{prefix}{target:08}-"),
+                format!("{prefix}{target:08}/child"),
+            ] {
+                let (old, new) = compare_reads(&paths, &query, &reads, conflicts);
+                prop_assert!(new <= old, "depth {}, width {}, padding {}, {}: {} > {}", depth, width, padding, query, new, old);
+            }
+            prefix.push_str("d/");
+        }
+    }
+}
+
 #[test]
 fn leading_conflicts_read_each_key_once_without_a_root_seek() {
     let reads = Rc::new(Cell::new(0));
@@ -147,7 +260,7 @@ fn leading_conflicts_read_each_key_once_without_a_root_seek() {
     }
 }
 #[test]
-fn ordered_work_is_independent_of_unrelated_paths_and_punctuation_interval() {
+fn former_index_has_bounded_seeks_but_is_rejected_by_the_scan_regression_guard() {
     for punctuation in [false, true] {
         let reads = Rc::new(Cell::new(0));
         let mut paths: BTreeMap<_, _> = (0..65_536)
@@ -176,7 +289,7 @@ fn ordered_work_is_independent_of_unrelated_paths_and_punctuation_interval() {
         }
         let query = if punctuation { "foo" } else { "files/new" };
         reads.set(0);
-        assert_eq!(conflicts(&paths, query), punctuation);
+        assert_eq!(old_crossover::conflicts(&paths, query), punctuation);
         assert!(reads.get() <= 256, "index used {} key probes", reads.get());
         reads.set(0);
         assert_eq!(reference(&paths, query), punctuation);
@@ -212,10 +325,10 @@ fn ordinary_queries_allocate_nothing_and_punctuation_scratch_is_bounded() {
     );
 }
 #[test]
-fn long_punctuation_queries_allocate_one_exact_prefix_buffer() {
+fn long_punctuation_queries_need_no_prefix_buffer() {
     for length in [64, 4096] {
         let query = "é".repeat(length / 2);
-        let mut paths: BTreeMap<_, _> = (0..=DIRECT_SCAN_PATHS)
+        let mut paths: BTreeMap<_, _> = (0..=80)
             .map(|index| (format!("{query}-{index:08}"), ()))
             .collect();
         paths.insert(format!("{query}/child"), ());
@@ -224,12 +337,21 @@ fn long_punctuation_queries_allocate_one_exact_prefix_buffer() {
         let allocation = allocation_counter::measure(|| {
             assert!(conflicts(&paths, &query));
         });
-        assert_eq!(allocation.count_total, 1);
         assert_eq!(
-            allocation.bytes_total,
+            (
+                allocation.count_total,
+                allocation.bytes_total,
+                allocation.bytes_max
+            ),
+            (0, 0, 0)
+        );
+        let old = allocation_counter::measure(|| assert!(old_crossover::conflicts(&paths, &query)));
+        assert_eq!(old.count_total, 1);
+        assert_eq!(
+            old.bytes_total,
             u64::try_from(query.len() + 1).unwrap_or_default()
         );
-        assert_eq!(allocation.bytes_max, allocation.bytes_total);
+        assert_eq!(old.bytes_max, old.bytes_total);
     }
 }
 
@@ -248,7 +370,7 @@ proptest! {
         let mut paths:BTreeMap<_,_>=names.iter().cloned().map(|name|(name,())).collect();
         for augmented in [false, true] {
             if augmented {
-                for index in 0..=DIRECT_SCAN_PATHS { paths.insert(format!("padding-{index:08}"),()); }
+                for index in 0..=80 { paths.insert(format!("padding-{index:08}"),()); }
                 paths.insert(format!("{path}-.txt"),());
                 paths.insert(format!("{path}/child"),());
             }

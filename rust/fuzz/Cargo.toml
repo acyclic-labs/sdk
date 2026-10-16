@@ -8,14 +8,13 @@ publish = false
 cargo-fuzz = true
 
 [features]
-memory-paths = ["dep:serde_json", "dep:arrayvec"]
+memory-paths = ["dep:serde_json"]
 proto-descriptors = ["dep:acyclic-proto-build"]
 default = ["native"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
 
 [dependencies]
 acyclic-proto-build = { path = "../../compatibility", optional = true }
-arrayvec = { version = "0.7.8", optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
 acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"

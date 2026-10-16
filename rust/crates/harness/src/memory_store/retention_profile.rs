@@ -42,9 +42,7 @@ fn profile(tracing: bool) -> Result<()> {
     let mut counts = vec![
         0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 16, 24, 32, 48, 64, 65, 96, 128, 256, 4096,
     ];
-    let cutoff = u32::try_from(super::super::super::directory::conflicts::DIRECT_SCAN_PATHS)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    counts.extend([cutoff.saturating_sub(1), cutoff, cutoff + 1]);
+    counts.extend([39, 40, 41, 80]);
     counts.sort_unstable();
     counts.dedup();
     for count in counts {
@@ -70,6 +68,38 @@ fn profile(tracing: bool) -> Result<()> {
                 ("missing-root", "missing"),
             ] {
                 measure(&store, query, label, tracing, syscalls)?;
+            }
+        }
+    }
+    if !syscalls {
+        for depth in [4, 16] {
+            let prefix = std::iter::repeat_n("d", depth)
+                .collect::<Vec<_>>()
+                .join("/");
+            let mut store = super::super::super::tests::store(1, 41)?;
+            store.stage("a", b"x", "text/plain", "x", true)?;
+            for index in 1..=40 {
+                store.stage(
+                    &format!("{prefix}/{index:08}"),
+                    b"x",
+                    "text/plain",
+                    "x",
+                    true,
+                )?;
+            }
+            for (label, query) in [
+                (format!("depth-{depth}-gap"), format!("{prefix}/00000020-")),
+                (
+                    format!("depth-{depth}-ancestor"),
+                    format!("{prefix}/00000005/child"),
+                ),
+                (
+                    format!("depth-{depth}-after-last"),
+                    format!("{prefix}/missing"),
+                ),
+                (format!("depth-{depth}-directory"), prefix.clone()),
+            ] {
+                measure(&store, &query, &label, tracing, false)?;
             }
         }
     }

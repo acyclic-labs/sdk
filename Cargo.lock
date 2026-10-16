@@ -729,7 +729,6 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-proto-build",
- "arrayvec",
  "libfuzzer-sys",
  "prost",
  "serde_json",
