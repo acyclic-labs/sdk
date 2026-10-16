@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import fc from "fast-check";
+import { spawnSync } from "node:child_process";
 import { credentialProvider, validateCredential } from "../src/credential.js";
 import { ActorsClient, type ActorsRustClient } from "../src/client.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
@@ -163,3 +164,48 @@ test("Actors cancellation settles while a credential provider is still pending",
     }
   }), { numRuns: 32 });
 }, 1000);
+
+test("synchronous provider cancellation always consumes its rejection", () => {
+  const fixture = `
+    import assert from "node:assert/strict";
+    import { setImmediate } from "node:timers/promises";
+    import { ActorsClient } from ${JSON.stringify(new URL("../dist/client.js", import.meta.url).href)};
+    import { credentialProvider } from ${JSON.stringify(new URL("../dist/credential.js", import.meta.url).href)};
+    const [variant, mode, token] = process.argv.slice(1);
+    const controller = new AbortController();
+    let connects = 0;
+    const credential = () => {
+      controller.abort();
+      if (mode === "throw") throw new Error("late credential failure");
+      if (mode === "reject") return Promise.reject(new Error("late credential failure"));
+      return token;
+    };
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test", credential,
+      binding: { connect: async () => { connects++; throw new Error("must not connect"); } },
+    });
+    const broken = async () => {
+      const operation = credentialProvider({ credential })(controller.signal);
+      // Deliberately restore the former early throw before attaching handlers.
+      if (controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "cancelled" });
+      return operation;
+    };
+    await assert.rejects(variant === "broken" ? broken() : client.inspectActor(
+      { actorId: "actor-a" }, { signal: controller.signal }), { code: "cancelled" });
+    assert.equal(connects, 0);
+    await setImmediate();
+  `;
+  fc.assert(fc.property(fc.stringMatching(/^[a-zA-Z0-9_-]{1,32}$/), fc.constantFrom("return", "throw", "reject"), (value, mode) => {
+    const run = (variant: string) => spawnSync("node", ["--unhandled-rejections=strict", "--input-type=module", "-e", fixture, variant, mode, value], {
+      encoding: "utf8", timeout: 1000, windowsHide: true,
+    });
+    const fixed = run("fixed");
+    expect(fixed.error).toBeUndefined();
+    expect(fixed.stderr).toBe("");
+    expect(fixed.status).toBe(0);
+    const broken = run("broken");
+    expect(broken.error).toBeUndefined();
+    expect(broken.status).toBe(1);
+    expect(broken.stderr).toMatch(/AbortError|late credential failure/);
+  }), { numRuns: 8 });
+}, 8000);

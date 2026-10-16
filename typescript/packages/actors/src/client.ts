@@ -341,10 +341,10 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return operation;
-  throwIfAborted(signal);
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new ActorsTransportError("Actors operation cancelled", "cancelled"));
-    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
     operation.then(
       value => { signal.removeEventListener("abort", onAbort); resolve(value); },
       error => { signal.removeEventListener("abort", onAbort); reject(error); },
