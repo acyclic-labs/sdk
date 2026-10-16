@@ -304,6 +304,22 @@ fn raw_follow_deadline_negative_control_drops_timeout_forwarding() {
     );
 }
 
+#[test]
+#[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
+fn raw_follow_delivery_negative_control_drops_timeout_forwarding() {
+    deadline_run("deadline", &["deliver"]);
+}
+#[test]
+#[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
+fn raw_follow_reconnect_negative_control_drops_timeout_forwarding() {
+    deadline_run("deadline", &["reconnect", "releaseReconnect"]);
+}
+#[test]
+#[should_panic(expected = "only the logical deadline owns a timer")]
+fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
+    deadline_run("deadline", &["cleanup"]);
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config {
         cases: 128,
