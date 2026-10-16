@@ -21,7 +21,10 @@ mod pool;
 #[cfg(acyclic_stream_loom)]
 pub use cache::verify_cache;
 #[cfg(acyclic_stream_loom)]
-pub use pool::model::{verify_interest_accounting, verify_link_isolation, verify_pool_lifetime};
+pub use pool::model::{
+    verify_abandoned_reconnect, verify_interest_accounting, verify_link_isolation,
+    verify_pool_lifetime,
+};
 mod progress;
 use progress::Progress;
 #[cfg(test)]
@@ -32,7 +35,7 @@ type Connect = std::sync::Arc<
         + Sync,
 >;
 type Ready = (String, Link, Response);
-type Dial = BoxFuture<'static, (String, Result<Ready, StreamError>)>;
+type Dial = BoxFuture<'static, (String, u64, Result<Ready, StreamError>)>;
 type Response = tonic::Streaming<wire::SessionFrame>;
 type Read = BoxFuture<
     'static,
@@ -53,6 +56,8 @@ pub struct Client {
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
+    attempt_epoch: Arc<AtomicU64>,
+    abandoned: Arc<gate::Gate>,
 }
 struct Delivery {
     item: Received,
@@ -68,6 +73,7 @@ enum Received {
 enum Command {
     Open {
         id: u64,
+        attempt_epoch: u64,
         acknowledge: bool,
         kind: Kind,
         progress: Arc<Progress>,
@@ -77,6 +83,7 @@ enum Command {
 }
 struct Route {
     node: String,
+    attempt_epoch: u64,
     kind: Kind,
     generation: u64,
     placement_epoch: u64,
@@ -114,6 +121,9 @@ struct Pool {
     home_channel: TransportChannel,
     next_link: u64,
     active: Arc<AtomicU64>,
+    attempt_epoch: Arc<AtomicU64>,
+    abandoned: Arc<gate::Gate>,
+    dial_epoch: u64,
     commands: mpsc::Receiver<Command>,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
@@ -156,6 +166,8 @@ impl Client {
         let removed = Arc::new(signal::Signal::new());
         let release_sender = Arc::new(signal::Signal::new());
         let active = Arc::new(AtomicU64::new(0));
+        let attempt_epoch = Arc::new(AtomicU64::new(0));
+        let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             authorization,
@@ -171,6 +183,9 @@ impl Client {
             home_channel: channel.clone(),
             next_link: 1,
             active: Arc::clone(&active),
+            attempt_epoch: Arc::clone(&attempt_epoch),
+            abandoned: Arc::clone(&abandoned),
+            dial_epoch: 0,
             commands: receiver,
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
@@ -186,7 +201,17 @@ impl Client {
             removed,
             next_id: Arc::new(AtomicU64::new(1)),
             active,
+            attempt_epoch,
+            abandoned,
         }
+    }
+    pub(crate) fn abandon_pending(&self) -> Result<(), StreamError> {
+        self.attempt_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| StreamError::Capacity)?;
+        self.abandoned.set(true)
     }
     /// Opens a logical follow on the shared session, without a per-stream RPC.
     pub async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
@@ -280,6 +305,7 @@ impl Client {
         self.commands
             .send(Command::Open {
                 id,
+                attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
                 acknowledge,
                 kind,
                 progress,

@@ -27,6 +27,8 @@ export declare class NativeStreamClient {
   static connectWithCredentialResult(endpoint: string, callback: (() => Promise<string>), caCertificatePem?: Buffer | undefined | null, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamConnectResult>
   /** Uses a request-local credential while retaining the existing TLS channel. */
   withCredential(token: string): NativeStreamClient
+  /** Abandons pending handshakes before cancelling their credential work. */
+  abandonSessionAttempts(): void
   /** Connects using the canonical Rust native gRPC transport. */
   static connect(endpoint: string, token: string, cancellation?: NativeStreamCancellation | undefined | null): Promise<NativeStreamClient>
   /** Connects and returns a structured success/error envelope. */
