@@ -136,3 +136,30 @@ test("Actors snapshots provider selection once even when configuration has gette
     expect(calls).toBe(values.length);
   }), settings);
 });
+
+test("Actors cancellation settles while a credential provider is still pending", async () => {
+  await fc.assert(fc.asyncProperty(token, fc.boolean(), async (value, reject) => {
+    let resolve!: (value: string) => void;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<string>((yes, no) => { resolve = yes; fail = no; });
+    const controller = new AbortController();
+    let connected = 0;
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test", credential: () => pending,
+      binding: { connect: async () => { connected++; return legacyClient(); } },
+    });
+    // Negative control: awaiting the provider alone ignores cancellation.
+    let brokenSettled = false;
+    const broken = pending.then(() => { brokenSettled = true; }, () => { brokenSettled = true; });
+    const call = client.inspectActor(actor, { signal: controller.signal });
+    controller.abort();
+    try {
+      await expect(call).rejects.toMatchObject({ code: "cancelled" });
+      expect(brokenSettled).toBe(false);
+      expect(connected).toBe(0);
+    } finally {
+      if (reject) fail(new Error("late credential failure")); else resolve(value);
+      await broken;
+    }
+  }), { numRuns: 32 });
+}, 1000);

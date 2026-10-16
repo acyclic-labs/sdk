@@ -96,7 +96,7 @@ export class ActorsClient {
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(signal);
-      const token = await this.#credential(signal);
+      const token = await abortable(Promise.resolve(this.#credential(signal)), signal);
       const client = await this.#connection(token, signal);
       if (this.#renewable && client.withCredential === undefined) {
         throw new ActorsTransportError("Actors binding does not support per-request credentials", "configuration");

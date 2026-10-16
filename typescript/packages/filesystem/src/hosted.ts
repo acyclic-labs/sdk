@@ -21,11 +21,13 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
+  const callback = options.credential;
+  const token = callback === undefined ? options.bearerToken : undefined;
   let credential: CredentialProvider;
   try {
-    credential = credentialProvider({ ...(options.bearerToken === undefined ? {} : { token: options.bearerToken }), ...(options.credential === undefined ? {} : { credential: options.credential }) });
+    credential = credentialProvider(callback === undefined ? (token === undefined ? {} : { token }) : { credential: callback });
   } catch (error) {
-    if (options.credential === undefined && error instanceof TypeError) throw new RangeError("invalid hosted filesystem bearer credential");
+    if (callback === undefined && error instanceof TypeError) throw new RangeError("invalid hosted filesystem bearer credential");
     throw error;
   }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;

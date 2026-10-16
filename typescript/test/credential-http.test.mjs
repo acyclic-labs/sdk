@@ -46,6 +46,11 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         throw new Error("fixture stopped after observing request");
       };
       const options = { endpoint: "https://service.example.test", token: "stale", bearerToken: "stale", credential: async () => values[calls++], fetcher, fetch: fetcher };
+      let reads = 0;
+      if (product === "fs") {
+        const callback = options.credential;
+        Object.defineProperty(options, "credential", { get: () => ++reads === 1 ? callback : undefined });
+      }
       let invoke;
       let release;
       switch (product) {
@@ -55,7 +60,7 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         case "machines": { const client = new HttpMachinesProvider(options); invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003")); break; }
         case "inference": { const client = new HttpInferenceTransport(options.endpoint, options, fetcher); invoke = () => client.listModels(); break; }
       }
-      options.credential = async () => "mutated";
+      if (product !== "fs") options.credential = async () => "mutated";
       try {
         const initial = product === "fs" ? 1 : 0;
         for (let index = initial; index < values.length; index++) await expect(invoke()).rejects.toThrow();
@@ -63,6 +68,7 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
         expect(calls).toBe(values.length);
         await expect(invoke()).rejects.toThrow();
         expect(sent.length).toBe(values.length);
+        if (product === "fs") expect(reads).toBe(1);
       } finally { release?.(); }
     }
   }), { numRuns: 32 });
