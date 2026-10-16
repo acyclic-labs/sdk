@@ -60,7 +60,14 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
         grants.push(format!("tool:call:{}", definition.name));
     }
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-    grants.extend(config.capabilities.iter().map(str::to_owned));
+    grants.extend(
+        config
+            .capabilities
+            .iter()
+            // Registry definitions above already supply every tool-call grant.
+            .filter(|grant| !grant.starts_with("tool:call:"))
+            .map(str::to_owned),
+    );
     grants.push(
         config
             .journal
