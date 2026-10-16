@@ -66,6 +66,10 @@ async fn configuration(root: &Path) -> Result<Config> {
             scope,
         },
         generation: "initial".into(),
+        command_workspace: None,
+        ui_session: None,
+        command_roots: Vec::new(),
+        skill_roots: Vec::new(),
         model_invocation_ledger: root.join("invocations.jsonl"),
         limits: Limits::default(),
         run_limits: Default::default(),
@@ -86,6 +90,136 @@ async fn configuration(root: &Path) -> Result<Config> {
         native_publications: Vec::new(),
         project_source_root: None,
     })
+}
+
+#[tokio::test]
+async fn command_requests_and_sdk_controls_share_the_native_runtime_without_a_checkout()
+-> Result<()> {
+    use acyclic_harness::client::{CommandRequest, CommandResolution, CommandTaskScope};
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let mut config = configuration(directory.path()).await?;
+    config.deterministic_delay_ms = 0;
+    let native = NativeSession::open(config).await?;
+    let queued = native
+        .owner
+        .dispatch_command(
+            OperationId::new(),
+            None,
+            CommandResolution::Prompt {
+                text: "shared task".into(),
+                source: None,
+                mentions: Vec::new(),
+            },
+        )
+        .await?;
+    let task = TaskId::parse(
+        queued["task"]
+            .as_str()
+            .ok_or_else(|| invalid("missing task"))?,
+    )?;
+    let admission = native.runtime.task_host().observe_admission(task).await?;
+    assert_eq!(admission.task.name, "acyclic.stock_turn");
+    for (request, expected) in [
+        (
+            CommandRequest::Pause {
+                scope: CommandTaskScope::Subtree,
+            },
+            true,
+        ),
+        (
+            CommandRequest::Resume {
+                scope: CommandTaskScope::Subtree,
+            },
+            false,
+        ),
+    ] {
+        let result = native
+            .owner
+            .dispatch_command(
+                OperationId::new(),
+                Some(task),
+                CommandResolution::Submit { request },
+            )
+            .await?;
+        assert_eq!(result["paused"], expected);
+    }
+    let worker = Worker {
+        id: "shared-owner".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let WorkPull::Claimed(lease) = native.claim(task, &worker).await? else {
+        return Err(invalid("SDK command could not claim the request-file task"));
+    };
+    native.resume(lease).await?;
+    assert!(matches!(
+        native.runtime.task_host().outcome(task).await?,
+        Some(acyclic_harness::Outcome::Succeeded(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_owner_reads_settings_written_by_the_native_client() -> Result<()> {
+    use acyclic_harness::client::{CommandFileRoot, CommandSession, consume_local_command};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    struct NoReads;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoReads {}
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let native = NativeSession::open(configuration(directory.path()).await?).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(storage)?;
+    let endpoint = format!("http://{}/find", listener.local_addr().map_err(storage)?);
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .map_err(storage)?
+            .map_err(storage)?;
+        let mut request = [0; 4096];
+        let count = connection.read(&mut request).await.map_err(storage)?;
+        assert!(
+            std::str::from_utf8(&request[..count])
+                .map_err(storage)?
+                .starts_with("GET /find?q=needle ")
+        );
+        connection
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfound")
+            .await
+            .map_err(storage)?;
+        Ok::<_, Error>(())
+    });
+    // Reopen through the same provider/path as the production client, rather
+    // than borrowing the owner's disposable in-memory index.
+    let identity = serde_json::to_vec(&native.config.private_volume).map_err(storage)?;
+    let volume = Arc::new(
+        acyclic_harness::task_volume::TaskVolume::open(
+            native.stream.clone(),
+            acyclic_stream::StreamPath::new(format!(
+                "graphcoder-files/{}",
+                blake3::hash(&identity).to_hex()
+            ))
+            .map_err(storage)?,
+        )
+        .await?,
+    );
+    let mut client = CommandSession::open(volume, uuid::Uuid::new_v4(), 65_536, 64).await?;
+    client
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"search_endpoint":endpoint}),
+        )
+        .await?;
+    client.submit("/search needle", &NoReads).await?;
+    let request = client.next_request().await?;
+    let result = consume_local_command(&mut client, &native.owner, &request).await;
+    server.await.map_err(storage)??;
+    assert_eq!(
+        result?.ok_or_else(|| invalid("unclaimed request"))?["stdout"],
+        "found"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -295,7 +429,7 @@ async fn running_plan_panel_follows_authenticated_private_writes_over_pty()
             }
             Ok::<_, Error>(())
         });
-        crate::run_backend(crate::Backend::Native(native), false).await?;
+        crate::command_line::run(crate::Backend::Native(native), false).await?;
         writer.await??;
     } else {
         let directory = tempfile::tempdir()?;

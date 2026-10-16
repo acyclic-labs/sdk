@@ -25,6 +25,7 @@ use std::{
 };
 
 mod admission;
+mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod command_machine;
@@ -47,7 +48,7 @@ pub use workspace::LocalWorkspace;
 /// Local durable filesystem host.
 pub type LocalFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 /// Local durable task host and its execution journals.
-pub(crate) type LocalTaskRuntime =
+pub type LocalTaskRuntime =
     FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 /// A checkout or volume, durable authority, journals and stock executor.

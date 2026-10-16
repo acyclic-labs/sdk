@@ -137,6 +137,8 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.capability(VolumeOperation::Write, &mut None)?,
         volume.directory_read_capability("", &mut None)?,
+        "task:spawn:acyclic.direct_tool@1".into(),
+        "tool:call:bash".into(),
     ]);
     let scope = issuer.issue(
         "terminal user",
@@ -145,6 +147,8 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         None,
         &mut None,
     )?;
+    let checkout = directory.path().join("checkout");
+    std::fs::create_dir(&checkout)?;
     let fs_root = directory.path().join("filesystem");
     let host = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&fs_root)).await?,
@@ -181,7 +185,7 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         "owner":{"authority":authority,"issuer":"command-client","key":vec![9_u8;32],"scope":scope},
         "generation":"commands-test","model_invocation_ledger":directory.path().join("model.jsonl"),
         "session_limits":{"active_tasks":6,"depth":3,"model_steps":7,"total_tasks":12},
-        "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":directory.path(),
+        "tools":{"content_budget":data["publication"]["budget"]},"command_workspace":checkout,
         "command_roots":[{"scope":"user","root":{"volume":volume,"directory":""}}],
         "deterministic_delay_ms":0
     });
@@ -235,11 +239,10 @@ async fn graphcoder_shell_runs_through_file_dispatch_without_a_model()
         3,
         "repeated archive renders: {rendered}"
     );
-    assert_eq!(
-        std::fs::read(directory.path().join("cli-effect.txt"))?,
-        b"hi"
-    );
+    assert_eq!(std::fs::read(checkout.join("cli-effect.txt"))?, b"hi");
     assert!(std::fs::read(directory.path().join("model.jsonl"))?.is_empty());
+    config["command_workspace"] = Value::Null;
+    std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     std::fs::write(input.path(), b"/does-not-exist\n")?;
     let mut unknown = std::process::Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     unknown

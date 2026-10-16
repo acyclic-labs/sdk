@@ -105,6 +105,7 @@ pub struct NativeSession {
     pub(super) stream: Arc<LocalStream>,
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
+    pub(super) owner: Arc<acyclic_harness::LocalHarness>,
     context: ContextPipeline,
     pub(super) model_provider: Arc<crate::provider::Deterministic>,
 }
@@ -116,24 +117,60 @@ impl NativeSession {
         #[cfg(feature = "native-execution")]
         acyclic_fs::initialize_native_mount_services()
             .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
-        let files = FilesystemHost::new(
+        let filesystem =
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root))
                 .await
-                .map_err(storage)?,
-            &config.filesystem_provider,
-            None,
-        )?;
+                .map_err(storage)?;
+        let files = FilesystemHost::new(filesystem.clone(), &config.filesystem_provider, None)?;
         let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default())
                 .await
                 .map_err(storage)?,
         );
-        let (runtime, context) = runtime(&config, stream.clone(), files.clone(), verifier).await?;
+        let (runtime, context, source) =
+            runtime(&config, stream.clone(), files.clone(), verifier.clone()).await?;
         let model_provider = Arc::new(crate::provider::Deterministic::new(
             config.deterministic_delay_ms,
             &config.model_invocation_ledger,
         )?);
+        let volume_identity = serde_json::to_vec(&config.private_volume).map_err(storage)?;
+        let task_files = Arc::new(
+            acyclic_harness::task_volume::TaskVolume::open(
+                stream.clone(),
+                acyclic_stream::StreamPath::new(format!(
+                    "graphcoder-files/{}",
+                    blake3::hash(&volume_identity).to_hex()
+                ))
+                .map_err(storage)?,
+            )
+            .await?,
+        );
+        let mut binding = acyclic_harness::LocalHarnessConfig::new(
+            &config.filesystem_root,
+            (
+                crate::provider::model(config.deterministic_delay_ms),
+                model_provider.clone(),
+            ),
+        )
+        .volume(config.private_volume.clone())
+        .context(context.clone())
+        .limits(config.limits);
+        binding.goal_continuations = None;
+        let owner = Arc::new(
+            acyclic_harness::LocalHarness::bind(
+                binding,
+                runtime,
+                files.clone(),
+                (filesystem, task_files),
+                (&verifier, &config.owner.scope),
+                config.command_workspace.as_deref(),
+            )
+            .await?,
+        );
+        let runtime = owner.task_runtime().clone();
+        source.bind_runtime(&runtime)?;
         Ok(Self {
+            owner,
             config,
             stream,
             files,
@@ -154,7 +191,7 @@ pub(super) async fn runtime(
     stream: Arc<LocalStream>,
     files: Arc<Files>,
     verifier: AuthorityVerifier,
-) -> Result<(Arc<Runtime>, ContextPipeline)> {
+) -> Result<(Runtime, ContextPipeline, Arc<crate::native_tools::Source>)> {
     let source = crate::native_tools::source(config, stream.clone(), files.clone())?;
     let issuer = AuthorityIssuer::new(
         &config.owner.issuer,
@@ -214,36 +251,34 @@ pub(super) async fn runtime(
         .requires("model")?,
     )?;
     let mut machines = MachineRegistry::default();
+    acyclic_harness::LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
     machines.register(mailbox, &mut None)?;
     let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
         .with_run_limits(config.run_limits, &mut None)?;
-    let runtime = Arc::new(
-        Runtime::open(
-            stream,
-            files,
-            &config.private_volume,
-            &verifier,
-            &config.owner.scope,
-            &scope,
-            &tasks,
-            &machines,
-            &toolset,
-            config.session_limits,
-            config.concurrency,
-            MAX_FRAME_BYTES as u64,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            None,
-            &[creation],
-            &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
-            None,
-        )
-        .await?
-        .with_recursive_source(source.clone()),
-    );
-    source.bind_runtime(&runtime)?;
-    Ok((runtime, context))
+    let runtime = Runtime::open(
+        stream,
+        files,
+        &config.private_volume,
+        &verifier,
+        &config.owner.scope,
+        &scope,
+        &tasks,
+        &machines,
+        &toolset,
+        config.session_limits,
+        config.concurrency,
+        MAX_FRAME_BYTES as u64,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        None,
+        &[creation],
+        &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
+        None,
+    )
+    .await?
+    .with_recursive_source(source.clone());
+    Ok((runtime, context, source))
 }
 
 async fn context_reference(

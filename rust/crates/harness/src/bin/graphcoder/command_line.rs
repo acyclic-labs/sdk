@@ -70,26 +70,6 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     specs.extend(sdk);
     let base = serde_json::to_vec(&specs).map_err(invalid)?;
     #[cfg(feature = "filesystem-local")]
-    let owner = if let Backend::Native(native) = &backend {
-        let mut config = acyclic_harness::LocalHarnessConfig::new(
-            native
-                .config
-                .command_workspace
-                .clone()
-                .unwrap_or_else(|| native.config.filesystem_root.clone()),
-            (
-                crate::provider::model(native.config.deterministic_delay_ms),
-                native.model_provider.clone(),
-            ),
-        );
-        if native.config.command_workspace.is_none() {
-            config = config.volume(native.config.private_volume.clone());
-        }
-        Some(acyclic_harness::LocalHarness::open(config).await?)
-    } else {
-        None
-    };
-    #[cfg(feature = "filesystem-local")]
     let mut sources = if let Backend::Native(native) = &backend {
         let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(
             native.files.clone(),
@@ -143,6 +123,13 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     let mut backend = Some(backend);
     let mut input = input_lines()?;
     #[cfg(feature = "filesystem-local")]
+    let mut documents: acyclic_stream::BoxProviderStream<
+        'static,
+        Result<acyclic_harness::client::ViewUpdate>,
+    > = Box::pin(futures::stream::pending());
+    #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+    let mut plans: Option<plans::Plans> = None;
+    #[cfg(feature = "filesystem-local")]
     let mut workers = tokio::task::JoinSet::<Result<String>>::new();
     writeln!(output, "terminal-mode stdin-is-terminal={} interactive={interactive} headless={headless} process-id={}", std::io::stdin().is_terminal(), std::process::id()).map_err(invalid)?;
     writeln!(
@@ -157,6 +144,11 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
     .map_err(invalid)?;
     loop {
         while let Some(request) = client.take_request() {
+            #[cfg(feature = "filesystem-local")]
+            let owner = match backend.as_ref() {
+                Some(Backend::Native(native)) => Some(Arc::clone(&native.owner)),
+                _ => None,
+            };
             if let Some(saved) = client.activity_cursor() {
                 use base64::Engine as _;
                 use prost::Message as _;
@@ -189,7 +181,7 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                     .consume(&request, |operation, target, resolution| {
                         dispatch(
                             #[cfg(feature = "filesystem-local")]
-                            owner.as_ref(),
+                            owner.as_deref(),
                             operation,
                             target,
                             resolution,
@@ -256,6 +248,26 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 if let Some(sources) = &mut sources { sources.refresh(&mut client).await?; }
                 continue;
             }
+            update = futures::StreamExt::next(&mut documents) => {
+                #[cfg(feature = "tui")]
+                {
+                    let result = (|| {
+                        let view = plans.as_mut().ok_or_else(|| Error::Conflict("plan selection missing".into()))?;
+                        if view.update(update.ok_or_else(|| Error::Conflict("plan query ended".into()))??)? {
+                            view.render(&mut output)?;
+                        }
+                        Ok::<_, Error>(())
+                    })();
+                    if let Err(error) = result {
+                        documents = Box::pin(futures::stream::pending());
+                        plans = None;
+                        writeln!(output, "plans: {}", terminal::text(&error.to_string())).map_err(invalid)?;
+                    }
+                }
+                #[cfg(not(feature = "tui"))]
+                let _ = update;
+                continue;
+            }
             outcome = workers.join_next(), if !workers.is_empty() => {
                 let rendered = outcome.ok_or_else(|| Error::Conflict("worker handle missing".into()))?.map_err(invalid)??;
                 write!(output, "{}", terminal::text(&rendered)).map_err(invalid)?;
@@ -314,6 +326,25 @@ pub(super) async fn run(backend: Backend, headless: bool) -> Result<()> {
                 .as_ref()
                 .and_then(|layout| layout.get("open_view"))
                 .and_then(Value::as_str);
+            #[cfg(all(feature = "filesystem-local", feature = "tui"))]
+            if view == Some("plan") {
+                plans = None;
+                documents = Box::pin(futures::stream::pending());
+                let native = backend
+                    .as_ref()
+                    .ok_or_else(|| Error::Conflict("session closed".into()))?
+                    .native()?
+                    .clone();
+                match plans::Plans::open(native).await {
+                    Ok((view, updates)) => {
+                        view.render(&mut output)?;
+                        plans = Some(view);
+                        documents = updates;
+                    }
+                    Err(error) => writeln!(output, "plans: {}", terminal::text(&error.to_string()))
+                        .map_err(invalid)?,
+                }
+            }
             if view == Some("history") {
                 let back = layout
                     .as_ref()

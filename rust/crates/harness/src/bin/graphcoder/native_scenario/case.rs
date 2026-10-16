@@ -218,8 +218,10 @@ pub(super) async fn prepare_case(
             .await
             .map_err(storage)?,
     );
-    let (runtime, _) =
+    let (runtime, _, source) =
         crate::native::runtime(&config, stream.clone(), files.clone(), owner.verifier()?).await?;
+    let runtime = Arc::new(runtime);
+    source.bind_runtime(&runtime)?;
     let definition: Arc<TaskDefinition<Value, TurnOutput>> =
         runtime.harness().task("acyclic.stock_turn@1")?;
     let operation = OperationId::new();

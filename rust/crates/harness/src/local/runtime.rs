@@ -20,8 +20,6 @@ pub(super) struct Configuration<'a> {
 }
 
 pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRuntime>, Scope)> {
-    let direct = Arc::new(super::command_machine::DirectTool::new());
-    let direct_definition = direct.definition()?;
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let definition = stock.definition()?;
@@ -87,10 +85,9 @@ pub(super) async fn open(config: Configuration<'_>) -> Result<(Arc<LocalTaskRunt
     )?);
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    tasks.register(direct_definition)?;
     tasks.register(fork)?;
     let mut machines = MachineRegistry::default();
-    machines.register(direct, &mut None)?;
+    LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
     let runtime = LocalTaskRuntime::open(

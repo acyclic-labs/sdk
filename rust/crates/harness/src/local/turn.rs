@@ -23,7 +23,8 @@ impl LocalHarness {
             None,
         )
     }
-    pub(super) fn commands(&self) -> Result<commands::CommandOwner<'_>> {
+    /// Owner-gated stock commands for this same runtime.
+    pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
         Ok(commands::CommandOwner(self))
     }
     pub(super) async fn submit_to(
