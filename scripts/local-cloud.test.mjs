@@ -9,7 +9,7 @@ import { STOPPED, TOPOLOGIES, phaseRecords, storageBucket, keptRun, dependencyDi
 const topology = {
   ca_file: "/dev/shm/cloud-e2e-x/ca.pem",
   edge: { streams: "10.0.0.20:8446", objects: "10.0.0.10:443", actors: "10.0.0.30:443", fs: "10.0.0.40:8456" },
-  bearers: { streams: "stream-bearer", objects: "object-bearer", actors: "actor-bearer", fs: "fs-bearer" },
+  bearers: { streams: "stream-bearer", objects: "object-bearer", actors: "actor-bearer", "actors-migration": "migration-bearer", fs: "fs-bearer" },
 };
 
 test("endpoints project only the gate's Edge addresses, CA and locally minted bearers", () => {
@@ -27,6 +27,9 @@ test("the full topology also projects Filesystem and Actors, and requires both",
   const full = endpoints(topology, TOPOLOGIES.full.products);
   assert.deepEqual(Object.keys(full), ["version", "streams", "objects", "fs", "actors"]);
   assert.deepEqual(full.fs, { endpoint: "https://10.0.0.40:8456", bearer: "fs-bearer", ca_file: topology.ca_file });
+  assert.equal(full.actors.migration_bearer, "migration-bearer");
+  const { "actors-migration": omitted, ...bearers } = topology.bearers;
+  assert.throws(() => endpoints({ ...topology, bearers }, TOPOLOGIES.full.products), /no actors-migration bearer/);
   const { fs: _, ...edge } = topology.edge;
   assert.throws(() => endpoints({ ...topology, edge }, TOPOLOGIES.full.products), /no fs Edge/);
   // The identity topology does not serve Filesystem, so it never requires it.

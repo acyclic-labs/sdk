@@ -11,6 +11,11 @@ const ACTOR: &str = "e2e-actor";
 const EVENTS: &str = "e2e-root/actor-events";
 // Exact code/configuration admitted by the cloud gate's locally minted bearer.
 const CODE: &str = include_str!("counter.mjs");
+const CODE_V2: &str = include_str!("counter-v2.mjs");
+
+fn digest(code: &str) -> Vec<u8> {
+    Sha256::digest(code.trim_end_matches('\n').as_bytes()).to_vec()
+}
 
 #[derive(Deserialize)]
 struct Remote {
@@ -20,15 +25,22 @@ struct Remote {
 }
 
 #[derive(Deserialize)]
+struct ActorRemote {
+    #[serde(flatten)]
+    remote: Remote,
+    migration_bearer: String,
+}
+
+#[derive(Deserialize)]
 struct Endpoints {
-    actors: Remote,
+    actors: ActorRemote,
     objects: Remote,
     streams: Remote,
 }
 
 fn create() -> wire::CreateActorRequest {
     wire::CreateActorRequest {
-        code_sha256: Sha256::digest(CODE.trim_end_matches('\n').as_bytes()).to_vec(),
+        code_sha256: digest(CODE),
         home_region: "la".into(),
         limits: Some(wire::ActorLimits {
             handler_timeout_millis: 1000,
@@ -44,9 +56,17 @@ fn observation(
     actor: Option<wire::ActorObservation>,
     revision: u64,
 ) -> TestResult<wire::ActorObservation> {
+    observation_with_code(actor, revision, CODE)
+}
+
+fn observation_with_code(
+    actor: Option<wire::ActorObservation>,
+    revision: u64,
+    code: &str,
+) -> TestResult<wire::ActorObservation> {
     let actor = actor.ok_or("response omitted the actor")?;
     if actor.actor_id != ACTOR
-        || actor.code_sha256 != create().code_sha256
+        || actor.code_sha256 != digest(code)
         || actor.home_region != "la"
         || actor.configuration_revision != revision
     {
@@ -56,7 +76,21 @@ fn observation(
 }
 
 fn state(response: &wire::InvokeActorResponse, counter: i32) -> TestResult {
-    let expected = format!("{{\"counter\":{counter},\"version\":1,\"events\":[]}}");
+    state_with_version(response, counter, 1)
+}
+
+fn state_with_version(
+    response: &wire::InvokeActorResponse,
+    counter: i32,
+    version: u8,
+) -> TestResult {
+    let migration = if version == 2 {
+        ",\"migratedFrom\":1"
+    } else {
+        ""
+    };
+    let expected =
+        format!("{{\"counter\":{counter},\"version\":{version},\"events\":[]{migration}}}");
     if response.status != 200 || response.body != expected.as_bytes() {
         return Err(format!("unexpected invocation: {response:?}, expected {expected}").into());
     }
@@ -64,6 +98,15 @@ fn state(response: &wire::InvokeActorResponse, counter: i32) -> TestResult {
 }
 
 async fn invoke(client: &mut grpc::Client, add: Option<i32>, counter: i32) -> TestResult {
+    invoke_version(client, add, counter, 1).await
+}
+
+async fn invoke_version(
+    client: &mut grpc::Client,
+    add: Option<i32>,
+    counter: i32,
+    version: u8,
+) -> TestResult {
     let response = client
         .invoke_actor(wire::InvokeActorRequest {
             actor_id: ACTOR.into(),
@@ -79,7 +122,7 @@ async fn invoke(client: &mut grpc::Client, add: Option<i32>, counter: i32) -> Te
         })
         .await?
         .into_inner();
-    state(&response, counter)
+    state_with_version(&response, counter, version)
 }
 
 #[test]
@@ -115,6 +158,17 @@ proptest::proptest! {
             ..Default::default()
         };
         assert!(state(&response, counter).is_ok());
+        // Retaining the v1 worker must fail the migration oracle even with
+        // the correct counter and an updated configuration revision.
+        assert!(state_with_version(&response, counter, 2).is_err());
+        let migrated = wire::InvokeActorResponse {
+            status: 200,
+            body: format!("{{\"counter\":{counter},\"version\":2,\"events\":[],\"migratedFrom\":1}}").into_bytes(),
+            ..Default::default()
+        };
+        assert!(state_with_version(&migrated, counter, 2).is_ok());
+        assert!(state_with_version(&migrated, counter + 1, 2).is_err());
+        assert!(state(&migrated, counter).is_err());
         assert!(state(&response, counter + 1).is_err());
         response.status = 503;
         assert!(state(&response, counter).is_err());
@@ -145,24 +199,27 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         .await?
         .bucket
         .ok_or("code bucket omitted")?;
-    let code = CODE.trim_end_matches('\n').as_bytes();
-    let digest = Sha256::digest(code);
-    let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    objects
-        .put(
-            objects::PutObjectHeader {
-                bucket: Some(bucket),
-                object_key: format!("sha256/{hash}"),
-                ..Default::default()
-            },
-            acyclic_stream::OwnedBytes::copy_from_slice(code),
-        )
-        .await?;
+    for code in [CODE, CODE_V2] {
+        let hash: String = digest(code)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        objects
+            .put(
+                objects::PutObjectHeader {
+                    bucket: Some(bucket.clone()),
+                    object_key: format!("sha256/{hash}"),
+                    ..Default::default()
+                },
+                acyclic_stream::OwnedBytes::copy_from_slice(code.trim_end_matches('\n').as_bytes()),
+            )
+            .await?;
+    }
 
-    let ca = std::fs::read(&endpoints.actors.ca_file)?;
+    let ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
     let mut actors = grpc::connect(
-        &endpoints.actors.endpoint,
-        &endpoints.actors.bearer,
+        &endpoints.actors.remote.endpoint,
+        &endpoints.actors.remote.bearer,
         Some(&ca),
     )
     .await?;
@@ -270,7 +327,14 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
     assert_eq!(added.subscriptions[0].completed_cursor, start);
     assert_eq!(added.subscriptions[0].recoverable_cursor, start);
     assert_eq!(
-        observation(actors.add_subscription(add).await?.into_inner().actor, 2)?,
+        observation(
+            actors
+                .add_subscription(add.clone())
+                .await?
+                .into_inner()
+                .actor,
+            2
+        )?,
         added
     );
     let resumed = observation(
@@ -302,23 +366,43 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         3,
     )?;
     assert!(removed.subscriptions.is_empty());
-    let updated = observation(
+    let mut readd = add;
+    readd.idempotency_key = "sdk-readd".into();
+    observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
+    actors = grpc::connect(
+        &endpoints.actors.remote.endpoint,
+        &endpoints.actors.migration_bearer,
+        Some(&ca),
+    )
+    .await?;
+    let update = wire::UpdateActorRequest {
+        actor_id: ACTOR.into(),
+        code_sha256: digest(CODE_V2),
+        limits: create().limits,
+        bindings: vec![],
+        expected_configuration_revision: 4,
+        idempotency_key: "sdk-migrate-v2".into(),
+    };
+    let updated = observation_with_code(
         actors
-            .update_actor(wire::UpdateActorRequest {
-                actor_id: ACTOR.into(),
-                code_sha256: create().code_sha256,
-                limits: create().limits,
-                bindings: vec![],
-                expected_configuration_revision: 3,
-                idempotency_key: "sdk-update".into(),
-            })
+            .update_actor(update.clone())
             .await?
             .into_inner()
             .actor,
-        4,
+        5,
+        CODE_V2,
     )?;
-    assert!(updated.subscriptions.is_empty());
-    invoke(&mut actors, None, 5).await?;
+    assert_eq!(updated.subscriptions.len(), 1);
+    assert_eq!(
+        observation_with_code(
+            actors.update_actor(update).await?.into_inner().actor,
+            5,
+            CODE_V2
+        )?,
+        updated
+    );
+    invoke_version(&mut actors, None, 5, 2).await?;
+    invoke_version(&mut actors, Some(3), 8, 2).await?;
     let deleted = wire::DeleteActorRequest {
         actor_id: ACTOR.into(),
         idempotency_key: "sdk-delete".into(),
