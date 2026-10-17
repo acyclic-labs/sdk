@@ -90,7 +90,23 @@ pub(crate) fn deduplicate_reads(
                     _ => None,
                 });
             let Some(call) = call else { continue };
-            if !call.arguments.get("file").is_some_and(Value::is_object) {
+            let Some(arguments) = call.arguments.as_object() else {
+                continue;
+            };
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "file" | "range"))
+            {
+                continue;
+            }
+            let Some(file) = arguments.get("file").and_then(Value::as_object) else {
+                continue;
+            };
+            if file.len() != 5
+                || ["volume", "path", "version", "descriptor", "display_name"]
+                    .iter()
+                    .any(|key| !file.contains_key(*key))
+            {
                 continue;
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
