@@ -209,17 +209,33 @@ impl LocalHarness {
             payload,
         };
         let receive_operation = receive_operation(operation);
-        let payload = publisher
-            .stage_once(
-                receive_operation,
-                &format!("inputs/{operation}.receive.json"),
-                b"{\"after\":0}",
-                "application/json",
-                "mailbox receive",
-                None,
-            )?
-            .await?
-            .0;
+        // Older admissions retained one identical payload per turn. Keep their
+        // exact reference on retry; new commands share one immutable journal file.
+        let (retained, _) = publisher
+            .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
+            .await?;
+        let payload = match retained {
+            Some(payload) => payload,
+            None => {
+                let mut hash = blake3::Hasher::new();
+                hash.update(b"acyclic.local.mail-receive-input/v1\0");
+                hash.update(publisher.volume().storage_name(&mut None)?.as_bytes());
+                let identity = hash.finalize();
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&identity.as_bytes()[..16]);
+                publisher
+                    .stage_once(
+                        OperationId::from_bytes(bytes),
+                        "inputs/mailbox-receive.json",
+                        b"{\"after\":0}",
+                        "application/json",
+                        "mailbox receive",
+                        None,
+                    )?
+                    .await?
+                    .0
+            }
+        };
         let receive = WorkflowCommand {
             operation_id: receive_operation,
             kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
