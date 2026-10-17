@@ -191,7 +191,11 @@ pub(super) async fn run(
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     let stored_manifest = read(&owner_store, &manifest, MAXIMUM).await?;
-    check("the serialized manifest", stored_manifest.as_ref(), &manifest_bytes)?;
+    check(
+        "the serialized manifest",
+        stored_manifest.as_ref(),
+        &manifest_bytes,
+    )?;
     if load_manifest(owner_store.as_ref(), &manifest, 1, None)
         .await?
         .0
