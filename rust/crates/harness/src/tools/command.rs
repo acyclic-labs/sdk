@@ -1,13 +1,19 @@
 use crate::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, all(feature = "filesystem-local", feature = "native-execution"))
+))]
 pub(crate) struct FsCommand {
     pub(crate) arguments: Vec<String>,
     pub(crate) volume: Option<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, all(feature = "filesystem-local", feature = "native-execution"))
+))]
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
         [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
@@ -15,7 +21,10 @@ pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, all(feature = "filesystem-local", feature = "native-execution"))
+))]
 pub(crate) fn parse_fs_command(command: &str) -> Result<FsCommand> {
     let mut arguments = parse_command(command)?;
     if arguments.first().is_some_and(|argument| argument == "git") {

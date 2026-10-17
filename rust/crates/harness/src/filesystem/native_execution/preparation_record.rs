@@ -61,7 +61,6 @@ impl serde::Serialize for super::journal_encoding::Canonical<'_, NativeVolumeMap
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::Serialize;
         let mapping = self.0;
         let volume = &mapping.volume;
         let provider = volume.provider();

@@ -102,7 +102,7 @@ impl LocalWorkspace {
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native-execution"))]
     pub(super) async fn current(
         &self,
     ) -> acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend> {

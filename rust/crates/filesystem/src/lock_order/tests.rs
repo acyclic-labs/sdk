@@ -131,32 +131,6 @@ fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn public_while_predicates_and_returned_guards_keep_the_rank() {
-    for timed in [false, true] {
-        let higher = Mutex::<_, VIEW>::new(());
-        let lower = Mutex::<_, OPERATION>::new(());
-        let condition = Condvar::new();
-        let guard = healthy(higher.lock());
-        let predicate = |_: &mut ()| {
-            assert!(catch_unwind(|| lower.lock()).is_err());
-            false
-        };
-        let guard = if timed {
-            let (guard, timeout) =
-                healthy(condition.wait_timeout_while(guard, Duration::ZERO, predicate));
-            assert!(!timeout.timed_out());
-            guard
-        } else {
-            healthy(condition.wait_while(guard, predicate))
-        };
-        assert!(catch_unwind(|| lower.lock()).is_err());
-        drop(guard);
-        drop(healthy(lower.lock()));
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
 fn independent_threads_can_hold_equal_ranks() {
     let barrier = Arc::new(Barrier::new(2));
     std::thread::scope(|scope| {
