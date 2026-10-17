@@ -6,7 +6,13 @@ pub(crate) use tokio::sync::Mutex;
 
 #[path = "sync/primitives.rs"]
 mod primitives;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(
+    test,
+    all(
+        not(target_arch = "wasm32"),
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    )
+))]
 pub(crate) use primitives::atomic;
 pub(crate) use primitives::{Arc, Mutex as SyncMutex};
 

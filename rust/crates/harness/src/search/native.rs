@@ -70,6 +70,7 @@ pub(crate) fn response_bytes(response: &SearchResponse) -> Result<u64> {
         })
 }
 
+#[cfg(feature = "test-support")]
 pub(crate) fn copy_response(
     response: &SearchResponse,
     work: &NativeMaterializationWork,

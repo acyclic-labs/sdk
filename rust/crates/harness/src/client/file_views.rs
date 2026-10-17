@@ -111,6 +111,7 @@ impl FileViews {
     }
 
     /// Last applied query cut.
+    #[cfg(feature = "test-support")]
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
     }
