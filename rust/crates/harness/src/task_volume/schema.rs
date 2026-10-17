@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 mod tests;
 
 /// Task namespace and packed-segment format revision.
-pub const SCHEMA: u32 = 5;
+pub const SCHEMA: u32 = 4;
 
 #[path = "component.rs"]
 mod component;

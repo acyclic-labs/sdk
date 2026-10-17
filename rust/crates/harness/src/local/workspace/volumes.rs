@@ -3,6 +3,9 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+#[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
+mod recovery_tests;
+
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
     let relative = Path::new(SCRATCH_PATH);
