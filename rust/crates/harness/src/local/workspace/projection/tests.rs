@@ -236,5 +236,25 @@ fn lock_order(broken: bool) {
 
 #[test]
 fn checkout_then_projection_order_cannot_deadlock() {
-    checked(lock_order, "deadlock");
+    const CONTROL: &str = "ACYCLIC_PROJECTION_LOCK_ORDER_CONTROL";
+    if std::env::var_os(CONTROL).is_some() {
+        loom::model(|| lock_order(true));
+        panic!("inverted lock order was not detected");
+    }
+    loom::model(|| lock_order(false));
+    // Loom's intentional deadlock can also panic while unwinding owned guards.
+    // Isolate that abort, retaining both the failing status and exact diagnostic.
+    let name = concat!(
+        module_path!(),
+        "::checkout_then_projection_order_cannot_deadlock"
+    );
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name.split_once("::").unwrap().1, "--exact", "--nocapture"])
+        .env(CONTROL, "1")
+        .env("RUST_BACKTRACE", "0")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "inverted lock order passed");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
