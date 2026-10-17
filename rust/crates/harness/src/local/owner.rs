@@ -6,13 +6,22 @@ use std::{
 };
 
 pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
+    let root = dirs::data_local_dir()
+        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
+    state_directory_in(&root, project)
+}
+
+/// Per-user state is keyed by the checkout's path and its directory identity:
+/// a checkout deleted and cloned again at the same path is a new workspace and
+/// starts with new state instead of being refused the old one.
+pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {
         LocalProject::Workspace(path) => (path, None),
         LocalProject::Volume { directory, volume } => (directory, Some(volume)),
     };
     let canonical = fs::canonicalize(path).map_err(storage)?;
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.state/v1\0");
+    hash.update(b"acyclic.local.state/v2\0");
     hash.update(if volume.is_some() {
         b"volume\0"
     } else {
@@ -21,11 +30,14 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
     hash.update(path_bytes);
-    if let Some(volume) = volume {
-        hash.update(volume.storage_name(&mut None)?.as_bytes());
+    match volume {
+        Some(volume) => {
+            hash.update(volume.storage_name(&mut None)?.as_bytes());
+        }
+        None => {
+            hash.update(&workspace_identity(&canonical)?);
+        }
     }
-    let root = dirs::data_local_dir()
-        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
     let directory = root
         .join("acyclic/harness")
         .join(hash.finalize().to_hex().as_str());
@@ -35,6 +47,16 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
         ));
     }
     Ok(directory)
+}
+
+fn workspace_identity(workspace: &Path) -> Result<[u8; 16]> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    Ok(work.root_identity(workspace)?.to_bytes())
 }
 
 pub(super) fn directory(path: &Path) -> Result<PathBuf> {
@@ -65,15 +87,7 @@ impl Owner {
         let path = directory.join("owner.json");
         let workspace_identity = workspace
             .as_ref()
-            .map(|workspace| {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                Ok::<_, Error>(work.root_identity(workspace)?.to_bytes())
-            })
+            .map(|workspace| workspace_identity(workspace))
             .transpose()?;
         let owner = match Self::load(&path) {
             Ok(owner) => owner,
