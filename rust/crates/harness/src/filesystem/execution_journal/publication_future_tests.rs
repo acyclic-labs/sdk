@@ -430,7 +430,22 @@ fn journal_accounting_admits_the_original_frames() {
                         !cancelled && maximum >= boundary,
                         "method {mode}, native {native}, limit {maximum}, boundary {boundary}"
                     );
-                    assert_eq!(held.2, 0, "factory retained custody after drop");
+                    // Native stage constructs the capability label before
+                    // admitting its frame; that label stays owned by the IO.
+                    let grant_bytes = if native && mode == 4 && !cancelled {
+                        journal
+                            .volume
+                            .capability(VolumeOperation::Write, &mut None)
+                            .unwrap()
+                            .len() as u64
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        held.2, grant_bytes,
+                        "factory retained frame custody after drop"
+                    );
+                    assert_eq!(held.4, ledger + grant_bytes, "native frame custody leaked");
                     assert_eq!(
                         held.5, ledger,
                         "only the original ledger may survive IO drop"
