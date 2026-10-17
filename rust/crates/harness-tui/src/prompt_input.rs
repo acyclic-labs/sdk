@@ -599,7 +599,9 @@ impl PromptInput {
                     self.editor.set_cursor(self.editor.cursor(), false);
                 }
                 other => {
-                    self.editor.break_group();
+                    if other != Action::App(crate::AppAction::Find) {
+                        self.editor.break_group();
+                    }
                     effects.push(InputEffect::Host(other));
                 }
             },

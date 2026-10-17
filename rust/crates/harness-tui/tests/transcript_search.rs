@@ -157,3 +157,21 @@ fn highlights_allocate_exactly_one_owned_span_per_uniform_row() {
 fn per_grapheme_spans_negative_control() {
     allocation_model::<true>();
 }
+
+#[test]
+fn physical_find_shortcut_preserves_the_open_undo_group() {
+    use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut input = PromptInput::default();
+    input.committed_text("draft", 0);
+    let before = format!("{:?}", input.editor);
+    let effects = input.key(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+        1,
+        80,
+    );
+    assert_eq!(effects.len(), 1);
+    assert_eq!(format!("{:?}", input.editor), before);
+    input.set_transcript_search(Some("needle"));
+    input.set_transcript_search(None);
+    assert_eq!(format!("{:?}", input.editor), before);
+}
