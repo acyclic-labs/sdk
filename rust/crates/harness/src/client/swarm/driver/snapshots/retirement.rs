@@ -25,6 +25,7 @@ fn check(count: usize, rebuild: bool) -> bool {
         snapshots.start(path(id), Pending(dropped.clone())).unwrap();
     }
     assert!(snapshots.next().now_or_never().is_none());
+    let retiring = path(count / 2);
     let started = Instant::now();
     let allocations = acyclic_test_support::measure(|| {
         if rebuild {
@@ -32,17 +33,17 @@ fn check(count: usize, rebuild: bool) -> bool {
             // source. Requeueing visits and reallocates every surviving node.
             snapshots.futures = std::mem::take(&mut snapshots.futures).into_iter().collect();
         }
-        snapshots.retire(&path(count / 2)).unwrap();
+        snapshots.retire(&retiring).unwrap();
     });
     let elapsed = started.elapsed();
     let reclaimed = dropped.get() == 1 && snapshots.active.len() == count - 1;
     println!(
         "snapshot retirement n={count} rebuild={rebuild} elapsed={elapsed:?} allocations={allocations:?}"
     );
-    // One path-format allocation is independent of N. The source's owner and
-    // future are released immediately; draining its wake-queued shell cannot
-    // poll or replace unrelated sources.
-    let fixed = allocations.count_total <= 2;
+    // Indexed removal allocates nothing. The source's owner and future are
+    // released immediately; draining its wake-queued shell cannot poll or
+    // replace unrelated sources.
+    let fixed = allocations.count_total == 0;
     assert!(snapshots.next().now_or_never().is_none());
     assert_eq!(snapshots.futures.len(), count - 1);
     reclaimed && fixed

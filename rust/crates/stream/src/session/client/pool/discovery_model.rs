@@ -2,6 +2,7 @@
 use super::fixture::fixture;
 use super::*;
 
+/// Explores the transport drain racing snapshot versus discovery-paced subscriptions.
 pub fn verify_discovery_admission(bypass_discovery: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -11,10 +12,17 @@ pub fn verify_discovery_admission(bypass_discovery: bool) {
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
         let (mut pool, _) = fixture(channel.clone());
-        pool.routes.clear();
+        for (id, route) in &mut pool.routes {
+            route.node = "good".into();
+            route.kind = Kind::Follow(wire::SessionFollow {
+                path: format!("swarm/a{id}/status"),
+                delivery: wire::SessionDelivery::Latest as i32,
+                ..Default::default()
+            });
+        }
         // Smallest queue/interleaving that distinguishes snapshot flooding from
         // discovery-paced admission. These are the production Outbound locks,
-        // pool command dispatcher and subscription/error paths, not a counter
+        // pool subscription dispatcher and error paths, not a counter
         // standing in for a channel.
         let outbound = Arc::new(Outbound::new(1, crate::MAX_COMMAND_BYTES));
         pool.links.get_mut("good").unwrap().sender = Arc::clone(&outbound);
@@ -32,31 +40,12 @@ pub fn verify_discovery_admission(bypass_discovery: bool) {
             true
         });
         let mut admitted = true;
-        let mut receivers = Vec::new();
         for child in 0..2 {
             if !bypass_discovery {
                 assert_eq!(loom::future::block_on(children.next()).unwrap(), child);
             }
-            let id = 3 + child * 2;
-            let (records, receiver) = mpsc::channel(2);
-            let (ready, _) = oneshot::channel();
-            receivers.push(receiver);
-            pool.command(Command::Open {
-                id,
-                attempt_epoch: 0,
-                acknowledge: false,
-                raw: true,
-                kind: Kind::Follow(wire::SessionFollow {
-                    path: format!("swarm/a{child}/status"),
-                    delivery: wire::SessionDelivery::Latest as i32,
-                    ..Default::default()
-                }),
-                progress: Arc::new(Progress::new(0)),
-                records,
-                ready,
-                observation: crate::obs::OperationSpan::new(tracing::Span::none()),
-            })
-            .unwrap();
+            let id = 1 + child * 2;
+            pool.subscribe(id).unwrap();
             if !pool.routes.contains_key(&id) {
                 admitted = false;
                 outbound.close().unwrap();
