@@ -575,6 +575,22 @@ pub(crate) fn turn_repair_violation(
     if kept(input) != kept(output) {
         return Some("lost part");
     }
+    // A canonical text run has no blank fragment beside another text part.
+    let blank = |part: &serde_json::Value| part["text"].as_str().map(|text| text.trim().is_empty());
+    if output
+        .iter()
+        .filter_map(|message| message[field].as_array())
+        .any(|parts| {
+            parts
+                .windows(2)
+                .any(|pair| match (blank(&pair[0]), blank(&pair[1])) {
+                    (Some(left), Some(right)) => left || right,
+                    _ => false,
+                })
+        })
+    {
+        return Some("fragmented text");
+    }
     if adapter == Adapter::Gemini && output.windows(2).any(|pair| unordered(&pair[0], &pair[1])) {
         return Some("unordered responses");
     }

@@ -192,6 +192,40 @@ mod turns {
             turn_repair_violation(Adapter::Gemini, &batch, &broken),
             Some("unordered responses")
         );
+        // Review counterexamples (seed 856): removing an empty turn joins its
+        // neighbours, and ordering an unanswered but complete batch moves a
+        // result ahead of a blank fragment;
+        // without the final normalization a second pass changes either.
+        let call = json!({"functionCall":{"name":"f","id":"c","args":{}}});
+        let result = |id: &str| json!({"functionResponse":{"name":"f","id":id,"response":{}}});
+        let joined = vec![
+            json!({"role":"model","parts":[{"type":"text","text":" "}]}),
+            json!({"role":"user","parts":[]}),
+            json!({"role":"model","parts":[{"type":"text","text":"t0"}]}),
+        ];
+        let moved = vec![
+            json!({"role":"user","parts":[{"text":"q"}]}),
+            json!({"role":"model","parts":[call]}),
+            json!({"role":"user","parts":[{"type":"text","text":" "}, result("c"), {"type":"text","text":"t0"}, result("d")]}),
+        ];
+        let fragmented = Rules {
+            normalize: |_, _| {},
+            ..RULES
+        };
+        for (messages, text) in [(joined, 1), (moved, 2)] {
+            let healthy = replay_turns_with(Adapter::Gemini, &messages, RULES).unwrap();
+            assert_eq!(
+                turn_repair_violation(Adapter::Gemini, &messages, &healthy),
+                None
+            );
+            let parts = healthy[text]["parts"].as_array().unwrap();
+            assert!(parts.iter().any(|part| part["text"] == " t0"));
+            let broken = replay_turns_with(Adapter::Gemini, &messages, fragmented).unwrap();
+            assert_eq!(
+                turn_repair_violation(Adapter::Gemini, &messages, &broken),
+                Some("fragmented text")
+            );
+        }
     }
 
     #[test]
@@ -203,6 +237,9 @@ mod turns {
             include_bytes!("../../../fuzz/corpus/turns/gemini-reversed-batch").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-missing-id").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-call-and-response").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-joined-blank-text").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/anthropic-joined-blank-text").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-result-moved-past-blank").as_slice(),
         ] {
             assert_turns(bytes);
         }

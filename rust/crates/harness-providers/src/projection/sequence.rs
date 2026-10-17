@@ -72,10 +72,12 @@ pub(super) fn push_with_successor<'a>(
 pub(super) struct Rules {
     pub boundary: fn(Option<&str>) -> bool,
     pub order: fn(&mut [Message<'_>]),
+    pub normalize: fn(Adapter, &mut Vec<Item<'_>>),
 }
 pub(super) const RULES: Rules = Rules {
     boundary: sequence::user_boundary,
     order: super::gemini_results::order,
+    normalize: super::text::normalize,
 };
 
 pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
@@ -122,6 +124,17 @@ pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rul
             }
             if adapter == Adapter::Gemini {
                 (rules.order)(messages);
+            }
+            // Joining turns around a removed empty one, or moving results
+            // ahead of text, can leave a blank fragment beside text: normalize
+            // the final runs once so a single pass is the fixed point. Both
+            // only join or permute non-empty contents, so none empties here.
+            for message in messages.iter_mut() {
+                if let Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } =
+                    message
+                {
+                    (rules.normalize)(adapter, content);
+                }
             }
             if !(rules.boundary)(messages.last().map(role)) {
                 messages.push(continuation(adapter));
