@@ -15,6 +15,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "client-mention-attachments"
+path = "tests/client_mention_attachments.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "tui-config"
 path = "tests/tui_config.rs"
 required-features = ["tui"]
