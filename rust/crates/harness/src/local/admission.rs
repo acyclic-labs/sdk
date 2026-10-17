@@ -35,7 +35,7 @@ fn can_admit(current: Option<OperationId>, expected: Option<OperationId>, termin
 }
 
 impl LocalHarness {
-    fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
+    pub(super) fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
         ContentGrant::verify_directory_read(
             &self.verifier,
             &self.signed,

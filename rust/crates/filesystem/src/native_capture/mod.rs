@@ -35,6 +35,8 @@ use paths::*;
 mod names;
 use names::*;
 mod host_walk;
+#[cfg(all(test, feature = "memory"))]
+mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
@@ -58,6 +60,8 @@ mod empty_stage_tests;
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
+#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+mod owner_allocation_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod reuse_properties;
 #[cfg(all(test, unix, feature = "native-mount"))]

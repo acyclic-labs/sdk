@@ -33,6 +33,8 @@ pub use manifest::ContextManifest;
 
 mod checkpoint;
 pub use checkpoint::*;
+pub(crate) mod summary_source;
+pub use summary_source::*;
 mod durable;
 pub use durable::*;
 mod validation;

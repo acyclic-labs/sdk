@@ -1,4 +1,4 @@
-use super::goals::{change, cut, snapshot};
+use super::goals::{change, cut, new_views, snapshot};
 use acyclic_harness::{
     client::ClientViews,
     task_volume::{Change, FileKey, FileQuerySource, FileValue, Query},
@@ -45,7 +45,7 @@ async fn request_head_follows_creation_replacement_removal_and_recreation()
         assert_eq!(
             view.files()
                 .get(&FileKey::RequestHead)
-                .map(|file| file.bytes.as_ref()),
+                .map(|file| file.segments[0].as_ref()),
             value.as_deref()
         );
     }
@@ -70,7 +70,7 @@ fn head(count: u32) -> Vec<u8> {
 }
 
 fn initial() -> ClientViews {
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     let goal = Query::File(FileKey::Goal);
     let request = Query::File(FileKey::RequestHead);
     let goal_cut = cut(&goal, [1; 32], 1);

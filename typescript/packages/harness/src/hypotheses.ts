@@ -1,11 +1,11 @@
-import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmHypothesisClient } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureHarnessWasm } from "./wasm-runtime.js";
 import { SnapshotStore, type ClientSnapshot } from "./client-snapshot.js";
 
 export type BranchId = `${string}:${string}`;
 export type PredictionOutcome = "Pending" | "Confirmed" | "Replaced" | "Invalidated" | "Removed";
 export type OperationOutcome = "Unknown" | "Admitted" | "Indeterminate" | "Completed" | "Rejected" | "Cancelled";
-export interface ClientViewLimits {
+export interface HypothesisLimits {
   readonly records: number;
   readonly branches: number;
   readonly edges: number;
@@ -73,8 +73,8 @@ function tick(value: bigint): void {
 }
 
 /** Rust-backed hypotheses; initialize shared WASM before effect-free construction. */
-export class ClientViews<Value, Assumption, Evidence> {
-  readonly #kernel: WasmClientViews;
+export class HypothesisClient<Value, Assumption, Evidence> {
+  readonly #kernel: WasmHypothesisClient;
   readonly #selections = new Set<Selection<Value>>();
   readonly #maximumSelections: number;
   #disposed = false;
@@ -82,37 +82,16 @@ export class ClientViews<Value, Assumption, Evidence> {
   static async initialize(): Promise<void> { await ensureHarnessWasm(); }
 
   constructor(domain: ClientDomain<Value, Assumption, Evidence>, namespace: string, sequence: bigint,
-    limits: ClientViewLimits) {
+    limits: HypothesisLimits) {
     tick(sequence);
     const budget = Object.freeze({ ...limits });
-    this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
+    this.#kernel = new WasmHypothesisClient(domain.identity, namespace, sequence, budget,
       domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain),
       domain.restore?.bind(domain));
     this.#maximumSelections = budget.records + budget.branches;
   }
 
   #live(): void { if (this.#disposed) throw new Error("client views are disposed"); }
-
-  /** Applies the existing bounded file-query snapshot through Rust. */
-  querySnapshot(query: unknown, snapshot: unknown, maximumFiles: number, maximumBytes: number): void {
-    this.#live();
-    this.#kernel.querySnapshot(query, snapshot, maximumFiles, maximumBytes);
-  }
-
-  /** Folds one pushed publication; replay follows the native cursor rules. */
-  queryChange(change: unknown): boolean {
-    this.#live();
-    return this.#kernel.queryChange(change);
-  }
-
-  /** Associates the two existing volume-scoped source identities. */
-  bindGoalSources(goal: unknown, request: unknown): void {
-    this.#live();
-    this.#kernel.bindGoalSources(goal, request);
-  }
-
-  /** Reads the shared rendering, including goal state and both source cursors. */
-  views(): unknown { this.#live(); return this.#kernel.views(); }
 
   begin(request: ClientPrediction<Value, Assumption>): BranchId {
     this.#live();

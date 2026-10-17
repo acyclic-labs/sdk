@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf 'after\\n' >> plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"files":{"plans/a.md":"before\nafter\n"}}}

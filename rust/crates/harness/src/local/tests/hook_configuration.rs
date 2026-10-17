@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    context::ContextManifest,
+    context::{ContextManifest, ContextPipeline},
     conversation::{ContentResidencyVerifier, FileRef, Limits},
     hooks::{HookFailure, HookRule, HookRun, Hooks},
     native_settings::SettingsConfig,
@@ -22,12 +22,20 @@ async fn pinned(
         .await?;
     let command: crate::filesystem::ModelTaskCommand =
         serde_json::from_slice(&bytes).map_err(super::super::storage)?;
-    let bytes = reader
-        .read(&command.context_manifest, harness.limits.file_bytes, None)?
-        .await?;
-    let manifest = ContextManifest::decode(&bytes, harness.limits)?;
-    assert_eq!(manifest.sources.len(), 1);
-    let file = manifest.sources.into_iter().next().unwrap();
+    let (_, stage) = ContextManifest::bind(
+        command.context_manifest,
+        reader.as_ref(),
+        harness.tools().clone(),
+        harness.limits,
+    )
+    .await?;
+    let pipeline = ContextPipeline::default().with(stage);
+    let mut sources = pipeline.configuration_sources();
+    let file = sources
+        .next()
+        .expect("bound hook configuration missing")
+        .clone();
+    assert!(sources.next().is_none());
     assert_eq!(file.volume(), harness.journal_volume());
     assert!(file.path().starts_with("inputs/config/hooks/"));
     assert_eq!(file.descriptor().media_type(), Hooks::MEDIA_TYPE);

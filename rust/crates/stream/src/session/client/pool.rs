@@ -9,6 +9,9 @@ mod ordering;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
 
+#[cfg(acyclic_stream_loom)]
+pub(super) mod discovery_model;
+
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {

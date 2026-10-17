@@ -1,13 +1,13 @@
 //! Snapshot anchors and standalone durability updates in the production driver.
-use super::path;
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error,
-    client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
+    client::{SwarmChange, SwarmClientLimits},
     task_volume::{FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{MemoryStream, StreamProvider, wire, wire_codec::session::preceding_follow};
-use futures::{StreamExt as _, channel::mpsc};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use acyclic_stream::{MemoryStream, StreamProvider, wire};
+use futures::StreamExt as _;
+use std::{cell::RefCell, sync::Arc};
 
 #[path = "support/client_resume.rs"]
 mod resume;
@@ -62,6 +62,9 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
     futures::executor::block_on(async {
         let original = Arc::new(MemoryStream::default());
         let replacement = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(replacement.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let config = TaskVolume::open(original.clone(), path("config/files"))
             .await
             .unwrap();
@@ -77,12 +80,14 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         let recovered = TaskVolume::open(replacement.clone(), path("swarm/a/files"))
             .await
             .unwrap();
+        status::status(&replacement, "swarm/a", false).await;
+        status::member(&parent, "a").await;
         put(&old, ".tasks/t/status.json", b"old").await;
         put(&recovered, ".tasks/t/status.json", b"replaced").await;
         let cut = old.heads(&Query::Root, None, 2).await.unwrap().cursor;
         assert_eq!(
             recovered
-                .snapshot(&Query::Root, 2)
+                .heads(&Query::Root, None, 2)
                 .await
                 .unwrap()
                 .cursor
@@ -90,7 +95,7 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
             cut.position
         );
         put(&recovered, "GOAL.md", b"new history tail").await;
-        // Negative control: a position-only follow silently returns that tail.
+        // A deliberately unchecked follow accepts the replacement suffix.
         let mut unchecked = replacement
             .follow(path("swarm/a/files"), cut.position)
             .await
@@ -99,60 +104,47 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
             unchecked.next().await.unwrap().unwrap().sequence,
             cut.position
         );
-        let admitted = Rc::new(RefCell::new(0));
-        let sink = Box::pin(futures::sink::unfold(
-            (replacement, admitted.clone()),
-            |(provider, admitted), update: wire::SessionInterest| async move {
-                for subscription in update.upsert {
-                    if let Some(wire::session_subscription::Kind::Follow(follow)) =
-                        subscription.kind
-                    {
-                        if follow.delivery == wire::SessionDelivery::All as i32 {
-                            *admitted.borrow_mut() += 1;
-                            let resume = subscription.resume.as_ref().unwrap();
-                            let result = provider
-                                .follow_checked(
-                                    path(&follow.path),
-                                    resume.next,
-                                    preceding_follow(&follow, resume)
-                                        .unwrap()
-                                        .expect("snapshot anchor"),
-                                )
-                                .await;
-                            assert!(matches!(
-                                result,
-                                Err(acyclic_stream::StreamError::PrefixNotRetained)
-                            ));
-                            return Err(Error::Storage("history replaced; reset required".into()));
-                        }
-                    }
-                }
-                Ok((provider, admitted))
-            },
-        ));
+        let (session, mut runner, mut observed) =
+            runtime::open(replacement, Arc::new(|s| s), Arc::new(|s| s));
         let snapshots = RefCell::new(0);
-        let result = SwarmClient::new(path("swarm"), limits())
-            .unwrap()
-            .follow(
-                &MemoryStream::default(),
-                &config,
-                sink,
-                futures::stream::pending(),
-                |_, maximum| old.heads(&Query::Root, None, maximum),
-                |update| {
-                    if let SwarmUpdate::Snapshot { snapshot, .. } = update {
-                        assert_eq!(snapshot.cursor, cut);
+        let client = super::client(limits()).unwrap();
+        let views = client.views();
+        let mut consumer = Box::pin(client.follow(
+            &config,
+            &parent,
+            &session,
+            |_, maximum| old.heads(&Query::Root, None, maximum),
+            async |change| {
+                match change {
+                    SwarmChange::Snapshot { cursor, .. } => {
+                        assert_eq!(cursor, cut);
                         *snapshots.borrow_mut() += 1;
                     }
-                    futures::future::ready(Ok(()))
-                },
-            )
-            .await;
-        assert!(
-            matches!(result, Err(Error::Storage(message)) if message.contains("history replaced"))
-        );
+                    SwarmChange::Data {
+                        overview: false, ..
+                    } => panic!("replacement tail escaped its anchor"),
+                    _ => {}
+                }
+                Ok(())
+            },
+        ));
+        let result = runner.until_idle(consumer.as_mut()).await;
+        assert!(matches!(result, Some(Err(Error::Storage(_)))), "{result:?}");
         assert_eq!(*snapshots.borrow(), 1);
-        assert_eq!(*admitted.borrow(), 1);
+        assert_eq!(
+            views
+                .read(|v| v.cursor(&path("swarm/a")).unwrap().clone())
+                .unwrap(),
+            cut
+        );
+        let content: Vec<_> = std::iter::from_fn(|| observed.try_recv().ok()).filter_map(|frame| match frame.body {
+            Some(wire::session_frame::Body::Interest(update)) => Some(update.upsert), _ => None,
+        }).flatten().filter(|sub| matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.path == "swarm/a/files" && f.delivery == wire::SessionDelivery::All as i32)).collect();
+        assert_eq!(content.len(), 1);
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &content[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(follow.preceding_commit_id.as_ref(), cut.commit);
     });
 }
 
@@ -160,6 +152,9 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
 fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
     futures::executor::block_on(async {
         let provider = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let config = TaskVolume::open(provider.clone(), path("config/files"))
             .await
             .unwrap();
@@ -172,64 +167,87 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
         let agent = TaskVolume::open(provider.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        let (frames, incoming) = mpsc::unbounded();
-        let sink = Box::pin(futures::sink::unfold(
-            frames,
-            |frames, update: wire::SessionInterest| async move {
-                for subscription in update.upsert {
-                    if let Some(wire::session_subscription::Kind::Follow(_)) = subscription.kind {
-                        frames
-                            .unbounded_send(Ok(wire::SessionFrame {
-                                channel_id: subscription.channel.unwrap().channel_id,
-                                generation: 1,
-                                body: Some(wire::session_frame::Body::Watermark(
-                                    wire::SessionWatermark {
-                                        accepted: 9,
-                                        durable: 9,
-                                    },
-                                )),
-                            }))
-                            .unwrap();
-                    }
+        put(&agent, "GOAL.md", b"before").await;
+        status::status(&provider, "swarm/a", false).await;
+        status::member(&parent, "a").await;
+        let responses: runtime::ResponseMap = Arc::new(|source| {
+            Box::pin(source.flat_map(|item| {
+            let watermark = match &item {
+                Ok(frame) if matches!(&frame.body, Some(wire::session_frame::Body::Data(data)) if matches!(&data.item,
+                    Some(wire::session_data::Item::LatestValue(_) | wire::session_data::Item::Record(_)))) => {
+                    Some(Ok(wire::SessionFrame { body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: 9, durable: 9 })), ..frame.clone() }))
                 }
-                Ok::<_, Error>(frames)
+                _ => None,
+            };
+            futures::stream::iter(std::iter::once(item).chain(watermark))
+        }))
+        });
+        let (session, mut runner, _) = runtime::open(provider, Arc::new(|s| s), responses);
+        let seen = RefCell::new(Vec::new());
+        let data = RefCell::new(std::collections::BTreeSet::new());
+        let client = super::client(limits()).unwrap();
+        let views = client.views();
+        let mut consumer = Box::pin(client.follow(
+            &config,
+            &parent,
+            &session,
+            |_, maximum| {
+                let agent = &agent;
+                async move {
+                    let snapshot = agent.heads(&Query::Root, None, maximum).await?;
+                    put(agent, "GOAL.md", b"after").await;
+                    Ok(snapshot)
+                }
+            },
+            async |change| {
+                match change {
+                    SwarmChange::Watermark {
+                        agent,
+                        overview,
+                        watermark,
+                    } => {
+                        assert_eq!(agent, path("swarm/a"));
+                        assert_eq!((watermark.accepted, watermark.durable), (9, 9));
+                        assert!(
+                            data.borrow().contains(&overview),
+                            "watermark preceded the last record"
+                        );
+                        seen.borrow_mut().push(overview);
+                        if seen.borrow().len() == 2 {
+                            return Err(Error::Unsupported("complete".into()));
+                        }
+                    }
+                    SwarmChange::Data { overview, .. } => {
+                        assert!(data.borrow_mut().insert(overview));
+                    }
+                    _ => {}
+                }
+                Ok(())
             },
         ));
-        let seen = RefCell::new(Vec::new());
-        let result = SwarmClient::new(path("swarm"), limits())
-            .unwrap()
-            .follow(
-                provider.as_ref(),
-                &config,
-                sink,
-                incoming,
-                |_, maximum| agent.heads(&Query::Root, None, maximum),
-                |update| {
-                    let result = match update {
-                        SwarmUpdate::Watermark {
-                            agent,
-                            overview,
-                            watermark,
-                        } => {
-                            assert_eq!(agent, path("swarm/a"));
-                            assert_eq!((watermark.accepted, watermark.durable), (9, 9));
-                            seen.borrow_mut().push(overview);
-                            if seen.borrow().len() == 2 {
-                                Err(Error::Unsupported("complete".into()))
-                            } else {
-                                Ok(())
-                            }
-                        }
-                        SwarmUpdate::Data { .. } => panic!("no data frames in this scenario"),
-                        _ => Ok(()),
-                    };
-                    futures::future::ready(result)
-                },
-            )
-            .await;
-        assert!(matches!(result, Err(Error::Unsupported(_))));
+        let result = runner.until_idle(consumer.as_mut()).await;
+        assert!(
+            matches!(result, Some(Err(Error::Unsupported(_)))),
+            "{result:?}"
+        );
+        drop(consumer);
         let mut seen = seen.into_inner();
         seen.sort();
         assert_eq!(seen, [false, true]);
+        views
+            .read(|v| {
+                let status = v.status(&path("swarm/a")).unwrap().watermarks();
+                let content = v.cursor(&path("swarm/a")).unwrap();
+                assert_eq!(
+                    (
+                        status.accepted,
+                        status.durable,
+                        content.accepted,
+                        content.durable
+                    ),
+                    (9, 9, 9, 9)
+                );
+            })
+            .unwrap();
     });
 }

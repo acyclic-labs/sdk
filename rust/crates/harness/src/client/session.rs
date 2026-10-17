@@ -1,9 +1,8 @@
-//! Durable outbox and replay reducer. A record is committed before publication.
+//! Durable wire outbox, cursor recovery and operation-bound settlement progress.
 
 use super::{
-    ClientViews,
-    content::MessageContent,
-    views::{authority_key, payload},
+    content,
+    session_progress::{authority_key, payload},
 };
 use crate::{
     Error, Result, wire,
@@ -72,21 +71,21 @@ impl ClientStateStore for MemoryClientState {
     }
 }
 
-/// Durable outbox and cursors with disposable renderer state.
+/// Durable wire outbox and cursors; renderers read ClientViews from file follows.
 pub struct ClientSession<S> {
     store: S,
     cursors: BTreeMap<String, wire::ReplayCursor>,
     pending: Vec<Option<wire::CommandEnvelope>>,
     operations: HashMap<String, usize>,
     idempotency: HashSet<(String, String)>,
-    views: ClientViews,
-    view_revisions: BTreeMap<String, u64>,
+    lifecycle: BTreeMap<String, (crate::core::LifecycleState, String)>,
+    replay_revisions: BTreeMap<String, u64>,
     tail_records: usize,
 }
 
 impl<S: ClientStateStore> ClientSession<S> {
-    /// Recovers durable cursors and pending commands. Disposable views rebuild from
-    /// owner history when replay opens; the journal never snapshots a transcript.
+    /// Recovers durable cursors and pending commands. Operation settlement is
+    /// rechecked against owner history; file views never enter this journal.
     pub fn open(mut store: S) -> Result<Self> {
         let records = store.load()?;
         let mut session = Self {
@@ -95,8 +94,8 @@ impl<S: ClientStateStore> ClientSession<S> {
             pending: Vec::new(),
             operations: HashMap::new(),
             idempotency: HashSet::new(),
-            views: ClientViews::default(),
-            view_revisions: BTreeMap::new(),
+            lifecycle: BTreeMap::new(),
+            replay_revisions: BTreeMap::new(),
             tail_records: 0,
         };
         for mut record in records {
@@ -192,7 +191,7 @@ impl<S: ClientStateStore> ClientSession<S> {
     }
 
     /// Resolves canonical files, publishes the complete frame, then commits its cursor.
-    /// File and validation failures leave the views and durable cut unchanged.
+    /// File and validation failures leave replay progress and the durable cut unchanged.
     pub(super) async fn receive_delivery(
         &mut self,
         delivery: wire::Delivery,
@@ -200,21 +199,16 @@ impl<S: ClientStateStore> ClientSession<S> {
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<wire::Delivery> {
         let authority = valid_authority(delivery.authority.as_ref())?;
-        let view_revision = self.view_revision(authority);
+        let replay_revision = self.replay_revision(authority);
         let mut messages = Vec::with_capacity(delivery.events.len());
         for event in &delivery.events {
             let payload = payload(event)?;
-            let content = if event.revision > view_revision {
-                if let crate::core::EventPayload::ConversationMessageAppended { message } = &payload
-                {
-                    MessageContent::read(message, files).await?
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            messages.push((payload, content));
+            if event.revision > replay_revision
+                && let crate::core::EventPayload::ConversationMessageAppended { message } = &payload
+            {
+                content::validate(message, files).await?;
+            }
+            messages.push(payload);
         }
         let record = SessionRecord {
             request: None,
@@ -249,58 +243,25 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.cursors.get(&authority_key(authority))
     }
 
-    /// Current disposable projection cut. It starts at zero after reopening.
+    /// Owner-history cut rechecked in this connection. Starts at zero after reopening.
     #[must_use]
-    pub fn view_revision(&self, authority: &wire::Authority) -> u64 {
-        self.view_revisions
+    pub fn replay_revision(&self, authority: &wire::Authority) -> u64 {
+        self.replay_revisions
             .get(&authority_key(authority))
             .copied()
             .unwrap_or(0)
     }
 
-    /// Snapshot-plus-follow starts at the projection cut, retaining durable acknowledgements.
+    /// Replay rechecks owner history while retaining durable acknowledgements.
     #[must_use]
     pub fn replay_request(&self) -> wire::ResumeRequest {
         let mut request = self.resume();
         for cursor in &mut request.cursors {
             if let Some(authority) = &cursor.authority {
-                cursor.revision = self.view_revision(authority);
+                cursor.revision = self.replay_revision(authority);
             }
         }
         request
-    }
-
-    /// Folds an incoming model item into the session's shared renderer state.
-    pub fn model_event(
-        &mut self,
-        authority: &wire::Authority,
-        turn: crate::OperationId,
-        event: crate::model::ModelEvent,
-    ) -> Result<()> {
-        self.require_tracked(authority)?;
-        self.views.model_event(authority, turn, event)
-    }
-
-    /// Folds an incoming tool chunk without a separate renderer-owned registry.
-    pub fn tool_output(
-        &mut self,
-        authority: &wire::Authority,
-        call_id: &str,
-        delta: &str,
-    ) -> Result<()> {
-        self.require_tracked(authority)?;
-        self.views.tool_output(authority, call_id, delta);
-        Ok(())
-    }
-
-    fn require_tracked(&self, authority: &wire::Authority) -> Result<()> {
-        valid_authority(Some(authority))?;
-        if !self.cursors.contains_key(&authority_key(authority)) {
-            return Err(Error::Conflict(
-                "streaming authority was not requested".into(),
-            ));
-        }
-        Ok(())
     }
 
     /// Exact envelopes awaiting definitive admission; never regenerate their identities.
@@ -308,48 +269,12 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending.iter().filter_map(Option::as_ref)
     }
 
-    /// Replaces a disposable file view at the query's atomic snapshot cut.
-    pub fn query_snapshot(
-        &mut self,
-        query: crate::task_volume::Query,
-        snapshot: crate::task_volume::Snapshot,
-        maximum_files: usize,
-        maximum_bytes: usize,
-    ) -> Result<()> {
-        self.views
-            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)
-    }
-
-    /// Applies one pushed file record; query payloads are disposable, not journaled.
-    pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
-        self.views.query_change(change)
-    }
-
-    /// Selects both file sources required for goal status and continuation counts.
-    pub async fn select_goal_view(
-        &mut self,
-        goal: &(impl crate::task_volume::FileQuerySource + ?Sized),
-        request: &(impl crate::task_volume::FileQuerySource + ?Sized),
-        maximum_bytes: usize,
-    ) -> Result<crate::task_volume::ChangeStream> {
-        self.views
-            .select_goal_view(goal, request, maximum_bytes)
-            .await
-    }
-
-    /// Joins observed GOAL.md and request-head cuts without persisting file payloads.
-    pub fn bind_goal_sources(
-        &mut self,
-        goal: ([u8; 32], [u8; 32]),
-        request: ([u8; 32], [u8; 32]),
-    ) -> Result<()> {
-        self.views.bind_goal_sources(goal, request)
-    }
-
-    /// State shared by every renderer.
-    #[must_use]
-    pub fn views(&self) -> &ClientViews {
-        &self.views
+    pub(super) fn waiting(&self, authority: &wire::Authority, operation: &str) -> bool {
+        self.lifecycle
+            .get(&authority_key(authority))
+            .is_some_and(|(state, owner)| {
+                *state == crate::core::LifecycleState::Waiting && owner == operation
+            })
     }
 
     /// Returns storage after transport shutdown, for reopening or explicit disposal.
@@ -419,19 +344,19 @@ impl<S: ClientStateStore> ClientSession<S> {
                             let payload = payload(event)?;
                             if persist
                                 && event.revision
-                                    > self.view_revision(valid_authority(
+                                    > self.replay_revision(valid_authority(
                                         delivery.authority.as_ref(),
                                     )?)
                                 && let crate::core::EventPayload::ConversationMessageAppended {
                                     message,
                                 } = &payload
-                                && MessageContent::requires_files(message)
+                                && content::requires_files(message)
                             {
                                 return Err(Error::Unsupported(
                                     "message projection requires a filesystem provider".into(),
                                 ));
                             }
-                            Ok((payload, None))
+                            Ok(payload)
                         })
                         .collect::<Result<Vec<_>>>()?;
                     self.deliver(delivery, record, persist, messages, |_| Ok(()))?;
@@ -518,8 +443,8 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending = checkpoint.pending.into_iter().map(Some).collect();
         self.operations = operations;
         self.idempotency = idempotency;
-        self.views = ClientViews::default();
-        self.view_revisions.clear();
+        self.lifecycle.clear();
+        self.replay_revisions.clear();
         self.tail_records = 0;
         Ok(())
     }
@@ -583,7 +508,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         delivery: &wire::Delivery,
         record: &SessionRecord,
         persist: bool,
-        messages: Vec<(crate::core::EventPayload, Option<MessageContent>)>,
+        messages: Vec<crate::core::EventPayload>,
         before_commit: impl FnOnce(&wire::ServerFrame) -> Result<()>,
     ) -> Result<()> {
         let authority = valid_authority(delivery.authority.as_ref())?;
@@ -618,7 +543,7 @@ impl<S: ClientStateStore> ClientSession<S> {
             return Err(Error::Conflict("delivery is not contiguous".into()));
         }
         let durable_revision = cursor.revision;
-        let view_revision = self.view_revision(authority);
+        let replay_revision = self.replay_revision(authority);
         if delivery.through_revision > durable_revision && delivery.from_revision > durable_revision
         {
             return Err(Error::Conflict(
@@ -626,24 +551,18 @@ impl<S: ClientStateStore> ClientSession<S> {
             ));
         }
         if persist
-            && delivery.through_revision > view_revision
-            && delivery.from_revision > view_revision
+            && delivery.through_revision > replay_revision
+            && delivery.from_revision > replay_revision
         {
             return Err(Error::Conflict(
-                "delivery does not follow view cursor".into(),
+                "delivery does not follow replay cursor".into(),
             ));
         }
         let skip = delivery
             .events
             .iter()
-            .take_while(|event| event.revision <= view_revision)
+            .take_while(|event| event.revision <= replay_revision)
             .count();
-        let usage = if persist {
-            self.views
-                .prepare_usage(authority, messages.iter().skip(skip))?
-        } else {
-            None
-        };
         before_commit(
             record
                 .response
@@ -653,22 +572,21 @@ impl<S: ClientStateStore> ClientSession<S> {
         if persist && delivery.through_revision > durable_revision {
             self.append_record(record)?;
         }
-        // Recovery reads only durable metadata. Replaying history rehydrates the
-        // projection without re-appending or moving the durable cursor backwards.
-        if persist && delivery.through_revision > view_revision {
-            for (event, (payload, content)) in delivery
+        // Recheck settlement evidence without re-appending history or moving the
+        // durable cursor backwards. UI state comes exclusively from file follows.
+        if persist && delivery.through_revision > replay_revision {
+            for (event, payload) in delivery
                 .events
                 .iter()
                 .skip(skip)
                 .zip(messages.into_iter().skip(skip))
             {
-                self.views
-                    .apply(authority, &event.operation_id, payload, content);
+                if let crate::core::EventPayload::LifecycleTransitioned { to, .. } = payload {
+                    self.lifecycle
+                        .insert(key.clone(), (to, event.operation_id.clone()));
+                }
             }
-            if let Some((usage, total)) = usage {
-                self.views.set_usage(authority, usage, total);
-            }
-            self.view_revisions.insert(key.clone(), revision);
+            self.replay_revisions.insert(key.clone(), revision);
         }
         if let Some(cursor) = self.cursors.get_mut(&key) {
             cursor.revision = cursor.revision.max(revision);

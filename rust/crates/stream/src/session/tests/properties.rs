@@ -5,6 +5,7 @@ use proptest::prelude::*;
 pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
     Session {
         provider: Arc::new(MemoryStream::default()),
+        executor: Arc::new(runtime::PlatformExecutor),
         limits: Limits::default(),
         node: "node".into(),
         hello: true,

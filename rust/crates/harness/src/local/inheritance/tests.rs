@@ -6,6 +6,8 @@ use crate::{
 };
 use proptest::prelude::*;
 
+pub(super) mod compaction_race;
+
 async fn open(directory: &Path) -> Result<LocalHarness> {
     let volume = super::super::tests::volume(directory).await?;
     let config = super::super::tests::volume_config(
@@ -333,9 +335,15 @@ proptest! {
     fn inherited_value_files_preserve_each_source_bound(
         model in prop::collection::vec(any::<char>(), 0..32),
         summary in prop::collection::vec(any::<char>(), 0..32),
+        frozen in any::<bool>(),
     ) {
         let model: String = model.into_iter().collect();
         let summary: String = summary.into_iter().collect();
+        let mut selected: crate::context::SummarySelection = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"), "/fuzz-context/corpus/context_manifest/summary-selection.json"
+        ))).unwrap();
+        selected.continuation.as_mut().unwrap().frozen = frozen;
+        for summary in [json!(summary), serde_json::to_value(selected).unwrap()] {
         let bound = [json!({"model":model}), json!({"summary":summary})]
             .iter().map(|value| serde_json::to_vec(value).unwrap().len()).max().unwrap().max(40) as u64;
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
@@ -348,6 +356,7 @@ proptest! {
             assert_eq!(retain_inheritance(&volume, task, expected.clone(), bound).await.unwrap(), expected);
             assert_eq!(read_inheritance(&volume, task, bound).await.unwrap(), Some(expected));
         });
+        }
     }
 }
 

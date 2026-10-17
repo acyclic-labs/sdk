@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::FileRef;
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
@@ -136,6 +137,11 @@ where
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
         self.executor = self.executor.with_max_output_tokens(maximum)?;
         Ok(self)
+    }
+
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        self.executor = self.executor.with_summary_source(source);
+        self
     }
 
     /// Executes or reconciles using the bound journal and existing stock loop.

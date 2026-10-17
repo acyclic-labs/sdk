@@ -12,10 +12,16 @@ impl WasmStream {
     #[must_use]
     /// Creates an in-process provider.
     pub fn new() -> Self {
+        let provider: std::sync::Arc<dyn StreamProvider> =
+            std::sync::Arc::new(MemoryStream::default());
+        let session = crate::session::Client::in_process(
+            provider.clone(),
+            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        );
         Self {
             connections: None,
-            session: None,
-            provider: std::sync::Arc::new(MemoryStream::default()),
+            session: Some(session),
+            provider,
         }
     }
 
@@ -31,14 +37,19 @@ impl WasmStream {
             journal_bytes: maximum_journal_bytes,
             ..Default::default()
         };
+        let provider: std::sync::Arc<dyn StreamProvider> = std::sync::Arc::new(
+            crate::BrowserStream::open(&name, limits)
+                .await
+                .map_err(js_error)?,
+        );
+        let session = crate::session::Client::in_process(
+            provider.clone(),
+            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        );
         Ok(Self {
             connections: None,
-            session: None,
-            provider: std::sync::Arc::new(
-                crate::BrowserStream::open(&name, limits)
-                    .await
-                    .map_err(js_error)?,
-            ),
+            session: Some(session),
+            provider,
         })
     }
 

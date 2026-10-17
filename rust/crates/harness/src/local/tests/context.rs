@@ -4,7 +4,7 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
     filesystem::FilesystemContentPublisher,
 };
-mod crash_cuts;
+pub(super) mod crash_cuts;
 mod generation;
 
 async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<()> {

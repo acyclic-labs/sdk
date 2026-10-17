@@ -30,6 +30,7 @@ mod checkout_tools;
 mod command_machine;
 mod command_views;
 mod commands;
+mod compact;
 mod compaction;
 mod config;
 mod context;
@@ -71,9 +72,8 @@ pub struct LocalHarness {
     #[cfg(feature = "hooks")]
     hooks: crate::hooks::Hooks,
     #[cfg(test)]
-    context_read_observer: Option<
-        for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>,
-    >,
+    context_read_observer:
+        Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -95,13 +95,11 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
+                if let Some(source) = &mount.view.source {
+                    let native = source.native().await;
+                    if let Some(native) = native.as_ref() {
+                        native.unmount().await?;
+                    }
                 }
             }
         }

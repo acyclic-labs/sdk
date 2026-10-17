@@ -5,8 +5,8 @@ use super::{
 };
 use acyclic_harness::{
     Error,
-    client::{QueryViewLimits, SwarmUpdate, query_verification::FileViews},
-    task_volume::{Change, FileValue, HeadSnapshot},
+    client::{ClientViewHandle, QueryViewLimits, SwarmChange, query_verification::FileViews},
+    task_volume::{Change, FileValue, Generation, HeadFile, HeadSnapshot},
 };
 use acyclic_stream::{CommitId, Record, wire};
 use futures::channel::mpsc;
@@ -73,12 +73,40 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn accept(&mut self, update: SwarmUpdate) -> acyclic_harness::Result<Action> {
+    pub fn accept(
+        &mut self,
+        update: SwarmChange,
+        views: &ClientViewHandle,
+    ) -> acyclic_harness::Result<Action> {
         let action = match update {
-            SwarmUpdate::Snapshot { agent, snapshot } => {
+            SwarmChange::Agent { .. } | SwarmChange::Retired { .. } => Action::None,
+            SwarmChange::Snapshot { agent, cursor } => {
+                // Independent oracle uses the same canonical file fold. Only
+                // segment handles are cloned; production has a single cache.
+                let snapshot = views.read(|view| HeadSnapshot {
+                    files: view
+                        .files(&agent)
+                        .map(|file| HeadFile {
+                            publication: file.publication,
+                            channel: file.channel,
+                            key: file.key.clone(),
+                            segments: file.segments.clone(),
+                            length: file.length,
+                            through_sequence: file.through_sequence,
+                        })
+                        .collect(),
+                    generation: Generation {
+                        volume: cursor.volume,
+                        epoch: cursor.epoch,
+                        position: cursor.position,
+                        commit: cursor.commit,
+                    },
+                    cursor,
+                })?;
                 self.snapshot(publish::id(&agent)?, snapshot)?
             }
-            SwarmUpdate::Layout(demand) => {
+            SwarmChange::Layout => {
+                let demand = views.read(|view| view.layout().clone())?;
                 let expected = &self.case.layouts[self.phase];
                 if demand.visible().cloned().collect::<Vec<_>>()
                     != (expected.visible[0]..expected.visible[1])
@@ -95,10 +123,11 @@ impl<'a> State<'a> {
                 self.waiting_layout = false;
                 Action::Phase(self.phase)
             }
-            SwarmUpdate::Data {
+            SwarmChange::Data {
                 agent,
                 overview,
                 data,
+                ..
             } => {
                 let id = publish::id(&agent)?;
                 if id >= self.case.agents {
@@ -116,10 +145,31 @@ impl<'a> State<'a> {
                     self.status(id, next, data.item)?;
                 } else {
                     self.content(id, next, data)?;
+                    views.read(|view| {
+                        let key = publish::agent(id);
+                        let expected = &self.heads[&id];
+                        if view.cursor(&key).map(|cut| (cut.position, cut.commit))
+                            != Some((expected.cursor().position, expected.cursor().commit))
+                            || view
+                                .files(&key)
+                                .flat_map(|file| {
+                                    file.segments.iter().flat_map(|segment| segment.iter())
+                                })
+                                .ne(expected.files().flat_map(|file| {
+                                    file.segments.iter().flat_map(|segment| segment.iter())
+                                }))
+                        {
+                            Err(Error::Invalid(
+                                "shared swarm view differs from complete file fold".into(),
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    })??;
                 }
                 Action::None
             }
-            SwarmUpdate::Watermark { .. } => Action::None,
+            SwarmChange::Watermark { .. } => Action::None,
         };
         if matches!(action, Action::None) && !self.waiting_layout && !self.complete {
             let needed = (self.phase + 1) * self.case.agents.div_ceil(self.case.attention_every);

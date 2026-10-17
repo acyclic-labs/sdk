@@ -183,6 +183,13 @@ pub enum FileKey {
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
     Input(InputPath),
+    /// Parent-owned child lifecycle and input files (gc-agents).
+    Child {
+        /// Child reference in this parent volume.
+        reference: Component,
+        /// Canonical file under agents/<ref>/.
+        file: super::ChildFile,
+    },
     /// Ordinary editable Markdown in the private volume's plans folder.
     Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
@@ -286,6 +293,12 @@ impl FileKey {
                     name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
                 )?));
             }
+            ["agents", reference, rest @ ..] => {
+                return Ok(Self::Child {
+                    reference: id(reference)?,
+                    file: super::ChildFile::parse(rest)?,
+                });
+            }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
         }
@@ -369,6 +382,9 @@ impl FileKey {
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
+            Self::Child { reference, file } => {
+                format!("agents/{}/{}", reference.as_str(), file.path())
+            }
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
             Self::Task { task, file } => format!(".tasks/{}/{}", task.as_str(), file.path()),
         }
@@ -383,7 +399,11 @@ impl FileKey {
                 file: TaskFile::Request(_),
                 ..
             } => Owner::Caller,
-            Self::Goal | Self::Plan(_) | Self::Input(_) => Owner::Agent,
+            Self::Child {
+                file: super::ChildFile::Status | super::ChildFile::Result(_),
+                ..
+            } => Owner::Harness,
+            Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
             Self::Task {
                 file: TaskFile::Request(_),
                 ..
@@ -399,7 +419,10 @@ impl FileKey {
     pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Ui { .. }
+            Self::Child {
+                file: super::ChildFile::Control | super::ChildFile::Status,
+                ..
+            } | Self::Ui { .. }
                 | Self::RequestHead
                 | Self::Goal
                 | Self::Input(_)

@@ -4,15 +4,45 @@ use acyclic_stream::{StreamPath, wire::SessionDelivery};
 use std::collections::BTreeSet;
 
 #[path = "client_interest_continuity.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod continuity;
 #[path = "client_interest_discovery.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod discovery;
 #[path = "client_interest_wire.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod platform;
 #[path = "support/quiescent.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod quiescent;
+#[path = "support/swarm_session.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod runtime;
 #[path = "client_interest_session.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod session;
+
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+fn client(
+    limits: acyclic_harness::client::SwarmClientLimits,
+) -> acyclic_harness::Result<acyclic_harness::client::SwarmClient> {
+    use acyclic_harness::client::{ClientViewLimits, QueryViewLimits, SwarmClient};
+    SwarmClient::new(
+        path("swarm"),
+        limits,
+        ClientViewLimits {
+            agents: limits.agents,
+            selected: limits.selected,
+            overview_values: limits.agents * 2,
+            overview_bytes: limits.agents as u64 * 256,
+            query: QueryViewLimits {
+                files: limits.snapshot_files,
+                segments: limits.snapshot_files,
+                bytes: 4096,
+            },
+        },
+    )
+}
 
 fn path(value: &str) -> StreamPath {
     StreamPath::new(value).unwrap()
@@ -229,3 +259,7 @@ proptest::proptest! {
         proptest::prop_assert!(check_changes(&before, &after, &ids(changes.subscribe()), &ids(changes.unsubscribe())));
     }
 }
+
+#[path = "support/swarm_status.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod status;

@@ -182,6 +182,7 @@ case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
+    node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
@@ -389,13 +390,13 @@ case "$lane" in
     }
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
-        harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
+        harness_tests --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
       harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
-    harness_tests --features wasm --target wasm32-unknown-unknown --test client-goal-views
+    harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser \
       --target wasm32-unknown-unknown --lib --locked

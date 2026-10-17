@@ -195,6 +195,7 @@ proptest::proptest! {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn large_publication_range_accounts_authentication_and_reads_only_the_selected_chunk()
 -> Result<()> {
@@ -268,6 +269,7 @@ proptest::proptest! {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> {
     let (host, file) = ordinary(&vec![b'x'; 4 * 1024 * 1024]).await?;

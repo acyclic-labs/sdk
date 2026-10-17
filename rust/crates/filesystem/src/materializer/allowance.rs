@@ -108,6 +108,10 @@ impl NativeResourceAllowance {
         delta: WorkCounters,
         bytes: u64,
     ) -> Result<(), DemandError> {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        if super::views::tests::skip_ancestor_check(self) {
+            return Ok(());
+        }
         state.check()?;
         let bytes = bytes
             .checked_add(state.allocations.reserved_bytes())

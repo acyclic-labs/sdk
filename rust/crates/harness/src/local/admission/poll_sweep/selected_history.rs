@@ -156,6 +156,7 @@ pub(super) async fn run(
     let admission = serialized(&harness.admission, async || {
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "manifest:begin");
         let command = crate::filesystem::ModelTaskCommand {
+            summary_source: None,
             context_manifest: harness.stage_context_manifest(OPERATION).await?,
             input: history
                 .messages

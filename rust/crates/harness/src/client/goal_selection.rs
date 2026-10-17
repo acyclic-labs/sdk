@@ -32,8 +32,8 @@ impl ClientViews {
         let (request, request_changes) = prepare(request_query, request)?;
         let goal_id = (goal.cursor().volume, goal.cursor().query);
         let request_id = (request.cursor().volume, request.cursor().query);
-        self.queries.insert(goal_id, goal);
-        self.queries.insert(request_id, request);
+        self.install_selection(goal);
+        self.install_selection(request);
         self.bind_goal_sources(goal_id, request_id)?;
         Ok(Box::pin(futures::stream::select(
             goal_changes,

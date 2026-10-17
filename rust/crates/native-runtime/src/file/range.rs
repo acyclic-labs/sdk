@@ -1,4 +1,5 @@
 use crate::*;
+use std::borrow::Borrow;
 
 pub(crate) fn validate_prepared_read_range(offset: u64, length: usize) -> io::Result<()> {
     let end = offset
@@ -95,16 +96,16 @@ fn read_bounded(
     Ok(filled)
 }
 
-/// An owned file range with an advancing cursor.
-pub struct AsyncRangeReader {
-    file: Arc<NativeFile>,
+/// A bounded file range with an advancing cursor.
+pub struct AsyncRangeReader<F = Arc<NativeFile>> {
+    file: F,
     offset: u64,
     remaining: u64,
 }
 
-impl AsyncRangeReader {
-    /// Limits reads to length bytes starting at offset.
-    pub const fn new(file: Arc<NativeFile>, offset: u64, length: u64) -> Self {
+impl<F: Borrow<NativeFile>> AsyncRangeReader<F> {
+    /// Limits reads to length bytes starting at offset, borrowing or owning the file.
+    pub const fn new(file: F, offset: u64, length: u64) -> Self {
         Self {
             file,
             offset,
@@ -138,6 +139,7 @@ impl AsyncRangeReader {
                 return Ok((storage, 0));
             }
             self.file
+                .borrow()
                 .read_prepared_bounded_async(self.offset, storage, length, require_full, meter)?
                 .await
         }
@@ -165,6 +167,7 @@ impl AsyncRangeReader {
                 return Ok((storage, 0));
             }
             self.file
+                .borrow()
                 .read_spare_bounded_async(self.offset, storage, length, require_full, meter)?
                 .await
         }
@@ -205,6 +208,7 @@ impl AsyncRangeReader {
         }
         let result = self
             .file
+            .borrow()
             .read_bounded_async(self.offset, length, meter, require_full)?
             .await?;
         self.offset = self

@@ -142,6 +142,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                         operation,
                         "model",
                         &serde_json::to_vec(&ModelTaskCommand {
+                            summary_source: None,
                             context_manifest: acyclic_harness::context::ContextManifest::new(
                                 Default::default(),
                                 Vec::new(),

@@ -222,7 +222,7 @@ async fn run_backend(backend: Backend, headless: bool) -> Result<(), Box<dyn std
     #[cfg(feature = "filesystem-local")]
     let mut documents: acyclic_stream::BoxProviderStream<
         'static,
-        acyclic_harness::Result<acyclic_harness::client::ViewUpdate>,
+        acyclic_harness::Result<acyclic_harness::task_volume::Change>,
     > = Box::pin(stream::pending());
     let mut output = std::io::stdout().lock();
     let mut scrollback = terminal::Scrollback::default();

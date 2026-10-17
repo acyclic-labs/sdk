@@ -1,4 +1,5 @@
 use super::*;
+mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -321,7 +322,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             (
                 crate::executor::with_history_io(Some(io), |work| {
-                    FileDescriptor::from_bytes(&bytes, "application/octet-stream", work)
+                    FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
                 })?,
                 stock_string_copy(name, Some(io))?,
             )

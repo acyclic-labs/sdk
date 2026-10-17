@@ -141,6 +141,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_mentions"
+path = "fuzz_targets/client_mentions.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "client_interests"
 path = "fuzz_targets/client_interests.rs"
 required-features = ["runtime"]
@@ -263,6 +271,7 @@ bench = false
 [[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -270,6 +279,7 @@ bench = false
 [[bin]]
 name = "journal_decode"
 path = "fuzz_targets/journal_decode.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -284,6 +294,14 @@ bench = false
 [[bin]]
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_swarm_views"
+path = "fuzz_targets/client_swarm_views.rs"
 required-features = ["runtime"]
 test = false
 doc = false

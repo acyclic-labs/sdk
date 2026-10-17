@@ -207,11 +207,16 @@ mod tests;
 
 struct ManifestStage {
     context: Context,
+    sources: Vec<FileRef>,
 }
 
 impl ContextStage for ManifestStage {
     fn name(&self) -> &str {
         "context-manifest"
+    }
+
+    fn configuration_sources(&self) -> &[FileRef] {
+        &self.sources
     }
 
     fn contract(&self, io: Option<&PreparationIo>) -> Result<Value> {

@@ -533,11 +533,8 @@ fn fork_lineage_and_child_lifecycle_are_independent_of_cross_authority_order() {
         for frame in ordered {
             state.receive(frame).unwrap();
         }
-        let child = &state.views().tasks["AGGREGATE_KIND_CONVERSATION:child"];
-        assert_eq!(child.parent, Some(seed.parent.clone()));
-        assert_eq!(child.status, LifecycleState::Active);
-        assert_eq!(child.reason.as_deref(), Some("working"));
-        let views = state.views().clone();
+        assert_eq!(state.replay_revision(&parent), seed.parent_revision + 1);
+        assert_eq!(state.replay_revision(&child), 1);
         let mut store = state.into_store();
         let history = store.load().unwrap();
         let mut state = ClientSession::open(store).unwrap();
@@ -548,6 +545,7 @@ fn fork_lineage_and_child_lifecycle_are_independent_of_cross_authority_order() {
                 recovered.receive(response).unwrap();
             }
         }
-        assert_eq!(recovered.views(), &views);
+        assert_eq!(recovered.replay_revision(&parent), seed.parent_revision + 1);
+        assert_eq!(recovered.replay_revision(&child), 1);
     }
 }

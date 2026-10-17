@@ -20,6 +20,8 @@ mod goal_lines_tests;
 /// Disposable goal rendering at the file query's current cursor.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum GoalFileView {
     /// The observed selection contains no GOAL.md.
     Missing,
@@ -58,7 +60,7 @@ type ViewIndex<V> = BTreeMap<FileKey, V>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileQueryView {
     query: Query,
-    files: ViewIndex<FileValue>,
+    storage: super::FileViews,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     models: ViewIndex<super::ModelFileView>,
     rejected_models: BTreeSet<FileKey>,
@@ -66,8 +68,7 @@ pub struct FileQueryView {
     goal_revision: Option<crate::OperationId>,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
-    cursor: Cursor,
-    bytes: usize,
+    materialized: bool,
     maximum_files: usize,
     maximum_bytes: usize,
 }
@@ -102,7 +103,7 @@ impl FileQueryView {
         {
             return Err(invalid());
         }
-        let mut files = ViewIndex::default();
+        let mut files = BTreeMap::<FileKey, FileValue>::new();
         let mut rejected_models = BTreeSet::new();
         let mut bytes = 0usize;
         for file in snapshot.files {
@@ -122,39 +123,96 @@ impl FileQueryView {
                 .ok_or_else(invalid)?;
             files.insert(file.key.clone(), file);
         }
-        let rows = files
-            .iter()
-            .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
-            .map(|(key, file)| (key.clone(), plan_rows(file)))
-            .collect();
-        let models = files
-            .iter()
-            .filter(|(key, _)| super::model_view::turn_request(key).is_some())
-            .map(|(key, file)| (key.clone(), super::ModelFileView::from_file(file)))
-            .chain(
-                rejected_models
-                    .iter()
-                    .map(|key| (key.clone(), super::ModelFileView::Invalid)),
-            )
-            .collect();
-        let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
-        let goal_revision = goal_revision(files.get(&FileKey::Goal));
-        let goal_line_starts = goal_line_starts(&goal);
-        Ok(Self {
+        let storage = super::FileViews::ordinary(
+            crate::task_volume::HeadSnapshot {
+                generation: snapshot.generation,
+                cursor,
+                files: files
+                    .into_iter()
+                    .map(|(_, file)| crate::task_volume::HeadFile {
+                        key: file.key,
+                        publication: file.publication,
+                        channel: file.channel,
+                        length: file.bytes.len() as u64,
+                        segments: vec![file.bytes],
+                        through_sequence: None,
+                    })
+                    .collect(),
+            },
+            super::QueryViewLimits {
+                files: maximum_files,
+                segments: maximum_files,
+                bytes: maximum_bytes as u64,
+            },
+        )
+        .map_err(super::query_error)?;
+        Self::from_storage(
             query,
-            rows,
-            models,
+            storage,
             rejected_models,
-            goal,
-            goal_revision,
-            goal_line_starts,
-            progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
-            files,
-            cursor,
-            bytes,
             maximum_files,
             maximum_bytes,
-        })
+            false,
+        )
+    }
+
+    fn from_storage(
+        query: Query,
+        storage: super::FileViews,
+        rejected_models: BTreeSet<FileKey>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+        materialized: bool,
+    ) -> Result<Self> {
+        let models = rejected_models
+            .iter()
+            .map(|key| (key.clone(), super::ModelFileView::Invalid))
+            .collect();
+        let mut view = Self {
+            query,
+            storage,
+            rows: BTreeMap::new(),
+            models,
+            rejected_models,
+            goal: GoalFileView::Missing,
+            goal_revision: None,
+            goal_line_starts: Arc::default(),
+            progress: None,
+            materialized,
+            maximum_files,
+            maximum_bytes,
+        };
+        // Parse only semantic files, directly from the sole segment index.
+        // Text/tool heads keep every shared segment; no temporary view is built.
+        for head in view.storage.files().filter(|head| semantic(&head.key)) {
+            let [bytes] = head.segments.as_slice() else {
+                return Err(Error::Invalid("semantic file must have one segment".into()));
+            };
+            let value = FileValue {
+                key: head.key.clone(),
+                bytes: bytes.clone(),
+                channel: head.channel,
+                publication: head.publication,
+            };
+            match &value.key {
+                FileKey::Goal => {
+                    view.goal = GoalFileView::from_file(Some(&value), maximum_bytes);
+                    view.goal_revision = value.publication;
+                }
+                FileKey::RequestHead => {
+                    view.progress = super::GoalProgress::from_file(Some(&value))
+                }
+                FileKey::Plan(_) => {
+                    view.rows.insert(value.key.clone(), plan_rows(&value));
+                }
+                _ => {
+                    view.models
+                        .insert(value.key.clone(), super::ModelFileView::from_file(&value));
+                }
+            }
+        }
+        view.goal_line_starts = goal_line_starts(&view.goal);
+        Ok(view)
     }
 
     /// File selection represented by this fold, including an empty snapshot.
@@ -164,19 +222,19 @@ impl FileQueryView {
 
     /// Exact resume cut; it advances even for nonmatching publications.
     pub fn cursor(&self) -> &Cursor {
-        &self.cursor
+        self.storage.cursor()
     }
 
     /// Admitted file slices, sharing immutable query payloads. Oversized model
     /// requests have an Invalid model row and retain no payload in this cache.
-    pub fn files(&self) -> &BTreeMap<FileKey, FileValue> {
+    pub fn files(&self) -> &BTreeMap<FileKey, crate::task_volume::HeadFile> {
         #[cfg(feature = "test-support")]
         {
-            self.files.as_map()
+            self.storage.files.as_map()
         }
         #[cfg(not(feature = "test-support"))]
         {
-            &self.files
+            &self.storage.files
         }
     }
 
@@ -185,7 +243,7 @@ impl FileQueryView {
         self.models.iter().filter_map(|(key, model)| {
             let (task, turn) = super::model_view::turn_request(key)?;
             Some(super::ModelQueryView {
-                cursor: &self.cursor,
+                cursor: self.storage.cursor(),
                 task,
                 turn,
                 model,
@@ -228,12 +286,115 @@ impl FileQueryView {
             // The exact publication cursor still identifies the source revision.
             rejected_model(file, self.maximum_bytes)
         } else {
-            self.files.get(&file.key) == Some(file)
+            self.matches_head(file)
         }
+    }
+
+    fn matches_head(&self, file: &FileValue) -> bool {
+        self.storage.file(&file.key).is_some_and(|head| {
+            head.segments.len() == 1
+                && head.segments[0] == file.bytes
+                && head.publication == file.publication
+                && head.channel == file.channel
+        })
+    }
+
+    fn project(&mut self, change: &Change) {
+        for key in &change.removed {
+            if *key == FileKey::Goal {
+                self.goal = GoalFileView::Missing;
+                self.goal_revision = None;
+                self.goal_line_starts = Arc::default();
+            }
+            if *key == FileKey::RequestHead {
+                self.progress = None;
+            }
+            self.rows.remove(key);
+            self.models.remove(key);
+            self.rejected_models.remove(key);
+        }
+        for file in change.file.iter().chain(&change.files) {
+            if rejected_model(&file, self.maximum_bytes) {
+                self.models
+                    .insert(file.key.clone(), super::ModelFileView::Invalid);
+                self.rejected_models.insert(file.key.clone());
+                continue;
+            }
+            self.rejected_models.remove(&file.key);
+            if file.key == FileKey::RequestHead && !self.matches_head(&file) {
+                self.progress = super::GoalProgress::from_file(Some(&file));
+            }
+            if file.key == FileKey::Goal
+                && (!self.matches_head(file) || self.goal_revision != file.publication)
+            {
+                self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
+                self.goal_revision = goal_revision(Some(&file));
+                self.goal_line_starts = goal_line_starts(&self.goal);
+            }
+            if matches!(file.key, FileKey::Plan(_)) && !self.matches_head(&file) {
+                self.rows.insert(file.key.clone(), plan_rows(&file));
+            }
+            if super::model_view::turn_request(&file.key).is_some() && !self.matches_head(&file) {
+                self.models
+                    .insert(file.key.clone(), super::ModelFileView::from_file(&file));
+            }
+        }
+    }
+
+    pub(super) fn from_heads(
+        snapshot: crate::task_volume::HeadSnapshot,
+        limits: super::QueryViewLimits,
+    ) -> Result<Self> {
+        let maximum_bytes = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
+        let storage = super::FileViews::snapshot(snapshot, limits).map_err(super::query_error)?;
+        Self::from_storage(
+            Query::Root,
+            storage,
+            BTreeSet::new(),
+            limits.files,
+            maximum_bytes,
+            true,
+        )
+    }
+
+    fn apply_materialized(&mut self, change: &Change) -> Result<()> {
+        let apply = self.storage.prepare(change).map_err(super::query_error)?;
+        self.project(change);
+        apply(&mut self.storage).map_err(super::query_error)
+    }
+
+    pub(super) fn session_change(
+        &mut self,
+        data: &acyclic_stream::wire::SessionData,
+    ) -> Result<Change> {
+        let change = self
+            .storage
+            .session_change(data)
+            .map_err(super::query_error)?;
+        self.apply_materialized(&change)?;
+        Ok(change)
+    }
+    pub(super) fn session_watermark(
+        &mut self,
+        value: acyclic_stream::wire::SessionWatermark,
+    ) -> Result<()> {
+        self.storage
+            .session_watermark(value)
+            .map_err(super::query_error)
+    }
+    pub(super) fn head(&self, key: &FileKey) -> Option<&crate::task_volume::HeadFile> {
+        self.storage.file(key)
+    }
+    pub(super) fn heads(&self) -> impl Iterator<Item = &crate::task_volume::HeadFile> {
+        self.storage.files()
     }
 
     /// Folds the next accepted record atomically. Gaps require a new snapshot.
     pub fn apply(&mut self, change: Change) -> Result<bool> {
+        if self.materialized {
+            self.apply_materialized(&change)?;
+            return Ok(change.file.is_some());
+        }
         let invalid = || Error::Conflict("file query follow requires reset".into());
         let cursor = &change.cursor;
         let files = change.file.iter().chain(&change.files);
@@ -244,7 +405,7 @@ impl FileQueryView {
         if changed_files
             > self
                 .maximum_files
-                .saturating_add(self.files.len())
+                .saturating_add(self.storage.files.len())
                 .saturating_add(self.rejected_models.len())
         {
             return Err(invalid());
@@ -255,47 +416,48 @@ impl FileQueryView {
                 return Err(invalid());
             }
         }
-        if *cursor == self.cursor {
+        if *cursor == self.storage.cursor {
             return if files.clone().all(|file| self.matches_file(file))
-                && change
-                    .removed
-                    .iter()
-                    .all(|key| !self.files.contains_key(key) && !self.rejected_models.contains(key))
-            {
+                && change.removed.iter().all(|key| {
+                    !self.storage.files.contains_key(key) && !self.rejected_models.contains(key)
+                }) {
                 Ok(false)
             } else {
                 Err(invalid())
             };
         }
-        if cursor.volume != self.cursor.volume
-            || cursor.query != self.cursor.query
-            || cursor.epoch != self.cursor.epoch
-            || cursor.schema != self.cursor.schema
-            || self.cursor.position.checked_add(1) != Some(cursor.position)
-            || cursor.accepted < self.cursor.accepted
+        if cursor.volume != self.storage.cursor.volume
+            || cursor.query != self.storage.cursor.query
+            || cursor.epoch != self.storage.cursor.epoch
+            || cursor.schema != self.storage.cursor.schema
+            || self.storage.cursor.position.checked_add(1) != Some(cursor.position)
+            || cursor.accepted < self.storage.cursor.accepted
             || cursor.accepted < cursor.position
-            || cursor.durable < self.cursor.durable
+            || cursor.durable < self.storage.cursor.durable
             || cursor.durable > cursor.accepted
         {
             return Err(invalid());
         }
-        let mut bytes = self.bytes;
-        let mut count = self.files.len() + self.rejected_models.len();
+        let mut bytes = usize::try_from(self.storage.bytes).map_err(|_| invalid())?;
+        let mut count = self.storage.files.len() + self.rejected_models.len();
         for key in &change.removed {
-            let old = self.files.get(key);
-            if old.is_none() && !self.rejected_models.contains(key) {
+            let old = self.storage.files.get(key);
+            if old.is_none()
+                && !self.rejected_models.contains(key)
+                && self.query != Query::ActiveAgents
+            {
                 return Err(invalid());
             }
             bytes = bytes
-                .checked_sub(old.map_or(0, |file| file.bytes.len()))
+                .checked_sub(old.map_or(0, |file| file.length as usize))
                 .ok_or_else(invalid)?;
-            count -= 1;
+            count -= usize::from(old.is_some() || self.rejected_models.contains(key));
         }
         let mut changed = !change.removed.is_empty();
         for file in files.clone() {
-            let old = self.files.get(&file.key);
+            let old = self.storage.files.get(&file.key);
             bytes = bytes
-                .checked_sub(old.map_or(0, |file| file.bytes.len()))
+                .checked_sub(old.map_or(0, |file| file.length as usize))
                 .ok_or_else(invalid)?;
             count = count
                 .checked_add(usize::from(
@@ -312,52 +474,15 @@ impl FileQueryView {
         if bytes > self.maximum_bytes || count > self.maximum_files {
             return Err(invalid());
         }
-        for key in change.removed {
-            if key == FileKey::Goal {
-                self.goal = GoalFileView::Missing;
-                self.goal_revision = None;
-                self.goal_line_starts = Arc::default();
-            }
-            if key == FileKey::RequestHead {
-                self.progress = None;
-            }
-            self.files.remove(&key);
-            self.rows.remove(&key);
-            self.models.remove(&key);
-            self.rejected_models.remove(&key);
-        }
-        for file in change.file.into_iter().chain(change.files) {
-            if rejected_model(&file, self.maximum_bytes) {
-                self.files.remove(&file.key);
-                self.models
-                    .insert(file.key.clone(), super::ModelFileView::Invalid);
-                self.rejected_models.insert(file.key);
-                continue;
-            }
-            self.rejected_models.remove(&file.key);
-            if file.key == FileKey::RequestHead && self.files.get(&file.key) != Some(&file) {
-                self.progress = super::GoalProgress::from_file(Some(&file));
-            }
-            if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
-                self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
-                self.goal_revision = goal_revision(Some(&file));
-                self.goal_line_starts = goal_line_starts(&self.goal);
-            }
-            if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
-                self.rows.insert(file.key.clone(), plan_rows(&file));
-            }
-            if super::model_view::turn_request(&file.key).is_some()
-                && self.files.get(&file.key) != Some(&file)
-            {
-                self.models
-                    .insert(file.key.clone(), super::ModelFileView::from_file(&file));
-            }
-            self.files.insert(file.key.clone(), file);
-        }
-        self.bytes = bytes;
-        self.cursor = change.cursor;
+        self.project(&change);
+        self.storage.replace(&change, &self.rejected_models);
         Ok(changed)
     }
+}
+
+fn semantic(key: &FileKey) -> bool {
+    matches!(key, FileKey::Goal | FileKey::Plan(_) | FileKey::RequestHead)
+        || super::model_view::turn_request(key).is_some()
 }
 
 fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {
@@ -419,8 +544,7 @@ fn safe(text: &str) -> String {
 impl super::ClientViews {
     /// Goal rendering for one followed volume selection, absent before its snapshot.
     pub fn goal(&self, volume: [u8; 32], query: [u8; 32]) -> Option<&GoalFileView> {
-        self.queries
-            .get(&(volume, query))
+        self.selection(&(volume, query))
             .filter(|view| view.query.matches(&FileKey::Goal))
             .map(FileQueryView::goal)
     }
@@ -434,16 +558,51 @@ impl super::ClientViews {
         maximum_bytes: usize,
     ) -> Result<()> {
         let view = FileQueryView::from_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
-        self.queries
-            .insert((view.cursor.volume, view.cursor.query), view);
+        self.install_selection(view);
         Ok(())
     }
 
     /// Updates the same shared views consumed by terminal, headless and browser renderers.
     pub fn query_change(&mut self, change: Change) -> Result<bool> {
-        self.queries
-            .get_mut(&(change.cursor.volume, change.cursor.query))
+        self.selection_mut(&(change.cursor.volume, change.cursor.query))
             .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?
             .apply(change)
+    }
+}
+
+impl super::ClientViews {
+    /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
+    /// The host folds returned records with `query_change` and redraws shared views.
+    pub async fn select_file_view(
+        &mut self,
+        selection: super::CommandQuery,
+        volume: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        let query = match selection {
+            super::CommandQuery::Plan => crate::task_volume::Query::Plans,
+            super::CommandQuery::Goal => {
+                crate::task_volume::Query::File(crate::task_volume::FileKey::Goal)
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "view does not select a private file query".into(),
+                ));
+            }
+        };
+        let observation = volume
+            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
+            .await
+            .map_err(|error| match error {
+                #[cfg(feature = "filesystem")]
+                crate::task_volume::Error::FileRead(error) => error,
+                error => Error::Storage(error.to_string()),
+            })?;
+        let snapshot = observation
+            .snapshot
+            .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;
+        self.query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
+        Ok(observation.changes)
     }
 }

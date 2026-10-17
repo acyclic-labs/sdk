@@ -1,7 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
     AgentId, OperationId,
-    client::{ClientSession, FileQueryView, MemoryClientState},
+    client::FileQueryView,
     context::CompactionPolicy,
     filesystem::MemoryHarnessStorage,
     model::{Model, ModelEvent},
@@ -134,7 +134,7 @@ impl PlanQuery {
         let snapshot = observation.snapshot.ok_or("missing initial snapshot")?;
         let identity = (snapshot.cursor.volume, snapshot.cursor.query);
         let mut changes = observation.changes;
-        let mut client = ClientSession::open(MemoryClientState::default())?;
+        let mut client = new_views()?;
         client.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
         let mut captured = Vec::new();
         for revision in &self.writes {
@@ -170,11 +170,12 @@ impl PlanQuery {
                 .await?
                 .snapshot
                 .ok_or("snapshot missing")?;
-            while client.views().queries[&identity].cursor().position < snapshot.cursor.position {
+            while client.selection(&identity).unwrap().cursor().position < snapshot.cursor.position
+            {
                 let change = changes.next().await.ok_or("follow ended")??;
                 let cursor = change.cursor.clone();
                 let modified = client.query_change(change)?;
-                let view = &client.views().queries[&identity];
+                let view = client.selection(&identity).unwrap();
                 if view.cursor() != &cursor {
                     return Err("client cursor did not advance".into());
                 }
@@ -182,24 +183,18 @@ impl PlanQuery {
                     views.push(view.clone());
                 }
             }
-            let view = client
-                .views()
-                .queries
-                .get(&identity)
-                .ok_or("file query missing")?;
+            let view = client.selection(&identity).ok_or("file query missing")?;
             views.push(view.clone());
 
             // A new client reconstructs exactly the accepted file view at each cut.
-            let mut reopened = ClientSession::open(client.into_store())?;
-            if !reopened.views().queries.is_empty() {
+            let mut reopened = new_views()?;
+            if !reopened.selections().next().is_none() {
                 return Err("file payloads leaked into recovery metadata".into());
             }
             reopened.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
             views.push(
                 reopened
-                    .views()
-                    .queries
-                    .get(&identity)
+                    .selection(&identity)
                     .ok_or("snapshot missing")?
                     .clone(),
             );
@@ -211,7 +206,7 @@ impl PlanQuery {
                 .map(|(key, value)| {
                     (
                         key.path(),
-                        String::from_utf8_lossy(&value.bytes).into_owned(),
+                        String::from_utf8_lossy(&value.segments[0]).into_owned(),
                     )
                 })
                 .collect();
@@ -256,4 +251,22 @@ fn panel_rows(view: &FileQueryView) -> Vec<String> {
     view.plan_rows()
         .map(|line| line.trim_end().to_owned())
         .collect()
+}
+
+fn new_views() -> acyclic_harness::Result<acyclic_harness::client::ClientViews> {
+    use acyclic_harness::client::{ClientViewLimits, ClientViews, QueryViewLimits};
+    ClientViews::new(
+        acyclic_stream::StreamPath::new("swarm").unwrap(),
+        ClientViewLimits {
+            agents: 0,
+            selected: 0,
+            overview_values: 0,
+            overview_bytes: 0,
+            query: QueryViewLimits {
+                files: 0,
+                segments: 0,
+                bytes: 0,
+            },
+        },
+    )
 }

@@ -1,6 +1,6 @@
 /** A public reducer-backed message projection; no queue/admission implementation. */
 import { Harness, DEFAULT_LIMITS, type ConversationMessage } from "@acyclic-labs/harness";
-import { ClientViews, type ClientDomain, type ClientFact, type OperationOutcome } from "@acyclic-labs/harness";
+import { HypothesisClient, type ClientDomain, type ClientFact, type OperationOutcome } from "@acyclic-labs/harness";
 
 function immutable<Value>(value: Value): Value {
   if (value !== null && typeof value === "object") {
@@ -73,7 +73,7 @@ export async function messageViewExample(): Promise<{
       return { matches: predicted.byteLength === canonical.byteLength && predicted.every((byte, index) => byte === canonical[index]), work: 1 };
     },
   };
-  const client = new ClientViews(domain, "11", 0n, { records: 1, branches: 1, edges: 1, bytes: 100_000, work: 32, retention: 10n, visible: 1 });
+  const client = new HypothesisClient(domain, "11", 0n, { records: 1, branches: 1, edges: 1, bytes: 100_000, work: 32, retention: 10n, visible: 1 });
   try {
     const initial = read(null);
     client.observe(predicted.id, initial);

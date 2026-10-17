@@ -1,11 +1,13 @@
 //! Model identity is a disposable fold over each immutable turn request file.
-use super::{ClientViews, FileQueryView};
+use super::ClientViews;
 use crate::task_volume::{Component, Cursor, FileKey, FileValue, TaskFile};
 use serde::Serialize;
 
 /// Selected identity from a request; model options and prompt bytes stay in the file.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub enum ModelFileView {
     /// The file has no valid model identity; never retain a prior selection.
     Invalid,
@@ -47,6 +49,8 @@ pub(super) fn turn_request(key: &FileKey) -> Option<(&Component, u64)> {
 
 /// Model identity at one accepted query cut, scoped to its task and turn.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct ModelQueryView<'a> {
     /// Exact volume, query and history position supplying this identity.
     pub cursor: &'a Cursor,
@@ -61,7 +65,7 @@ pub struct ModelQueryView<'a> {
 impl ClientViews {
     /// Borrows model choices from already observed turn-request files.
     pub fn models(&self) -> impl Iterator<Item = ModelQueryView<'_>> {
-        self.queries.values().flat_map(FileQueryView::models)
+        self.selections().flat_map(|(_, files)| files.models())
     }
 }
 

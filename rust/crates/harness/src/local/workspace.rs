@@ -9,6 +9,7 @@ mod bootstrap;
 mod performance_tests;
 
 mod mounts;
+mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
 pub(super) use crate::sync::owned::lock_owned;
@@ -16,19 +17,8 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
-    pub(super) native: Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>,
-}
-
-impl Drop for MountedVolume {
-    fn drop(&mut self) {
-        if let Some(native) = &self.native {
-            // Provider retirement joins callbacks and releases the actual OS
-            // destination fence before the final workspace owner disappears.
-            if let Err(error) = native.abandon() {
-                tracing::error!(?error, "workspace mount retirement failed");
-            }
-        }
-    }
+    pub(super) destination: PathBuf,
+    pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -58,8 +48,8 @@ pub struct LocalWorkspace {
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) identity: acyclic_fs::NativeRootIdentity,
-    // Lock order: view state -> coordinator -> command-local cache or native
-    // completion, then task-file index -> provider visibility -> provider state.
+    // Lock order: view state -> volume projection -> coordinator -> command-local
+    // cache or native completion, then task-file index -> provider visibility -> provider state.
     // Callbacks never reacquire view state. All executor bindings share this
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
