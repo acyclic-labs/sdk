@@ -281,6 +281,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
 tonic.workspace = true
@@ -304,6 +305,11 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "local-cloud-actors"
+path = "tests/local_cloud_actors/main.rs"
+required-features = ["test-support", "grpc"]
 
 [[test]]
 name = "client-diff"
