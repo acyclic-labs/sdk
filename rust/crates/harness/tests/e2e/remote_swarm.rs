@@ -57,13 +57,14 @@ fn expected(reply: &str) -> TestResult<Value> {
         "status": status,
         "selected": [{
             "key": head()?,
-            "segments": [reply_of(0, reply)],
+            "segments": [reply_of(0, reply), reply_of(0, LIVE)],
         }],
     }))
 }
 
 const CHUNKS: &str = ".tasks/t/turns/1/chunks";
 const CHUNK: &str = ".tasks/t/turns/1/chunks/1";
+const LIVE: &str = " delivered after snapshot";
 
 /// The Text head a client views `CHUNK` under.
 fn head() -> TestResult<FileKey> {
@@ -221,15 +222,23 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
     publish: (impl Fn(usize) -> usize, Option<usize>),
 ) -> TestResult<Value> {
     let volumes = volumes(&stream, root).await?;
+    let index = if publish.1.is_some() { 3 } else { 2 };
+    let live = reply_of(0, LIVE);
+    let mut live_chunk = Write::new(
+        FileKey::parse(&format!("{CHUNKS}/{index}"))?,
+        live.as_bytes().to_vec(),
+    );
+    live_chunk.channel = Some(Channel::Text);
     seed(&stream, &volumes, root, reply, publish).await?;
     let client = client(root)?;
     let views = client.views();
     let (done, completed) = oneshot::channel();
     let mut done = Some(done);
+    let mut published = false;
     let agents = (0..AGENTS)
         .map(|id| agent(root, id))
         .collect::<TestResult<Vec<_>>>()?;
-    let ready = |views: &acyclic_harness::client::ClientViews| {
+    let ready = |views: &acyclic_harness::client::ClientViews, length: usize| {
         views.agents().eq(agents.iter())
             && agents.iter().all(|agent| {
                 views
@@ -238,7 +247,7 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
             })
             && views
                 .files(&agents[0])
-                .any(|file| file.length == reply_of(0, reply).len() as u64)
+                .any(|file| file.length == length as u64)
     };
     let followed = client
         .follow(
@@ -256,7 +265,16 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
                 }
             },
             async |_| {
-                if views.read(&ready)?
+                // Publish only after the initial snapshot is installed. This
+                // chunk must arrive through the selected content subscription.
+                if !published && views.read(|views| ready(views, reply_of(0, reply).len()))? {
+                    published = true;
+                    put(&volumes.agents[0], &live_chunk).await.map_err(|error| {
+                        acyclic_harness::Error::Storage(error.to_string())
+                    })?;
+                }
+                if published
+                    && views.read(|views| ready(views, reply_of(0, reply).len() + live.len()))?
                     && let Some(done) = done.take()
                 {
                     let _ = done.send(());
