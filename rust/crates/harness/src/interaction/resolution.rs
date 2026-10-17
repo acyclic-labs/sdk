@@ -10,7 +10,7 @@ pub struct InteractionResolution {
     pub expected_version: u64,
     /// One explicit closed state.
     pub outcome: InteractionOutcome,
-    /// Optional pinned JSON response preserving an approval explanation.
+    /// Pinned JSON decision file; mandatory for approval verdicts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<FileRef>,
 }
@@ -21,6 +21,17 @@ impl InteractionResolution {
         if self.id != ticket.id || self.expected_version == 0 {
             return Err(Error::Conflict(
                 "interaction resolution version mismatch".into(),
+            ));
+        }
+        if ticket.kind == InteractionKind::Approval
+            && matches!(
+                &self.outcome,
+                InteractionOutcome::Approved {} | InteractionOutcome::Declined {}
+            )
+            && self.detail.is_none()
+        {
+            return Err(Error::Invalid(
+                "approval decision requires its decision file".into(),
             ));
         }
         if let Some(detail) = &self.detail {

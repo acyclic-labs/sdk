@@ -126,3 +126,73 @@ fn a_retry_revalidates_the_owner_before_publishing() {
         .unwrap_or("");
     assert!(text.contains("retry did not revalidate owner"), "{text}");
 }
+
+/// A peer's identical copy may be accepted but not yet durable, so a publisher
+/// still awaiting a durable receipt commits its own copy: on a flushing provider
+/// that commit is what advances the durable prefix over the file. Whichever
+/// order the peer's pre-encoded append and the real commit-and-retry path take,
+/// the publisher's own copy lands.
+#[test]
+fn an_identical_accepted_copy_never_replaces_the_own_commit() {
+    fn scenario(broken: bool) {
+        let provider = Arc::new(MemoryStream::default());
+        let volume = Arc::new(
+            loom::future::block_on(Box::pin(TaskVolume::open(
+                provider.clone(),
+                StreamPath::new("durable-publication-model").unwrap(),
+            )))
+            .unwrap(),
+        );
+        let decision = Write::new(
+            FileKey::Task {
+                task: Component::new("task").unwrap(),
+                file: TaskFile::ApprovalDecision {
+                    request: Component::new("request").unwrap(),
+                    principal: Component::new("principal").unwrap(),
+                },
+            },
+            b"approve".to_vec(),
+        );
+        let (record, _) = segment::encode(&decision, None).unwrap();
+        let path = volume.path.clone();
+        let opened = loom::future::block_on(Box::pin(provider.tail(path.clone()))).unwrap();
+        let generation = loom::future::block_on(Box::pin(volume.head())).unwrap();
+        let peer_provider = provider.clone();
+        let peer = loom::thread::spawn(move || {
+            loom::future::block_on(Box::pin(peer_provider.append(AppendRequest {
+                path,
+                records: vec![record],
+                if_tail: None,
+                idempotency_key: None,
+            })))
+            .unwrap();
+        });
+        if broken {
+            model_checking::set_fault(model_checking::Fault::TrustAcceptedCopy);
+        }
+        loom::future::block_on(Box::pin(commit_acknowledged(
+            &volume, generation, &decision, None,
+        )))
+        .unwrap();
+        peer.join().unwrap();
+        // The stream must hold this publisher's copy as well as the peer's.
+        let records = loom::future::block_on(Box::pin(provider.tail(volume.path.clone()))).unwrap();
+        assert_eq!(
+            records,
+            opened + 2,
+            "own commit skipped for an accepted copy"
+        );
+    }
+    loom::model(|| scenario(false));
+    let error = std::panic::catch_unwind(|| loom::model(|| scenario(true)))
+        .expect_err("skipped own commit was accepted");
+    let text = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        text.contains("own commit skipped for an accepted copy"),
+        "{text}"
+    );
+}

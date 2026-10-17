@@ -142,7 +142,7 @@ impl History {
                 },
                 _ => unreachable!("bounded outcome input"),
             },
-            detail: None,
+            detail: (outcome < 2).then(|| request_file(b"{}").expect("decision file")),
         };
         if allowed {
             self.expected.push((id, resolution.clone()));
@@ -153,6 +153,7 @@ impl History {
         }
         if fault == Fault::ForeignPending {
             submitted.outcome = InteractionOutcome::Indeterminate { operation_id: id };
+            submitted.detail = None;
         }
         if fault == Fault::Reopen {
             self.reducer

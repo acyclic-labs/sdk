@@ -107,7 +107,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         &self,
         ticket: &crate::interaction::InteractionTicket,
         reference: &crate::conversation::FileRef,
-        detail_outcome: Option<&InteractionOutcome>,
+        decision: Option<(&crate::interaction::InteractionResolution, &str)>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
         let verifier = self.content_verifier.as_ref().ok_or_else(|| {
@@ -118,6 +118,20 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
         })?;
         let mut quota = CodecQuota::new(work, 0)?;
+        if let Some((resolution, principal)) = decision {
+            let (bytes, held) =
+                Self::read_admission_content_with_work(verifier.as_ref(), reference, quota.work())
+                    .await?;
+            quota.adopt(held)?;
+            ticket.validate_decision_bytes(
+                resolution,
+                Some(principal),
+                reference,
+                &bytes,
+                quota.work(),
+            )?;
+            return Ok(());
+        }
         let (request_bytes, held) = Self::read_admission_content_with_work(
             verifier.as_ref(),
             &ticket.request,
@@ -131,12 +145,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Self::read_admission_content_with_work(verifier.as_ref(), reference, quota.work())
                 .await?;
         quota.adopt(held)?;
-        match detail_outcome {
-            Some(outcome) => {
-                ticket.validate_decision_bytes(&request.0, outcome, reference, &bytes, quota.work())
-            }
-            None => ticket.validate_answer_bytes(&request.0, reference, &bytes, quota.work()),
-        }
+        ticket.validate_answer_bytes(&request.0, reference, &bytes, quota.work())
     }
     pub(super) async fn validate_extension_admission_content(
         &self,
@@ -175,8 +184,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
     pub(super) async fn validate_admission_content(
         &self,
         action: &crate::core::Action,
+        principal: &str,
     ) -> Result<()> {
-        self.validate_interaction_admission(action).await?;
+        self.validate_interaction_admission(action, principal)
+            .await?;
         self.validate_extension_admission_content(action).await?;
         let message = match action {
             crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
@@ -243,7 +254,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    pub(super) async fn validate_interaction_admission(&self, action: &Action) -> Result<()> {
+    pub(super) async fn validate_interaction_admission(
+        &self,
+        action: &Action,
+        principal: &str,
+    ) -> Result<()> {
         let Action::ResolveInteraction { resolution } = action else {
             return Ok(());
         };
@@ -273,7 +288,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_interaction_part_with_work(
                 ticket,
                 detail,
-                Some(&resolution.outcome),
+                Some((resolution, principal)),
                 &mut None,
             )
             .await?;

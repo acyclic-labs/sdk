@@ -9,6 +9,8 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Fault {
     None,
+    MixedReceiptCut,
+    BarrierAsFlushed,
     OmitAppendWake,
     RetainReplacedState,
     IgnoreHead,
@@ -362,4 +364,14 @@ pub fn local_compaction_visibility(hold_publication: bool) {
 /// Detect releasing mutation serialization before the snapshot's device cut.
 pub fn local_compaction_cut() {
     crate::local::compaction_model::verify(2);
+}
+
+/// Checks receipts against their own flushed cut while other calls advance it.
+pub fn local_receipt_cuts(broken: bool) {
+    crate::local::receipt_model::verify(broken);
+}
+
+/// Checks ordered and device-flushed progress on the production journal locks.
+pub fn local_barrier_receipts(broken: bool) {
+    crate::local::receipt_model::verify_barrier(broken);
 }

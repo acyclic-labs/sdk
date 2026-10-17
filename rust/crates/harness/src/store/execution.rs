@@ -52,6 +52,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
                         owner.require_interaction_grant(work)?;
                         crate::distributed::JournalWrite::Fresh
                     }
+                    Action::ResolveInteraction { .. } => {
+                        owner.require_interaction_grant(work)?;
+                        crate::distributed::JournalWrite::Settlement
+                    }
                     Action::PlanEffect {
                         provider,
                         request,

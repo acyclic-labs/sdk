@@ -61,6 +61,8 @@ pub(crate) mod follow_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
 #[cfg(acyclic_loom)]
+pub(crate) mod receipt_model;
+#[cfg(acyclic_loom)]
 pub(crate) mod replay_model;
 
 #[cfg(test)]

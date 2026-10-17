@@ -13,7 +13,7 @@ use crate::{
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, ApplyResult, Authority, AuthorityVerifier, Command, SchemaRegistry, Scope},
     interaction::{
-        ApprovalBinding, Interaction, InteractionKind, InteractionOutcome, InteractionResolution,
+        ApprovalBinding, Interaction, InteractionOutcome, InteractionResolution,
         InteractionResponse, InteractionTicket, ResolutionReceipt,
     },
     runtime::InteractionResolver,
@@ -38,6 +38,7 @@ pub struct FilesystemInteractionHost<P, A, O> {
 }
 
 mod content;
+pub(in crate::filesystem) use content::admit_interaction;
 mod publication;
 mod resolution;
 

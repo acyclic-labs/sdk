@@ -332,14 +332,8 @@ pub(super) async fn worker_restart_with_options(
             )
             .await?;
             let runtime = if with_policy {
-                runtime.with_interaction_owner(
-                    conversation_issuer
-                        .verifier(&mut None)
-                        .expect("verifier copy"),
-                    SchemaRegistry::new(),
-                    conversation_scope.clone(),
-                    volume.clone(),
-                )?
+                let owner = (&conversation_issuer, &conversation_scope);
+                with_interaction_owner(runtime, &stream, (&volume, &issuer, &signed), owner).await?
             } else {
                 runtime
             };

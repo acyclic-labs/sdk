@@ -16,7 +16,7 @@ use crate::{
         EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
         ModelEventAdmission, decode_json,
     },
-    interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
+    interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{ModelContent, ModelEvent},
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
@@ -31,6 +31,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
+mod approvals;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod approvals_tests;
 mod cancellation;
 mod canonical;
 mod chunks;

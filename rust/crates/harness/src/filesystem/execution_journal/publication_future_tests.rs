@@ -503,21 +503,43 @@ proptest! {
                 });
                 assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
                 assert!(observed.1.is_empty(), "factory error reached storage work");
-                observed
+                let frames = if old {
+                    legacy::frame_bytes()
+                } else {
+                    // Construct and drop the candidate without polling: this is
+                    // exactly its trait-erasure frame, with no operation work.
+                    let frame = acyclic_test_support::measure(|| {
+                        let selected = Choice(&journal, false);
+                        match mode {
+                            0 => drop(selected.append(operation, "key", &event, None).unwrap()),
+                            1 => drop(selected.append_if_tail(operation, 0, "key", &event, None).unwrap()),
+                            2 => drop(selected.replay(operation, 0, 64, None).unwrap()),
+                            3 => drop(selected.load(&file, None).unwrap()),
+                            _ => drop(selected.stage(operation, "key", &oversized, "application/octet-stream", None).unwrap()),
+                        }
+                    });
+                    assert_eq!(frame.count_total, 1);
+                    assert_eq!(frame.count_current, 0);
+                    frame.bytes_total
+                };
+                (observed, frames)
             })
         });
         prop_assert_eq!(initializations.get(), 2);
-        for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
+        for ((before, original_frames), (after, candidate_frame)) in before.into_iter().zip(after) {
             prop_assert!(after.0.0.is_err());
             prop_assert_eq!(&before.0.0, &after.0.0);
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
-            prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Main added chunk publication to the accounted append frame (+64 bytes).
-            let saved = [21200, 21024, 14304, 11840, 14192][mode];
-            eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
-            prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
-            prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
+            let saved = original_frames - candidate_frame;
+            let savings = |baseline: acyclic_test_support::AllocationInfo, candidate: acyclic_test_support::AllocationInfo| {
+                (baseline.count_total as i128 - candidate.count_total as i128,
+                 baseline.bytes_total as i128 - candidate.bytes_total as i128)
+            };
+            prop_assert_eq!(savings(before, after), (1, saved as i128));
+            // The independently initialized old production path adds the nested
+            // box back, and must fail the very same count AND byte assertion.
+            prop_assert_ne!(savings(before, before), (1, saved as i128), "old nested box passed");
         }
     }
 

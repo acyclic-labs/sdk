@@ -33,6 +33,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         appended: 0,
         required: 0,
         synced: 0,
+        flushed_sequence: Some(0),
         syncing: false,
         root: PathBuf::new(),
         torn_tail: None,
@@ -47,6 +48,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     });
     Ok(LocalStream {
         inner: Arc::new(LocalInner {
+            durability: limits.durability,
             provider: MemoryStream::new_with_commit_clock(
                 limits.memory,
                 clock,
@@ -56,7 +58,11 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
             publication: RwLock::new(()),
-            synced: watch::channel(0).0,
+            synced: watch::channel(SyncProgress {
+                ordered: 0,
+                flushed: Some(0),
+            })
+            .0,
             failed: watch::channel(false).0,
             revision: watch::channel(0).0,
             omit_follow_wake,

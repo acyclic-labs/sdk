@@ -91,7 +91,11 @@ pub(crate) fn verify(fault: u8) {
                         entered.send(()).unwrap();
                         released.recv().unwrap();
                         let target = journal.appended;
-                        provider.inner.publish_synced(&mut journal, target);
+                        provider.inner.publish_synced(
+                            &mut journal,
+                            target,
+                            SyncCompletion::Flushed(DeviceFlushed),
+                        );
                     }
                     provider.inner.commit_clock.unpin();
                 })

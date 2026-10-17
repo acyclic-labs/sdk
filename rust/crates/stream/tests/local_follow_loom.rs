@@ -63,3 +63,23 @@ fn negative_control_compaction_retains_the_publication_fence() {
 fn negative_control_compaction_releases_mutation_serialization_early() {
     acyclic_stream::verification::local_compaction_cut();
 }
+
+#[test]
+fn concurrent_receipt_cuts_keep_their_flushed_snapshot() {
+    acyclic_stream::verification::local_receipt_cuts(false);
+}
+#[test]
+#[should_panic(expected = "flushed snapshot lost its receipt")]
+fn negative_control_receipt_cuts_mix_observations() {
+    acyclic_stream::verification::local_receipt_cuts(true);
+}
+
+#[test]
+fn barrier_progress_cannot_certify_device_flush() {
+    acyclic_stream::verification::local_barrier_receipts(false);
+}
+#[test]
+#[should_panic(expected = "barrier certified an unflushed record")]
+fn negative_control_barrier_progress_certifies_device_flush() {
+    acyclic_stream::verification::local_barrier_receipts(true);
+}

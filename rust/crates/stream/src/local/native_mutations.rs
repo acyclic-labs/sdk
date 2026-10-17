@@ -83,7 +83,7 @@ impl LocalStream {
                     let required = stream.inner.required();
                     drop(visibility);
                     let result = match required {
-                        Ok(required) => stream.await_durable(required).await.and(result),
+                        Ok(required) => stream.await_publication(required).await.and(result),
                         Err(error) => Err(error),
                     };
                     break result;

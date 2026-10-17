@@ -23,8 +23,9 @@ mod tests {
         #[test]
         fn accepted_observation_round_trips_and_preserves_the_exact_boundary(
             accepted in any::<u64>(), durable in proptest::option::of(any::<u64>()),
+            through in proptest::option::of(any::<u64>()),
         ) {
-            let request = wire::TailRequest { path: "agents/new".into(), accepted: accepted % 2 == 0 };
+            let request = wire::TailRequest { path: "agents/new".into(), accepted: accepted % 2 == 0, durable_through: through };
             prop_assert_eq!(wire::TailRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
             let wire = wire::TailResponse { tail: accepted, durable };
             let decoded = wire::TailResponse::decode(wire.encode_to_vec().as_slice()).unwrap();

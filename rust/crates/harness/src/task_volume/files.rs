@@ -83,6 +83,27 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    /// Publishes an owner-produced immutable file through the shared
+    /// generation-retry path. An identical accepted copy is success.
+    pub(crate) async fn publish_owned(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<()> {
+        let generation = self.inner.head().await?;
+        super::publication::publish_with_work(&self.inner, generation, file, work).await?;
+        Ok(())
+    }
+
+    /// Publishes an owner-produced immutable file and proves it is durable.
+    pub(crate) async fn publish_durable(
+        &self,
+        file: &FileValue,
+        work: crate::NativeWork<'_>,
+    ) -> super::Result<super::DurableFile> {
+        super::publish_durable(&self.inner, file, work).await
+    }
+
     pub(crate) async fn write_if(
         &self,
         expected: Generation,

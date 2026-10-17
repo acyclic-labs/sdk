@@ -18,6 +18,13 @@ use native::NativeFaultRecordCursor;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
+    async fn durable_receipt(
+        &self,
+        path: acyclic_stream::StreamPath,
+        through: u64,
+    ) -> std::result::Result<Option<acyclic_stream::DurableReceipt>, acyclic_stream::StreamError> {
+        self.inner.durable_receipt(path, through).await
+    }
     async fn inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,

@@ -392,6 +392,7 @@ impl Error {
                 crate::task_volume::Error::Conflict(_)
                 | crate::task_volume::Error::ImmutableConflict(_)
                 | crate::task_volume::Error::SequenceConflict(_)
+                | crate::task_volume::Error::AwaitingDurability
                 | crate::task_volume::Error::ResetRequired => ErrorCode::Conflict,
                 crate::task_volume::Error::InvalidPath
                 | crate::task_volume::Error::InvalidSegment

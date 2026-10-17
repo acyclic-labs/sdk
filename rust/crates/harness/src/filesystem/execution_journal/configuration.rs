@@ -40,7 +40,9 @@ where
         mut self,
         files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     ) -> Self {
-        self.task_files = files;
+        if files.is_some() {
+            self.task_files = files;
+        }
         self
     }
 
@@ -260,6 +262,13 @@ where
         private_volume: &VolumeRef,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        // Task approvals are followed as task files: an owner-bound task journal
+        // without them could never prove a decision published.
+        if self.owner.is_some() && self.task_files.is_none() {
+            return Err(Error::Invalid(
+                "task interaction owner requires private task files".into(),
+            ));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self

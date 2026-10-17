@@ -17,7 +17,7 @@ mod page;
 mod plan_name;
 mod publication;
 mod recent;
-pub(crate) use publication::publish;
+pub(crate) use publication::{DurableFile, publish, publish_durable};
 mod refresh;
 mod schema;
 mod segment;
@@ -102,6 +102,9 @@ pub enum Error {
     /// An execution-owner condition failed without publishing any task files.
     #[error("task-volume execution fence conflict")]
     FenceConflict,
+    /// The provider has not yet confirmed this file in its durable prefix.
+    #[error("task file awaits durability")]
+    AwaitingDurability,
     /// Cursor identity or position cannot be resumed in this history/query.
     #[error("task-volume query reset required")]
     ResetRequired,
@@ -418,10 +421,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            false,
+            Mode::Append,
             work,
         )
         .await
+        .map(|(generation, _)| generation)
     }
 
     /// Creates one file only if absent at the exact query generation. Unlike an
@@ -445,29 +449,31 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             write,
             conditions,
             deadline_unix_millis,
-            true,
+            Mode::Create,
             work,
         )
         .await
+        .map(|(generation, _)| generation)
     }
 
-    async fn publish(
+    pub(super) async fn publish(
         &self,
         expected: Generation,
         write: &Write,
         conditions: Vec<CommitCondition>,
         deadline_unix_millis: Option<u64>,
-        create_only: bool,
+        mode: Mode,
         work: NativeWork<'_>,
-    ) -> Result<Generation> {
+    ) -> Result<(Generation, bool)> {
         let Some((request, files, next)) = self
-            .prepare_append(expected, write, conditions, create_only, work)
+            .prepare_append(expected, write, conditions, mode, work)
             .await?
         else {
-            return Ok(expected);
+            return Ok((expected, false));
         };
         self.commit_append(expected, request, files, next, deadline_unix_millis)
             .await
+            .map(|generation| (generation, true))
     }
 
     async fn prepare_append(
@@ -475,7 +481,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         expected: Generation,
         write: &Write,
         mut conditions: Vec<CommitCondition>,
-        create_only: bool,
+        mode: Mode,
         work: NativeWork<'_>,
     ) -> Result<Option<(CommitRequest, FileValue, u64)>> {
         self.refresh().await?;
@@ -483,14 +489,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if expected != self.generation(&index) {
             return Err(Error::Conflict(self.generation(&index)));
         }
-        if create_only && index.files.contains_key(&write.key) {
+        if mode == Mode::Create && index.files.contains_key(&write.key) {
             return Err(Error::ImmutableConflict(write.key.clone()));
         }
         validate_file(&index, write)?;
-        if index
-            .files
-            .get(&write.key)
-            .is_some_and(|stored| &stored.file == write)
+        if mode != Mode::Acknowledged
+            && index
+                .files
+                .get(&write.key)
+                .is_some_and(|stored| &stored.file == write)
         {
             return Ok(None);
         }
@@ -716,6 +723,18 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
         return Err(Error::SequenceConflict(file.key.clone()));
     }
     Ok(())
+}
+
+/// How a publication treats an identical accepted copy of its file.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Mode {
+    /// Succeed without a new record.
+    Append,
+    /// Fail: creation must be the first copy.
+    Create,
+    /// Commit this publisher's own copy, so success carries the provider's
+    /// acknowledgement of a commit that includes the exact file.
+    Acknowledged,
 }
 
 fn apply(index: &mut Index, file: FileValue, position: u64) {

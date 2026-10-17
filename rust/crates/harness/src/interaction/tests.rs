@@ -198,38 +198,57 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
             action_digest: [5; 32],
         }),
     };
-    let bytes = br#"{"type":"approval","approved":false,"reason":"Declined"}"#;
-    let detail = file("native-approval-decision.json", bytes)?;
+    let decision = ApprovalDecisionFile::new(
+        "approver",
+        ticket.request.descriptor().sha256(),
+        1,
+        false,
+        Some("Declined".into()),
+    )?;
+    let bytes = serde_json::to_vec(&decision).map_err(|error| Error::Invalid(error.to_string()))?;
+    let detail = file("native-approval-decision.json", &bytes)?;
+    let resolution = |outcome, expected_version| InteractionResolution {
+        id: ticket.id,
+        expected_version,
+        outcome,
+        detail: Some(detail.clone()),
+    };
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(native_budget(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let mut io = crate::store::HistoryWork::new(
         crate::filesystem::PreparationIo::from_native_work(&native)?,
     );
-    let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
-    ticket.validate_decision_bytes(
-        &request.0,
-        &InteractionOutcome::Declined {},
-        &detail,
-        bytes,
-        &mut Some(&mut io),
-    )?;
-    drop(request);
-    let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
-    assert!(matches!(
+    assert_eq!(
         ticket.validate_decision_bytes(
-            &request.0,
-            &InteractionOutcome::Approved {},
+            &resolution(InteractionOutcome::Declined {}, 1),
+            Some("approver"),
             &detail,
-            bytes,
+            &bytes,
             &mut Some(&mut io),
-        ),
-        Err(Error::NativeBoundary {
-            code: Conflict,
-            reason: "approval artifact disagrees with outcome",
-        })
-    ));
-    drop(request);
+        )?,
+        ApprovalDecisionFile::principal_digest("approver"),
+    );
+    // Negative controls: another verdict, version or resolving principal.
+    for (outcome, version, principal) in [
+        (InteractionOutcome::Approved {}, 1, "approver"),
+        (InteractionOutcome::Declined {}, 2, "approver"),
+        (InteractionOutcome::Declined {}, 1, "intruder"),
+    ] {
+        assert!(matches!(
+            ticket.validate_decision_bytes(
+                &resolution(outcome, version),
+                Some(principal),
+                &detail,
+                &bytes,
+                &mut Some(&mut io),
+            ),
+            Err(Error::NativeBoundary {
+                code: Conflict,
+                reason: "approval artifact disagrees with outcome",
+            })
+        ));
+    }
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
 }
@@ -326,4 +345,59 @@ fn approval_binding_cannot_change_with_display_json() -> Result<()> {
         Err(Error::Invalid(_))
     ));
     Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(256))]
+
+    /// Decision files round-trip exactly and bind only their own request cut.
+    #[test]
+    fn decision_file_round_trips_and_binds_exactly(
+        principal in "[ -~]{1,64}",
+        sha in proptest::prelude::any::<[u8; 32]>(),
+        other in proptest::prelude::any::<[u8; 32]>(),
+        version in 1_u64..u64::MAX,
+        approved in proptest::prelude::any::<bool>(),
+        reason in proptest::option::of("[ -~]{0,32}"),
+    ) {
+        proptest::prop_assume!(sha != [0; 32]);
+        let decision = ApprovalDecisionFile::new(&principal, &sha, version, approved, reason)
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        let bytes = serde_json::to_vec(&decision).unwrap();
+        let decoded = ApprovalDecisionFile::decode(&bytes, bytes.len() as u64).unwrap();
+        proptest::prop_assert_eq!(&decoded, &decision);
+        proptest::prop_assert_eq!(decoded.approved(), approved);
+        proptest::prop_assert!(decoded.binds(&sha, version));
+        proptest::prop_assert!(!decoded.binds(&sha, version - 1));
+        proptest::prop_assert_eq!(decoded.binds(&other, version), other == sha);
+        proptest::prop_assert!(ApprovalDecisionFile::decode(&bytes, bytes.len() as u64 - 1).is_err());
+        let file = ApprovalDecisionFile::principal_file(&principal);
+        proptest::prop_assert_eq!(file.len(), 32);
+        proptest::prop_assert!(crate::task_volume::Component::new(&file).is_ok());
+    }
+}
+
+#[test]
+fn decision_file_rejects_unbound_bodies() {
+    let sha = "ab".repeat(32);
+    let body = |principal: &str, sha: &str, version: u64| {
+        format!(
+            r#"{{"principal":"{principal}","request_sha256":"{sha}","expected_version":{version},"verdict":"approve","reason":null}}"#
+        )
+    };
+    assert!(ApprovalDecisionFile::decode(body("human", &sha, 1).as_bytes(), 4096).is_ok());
+    for invalid in [
+        body("", &sha, 1),
+        body("human", &sha, 0),
+        body("human", &"0".repeat(64), 1),
+        body("human", &"AB".repeat(32), 1),
+        body("human", &"ab".repeat(31), 1),
+        body("human", &sha, 1).replace("approve", "abstain"),
+        body("human", &sha, 1).replace("null}", r#"null,"extra":1}"#),
+    ] {
+        assert!(
+            ApprovalDecisionFile::decode(invalid.as_bytes(), 4096).is_err(),
+            "{invalid}"
+        );
+    }
 }

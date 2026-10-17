@@ -53,6 +53,8 @@ message TailRequest {
   // Observe accepted visibility without waiting for persistence. False retains
   // the provider's ordinary tail behavior.
   bool accepted = 2;
+  // Request an explicit irreversible-prefix barrier through this sequence.
+  optional uint64 durable_through = 3;
 }
 message TailResponse {
   uint64 tail = 1;

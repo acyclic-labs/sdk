@@ -15,6 +15,16 @@ impl StreamProvider for MemoryStream {
             }))
     }
 
+    /// Memory never rolls back part of a path: its retained tail is its
+    /// irreversible prefix, although it makes no crash-persistence claim.
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        let tail = self.tail(path.clone()).await?;
+        Ok(crate::DurableReceipt::retained(path, tail, through))
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let state = self.state.read().await;
         state

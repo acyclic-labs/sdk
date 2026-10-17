@@ -75,6 +75,23 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             let request = request.into_inner();
             let path = path(request.path).map_err(|error| error_status(&error))?;
             if request.accepted {
+                if let Some(through) = request.durable_through {
+                    let receipt = self
+                        .provider
+                        .durable_receipt(path.clone(), through)
+                        .await
+                        .map_err(|error| error_status(&error))?;
+                    let accepted = self
+                        .provider
+                        .watermarks(path)
+                        .await
+                        .map_err(|error| error_status(&error))?
+                        .accepted;
+                    return Ok(wire::TailResponse {
+                        tail: accepted,
+                        durable: Some(receipt.map_or(0, |receipt| receipt.through())),
+                    });
+                }
                 let watermarks = self
                     .provider
                     .watermarks(path)

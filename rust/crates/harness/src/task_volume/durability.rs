@@ -1,5 +1,5 @@
 use super::{Error, FileValue, Result, TaskVolume};
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{DurableReceipt, StreamProvider};
 
 #[cfg(all(test, acyclic_harness_loom))]
 #[path = "../../tests/task_volume/durability_model.rs"]
@@ -10,6 +10,37 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     /// A concurrent replacement or lost accepted history requires revalidation.
     pub async fn file_is_durable(&self, value: &FileValue) -> Result<bool> {
         self.file_durability::<true, false>(value).await
+    }
+
+    /// The provider's receipt that this exact indexed file is in its durable
+    /// prefix, on a validated history anchor; `None` while it is absent or only
+    /// accepted.
+    pub(crate) async fn file_receipt(&self, value: &FileValue) -> Result<Option<DurableReceipt>> {
+        value.validate()?;
+        self.refresh().await?;
+        let (generation, position) = {
+            let index = self.index.lock().await;
+            let Some(stored) = index.files.get(&value.key) else {
+                return Ok(None);
+            };
+            if &stored.file != value {
+                return Err(Error::ImmutableConflict(value.key.clone()));
+            }
+            (self.generation(&index), stored.position)
+        };
+        let Some(receipt) = self
+            .provider
+            .durable_receipt(self.path.clone(), position)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if receipt.path() != &self.path || receipt.through() < position {
+            return Err(Error::ResetRequired);
+        }
+        self.validate_anchor(generation.position, &generation.commit)
+            .await?;
+        Ok(Some(receipt))
     }
 
     async fn file_durability<const CHECK_ANCHOR: bool, const HOLD_INDEX: bool>(

@@ -307,10 +307,10 @@ async fn a_poisoned_store_fails_waits_for_frames_already_durable()
     provider.commit(keyed_commit("durable", 0)?).await?;
     let required = provider.inner.required()?;
     assert_eq!(required, 1);
-    provider.await_durable(required).await?;
+    provider.await_publication(required).await?;
     provider.inner.poison();
     assert_eq!(
-        provider.await_durable(required).await,
+        provider.await_publication(required).await,
         Err(StreamError::Unavailable)
     );
     assert_eq!(

@@ -154,11 +154,32 @@ impl StreamProvider for Client {
                 wire::TailRequest {
                     path: path.to_string(),
                     accepted: true,
+                    durable_through: None,
                 },
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
             .await?;
         decode_response(response, crate::wire_codec::watermarks_from_wire)
+    }
+
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        let response = self
+            .unary(
+                ATTEMPT_TIMEOUT,
+                wire::TailRequest {
+                    path: path.to_string(),
+                    accepted: true,
+                    durable_through: Some(through),
+                },
+                |mut service, request| Box::pin(async move { service.tail(request).await }),
+            )
+            .await?;
+        let marks = decode_response(response, crate::wire_codec::watermarks_from_wire)?;
+        Ok(crate::DurableReceipt::covering(path, &marks, through))
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

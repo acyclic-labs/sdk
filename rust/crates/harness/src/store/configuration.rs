@@ -49,4 +49,23 @@ impl<P: StreamProvider> StreamAggregate<P> {
     pub const fn reducer(&self) -> &Reducer {
         &self.reducer
     }
+
+    /// The provider's receipt that every event this projection reduced is in
+    /// its durable prefix; `None` while any of them is only accepted.
+    pub(crate) async fn durable_receipt(&self) -> Result<Option<acyclic_stream::DurableReceipt>> {
+        let through = self.reducer.revision();
+        let receipt = self
+            .client
+            .durable_receipt(self.path.clone(), through)
+            .await?;
+        if receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.path() != &self.path || receipt.through() < through)
+        {
+            return Err(Error::Storage(
+                "durable receipt names another prefix".into(),
+            ));
+        }
+        Ok(receipt)
+    }
 }

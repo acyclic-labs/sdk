@@ -402,6 +402,13 @@ impl StreamProvider for HttpStream {
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.session_client()?.watermarks(path).await
     }
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        self.session_client()?.durable_receipt(path, through).await
+    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         parse_append(
             &self

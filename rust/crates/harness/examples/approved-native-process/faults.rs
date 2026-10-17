@@ -11,6 +11,14 @@ struct ReceiptFaultStream<P = MemoryStream> {
 
 #[async_trait::async_trait]
 impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
+    async fn durable_receipt(
+        &self,
+        path: acyclic_stream::StreamPath,
+        through: u64,
+    ) -> std::result::Result<Option<acyclic_stream::DurableReceipt>, acyclic_stream::StreamError>
+    {
+        self.inner.durable_receipt(path, through).await
+    }
     fn native_inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,

@@ -104,10 +104,10 @@ impl Work {
         Ok(())
     }
     #[cfg(feature = "local")]
-    pub(crate) fn sync(
+    pub(crate) fn sync<T>(
         &self,
-        operation: impl FnOnce() -> std::io::Result<()>,
-    ) -> std::io::Result<()> {
+        operation: impl FnOnce() -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
         let mut ticket = self
             .durability
             .lock()
@@ -118,7 +118,7 @@ impl Work {
             .attempt(operation);
         let _ = self.record(observed);
         match physical {
-            Ok(()) => Ok(()),
+            Ok(value) => Ok(value),
             Err(error) => {
                 let _ = self.record::<()>(Err(error));
                 Err(std::io::ErrorKind::Other.into())

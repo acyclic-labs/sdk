@@ -13,9 +13,11 @@ struct Journal {
     appended: u64,
     /// The latest frame written by a mutation that waits for the device.
     required: u64,
-    /// Every frame through this sequence is durable.
+    /// Every frame through this sequence is ordered (possibly still cached).
     synced: u64,
-    /// Whether a flush is under way; see [`LocalStream::await_durable`].
+    /// A device flush, including the recovered prefix, has covered this cut.
+    flushed_sequence: Option<u64>,
+    /// Whether a flush is under way; see [`LocalStream::await_publication`].
     syncing: bool,
     root: PathBuf,
     torn_tail: Option<u64>,

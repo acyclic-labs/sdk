@@ -54,6 +54,16 @@ pub trait StreamProvider: ProviderPlatform + 'static {
             durable: 0,
         })
     }
+    /// Issues a [`DurableReceipt`] when this path's confirmed durable prefix
+    /// covers `through`. Wrapping providers delegate to their inner provider.
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<DurableReceipt>, StreamError> {
+        let watermarks = self.watermarks(path.clone()).await?;
+        Ok(DurableReceipt::covering(path, &watermarks, through))
+    }
     /// Atomic append or tail conflict.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.

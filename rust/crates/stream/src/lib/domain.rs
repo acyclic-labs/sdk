@@ -143,6 +143,52 @@ pub struct StreamWatermarks {
     pub durable: u64,
 }
 
+/// Proof that a path's records before `through` are in the provider's
+/// irreversible prefix: no crash short of losing the whole stream removes them.
+/// Only [`StreamProvider::durable_receipt`] issues it, from a confirmed durable
+/// watermark (or, for `MemoryStream`, its retained tail, which it never
+/// rolls back). A commit acknowledgement alone never yields one, so writes made
+/// under `deferring_durability` cannot be mistaken for durable ones.
+///
+/// Nothing outside the provider can assemble one:
+///
+/// ```compile_fail
+/// let forged = acyclic_stream::DurableReceipt {
+///     path: acyclic_stream::StreamPath::new("forged").unwrap(),
+///     through: 1,
+/// };
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableReceipt {
+    path: StreamPath,
+    through: u64,
+}
+
+impl DurableReceipt {
+    /// The covered path.
+    pub fn path(&self) -> &StreamPath {
+        &self.path
+    }
+
+    /// Every record ending at or before this sequence is covered.
+    pub fn through(&self) -> u64 {
+        self.through
+    }
+
+    pub(crate) fn covering(
+        path: StreamPath,
+        watermarks: &StreamWatermarks,
+        through: u64,
+    ) -> Option<Self> {
+        (through <= watermarks.durable && watermarks.durable <= watermarks.accepted)
+            .then_some(Self { path, through })
+    }
+
+    pub(crate) fn retained(path: StreamPath, tail: u64, through: u64) -> Option<Self> {
+        (through <= tail).then_some(Self { path, through })
+    }
+}
+
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {

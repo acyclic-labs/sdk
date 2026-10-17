@@ -13,124 +13,21 @@ where
         response: InteractionResponse,
         responder: &Scope,
     ) -> Result<()> {
-        let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
-        traced(span, async {
-            let host = self.interactions()?;
-            host.verify_responder_scope(id, responder, None)?;
-            if let Some((owner, _)) = &self.owner {
-                owner.require_interaction_grant(&mut None)?;
-                owner.verify(true, &mut None).await?;
-            }
-            let (ticket, prior) = host
-                .read(id, None)
-                .await?
-                .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-            let request = host
-                .read_request(id, None)
-                .await?
-                .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
-            request.validate_response(&response, &mut None)?;
-            if let Some(previous) = &prior
-                && previous.outcome.is_terminal()
-            {
-                let stored = match (&previous.outcome, &response) {
-                    (
-                        InteractionOutcome::Approved {},
-                        InteractionResponse::Approval { approved: true, .. },
-                    )
-                    | (
-                        InteractionOutcome::Declined {},
-                        InteractionResponse::Approval {
-                            approved: false, ..
-                        },
-                    ) => Some(
-                        host.read_resolution_file(id, true, None)
-                            .await?
-                            .ok_or_else(|| {
-                                Error::Storage("admitted approval detail is missing".into())
-                            })?,
-                    ),
-                    (InteractionOutcome::Answered { .. }, _) => Some(
-                        host.read_resolution_file(id, false, None)
-                            .await?
-                            .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?,
-                    ),
-                    _ => None,
-                };
-                let same = match stored {
-                    Some(bytes) => {
-                        crate::contract::json_from_slice::<InteractionResponse>(&bytes)
-                            .map_err(|error| Error::Storage(error.to_string()))?
-                            == response
-                    }
-                    None => false,
-                };
-                if let Some((owner, _)) = &self.owner {
-                    owner.verify(true, &mut None).await?;
-                }
-                return if same {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("interaction was already resolved".into()))
-                };
-            }
-            let expected_version = prior.as_ref().map_or(Ok(1_u64), |value| {
-                value
-                    .expected_version
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("interaction version exhausted".into()))
-            })?;
-            let digest = blake3::hash(
-                format!(
-                    "interaction:{}:resolve-{expected_version}",
-                    uuid::Uuid::from_bytes(id.into_bytes()).hyphenated()
-                )
-                .as_bytes(),
-            );
-            let mut bytes = [0_u8; 16];
-            bytes.copy_from_slice(&digest.as_bytes()[..16]);
-            let operation = OperationId::from_bytes(bytes);
-            if let Some((owner, _)) = &self.owner {
-                owner.verify(true, &mut None).await?;
-            }
-            let staged = host
-                .stage_answer(id, expected_version, operation, &response, None)
-                .await?;
-            let (outcome, detail) = match response {
-                InteractionResponse::Approval { approved: true, .. } => {
-                    (InteractionOutcome::Approved {}, Some(staged))
-                }
-                InteractionResponse::Approval {
-                    approved: false, ..
-                } => (InteractionOutcome::Declined {}, Some(staged)),
-                _ => (
-                    InteractionOutcome::Answered {
-                        answer: Box::new(staged),
-                    },
-                    None,
-                ),
-            };
-            host.execute(
-                operation,
-                responder,
-                crate::core::Action::ResolveInteraction {
-                    resolution: InteractionResolution {
-                        id: ticket.id,
-                        expected_version,
-                        outcome,
-                        detail,
-                    },
-                },
-                None,
-                None,
-            )
-            .await?;
-            if let Some((owner, _)) = &self.owner {
-                owner.verify(true, &mut None).await?;
-            }
-            Ok(())
-        })
-        .await
+        let host = self.interactions()?;
+        let owner = self.owner.as_ref().map(|(owner, _)| owner);
+        if let Some(owner) = owner {
+            owner.require_interaction_grant(&mut None)?;
+            owner.verify(true, &mut None).await?;
+        }
+        let approval = matches!(response, InteractionResponse::Approval { .. });
+        host.resolve_latest(id, response, responder, owner).await?;
+        if approval {
+            self.published_decision(id, None).await?;
+        }
+        if let Some(owner) = owner {
+            owner.verify(true, &mut None).await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn open_interaction_with_io(
@@ -171,7 +68,7 @@ where
                     owner.verify(false, &mut work).await?;
                 }
                 return if original == interaction {
-                    Ok(())
+                    self.publish_approval_request(id, io).await
                 } else {
                     Err(reject(
                         crate::wire::ErrorCode::Conflict,
@@ -206,7 +103,7 @@ where
             owner.verify(false, &mut work).await?;
         }
         let result = match publication {
-            Ok(_) => Ok(()),
+            Ok(_) => self.publish_approval_request(id, io).await,
             Err(error)
                 if matches!(
                     error.code(),
@@ -222,7 +119,9 @@ where
                     (request_hold, original)
                 };
                 let result = match &original {
-                    Some(original) if original == interaction => Ok(()),
+                    Some(original) if original == interaction => {
+                        self.publish_approval_request(id, io).await
+                    }
                     Some(_) => Err(reject(
                         crate::wire::ErrorCode::Conflict,
                         "interaction identity reused",
@@ -261,7 +160,13 @@ where
                 "task execution has no conversation interaction owner",
             )
         })?;
-        let outcome = host.read_outcome(id, io).await?;
+        let outcome = match host.read_outcome(id, io).await? {
+            // A verdict reaches execution only as a published decision.
+            Some(InteractionOutcome::Approved {} | InteractionOutcome::Declined {}) => {
+                Some(self.published_decision(id, io).await?.outcome())
+            }
+            outcome => outcome,
+        };
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }

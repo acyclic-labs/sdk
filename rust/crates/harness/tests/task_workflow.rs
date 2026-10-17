@@ -12,7 +12,7 @@ use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
-    Action, AggregateKind, Authority, AuthorityIssuer, Command, EventPayload, SchemaRegistry,
+    Action, AggregateKind, Authority, AuthorityIssuer, Command, EventPayload, SchemaRegistry, Scope,
 };
 use acyclic_harness::distributed::{
     DistributedCoordinator, SchedulerPayloadStore, WorkPull, Worker,
@@ -175,6 +175,36 @@ impl ToolExecutor for InterruptedTool {
             }))
         })
     }
+}
+
+/// Binds a task runtime to its conversation interaction owner. Task approvals
+/// are followed as task files, so the owner is bound with the task's files.
+async fn with_interaction_owner<A, O>(
+    mut runtime: FilesystemTaskRuntime<LocalStream, A, O>,
+    stream: &Arc<LocalStream>,
+    (volume, issuer, signed): (&VolumeRef, &AuthorityIssuer, &Scope),
+    (conversation, scope): (&AuthorityIssuer, &Scope),
+) -> Result<FilesystemTaskRuntime<LocalStream, A, O>>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let verifier = issuer.verifier(&mut None).expect("verifier copy");
+    let files = acyclic_harness::task_volume::TaskFiles::open(
+        stream.clone(),
+        volume,
+        &verifier,
+        signed,
+        65_536,
+    )
+    .await?;
+    runtime.bind_task_files(Some(Arc::new(files)));
+    runtime.with_interaction_owner(
+        conversation.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(),
+        scope.clone(),
+        volume.clone(),
+    )
 }
 
 fn task_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedModelProvider {

@@ -542,13 +542,6 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.require_operation(operation, io)?;
-        let host = self.interactions.as_ref().ok_or_else(|| {
-            crate::filesystem::interaction_host::interaction_boundary(
-                io,
-                crate::wire::ErrorCode::Unsupported,
-                "task execution has no conversation interaction owner",
-            )
-        })?;
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed
             .as_mut()
@@ -557,7 +550,17 @@ where
             owner.require_interaction_grant(&mut work)?;
             owner.verify(true, &mut work).await?;
         }
-        host.verify_approval(id, operation, digest, io).await?;
+        if !self
+            .published_decision_for(id, Some((operation, digest)), io)
+            .await?
+            .approved()
+        {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "tool installation lacks a resolved approval",
+            ));
+        }
         if let Some((owner, _)) = &self.owner {
             owner.verify(true, &mut work).await?;
         }

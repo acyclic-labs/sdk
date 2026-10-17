@@ -157,15 +157,17 @@ impl InteractionTicket {
         )?;
         request.validate_response(&response.0, response.1.work())
     }
-    /// Checks the pinned approval explanation against the committed decision.
+    /// Checks the staged decision file against its committed resolution and
+    /// returns its principal's file digest. `principal` is the resolving scope
+    /// when the decision is being admitted.
     pub(crate) fn validate_decision_bytes(
         &self,
-        request: &Interaction,
-        outcome: &InteractionOutcome,
+        resolution: &InteractionResolution,
+        principal: Option<&str>,
         detail: &FileRef,
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<[u8; 16]> {
         if self.kind != InteractionKind::Approval
             || detail.descriptor().media_type() != "application/json"
         {
@@ -177,29 +179,37 @@ impl InteractionTicket {
         }
         detail.validate(work)?;
         detail.descriptor().verify(bytes, work)?;
-        let mut response = decode_interaction_json::<InteractionResponse>(
+        let mut decision = decode_interaction_json::<ApprovalDecisionFile>(
             bytes,
-            crate::executor::json::JsonValueSchema::InteractionResponse,
+            crate::executor::json::JsonValueSchema::None,
             std::mem::size_of::<String>() as u64,
             work,
         )?;
-        request.validate_response(&response.0, response.1.work())?;
-        match (outcome, &response.0) {
-            (
-                InteractionOutcome::Approved {},
-                InteractionResponse::Approval { approved: true, .. },
+        let approved = match resolution.outcome {
+            InteractionOutcome::Approved {} => true,
+            InteractionOutcome::Declined {} => false,
+            _ => {
+                return Err(boundary(
+                    decision.1.work(),
+                    Invalid,
+                    "only an approval verdict carries a decision file",
+                ));
+            }
+        };
+        if decision.0.validate().is_err()
+            || decision.0.approved() != approved
+            || !decision.0.binds(
+                self.request.descriptor().sha256(),
+                resolution.expected_version,
             )
-            | (
-                InteractionOutcome::Declined {},
-                InteractionResponse::Approval {
-                    approved: false, ..
-                },
-            ) => Ok(()),
-            _ => Err(boundary(
-                response.1.work(),
+            || principal.is_some_and(|principal| principal != decision.0.principal)
+        {
+            return Err(boundary(
+                decision.1.work(),
                 Conflict,
                 "approval artifact disagrees with outcome",
-            )),
+            ));
         }
+        Ok(ApprovalDecisionFile::principal_digest(&decision.0.principal))
     }
 }

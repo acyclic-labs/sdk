@@ -30,7 +30,7 @@ fn race<const REQUIRE: bool>() {
             "replay omitted the original durability requirement"
         );
         flusher.join().map_err(|_| "flusher panicked")?;
-        block_on(stream.await_durable(stream.inner.required()?))?;
+        block_on(stream.await_publication(stream.inner.required()?))?;
         let journal = stream.inner.journal.lock().unwrap();
         assert_eq!(journal.appended, 1);
         assert_eq!(journal.synced, 1);

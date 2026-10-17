@@ -48,7 +48,10 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
                 frames
             );
             if early_durable {
-                provider.inner.synced.send_replace(frames);
+                provider.inner.synced.send_replace(SyncProgress {
+                    ordered: frames,
+                    flushed: Some(frames),
+                });
             }
             for index in 0..3 {
                 if accepted[index] == 0 {

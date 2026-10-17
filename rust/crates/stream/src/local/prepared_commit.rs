@@ -136,7 +136,7 @@ impl LocalStream {
         }
         let required = self.inner.required()?;
         drop(visibility);
-        self.await_durable(required).await?;
+        self.await_publication(required).await?;
         result
     }
 

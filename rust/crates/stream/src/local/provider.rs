@@ -21,7 +21,12 @@ impl StreamProvider for LocalStream {
             let accepted = self.inner.provider.tail(path.clone()).await?;
             // Both frame counters are published before publication is released.
             // Do not borrow the journal: compaction may hold it during device I/O.
-            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let synced = self
+                .inner
+                .synced
+                .borrow()
+                .flushed
+                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
             let mut tails = self
                 .inner
                 .durable_tails
@@ -37,6 +42,29 @@ impl StreamProvider for LocalStream {
             })
         })
         .await?
+    }
+
+    /// The explicit durability barrier: frames written under
+    /// `deferring_durability` are flushed here before any receipt covers them.
+    async fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        let observed = self.watermarks(path.clone()).await?;
+        if let Some(receipt) = crate::DurableReceipt::covering(path.clone(), &observed, through) {
+            return Ok(Some(receipt));
+        }
+        // Every frame behind this path's accepted tail is at or before the
+        // published revision observed under the same publication guard.
+        let (accepted, revision) = self
+            .accepted(async {
+                let accepted = self.inner.provider.tail(path.clone()).await?;
+                Ok::<_, StreamError>((accepted, *self.inner.revision.borrow()))
+            })
+            .await??;
+        let flushed = self.await_flushed(revision).await?;
+        self.receipt_for_flushed_snapshot(path, accepted, through, flushed)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -327,4 +355,39 @@ fn describe_commit(request: &CommitRequest) {
                 .collect::<Vec<_>>()
         )
     });
+}
+
+impl LocalStream {
+    fn receipt_for_flushed_snapshot(
+        &self,
+        path: StreamPath,
+        accepted: u64,
+        through: u64,
+        _flushed: DeviceFlushed,
+    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
+        // No other lock is held here. Watermark reads acquire publication first,
+        // then durable_tails; this path never acquires publication afterward.
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path.clone()).or_default();
+        *durable = (*durable).max(accepted);
+        // This call flushed this exact snapshot. Later callers may have advanced
+        // durable_tails beyond it; never pair that newer prefix with this cut.
+        let covered = accepted;
+        #[cfg(acyclic_loom)]
+        let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut)
+        {
+            *durable
+        } else {
+            covered
+        };
+        let marks = crate::StreamWatermarks {
+            accepted,
+            durable: covered,
+        };
+        Ok(crate::DurableReceipt::covering(path, &marks, through))
+    }
 }

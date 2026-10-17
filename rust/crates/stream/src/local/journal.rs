@@ -36,6 +36,7 @@ impl Journal {
             appended: 0,
             required: 0,
             synced: 0,
+            flushed_sequence: None,
             syncing: false,
             root: root.to_path_buf(),
             torn_tail: None,
@@ -70,7 +71,7 @@ impl Journal {
                     return Ok(journal);
                 }
                 journal.restart(epoch, None)?;
-                sync_directory(&path, limits.durability)?;
+                sync_directory(&path, LocalDurability::FullFlush)?;
                 return Ok(journal);
             }
             Some(Some(found)) if found == epoch => {}
@@ -103,7 +104,12 @@ impl Journal {
         }
         // Frames a crashed process wrote but never flushed are replayed, so
         // they are made durable before anything can observe them.
-        sync_file_data(&journal.file, limits.durability)?;
+        if matches!(
+            sync_file_data(&journal.file, limits.durability)?,
+            SyncCompletion::Flushed(_)
+        ) {
+            journal.flushed_sequence = Some(0);
+        }
         Ok(journal)
     }
 
@@ -168,14 +174,15 @@ impl Journal {
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&encode_header(self.limits, epoch)?)?;
         match work {
-            Some(work) => work.sync(|| sync_file(&self.file, self.limits.durability))?,
-            None => sync_file(&self.file, self.limits.durability)?,
+            Some(work) => work.sync(|| sync_file(&self.file, LocalDurability::FullFlush))?,
+            None => sync_file(&self.file, LocalDurability::FullFlush)?,
         }
         self.epoch = epoch;
         self.operations = 0;
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         // The header was synchronized after the snapshot holding every frame.
         self.synced = self.appended;
+        self.flushed_sequence = Some(self.appended);
         #[cfg(feature = "test-support")]
         {
             self.flushed = self.bytes;
@@ -194,7 +201,7 @@ impl Journal {
         &mut self,
         state: &[u8],
         work: Option<&Arc<crate::memory::Work>>,
-    ) -> Result<(), LocalStreamError> {
+    ) -> Result<DeviceFlushed, LocalStreamError> {
         let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
         let temporary = self.root.join(SNAPSHOT_TEMPORARY);
         let snapshot = self.root.join(SNAPSHOT_FILE);
@@ -202,8 +209,8 @@ impl Journal {
             let mut file = File::create(&temporary)?;
             file.write_all(&encode_snapshot(self.limits, epoch, state)?)?;
             match work {
-                Some(work) => work.sync(|| sync_file(&file, self.limits.durability))?,
-                None => sync_file(&file, self.limits.durability)?,
+                Some(work) => work.sync(|| sync_file(&file, LocalDurability::FullFlush))?,
+                None => sync_file(&file, LocalDurability::FullFlush)?,
             }
         }
         std::fs::rename(&temporary, &snapshot)?;
@@ -211,12 +218,15 @@ impl Journal {
             Some(work) => work.sync(|| {
                 acyclic_native_runtime::sync_parent(
                     &snapshot,
-                    native_durability(self.limits.durability),
+                    native_durability(LocalDurability::FullFlush),
                 )
             })?,
-            None => sync_directory(&snapshot, self.limits.durability)?,
+            None => sync_directory(&snapshot, LocalDurability::FullFlush)?,
         }
-        self.restart(epoch, work)
+        // Retiring the old journal must preserve every receipt previously
+        // issued, including receipts issued before this provider was reopened.
+        self.restart(epoch, work)?;
+        Ok(DeviceFlushed)
     }
 
     fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
