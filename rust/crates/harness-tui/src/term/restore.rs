@@ -78,6 +78,20 @@ impl<W: Write> RestoreGuard<W> {
         &mut self.writer
     }
 
+    /// Input cannot mutate the displayed state. Keep this operation narrow:
+    /// exposing the writer here would also permit untracked output changes.
+    #[cfg(all(unix, not(acyclic_harness_tui_loom)))]
+    pub(crate) fn receive(
+        &mut self,
+        bytes: &mut [u8],
+        deadline: std::time::Instant,
+    ) -> io::Result<usize>
+    where
+        W: super::ProbeIo,
+    {
+        self.writer.receive(bytes, deadline)
+    }
+
     pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         if !self.undo.is_empty() {
             return Err(io::ErrorKind::AlreadyExists.into());

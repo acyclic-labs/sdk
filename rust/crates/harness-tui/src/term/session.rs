@@ -155,9 +155,7 @@ impl ProbeIo for Tty {
             // Only the nonblocking syscall holds state. Both output and the
             // signal worker remain runnable while input waits for another byte.
             let result = lifecycle::active(&self.state, |guard| {
-                guard
-                    .writer()
-                    .receive(bytes, deadline.min(now + Duration::from_millis(1)))
+                guard.receive(bytes, deadline.min(now + Duration::from_millis(1)))
             });
             match result {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -206,8 +204,62 @@ mod tests {
     use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
 
+    fn read_redraw_model(tracked_read: bool) -> io::Result<usize> {
+        use crate::ratatui::layout::Size;
+        use crate::term::FrameTerminal;
+        use std::io::Read;
+        let pty = rustix_openpty::openpty(None, None)?;
+        let mut master = File::from(pty.controller);
+        rustix::fs::fcntl_setfl(&master, OFlags::NONBLOCK)?;
+        let (mut tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let size = Size::new(20, 4);
+        let mut terminal = FrameTerminal::new(output, size)?;
+        let mut draw = || terminal.draw(size, |frame| frame.set_cursor_position((3, 2)));
+        draw()?;
+        let drain = |master: &mut File| -> io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            match master.read_to_end(&mut bytes) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+            Ok(bytes)
+        };
+        assert!(!drain(&mut master)?.is_empty());
+        let mut redundant = 0;
+        for n in [8, 16] {
+            for _ in 0..n {
+                master.write_all(b"x")?;
+                let deadline = Instant::now() + Duration::from_millis(100);
+                if tracked_read {
+                    // Negative control: the former polling path classified a
+                    // read as outside output through the generic writer.
+                    let count = lifecycle::active(&tty.state, |guard| {
+                        guard.writer().receive(&mut [0; 8], deadline)
+                    })?;
+                    assert_eq!(count, 1);
+                } else {
+                    let events = tty.read_events(deadline)?;
+                    assert_eq!(events.len(), 1);
+                }
+                draw()?;
+                redundant += drain(&mut master)?.len();
+            }
+        }
+        Ok(redundant)
+    }
+
+    fn input_reads_leave_identical_real_pty_frames_without_output() -> io::Result<()> {
+        assert_eq!(read_redraw_model(false)?, 0);
+        assert!(read_redraw_model(true)? > 0);
+        Ok(())
+    }
+
     #[test]
     fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
+        // The signal dispatcher owns one terminal per process. Run all real
+        // owner scenarios in this test so parallel tests cannot race attach.
+        input_reads_leave_identical_real_pty_frames_without_output()?;
         let pty = rustix_openpty::openpty(None, None)?;
         let observer = File::from(pty.user);
         let original = tcgetattr(&observer)?;
