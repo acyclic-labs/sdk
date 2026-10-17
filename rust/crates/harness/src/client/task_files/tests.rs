@@ -336,7 +336,7 @@ async fn replacement_sequence(tasks: &[u8], retain_old: bool) {
             .clone();
         let old_query = before.query().clone();
         let old_snapshot = volume.snapshot(&old_query, 16).await.unwrap();
-        client.follow_task(&volume, &owner, task).await.unwrap();
+        client.follow_task(&volume, task).await.unwrap();
         if retain_old && old_query != TaskFileClient::task_query(task).unwrap() {
             client
                 .views

@@ -99,7 +99,6 @@ impl TaskFileClient {
     pub async fn follow_task(
         &mut self,
         files: &impl FileQuerySource,
-        _owner: &wire::Authority,
         task: crate::TaskId,
     ) -> Result<()> {
         if self.selected == Some(task) {

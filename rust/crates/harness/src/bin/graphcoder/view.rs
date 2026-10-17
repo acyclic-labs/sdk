@@ -48,7 +48,6 @@ pub async fn run(
         client
             .follow_task(
                 local.task_files().as_ref(),
-                &authority,
                 commands
                     .active_task()
                     .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
