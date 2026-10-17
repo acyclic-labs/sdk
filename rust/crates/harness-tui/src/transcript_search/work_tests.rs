@@ -138,3 +138,29 @@ fn refinement_checks_only_the_new_suffix_of_prior_candidates() {
     );
     assert_eq!(search.count(), 8192 - 128);
 }
+
+#[test]
+fn indexed_navigation_covers_line_terminators_and_changed_suffixes() {
+    let mut projection = projection("first\nsecond\nthird");
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "\n", 0, Style::default());
+    finish(&mut search, &projection);
+    assert_eq!(search.selected_row(&projection, 1), 1);
+    projection.update(
+        &[Line::raw("first"), Line::raw("second"), Line::raw("third")],
+        0,
+        80,
+    );
+    projection.update(
+        &[
+            Line::raw("first"),
+            Line::raw("second"),
+            Line::raw("final\nrow"),
+        ],
+        2,
+        80,
+    );
+    search.update(&projection, "\n", 0, Style::default());
+    finish(&mut search, &projection);
+    assert_eq!(search.selected_row(&projection, 2), 2);
+}

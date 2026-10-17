@@ -110,9 +110,11 @@ impl WrappedLines {
         self.index.replace_suffix(text, at.min(text.len()));
         self.source_rows.resize(text.len() + 1, 0);
         for (row_index, range) in self.ranges.iter().enumerate().skip(row) {
-            for offset in range.start..range.end.min(text.len() + 1) {
-                self.source_rows[offset] = row_index;
-            }
+            let end = self
+                .ranges
+                .get(row_index + 1)
+                .map_or(text.len() + 1, |next| next.start);
+            self.source_rows[range.start..end].fill(row_index);
         }
         self.folded_rows.extend(
             self.ranges[row..]
