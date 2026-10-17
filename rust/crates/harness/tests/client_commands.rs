@@ -544,6 +544,7 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
         // Submit uses the existing command schema, retaining immutable refs rather
         // than copying file bodies into a second prompt format.
         let command = ModelTaskCommand {
+            context_manifest: source.read(fixture.reader.as_ref(), 1024).await?.0,
             input: content,
             selected_context: None,
             max_steps: 1,
