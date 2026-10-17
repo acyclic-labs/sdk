@@ -168,6 +168,7 @@ pub(super) async fn append_origin<const FENCE: bool, P: StreamProvider, const N:
     ))
 }
 
+#[cfg(any(test, feature = "filesystem"))]
 pub(super) async fn read<P: StreamProvider>(
     client: &Arc<P>,
     operation: OperationId,

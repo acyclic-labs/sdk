@@ -8,13 +8,20 @@ pub(crate) use tokio::sync::Mutex;
 mod primitives;
 #[cfg(any(
     test,
+    feature = "filesystem",
+    feature = "mcp-stdio",
+    feature = "mcp-http"
+))]
+pub(crate) use primitives::Arc;
+pub(crate) use primitives::Mutex as SyncMutex;
+#[cfg(any(
+    test,
     all(
         not(target_arch = "wasm32"),
         any(feature = "mcp-stdio", feature = "mcp-http")
     )
 ))]
 pub(crate) use primitives::atomic;
-pub(crate) use primitives::{Arc, Mutex as SyncMutex};
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]
