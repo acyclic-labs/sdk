@@ -44,6 +44,11 @@ impl Source {
         self.revision = Some(crate::OperationId::from_bytes([publication; 16]));
         self
     }
+    #[cfg(feature = "tui")]
+    fn published(mut self, publication: u8) -> Self {
+        self.publication = crate::OperationId::from_bytes([publication; 16]);
+        self
+    }
     fn snapshot(&self, query: Query) -> Snapshot {
         let volume = [if self.goal.is_some() { 1 } else { 2 }; 32];
         let cursor = Cursor {
