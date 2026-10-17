@@ -107,6 +107,8 @@ thread_local! {
 }
 
 pub(super) fn after_ranges(empty: bool) -> bool {
+    #[cfg(windows)]
+    super::windows_dense_tests::after_ranges();
     PROBE.with_borrow_mut(|probe| {
         if let Some(edit) = probe.edit.take() {
             assert!(empty, "fixture must reach the empty-range branch");
@@ -117,6 +119,10 @@ pub(super) fn after_ranges(empty: bool) -> bool {
 }
 
 pub(super) fn omit_finish() -> bool {
+    #[cfg(windows)]
+    if super::windows_dense_tests::omit_finish() {
+        return true;
+    }
     PROBE.with_borrow(|probe| probe.omit_finish)
 }
 
@@ -128,7 +134,7 @@ impl Drop for Reset {
     }
 }
 
-fn sparse_file(path: &Path, length: u64) {
+pub(super) fn sparse_file(path: &Path, length: u64) {
     let file = std::fs::File::create(path).unwrap();
     #[cfg(windows)]
     acyclic_native_runtime::device_control_in_place(
@@ -238,7 +244,7 @@ async fn run_capture(
     (checkout, result, work, before)
 }
 
-async fn encoded_record(
+pub(super) async fn encoded_record(
     checkout: &mut crate::facade::MemoryCheckout,
     path: &NamespacePath,
     setup: &NativeMaterializationWork,
@@ -307,7 +313,7 @@ fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
                         maximum_paths: 8,
                         maximum_extent_spans: 8,
                     };
-                    let (baseline, seeded, _, _) = run_capture(
+                    let (mut baseline, seeded, _, _) = run_capture(
                         &initial,
                         &path,
                         &options,
@@ -318,6 +324,12 @@ fn empty_finalization_rejects_growth_replacement_removal_and_cancellation()
                     )
                     .await;
                     seeded.unwrap();
+                    // Compare admission at the same decoded-cache state: the first
+                    // metadata lookup otherwise pays a cold read shared by later clones.
+                    baseline
+                        .read_metadata(&path, &setup, setup.cancellation())
+                        .await
+                        .unwrap();
                     for edit in 0..5 {
                         let mut outcomes = Vec::new();
                         for force_import in [true, false] {
