@@ -1,2 +1,2 @@
 {"agents":3,"chunks":["Plan ","the ","work."],
- "expect":{"children":["a00000","a00001","a00002"],"text":"Plan the work."}}
+ "expect":{"children":["a00000","a00001","a00002"],"text":"Plan the work.","status":"done"}}

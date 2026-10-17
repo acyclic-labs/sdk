@@ -40,7 +40,7 @@ pub(super) struct SubagentCase {
     pub agents: usize,
     /// Each subagent's streamed reply, one Text chunk per publication.
     pub chunks: Vec<String>,
-    /// Each subagent's final `status.json` state.
+    /// Each subagent's final `status.json` state, as it publishes it.
     pub status: String,
     pub expect: Expect,
 }
@@ -52,6 +52,8 @@ pub(super) struct Expect {
     pub children: Vec<String>,
     /// Each subagent's reply, as its follow assembled it.
     pub text: String,
+    /// Each subagent's final state, as its follow decoded it.
+    pub status: String,
 }
 
 /// Names the step that failed, so a provider divergence names its operation.
@@ -113,12 +115,59 @@ fn name(root: &StreamPath, child: &StreamPath) -> TestResult<String> {
         .ok_or_else(|| format!("{} is outside {}", child.as_str(), root.as_str()).into())
 }
 
+/// The name of agent `id`, which tags every payload it publishes.
+fn agent(id: usize) -> String {
+    format!("a{id:05}")
+}
+
+/// The exact `status.json` agent `name` publishes in `state`.
+fn status_of(name: &str, state: &str) -> Value {
+    json!({ "state": state, "agent": name })
+}
+
+/// Checks that `trace`, the follow of agent `name`, delivered exactly that
+/// agent's tagged reply and then exactly its expected status.
+fn check(name: &str, trace: &[Value], expect: &Expect) -> TestResult {
+    let tag = format!("{name}:");
+    let (status, chunks) = trace.split_last().ok_or("an empty follow")?;
+    let mut text = String::new();
+    for seen in chunks {
+        let tagged = seen["text"].as_str().ok_or("a chunk without text")?;
+        let (true, Some(chunk)) = (
+            seen["channel"] == json!(Channel::Text),
+            tagged.strip_prefix(&tag),
+        ) else {
+            return Err(format!("{name} was delivered {seen}").into());
+        };
+        text.push_str(chunk);
+    }
+    let decoded: Value = serde_json::from_str(status["text"].as_str().ok_or("no status")?)?;
+    if text != expect.text
+        || status["key"] != json!(FileKey::parse(STATUS)?)
+        || decoded != status_of(name, &expect.status)
+    {
+        return Err(format!("{name} followed {trace:?}").into());
+    }
+    Ok(())
+}
+
 /// Runs `case` under `root` on `stream`, checks its oracle, and returns the
 /// trace every provider must reproduce.
 pub(super) async fn run_on<P: StreamProvider>(
     case: &SubagentCase,
     stream: Arc<P>,
     root: &str,
+) -> TestResult<Value> {
+    run_publishing(case, stream, root, |id| id).await
+}
+
+/// `run_on`, with agent `id` publishing the payloads of agent `author(id)`,
+/// so a negative control can cross deliveries.
+async fn run_publishing<P: StreamProvider>(
+    case: &SubagentCase,
+    stream: Arc<P>,
+    root: &str,
+    author: impl Fn(usize) -> usize,
 ) -> TestResult<Value> {
     if !(1..=64).contains(&case.agents) || case.chunks.is_empty() {
         return Err("a subagent case needs 1..=64 agents and a nonempty reply".into());
@@ -134,7 +183,7 @@ pub(super) async fn run_on<P: StreamProvider>(
     let mut volumes = Vec::with_capacity(case.agents);
     let mut follows = Vec::with_capacity(case.agents);
     for id in 0..case.agents {
-        let path = StreamPath::new(&format!("{}/a{id:05}", root.as_str()))?;
+        let path = StreamPath::new(&format!("{}/{}", root.as_str(), agent(id)))?;
         let volume = TaskVolume::open(stream.clone(), path)
             .await
             .map_err(at(format!("open a{id:05}")))?;
@@ -151,19 +200,20 @@ pub(super) async fn run_on<P: StreamProvider>(
     }
     // Interleave the agents' publications, as concurrent subagents would.
     for (sequence, text) in case.chunks.iter().enumerate() {
-        for volume in &volumes {
+        for (id, volume) in volumes.iter().enumerate() {
+            let tagged = format!("{}:{text}", agent(author(id)));
             let head = volume.head().await.map_err(at("head"))?;
             volume
-                .append(head, &chunk(sequence + 1, text)?)
+                .append(head, &chunk(sequence + 1, &tagged)?)
                 .await
                 .map_err(at(format!("append chunk {}", sequence + 1)))?;
         }
     }
-    let status = serde_json::to_vec(&json!({ "state": case.status }))?;
-    for volume in &volumes {
+    for (id, volume) in volumes.iter().enumerate() {
+        let status = serde_json::to_vec(&status_of(&agent(author(id)), &case.status))?;
         let head = volume.head().await.map_err(at("head"))?;
         volume
-            .append(head, &Write::new(FileKey::parse(STATUS)?, status.clone()))
+            .append(head, &Write::new(FileKey::parse(STATUS)?, status))
             .await
             .map_err(at("append the status"))?;
     }
@@ -177,7 +227,6 @@ pub(super) async fn run_on<P: StreamProvider>(
         return Err(format!("children discovered: {discovered:?}").into());
     }
     let published = case.chunks.len() + 1;
-    let status_key = json!(FileKey::parse(STATUS)?);
     let mut agents = Vec::with_capacity(case.agents);
     let mut resume_after = None;
     for (id, follow) in follows.iter_mut().enumerate() {
@@ -186,14 +235,7 @@ pub(super) async fn run_on<P: StreamProvider>(
             .iter()
             .map(observed)
             .collect::<TestResult<Vec<_>>>()?;
-        let text: String = trace
-            .iter()
-            .filter(|seen| seen["channel"] == json!(Channel::Text))
-            .filter_map(|seen| seen["text"].as_str())
-            .collect();
-        if text != case.expect.text || trace.last().map(|last| &last["key"]) != Some(&status_key) {
-            return Err(format!("a{id:05} followed {trace:?}").into());
-        }
+        check(&agent(id), &trace, &case.expect)?;
         if resume_after.is_none() {
             resume_after = delivered.into_iter().next().map(|change| change.cursor);
         }
@@ -319,4 +361,38 @@ pub(super) async fn run(case: SubagentCase) -> TestResult {
     run_on(&case, Arc::new(MemoryStream::default()), "subagents")
         .await
         .map(drop)
+}
+
+/// The oracle fails a follow that decodes another final state, and one that
+/// receives another agent's deliveries.
+#[tokio::test]
+async fn the_oracle_rejects_a_wrong_status_and_crossed_deliveries() -> TestResult {
+    let case = |status: &str, expected: &str| SubagentCase {
+        agents: 3,
+        chunks: vec!["Plan ".into(), "the work.".into()],
+        status: status.into(),
+        expect: Expect {
+            children: (0..3).map(agent).collect(),
+            text: "Plan the work.".into(),
+            status: expected.into(),
+        },
+    };
+    let stream = || Arc::new(MemoryStream::default());
+    run_on(&case("failed", "failed"), stream(), "control").await?;
+    if run_on(&case("done", "failed"), stream(), "control")
+        .await
+        .is_ok()
+    {
+        return Err("a failed agent that published done passed".into());
+    }
+    let swapped = |id| match id {
+        1 => 2,
+        2 => 1,
+        id => id,
+    };
+    let crossed = run_publishing(&case("done", "done"), stream(), "control", swapped).await;
+    if crossed.is_ok() {
+        return Err("a00001 and a00002 swapped deliveries and passed".into());
+    }
+    Ok(())
 }

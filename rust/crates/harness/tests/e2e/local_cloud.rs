@@ -315,6 +315,7 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
     };
     let mut changed = fan_out.clone();
     changed.status = "cancelled".into();
+    changed.expect.status = "cancelled".into();
     let loopback = loopback(Arc::new(MemoryStream::default())).await?;
     let left = trace(&Case::Subagents(fan_out), loopback.client.clone(), "left").await?;
     let right = trace(&Case::Subagents(changed), loopback.client.clone(), "right").await?;
