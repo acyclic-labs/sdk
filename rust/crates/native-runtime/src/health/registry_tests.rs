@@ -29,11 +29,14 @@ struct TraceMeter {
 }
 impl TraceMeter {
     fn new() -> Self {
-        Self {
+        let meter = Self {
             calls: Mutex::new(Vec::with_capacity(1 << 16)),
             deny_allocations: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-        }
+        };
+        // Apple's pthread-backed mutex allocates on first lock; take it before measurement.
+        drop(meter.calls.lock());
+        meter
     }
     fn push(&self, call: Call) -> io::Result<()> {
         let mut calls = self.calls.lock().unwrap();
