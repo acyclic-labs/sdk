@@ -552,6 +552,7 @@ async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revisio
         // than copying file bodies into a second prompt format.
         let command = ModelTaskCommand {
             context_manifest: source.read(fixture.reader.as_ref(), 1024).await?.0,
+            summary_source: None,
             input: content,
             selected_context: None,
             max_steps: 1,
