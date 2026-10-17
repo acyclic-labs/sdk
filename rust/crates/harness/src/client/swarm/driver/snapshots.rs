@@ -136,5 +136,5 @@ impl<'a> Snapshots<'a> {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod retirement;
