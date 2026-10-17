@@ -48,7 +48,8 @@ async fn publish(volume: &TaskVolume<MemoryStream>, path: &str, bytes: Vec<u8>) 
 #[tokio::test]
 async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay() -> Result<()> {
     use acyclic_harness::{LocalHarness, model::Model, test_support::ScriptedModelProvider};
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory =
+        crate::client_local::Directory::new().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git")).unwrap();
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
@@ -57,7 +58,7 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
             output_tokens: 4096,
         },
     ));
-    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+    let local = LocalHarness::open(crate::client_local::config(
         directory.path(),
         (model, provider.clone()),
     )?)
