@@ -147,13 +147,56 @@ async fn escape_closes_views_then_is_quiet_and_never_leaves_a_stale_prompt() {
     assert_eq!(ui.input.editor.text(), "x");
 }
 
+/// Idle Escape publishes no feedback; before, it reported an unsupported action.
+#[tokio::test]
+async fn idle_escape_is_quiet() {
+    idle_escape::<false>().await;
+}
+
+/// Feedback published on the session's notification channel, as the old
+/// unsupported-action reply was, must fail the quiet check.
+#[tokio::test]
+#[should_panic(expected = "idle Escape left feedback")]
+async fn idle_feedback_is_detected_negative_control() {
+    idle_escape::<true>().await;
+}
+
+async fn idle_escape<const FEEDBACK: bool>() {
+    let mut ui = Ui::open().await;
+    if FEEDBACK {
+        ui.type_text("/definitely-unknown").await;
+        ui.key(KeyCode::Enter).await;
+        ui.key(KeyCode::Enter).await;
+    } else {
+        ui.key(KeyCode::Esc).await;
+    }
+    assert_eq!(
+        ui.notifications(),
+        serde_json::json!([]),
+        "idle Escape left feedback"
+    );
+}
+
 #[tokio::test]
 async fn escape_while_a_turn_runs_publishes_its_cancellation() {
+    cancellation::<true>().await;
+}
+
+/// A key that leaves the running turn alone must fail the cancellation check.
+#[tokio::test]
+#[should_panic(expected = "Escape publishes the same cancellation request as Ctrl+C")]
+async fn an_ignored_escape_is_detected_negative_control() {
+    cancellation::<false>().await;
+}
+
+async fn cancellation<const ESCAPE: bool>() {
     let mut ui = Ui::open().await;
     ui.type_text("hello").await;
     ui.key(KeyCode::Enter).await;
     let task = ui.files.active_task().expect("submitted prompt is active");
-    ui.key(KeyCode::Esc).await;
+    if ESCAPE {
+        ui.key(KeyCode::Esc).await;
+    }
     assert_eq!(ui.notifications(), serde_json::json!([]));
     let cancel = FileKey::Task {
         task: acyclic_harness::task_volume::Component::new(task.to_string()).unwrap(),

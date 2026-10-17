@@ -34,9 +34,7 @@ async fn execute(
     let output = spawn(workspace, catalog, settings, operation, mode, "hello").await;
     assert!(
         output.status.success(),
-        "exit {:?}
-{}
-{}",
+        "exit {:?}\n{}\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -57,8 +55,7 @@ async fn spawn(
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
         format!(
-            "{}
-",
+            "{}\n",
             serde_json::to_string(&prepare_local_prompt(operation, prompt).unwrap()).unwrap()
         )
         .into_bytes()
@@ -113,9 +110,7 @@ async fn spawn(
             )
             .unwrap_or_else(|failure| {
                 panic!(
-                    "GraphCoder process failed: {}
-stdout: {}
-stderr: {}",
+                    "GraphCoder process failed: {}\nstdout: {}\nstderr: {}",
                     failure.error,
                     String::from_utf8_lossy(&failure.stdout),
                     String::from_utf8_lossy(&failure.stderr)
@@ -263,6 +258,20 @@ async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
 /// prompt, direct tools run, and any other slash input fails without chat.
 #[tokio::test]
 async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
+    headless_input(Mode::Prompt).await;
+}
+
+/// Prepared JSONL requests skip the catalog, so slash input sent that way is
+/// chat; the never-chat check must catch it.
+#[tokio::test]
+#[should_panic(expected = "slash input reached the model")]
+async fn uncataloged_slash_input_is_detected_negative_control() {
+    headless_input(Mode::Jsonl).await;
+}
+
+/// Runs each kind of headless input through `mode`. The checked property, first:
+/// slash input that is not a direct tool fails and never reaches the model.
+async fn headless_input(mode: Mode) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -309,7 +318,7 @@ async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
                 &catalog,
                 &settings,
                 OperationId::new(),
-                Mode::Prompt,
+                mode,
                 prompt,
             )
             .await
@@ -337,6 +346,24 @@ async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
             .collect()
     };
 
+    // Unknown commands and renderer-only selections fail with no model call.
+    for (prompt, message) in [
+        (
+            "/definitely-unknown",
+            "Unknown command: /definitely-unknown",
+        ),
+        ("/help", "no headless form"),
+    ] {
+        let output = run(prompt).await;
+        assert!(
+            observed.try_recv().is_err(),
+            "slash input reached the model: {prompt}"
+        );
+        assert!(!output.status.success(), "{prompt}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{prompt}: {stderr}");
+    }
+
     // Plain text is a prompt.
     let output = run("plain words LPPROMPT").await;
     assert!(
@@ -363,22 +390,9 @@ async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
             .contains("LPSHELL")
     );
 
-    // Unknown commands and renderer-only selections fail with no model call.
-    for (prompt, message) in [
-        (
-            "/definitely-unknown",
-            "Unknown command: /definitely-unknown",
-        ),
-        ("/help", "no headless form"),
-    ] {
-        let output = run(prompt).await;
-        assert!(!output.status.success(), "{prompt}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains(message), "{prompt}: {stderr}");
-    }
     assert!(
         observed.try_recv().is_err(),
-        "only the prompt reached the model"
+        "the direct tool reached the model"
     );
     stop.send(()).unwrap();
     server.await.unwrap();

@@ -38,7 +38,62 @@ pub(in crate::client) fn display(ok: &serde_json::Value) -> Option<Cow<'_, str>>
 #[cfg(test)]
 mod tests {
     use super::display;
-    use serde_json::json;
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
+    use std::borrow::Cow;
+
+    /// The checked property: a process result shows every nonempty stream and,
+    /// when it failed, its exit status.
+    fn assert_shows_process(
+        display: impl Fn(&Value) -> Option<Cow<'_, str>>,
+        stdout: &str,
+        stderr: &str,
+        code: i64,
+    ) {
+        let ok = json!({
+            "success": code == 0,
+            "exit_code": code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stop": null,
+        });
+        let shown = display(&ok).map(Cow::into_owned).unwrap_or_default();
+        for stream in [stdout, stderr] {
+            assert!(
+                shown.contains(stream),
+                "process output missing from the transcript: {shown:?}"
+            );
+        }
+        if code != 0 {
+            assert!(
+                shown.contains(&format!("exit {code}")),
+                "exit status missing from the transcript: {shown:?}"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn every_process_stream_and_failure_is_displayed(
+            stdout in "[a-z]{0,12}\n?",
+            stderr in "[A-Z]{0,12}\n?",
+            code in -3i64..4,
+        ) {
+            assert_shows_process(display, &stdout, &stderr, code);
+        }
+    }
+
+    /// The mapping before this change showed only an explicit `text` field.
+    #[test]
+    #[should_panic(expected = "process output missing from the transcript")]
+    fn a_text_only_mapping_is_detected_negative_control() {
+        assert_shows_process(
+            |ok| ok.get("text").and_then(Value::as_str).map(Cow::Borrowed),
+            "LPSHELL\n",
+            "",
+            0,
+        );
+    }
 
     #[test]
     fn text_and_process_envelopes_display_and_acknowledgements_do_not() {
