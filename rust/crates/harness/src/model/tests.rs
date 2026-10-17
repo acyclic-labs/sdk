@@ -2,6 +2,10 @@ use super::*;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "request_projection_tests.rs"]
+mod projection_reuse;
+
 #[test]
 fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata() -> Result<()> {
     let call = ToolCall::new("call".into(), "echo".into(), json!({"value":1}));
