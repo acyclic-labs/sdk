@@ -15,6 +15,44 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
     effect: InputEffect,
 ) -> Result<()> {
     match effect {
+        InputEffect::FindStep { previous } => {
+            let mut layout = files
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or_else(|| serde_json::json!({}));
+            if layout["open_view"] != "find" || layout["view_input"] != "find" {
+                return Err(Error::Invalid("transcript search is closed".into()));
+            }
+            let index = layout
+                .get("search_index")
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .ok_or_else(|| Error::Invalid("search index must be an integer".into()))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            layout["search_index"] =
+                serde_json::json!(index.saturating_add(if previous { -1 } else { 1 }));
+            files
+                .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+                .await?;
+        }
+        InputEffect::Host(crate::tui::Action::App(crate::tui::AppAction::Find)) => {
+            let command = files
+                .catalog()
+                .commands()
+                .find(|spec| {
+                    spec.action
+                        == super::CommandAction::Select {
+                            query: super::CommandQuery::Find,
+                        }
+                })
+                .map(|spec| format!("/{}", spec.name))
+                .ok_or_else(|| {
+                    Error::Unsupported("transcript search has no enabled command".into())
+                })?;
+            files.submit_input(&command, reader).await?;
+        }
         InputEffect::Submit {
             text, edit: None, ..
         } => {

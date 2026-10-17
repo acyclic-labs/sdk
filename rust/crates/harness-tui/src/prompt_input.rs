@@ -27,6 +27,11 @@ pub enum InputEffect {
     Paste,
     /// Suspend terminal presentation and edit the current text externally.
     ExternalEditor,
+    /// Move through transcript matches; the host publishes the selection file.
+    FindStep {
+        /// Move to the preceding match instead of the following one.
+        previous: bool,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -75,6 +80,8 @@ pub struct PromptInput {
     pub recording: bool,
     /// Host transcript selection, already converted to markdown for copying.
     pub transcript_selection: Option<String>,
+    /// Followed transcript-search form owns this editor instead of chat.
+    pub transcript_search: bool,
     /// User overrides used by both dispatch and help.
     pub keymap: InputKeymap,
     /// Completion results folded from the host's current file-query snapshots.
@@ -132,7 +139,11 @@ impl PromptInput {
 
     /// Refresh the popup from the editor delta and current file-query fold.
     pub fn refresh_completions(&mut self) {
-        self.completion.refresh(&self.editor);
+        if self.transcript_search {
+            self.completion.dismiss(&self.editor);
+        } else {
+            self.completion.refresh(&self.editor);
+        }
     }
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
@@ -397,6 +408,17 @@ impl PromptInput {
             }
         }
         if let DecodedKey::Action { action, select } = &decoded {
+            if self.transcript_search {
+                match action {
+                    Action::Submit | Action::Newline => {
+                        return vec![InputEffect::FindStep {
+                            previous: *action == Action::Newline,
+                        }];
+                    }
+                    Action::Escape => return vec![InputEffect::Host(Action::Escape)],
+                    _ => {}
+                }
+            }
             if !(*action == Action::Escape && self.editing.is_some())
                 && self
                     .completion
@@ -424,6 +446,7 @@ impl PromptInput {
                     }
                     let previous = motion == Motion::Up;
                     let history = !select
+                        && !self.transcript_search
                         && matches!(motion, Motion::Up | Motion::Down)
                         && self.editor.recall(&mut self.history, previous, now_ms);
                     if !history {

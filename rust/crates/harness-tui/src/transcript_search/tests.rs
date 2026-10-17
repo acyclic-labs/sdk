@@ -63,6 +63,49 @@ fn corpus_expansions_and_overlapping_matches() {
 }
 
 #[test]
+fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
+    use ratatui::{
+        style::{Modifier, Style},
+        text::{Line, Span},
+    };
+    let mut view = TranscriptSearch::default();
+    let source = [
+        Line::from(vec![
+            Span::styled("Stra", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("ße"),
+        ]),
+        Line::raw("STRASSE"),
+    ];
+    view.update(&source, "strasse");
+    assert_eq!(view.count(), 2);
+    assert_eq!(view.selected_row(-1), 1);
+    assert_eq!(view.selected_row(2), 0);
+    assert!(
+        view.rows()[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::UNDERLINED)
+    );
+    assert!(
+        view.rows()
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
+    );
+    assert_eq!(
+        view.rows()
+            .iter()
+            .map(|line| line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["Straße", "STRASSE"]
+    );
+}
+
+#[test]
 #[should_panic(expected = "ASCII folding loses Unicode matches")]
 fn ascii_only_search_is_detected_negative_control() {
     let broken: Vec<_> = "Straße"

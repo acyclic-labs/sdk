@@ -82,6 +82,8 @@ impl StreamText {
 pub struct ClientRenderer {
     key: String,
     help: super::help::Help,
+    search: super::TranscriptSearch,
+    search_cut: Option<(String, u16, usize)>,
     busy: bool,
     tool_details: bool,
     seen: usize,
@@ -329,6 +331,8 @@ impl ClientRenderer {
         self.wrapped = false;
         let areas = self.screen_for(files)?.areas(area, input);
         let width = areas.transcript.width;
+        let search_changed = self.transcript_changed < self.transcript.len()
+            || self.wrapped_transcript.rows().is_empty();
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
         self.wrapped_reasoning
@@ -346,6 +350,19 @@ impl ClientRenderer {
             self.plans_changed = self.plans.len();
         }
         self.wrapped = true;
+        let layout = files
+            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_default();
+        if layout["open_view"] == "find" && layout["view_input"] == "find" {
+            let query = layout["search_query"].as_str().unwrap_or("").to_owned();
+            let cut = (query, width, self.transcript.len());
+            if search_changed || self.search_cut.as_ref() != Some(&cut) {
+                self.search.update(self.wrapped_transcript.rows(), &cut.0);
+                self.search_cut = Some(cut);
+            }
+        } else {
+            self.search_cut = None;
+        }
         Ok(())
     }
 
@@ -426,6 +443,23 @@ impl ClientRenderer {
             };
         }
         match view {
+            Some("find")
+                if layout
+                    .as_ref()
+                    .is_some_and(|value| value["view_input"] == "find") =>
+            {
+                let index = layout
+                    .as_ref()
+                    .and_then(|value| value["search_index"].as_i64())
+                    .unwrap_or(0);
+                screen.transcript = self.search.rows();
+                screen.reasoning = &[];
+                screen.search_row = Some(self.search.selected_row(index));
+                screen.status = Line::raw(format!(
+                    "Find: {} matches · Enter next · Shift+Enter previous · Escape closes",
+                    self.search.count()
+                ));
+            }
             Some("feedback") => {
                 screen.feedback = layout
                     .as_ref()
@@ -543,3 +577,7 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod search_tests;

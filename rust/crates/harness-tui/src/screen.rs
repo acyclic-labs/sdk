@@ -32,6 +32,8 @@ pub struct Screen<'a> {
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
     pub feedback: bool,
+    /// Search selection overrides follow-tail while its file-backed form is open.
+    pub search_row: Option<usize>,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -169,6 +171,13 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> ScreenAreas {
         let areas = self.areas(frame.area(), input);
+        let transcript_scroll = self.search_row.map_or(transcript_scroll, |row| {
+            row.min(
+                self.transcript
+                    .len()
+                    .saturating_sub(usize::from(areas.transcript.height)),
+            )
+        });
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);

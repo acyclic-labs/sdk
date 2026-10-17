@@ -17,6 +17,7 @@ fn query_supported(query: CommandQuery) -> bool {
             | CommandQuery::Goal
             | CommandQuery::Plan
             | CommandQuery::Feedback
+            | CommandQuery::Find
     )
 }
 
@@ -50,16 +51,21 @@ pub(crate) async fn configure<P: StreamProvider + ?Sized>(
             .get("open_view")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|view| {
-                !matches!(view, "shortcuts" | "diff" | "goal" | "plan" | "feedback")
+                !matches!(
+                    view,
+                    "shortcuts" | "diff" | "goal" | "plan" | "feedback" | "find"
+                )
             });
         // Only a visible feedback form can intercept chat. Stale form pointers
         // from another frontend must never consume the next ordinary prompt.
         let form = layout
             .get("view_input")
             .is_some_and(|value| !value.is_null())
-            && !(layout["open_view"] == "feedback" && layout["view_input"] == "feedback");
-        let closed_feedback =
-            layout["open_view"] == "feedback" && layout["view_input"] != "feedback";
+            && !((layout["open_view"] == "feedback" && layout["view_input"] == "feedback")
+                || (layout["open_view"] == "find" && layout["view_input"] == "find"));
+        let closed_feedback = (layout["open_view"] == "feedback"
+            && layout["view_input"] != "feedback")
+            || (layout["open_view"] == "find" && layout["view_input"] != "find");
         if unsupported || form || closed_feedback {
             if let Some(object) = layout.as_object_mut() {
                 for key in ["open_view", "view_input", "view_request", "view_back"] {
