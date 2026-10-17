@@ -125,16 +125,23 @@ impl Kernel {
     }
 
     pub(super) fn assert_safe(&self) {
-        let state = self.state.lock().unwrap();
+        let (live_detaches, mount_before_exit, helper_running) = {
+            let state = self.state.lock().unwrap();
+            (
+                state.live_detaches,
+                state.mount_before_exit,
+                state.helper_running,
+            )
+        };
         assert_eq!(
-            state.live_detaches, 0,
+            live_detaches, 0,
             "helper detached a live remount after early fence release"
         );
         assert_eq!(
-            state.mount_before_exit, 0,
+            mount_before_exit, 0,
             "remount acquired the fence before helper exit"
         );
-        assert!(!state.helper_running, "helper custody was abandoned");
+        assert!(!helper_running, "helper custody was abandoned");
     }
 
     pub(in crate::native_mount) fn helper_stat(&self) -> rustix::fs::Stat {
@@ -145,8 +152,18 @@ impl Kernel {
 // An OS-process handle at the existing closed-process syscall boundary. The
 // production FuseRecoveryControl still owns spawn, wait, terminate and custody.
 pub(in crate::native_mount) struct Helper {
-    kernel: Arc<Kernel>,
+    kernel: Option<Arc<Kernel>>,
+    real: Option<acyclic_native_runtime::ProcessTree>,
     exited: bool,
+}
+impl From<acyclic_native_runtime::ProcessTree> for Helper {
+    fn from(real: acyclic_native_runtime::ProcessTree) -> Self {
+        Self {
+            kernel: None,
+            real: Some(real),
+            exited: false,
+        }
+    }
 }
 impl Helper {
     pub(in crate::native_mount) fn spawn_closed_measured(
@@ -158,7 +175,8 @@ impl Helper {
         let kernel = current().ok_or_else(|| io::Error::other("missing modeled kernel"))?;
         kernel.state.lock().unwrap().helper_running = true;
         *out = Some(Self {
-            kernel,
+            kernel: Some(kernel),
+            real: None,
             exited: false,
         });
         Ok(())
@@ -166,12 +184,15 @@ impl Helper {
 
     pub(in crate::native_mount) fn try_wait(
         &mut self,
-        _meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+        meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> io::Result<Option<std::process::ExitStatus>> {
+        if let Some(real) = &mut self.real {
+            return real.try_wait(meter);
+        }
         // Explore helper execution against a competing real fence acquirer.
         loom::thread::yield_now();
         if !self.exited {
-            let mut state = self.kernel.state.lock().unwrap();
+            let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
             if state.mount == Some(1) {
                 state.live_detaches += 1;
             }
@@ -184,10 +205,25 @@ impl Helper {
 
     pub(in crate::native_mount) fn terminate(
         &mut self,
-        _meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
+        meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> io::Result<()> {
-        self.kernel.state.lock().unwrap().helper_running = false;
+        if let Some(real) = &mut self.real {
+            return real.terminate(meter);
+        }
+        self.kernel
+            .as_ref()
+            .unwrap()
+            .state
+            .lock()
+            .unwrap()
+            .helper_running = false;
         self.exited = true;
         Ok(())
+    }
+
+    pub(in crate::native_mount) fn is_reaped(&self) -> bool {
+        self.real
+            .as_ref()
+            .map_or(self.exited, |real| real.is_reaped())
     }
 }
