@@ -54,6 +54,7 @@ pub struct GoalQueryView<'a> {
 }
 
 impl GoalQueryView<'_> {
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     pub(super) fn lines(&self) -> impl Iterator<Item = &str> {
         let markdown = match self.goal {
             GoalFileView::Present { goal } => goal.markdown.as_str(),

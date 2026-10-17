@@ -225,6 +225,7 @@ impl FileQueryView {
         &self.query
     }
 
+    #[cfg(feature = "tui")]
     pub(crate) fn source(&self) -> &Arc<Query> {
         &self.query
     }

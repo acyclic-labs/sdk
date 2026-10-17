@@ -3,7 +3,9 @@ use super::{ClientViews, FileQueryView};
 use crate::task_volume::{
     Channel, Component, Cursor, FileKey, HeadFile, Query, TaskFile, ToolFile,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
+#[cfg(feature = "tui")]
+use std::sync::Arc;
 
 /// One task at an accepted query cut; payloads remain shared file segments.
 #[derive(Clone)]
@@ -12,7 +14,9 @@ pub struct TaskQueryView<'a> {
     pub cursor: &'a Cursor,
     /// Canonical task identity.
     pub task: &'a Component,
+    #[cfg(feature = "tui")]
     pub(crate) source: &'a Arc<Query>,
+    #[cfg(feature = "tui")]
     selection: &'a FileQueryView,
     files: &'a BTreeMap<FileKey, HeadFile>,
     selected: std::collections::btree_map::Range<'a, FileKey, HeadFile>,
@@ -49,7 +53,9 @@ impl FileQueryView {
         TaskQueryView {
             cursor: self.cursor(),
             task,
+            #[cfg(feature = "tui")]
             source: self.source(),
+            #[cfg(feature = "tui")]
             selection: self,
             files: self.files(),
             selected: self.files().range(range),
@@ -67,15 +73,18 @@ impl ClientViews {
     }
 }
 impl<'a> TaskQueryView<'a> {
+    #[cfg(feature = "tui")]
     pub(crate) fn selection(&self) -> &'a FileQueryView {
         self.selection
     }
+    #[cfg(feature = "tui")]
     pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
         match key {
             FileKey::Task { task, .. } if task == self.task => self.files.get(key),
             _ => None,
         }
     }
+    #[cfg(feature = "tui")]
     pub(crate) fn text_from(
         &self,
         from: Option<&FileKey>,
@@ -163,13 +172,16 @@ impl<'a> TaskQueryView<'a> {
     }
 }
 impl<'a> ToolQueryView<'a> {
+    #[cfg(feature = "tui")]
     pub(crate) fn source(&self) -> &'a Arc<Query> {
         self.task.source
     }
+    #[cfg(feature = "tui")]
     pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
         self.task.file(key).filter(|file| matches!(&file.key,
             FileKey::Task { file: TaskFile::Tool { turn, call, .. }, .. } if *turn == self.turn && call == self.call))
     }
+    #[cfg(feature = "tui")]
     pub(crate) fn output_from(
         &self,
         stderr: bool,
