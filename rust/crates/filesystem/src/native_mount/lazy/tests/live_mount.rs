@@ -106,6 +106,37 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
     live.unmount().await?;
     Ok(())
 }
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "mounts a live native session; requires the host's native mount capability"]
+async fn live_mount_unmount_closes_a_connection_a_handle_still_holds()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let root = tempfile::tempdir()?;
+    let (source, mount) = (root.path().join("source"), root.path().join("mount"));
+    std::fs::create_dir_all(&source)?;
+    let demand = native_source(&source, crate::model::FilesystemProfile::Posix).await?;
+    let live = live_lazy_mount_of(demand, &mount, "live-held-connection").await?;
+    // Keeps the mount referenced after the unmount detaches it, as a copy of
+    // the mount in another mount namespace does.
+    let held = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(&mount)?;
+    live.unmount().await?;
+    // Only the session can resolve a name never looked up before.
+    let looked_up = std::fs::symlink_metadata(format!(
+        "/proc/self/fd/{}/never-looked-up",
+        std::os::fd::AsRawFd::as_raw_fd(&held)
+    ));
+    assert_eq!(
+        looked_up.err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::NotConnected),
+        "the held mount still reaches a session"
+    );
+    Ok(())
+}
 #[cfg(not(target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]

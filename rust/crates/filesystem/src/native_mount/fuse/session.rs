@@ -26,6 +26,73 @@ pub(super) struct FuseSessionState {
     pub(super) _allocation: NativeAllocation,
 }
 
+/// How long a lazily detached mount's FUSE connection may take to close.
+///
+/// A lazy unmount detaches the mount at once, but the kernel closes the
+/// connection only when the last reference to the mount goes away. Within
+/// this namespace that takes microseconds: across 663 stressed unmounts on a
+/// loaded host, every connection that closed on its own did so within 1 ms.
+/// The rest closed between 0.3 s and over 10 s later, because another mount
+/// namespace held a copy of the mount for as long as it lived. Any process
+/// that creates a mount namespace while the mount exists gets such a copy,
+/// for example a sandboxed command. Waiting for it is unbounded, so the
+/// connection is aborted after this grace.
+const DISCONNECT_GRACE: Duration = Duration::from_millis(100);
+
+/// Waits up to `grace` for the kernel to close the FUSE connection on
+/// `device`, and reports whether it closed.
+fn await_disconnect(device: &OwnedFd, grace: Duration) -> Result<bool, NativeMountError> {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let timeout = libc::c_int::try_from(remaining.as_micros().div_ceil(1_000))
+            .unwrap_or(libc::c_int::MAX);
+        let mut poll = libc::pollfd {
+            fd: device.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: poll owns one initialized descriptor record.
+        if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        if poll.revents & libc::POLLERR != 0 {
+            return Ok(true);
+        }
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+    }
+}
+
+/// Aborts the FUSE connection of the mount on `device` through the FUSE
+/// control filesystem, where the mounting user owns its `abort` file.
+fn abort_connection(device: u64) -> Result<(), NativeMountError> {
+    // The control filesystem names a connection by the kernel's encoding of
+    // its device number.
+    let connection = (u64::from(libc::major(device)) << 20) | u64::from(libc::minor(device));
+    let mut path = [0_u8; 64];
+    let mut unwritten = path.as_mut_slice();
+    std::io::Write::write_fmt(
+        &mut unwritten,
+        format_args!("/sys/fs/fuse/connections/{connection}/abort\0"),
+    )?;
+    let path = std::ffi::CStr::from_bytes_until_nul(&path)
+        .map_err(|_| NativeMountError::FuseShutdownFailed)?;
+    let control = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(std::io::Error::from)?;
+    rustix::io::write(&control, b"1").map_err(std::io::Error::from)?;
+    Ok(())
+}
+
 impl FuseSessionState {
     pub(super) fn is_retired(&self) -> bool {
         self.worker.is_none()
@@ -59,17 +126,14 @@ impl FuseSessionState {
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            let mut poll = libc::pollfd {
-                fd: device.as_raw_fd(),
-                events: 0,
-                revents: 0,
-            };
-            // SAFETY: poll owns one initialized descriptor record.
-            if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            if poll.revents & libc::POLLERR == 0 {
-                return Err(NativeMountError::FuseShutdownFailed);
+            if !await_disconnect(device, DISCONNECT_GRACE)? {
+                // Another mount namespace still holds the detached mount.
+                let identity = self.identity.ok_or(NativeMountError::FuseShutdownFailed)?;
+                started(WriteOperations.delta(1))?;
+                abort_connection(identity.device)?;
+                if !await_disconnect(device, DISCONNECT_GRACE)? {
+                    return Err(NativeMountError::FuseShutdownFailed);
+                }
             }
         } else if let Some(before) = self.before {
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
@@ -158,7 +222,8 @@ impl FuseSession {
             WorkCounters::UNCHARGED,
         )?;
         let cleanup = work.reserve_work(WorkCounters {
-            backend_write_operations: 1,
+            // Unmounting, and aborting a connection the unmount leaves open.
+            backend_write_operations: 2,
             backend_read_operations: 3,
             ..WorkCounters::UNCHARGED
         })?;
