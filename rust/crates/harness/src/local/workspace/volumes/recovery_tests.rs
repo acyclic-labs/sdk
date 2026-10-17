@@ -59,7 +59,7 @@ fn scratch_mount_owner() -> TestResult {
         let _mount = acyclic_fs::mount_native_over_existing(
             acyclic_fs::NativeMountRequest {
                 mount_id: acyclic_fs::MountId::new(),
-                volume_id: acyclic_fs::MountFilesystem::volume_id(source.as_ref())?,
+                volume_id: source.volume_id()?,
                 destination: PathBuf::from(root).join(SCRATCH_PATH),
                 writable: true,
             },
