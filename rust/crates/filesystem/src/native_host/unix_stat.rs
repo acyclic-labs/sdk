@@ -79,38 +79,84 @@ pub(super) fn stat_at<W: NativeHostWork>(
 ) -> Result<HostStat, W::Error> {
     #[cfg(target_os = "linux")]
     {
-        let directory = if fd == libc::AT_FDCWD {
-            rustix::fs::CWD
+        statx_at(fd, name, true, work)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn stat_file_metadata<W: NativeHostWork>(
+    file: &File,
+    work: &mut W,
+) -> Result<HostStat, W::Error> {
+    stat_at_metadata(file.as_raw_fd(), c"", work)
+}
+
+#[cfg(target_os = "linux")]
+// Capture consumes identity and canonical metadata, not inode-generation cookies.
+pub(super) fn stat_at_metadata<W: NativeHostWork>(
+    fd: i32,
+    name: &std::ffi::CStr,
+    work: &mut W,
+) -> Result<HostStat, W::Error> {
+    #[cfg(test)]
+    if stat_probe::old() {
+        return stat_probe::baseline_at(fd, name, work);
+    }
+    statx_at(fd, name, false, work)
+}
+
+#[cfg(target_os = "linux")]
+fn statx_at<W: NativeHostWork>(
+    fd: i32,
+    name: &std::ffi::CStr,
+    with_handle: bool,
+    work: &mut W,
+) -> Result<HostStat, W::Error> {
+    let directory = if fd == libc::AT_FDCWD {
+        rustix::fs::CWD
+    } else {
+        // SAFETY: the caller holds this descriptor for the complete query.
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+    };
+    let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
+        | if name.is_empty() && fd != libc::AT_FDCWD {
+            rustix::fs::AtFlags::EMPTY_PATH
         } else {
-            // SAFETY: the caller holds this descriptor for the complete query.
-            unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+            rustix::fs::AtFlags::empty()
         };
-        let flags = rustix::fs::AtFlags::SYMLINK_NOFOLLOW
-            | if name.is_empty() && fd != libc::AT_FDCWD {
-                rustix::fs::AtFlags::EMPTY_PATH
-            } else {
-                rustix::fs::AtFlags::empty()
-            };
-        loop {
-            work.started_io(READ)?;
-            match rustix::fs::statx(
-                directory,
-                name,
-                flags,
-                rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
-            ) {
-                Ok(stat) => {
-                    let handle = file_handle_at(fd, name, flags);
-                    return Ok(HostStat::from_statx(stat).with_handle(handle));
-                }
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
-                Err(error) => return Err(io::Error::from(error).into()),
+    loop {
+        work.started_io(READ)?;
+        #[cfg(test)]
+        stat_probe::query(false);
+        match rustix::fs::statx(
+            directory,
+            name,
+            flags,
+            rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
+        ) {
+            Ok(stat) => {
+                let handle = if with_handle {
+                    file_handle_at(fd, name, flags)
+                } else {
+                    None
+                };
+                return Ok(HostStat::from_statx(stat).with_handle(handle));
             }
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
+            Err(error) => return Err(io::Error::from(error).into()),
         }
     }
     Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "stat_probe.rs"]
+pub(crate) mod stat_probe;
 
 /// [`HostStat::handle`] of what `name` names relative to `fd`, resolved as
 /// the stat that precedes it resolved it. The two queries are separate, so
@@ -119,6 +165,8 @@ pub(super) fn stat_at<W: NativeHostWork>(
 /// corrects. The query is metered as part of its stat.
 #[cfg(target_os = "linux")]
 fn file_handle_at(fd: i32, name: &std::ffi::CStr, flags: rustix::fs::AtFlags) -> Option<[u8; 32]> {
+    #[cfg(test)]
+    stat_probe::query(true);
     /// `struct file_handle` with room for `MAX_HANDLE_SZ` bytes.
     #[repr(C)]
     struct FileHandle {

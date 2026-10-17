@@ -42,7 +42,7 @@ pub(super) fn ensure_current_host_node(
 ) -> Result<(), CaptureError> {
     meter.clone().check().map_err(capture_demand_error)?;
     let observed = source_root
-        .stat_source(host_path, &mut meter.clone())
+        .stat_source_metadata(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
     meter.clone().check().map_err(capture_demand_error)

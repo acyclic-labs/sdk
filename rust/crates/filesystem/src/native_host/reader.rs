@@ -20,6 +20,25 @@ impl HostStatReader {
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
+        self.next_with_handle::<W, true>(work)
+    }
+    pub(crate) fn next_metadata<W: NativeHostWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
+        #[cfg(target_os = "linux")]
+        {
+            self.next_with_handle::<W, false>(work)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.next(work)
+        }
+    }
+    fn next_with_handle<W: NativeHostWork, const HANDLE: bool>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
         #[cfg(unix)]
         use std::os::unix::ffi::OsStringExt as _;
         loop {
@@ -58,6 +77,11 @@ impl HostStatReader {
                 work.record(copied)?;
                 #[cfg(unix)]
                 {
+                    #[cfg(target_os = "linux")]
+                    if !HANDLE {
+                        return stat_at_metadata(self.directory.as_raw_fd(), native_name, work)
+                            .map(Some);
+                    }
                     stat_at(self.directory.as_raw_fd(), native_name, work).map(Some)
                 }
                 #[cfg(windows)]
