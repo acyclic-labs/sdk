@@ -376,7 +376,7 @@ async fn moved_owner_withdraws() -> TestResult {
     let cancelled = std::sync::Arc::new(tokio::sync::Notify::new());
     let begin = started.clone();
     let end = cancelled.clone();
-    let target = destination.channel.clone();
+    let target = destination._channel.clone();
     let connect: Connect = std::sync::Arc::new(move |node| {
         assert_eq!(node.node_id, "away");
         let gate = blocked.lock().unwrap().take().unwrap();
@@ -390,7 +390,7 @@ async fn moved_owner_withdraws() -> TestResult {
         })
     });
     let client = Client::with_connector(
-        home.channel.clone(),
+        home._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,

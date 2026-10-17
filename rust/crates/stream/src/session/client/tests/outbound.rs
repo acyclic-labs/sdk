@@ -127,7 +127,7 @@ async fn paused_peer() -> Result<
     Ok((
         Fixture {
             controls,
-            channel,
+            _channel: channel,
             tls_client: None,
             counts,
             server,
@@ -146,14 +146,14 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         append(&memory, "healthy", 1).await?;
         let healthy = Fixture::open(Arc::clone(&memory), "healthy").await?;
         let (paused, resume, closed) = paused_peer().await?;
-        let destination = healthy.channel.clone();
+        let destination = healthy._channel.clone();
         let connect: Connect = Arc::new(move |node| {
             assert_eq!(node.node_id, "healthy");
             let channel = destination.clone();
             Box::pin(async move { Ok(channel) })
         });
         let client = Client::with_connector(
-            paused.channel.clone(),
+            paused._channel.clone(),
             Some("Bearer fixture".parse()?),
             None,
             connect,
