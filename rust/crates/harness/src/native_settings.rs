@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io::Read as _,
     path::{Path, PathBuf},
 };
@@ -222,6 +222,7 @@ impl NativeSettings {
         }
         let mut snapshot = Self::default();
         let mut selected = BTreeMap::new();
+        let mut disabled_claude_servers = BTreeSet::<String>::new();
         #[cfg(feature = "hooks")]
         let mut hook_documents = Vec::new();
         #[cfg(feature = "hooks")]
@@ -315,14 +316,26 @@ impl NativeSettings {
                     && let Some((_, project)) = object(projects)?.into_iter().find(|(path, _)| {
                         workspace::matches(path, configured_workspace, &workspace)
                     })
-                    && let Some(servers) = object(project)?.remove("mcpServers")
                 {
-                    select(&mut selected, servers, Dialect::Claude, usize::MAX)?;
+                    let mut project = object(project)?;
+                    if let Some(disabled) = project.remove("disabledMcpServers") {
+                        disabled_claude_servers =
+                            serde_json::from_value(disabled).map_err(|_| {
+                                Error::Invalid(
+                                    "disabledMcpServers must be an array of names".into(),
+                                )
+                            })?;
+                    }
+                    if let Some(servers) = project.remove("mcpServers") {
+                        select(&mut selected, servers, Dialect::Claude, usize::MAX)?;
+                    }
                 }
             }
         }
         for (name, (_, dialect, imported)) in selected {
-            if imported.get("enabled") == Some(&Value::Bool(false)) {
+            if imported.get("enabled") == Some(&Value::Bool(false))
+                || dialect == Dialect::Claude && disabled_claude_servers.contains(&name)
+            {
                 continue;
             }
             let imported: ImportedServer = serde_json::from_value(imported)

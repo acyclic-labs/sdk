@@ -70,6 +70,62 @@ pub(super) fn advertised(names: &[&str]) -> Vec<McpToolDefinition> {
 }
 
 #[tokio::test]
+async fn claude_project_disabled_servers_do_not_attempt_installation() -> Result<()> {
+    use crate::native_settings::{NativeSettings, SettingsConfig};
+
+    let root = tempfile::tempdir().map_err(Error::process_io)?;
+    let workspace = std::fs::canonicalize(root.path()).map_err(Error::process_io)?;
+    for disabled in [true, false] {
+        let document = json!({
+            "mcpServers": {
+                "disabled": {"command": "disabled", "required": true},
+                "enabled": {"command": "enabled", "required": true}
+            },
+            "projects": {workspace.to_string_lossy().as_ref(): {
+                "disabledMcpServers": if disabled { vec!["disabled"] } else { vec![] }
+            }}
+        });
+        std::fs::write(root.path().join(".claude.json"), document.to_string())
+            .map_err(Error::process_io)?;
+        let settings = NativeSettings::load(
+            SettingsConfig::new(&workspace, root.path()).codex_home(root.path().join("codex")),
+        )
+        .await?;
+        let attempts = Mutex::new(Vec::new());
+        let installation = settings
+            .mcp
+            .install_with(
+                ToolRegistry::default(),
+                McpClientLimits::default(),
+                |server| {
+                    let super::super::McpTransport::Stdio { command, .. } = &server.transport
+                    else {
+                        return Box::pin(async { Err(Error::Invalid("expected stdio".into())) });
+                    };
+                    attempts.lock().unwrap().push(command.clone());
+                    Box::pin(async {
+                        Ok(Connected {
+                            transport: Arc::new(Remote::default()),
+                            tools: advertised(&["read"]),
+                            binding: [1; 32],
+                        })
+                    })
+                },
+            )
+            .await?;
+        let expected = if disabled {
+            vec!["enabled"]
+        } else {
+            vec!["disabled", "enabled"]
+        };
+        assert_eq!(*attempts.lock().unwrap(), expected);
+        assert!(installation.diagnostics.is_empty());
+        assert_eq!(installation.tools.definitions(None)?.len(), expected.len());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn installation_is_additive_filtered_and_uses_the_retained_connection() -> Result<()> {
     let remote = Arc::new(Remote::default());
     let mut tools = ToolRegistry::default();

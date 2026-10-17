@@ -1,6 +1,8 @@
 use super::*;
 use crate::mcp::McpTransport;
 use serde_json::json;
+#[path = "tests/claude_mcp.rs"]
+mod claude_mcp;
 #[cfg(feature = "hooks")]
 #[path = "tests/selection.rs"]
 mod selection;
