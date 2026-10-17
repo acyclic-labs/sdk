@@ -77,6 +77,15 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    /// Reads the authorized private volume at one exact query cut.
+    pub async fn snapshot(
+        &self,
+        query: &Query,
+        maximum_files: usize,
+    ) -> super::Result<super::Snapshot> {
+        self.inner.snapshot(query, maximum_files).await
+    }
+
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.
     pub async fn observe(
         &self,

@@ -22,9 +22,9 @@ proptest! {
     #[test]
     fn syntax_and_names_round_trip(input in text()) {
         let input = format!("/{input}");
-        let (name, arguments) = command_parse::split(&input, 1024).expect("bound").expect("slash");
+        let (name, arguments) = command_syntax::split(&input, 1024).expect("bound").expect("slash");
         let normalized = format!("/{name} {arguments}");
-        prop_assert_eq!(command_parse::split(&normalized, 1024).expect("normalized"), Some((name, arguments)));
+        prop_assert_eq!(command_syntax::split(&normalized, 1024).expect("normalized"), Some((name, arguments)));
         if command_parse::validate_name(name).is_ok() {
             let encoded = serde_json::to_vec(name).expect("encode");
             let decoded: String = serde_json::from_slice(&encoded).expect("decode");

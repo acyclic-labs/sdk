@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod accounting;
+#[cfg(all(test, feature = "memory"))]
+mod reserve_tests;
 #[cfg(test)]
 mod capture_policy_tests;
 mod entry;
@@ -35,6 +37,8 @@ use paths::*;
 mod names;
 use names::*;
 mod host_walk;
+#[cfg(all(test, feature = "memory"))]
+mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;

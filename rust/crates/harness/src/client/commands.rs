@@ -42,7 +42,11 @@ pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::consume_local_command;
+pub(crate) use local::run_local_command_files;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{
+    consume_local_command, run_local_command, run_local_commands, with_local_commands,
+};
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -181,6 +185,18 @@ pub struct CommandSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRequest {
+    /// Cancel the captured admitted task. Published as an immutable request file.
+    Cancel {
+        /// Exact task; later selection changes cannot retarget this request.
+        task: crate::TaskId,
+    },
+    /// Submit an immutable replacement of an earlier user request as a new branch.
+    Replace {
+        /// Original prompt admission, retained for provenance.
+        message: crate::OperationId,
+        /// Replacement prompt; never interpreted as a slash command.
+        text: String,
+    },
     /// Exit the client.
     Quit,
     /// Create a new root conversation.

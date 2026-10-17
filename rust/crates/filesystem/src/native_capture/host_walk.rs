@@ -69,6 +69,14 @@ pub(super) fn collect_host_walk_measured(
                 stat
             };
             let recurse = stat.file_type() == crate::demand::SourceNodeKind::Directory;
+            let move_leaf = !recurse;
+            #[cfg(all(test, feature = "memory"))]
+            let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
+            if move_leaf {
+                meter.clone().check().map_err(capture_demand_error)?;
+                insert(child, stat, meter)?;
+                continue;
+            }
             insert(clone_capture_path(&child, meter)?, stat, meter)?;
             if recurse {
                 capture_reserve(&mut pending, 1, meter)?;

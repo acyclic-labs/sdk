@@ -476,105 +476,131 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = io.and_then(PreparationIo::original_native_work) {
-                let scratch = PreparationIo::from_native_work(original)?;
-                let io = &scratch;
-                reference.validate(&mut Some(&mut io.history_io()))?;
+        // Keep the Result temporary across await for the original admitted caller frame.
+        (if io.is_none() {
+            crate::conversation::BoundedContentFuture::new(None, || async move {
                 if reference.volume().provider() != &self.provider
                     || reference.descriptor().byte_length() > maximum_bytes
                 {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "content provider or size limit mismatch",
-                    });
+                    return Err(Error::Invalid(
+                        "content provider or size limit mismatch".into(),
+                    ));
                 }
-                let generation = self.file_generation(reference, Some(io))?;
-                let workspace = fork_preparer_io::content_workspace(
-                    &self.provider,
-                    reference.volume(),
-                    Some(io),
-                )?;
-                let rendered = original
-                    .display(&format_args!("/{}", reference.path()))
-                    .map_err(|cause| Error::NativeWork {
-                        cause,
-                        custody: None,
-                    })?;
-                let path_custody = rendered.1;
-                let path = rendered.0;
-                let opened = (self).open(&workspace, Some(io)).await?;
-                let pinned = (self).generation(&opened, &generation, Some(io)).await?;
-                let bytes = pinned
-                    .read(&path, maximum_bytes, original, io.cancellation())
-                    .await
-                    .map_err(|source| Error::NativeWorkspace {
-                        source: Box::new(source),
-                        custody: None,
-                    })?;
-                fork_preparer_io::retain(&pinned, Some(io)).await?;
-                crate::executor::with_history_io(Some(io), |work| {
-                    reference.descriptor().verify(&bytes, work)
-                })?;
-                drop(path);
-                drop(path_custody);
-                return Ok(bytes);
-            }
-            if reference.volume().provider() != &self.provider
-                || reference.descriptor().byte_length() > maximum_bytes
-            {
-                return Err(Error::Invalid(
-                    "content provider or size limit mismatch".into(),
-                ));
-            }
-            if let Some(io) = io {
-                io.retain_owned((reference.path().len() + 1) as u64)?;
-            }
-            let _path_hold = io
-                .map(|io| io.guard_owned((reference.path().len() + 1) as u64))
-                .transpose()?;
-            let generation = self.file_generation(reference, io)?;
-            let generation_hold = io
-                .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
-                .transpose()?;
-            let workspace =
-                fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
-            let _workspace_hold = io
-                .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
-                .transpose()?;
-            let path = format!("/{}", reference.path());
-            let bytes = match io {
-                Some(io) => {
+                let generation = self.file_generation(reference, None)?;
+                let workspace =
+                    fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
+                let path = format!("/{}", reference.path());
+                let bytes = self
+                    .read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                    .await?;
+                reference.descriptor().verify(&bytes, &mut None)?;
+                Ok(bytes)
+            })
+        } else {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = io.and_then(PreparationIo::original_native_work) {
+                    let scratch = PreparationIo::from_native_work(original)?;
+                    let io = &scratch;
+                    reference.validate(&mut Some(&mut io.history_io()))?;
+                    if reference.volume().provider() != &self.provider
+                        || reference.descriptor().byte_length() > maximum_bytes
+                    {
+                        return Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "content provider or size limit mismatch",
+                        });
+                    }
+                    let generation = self.file_generation(reference, Some(io))?;
+                    let workspace = fork_preparer_io::content_workspace(
+                        &self.provider,
+                        reference.volume(),
+                        Some(io),
+                    )?;
+                    let rendered = original
+                        .display(&format_args!("/{}", reference.path()))
+                        .map_err(|cause| Error::NativeWork {
+                            cause,
+                            custody: None,
+                        })?;
+                    let path_custody = rendered.1;
+                    let path = rendered.0;
                     let opened = (self).open(&workspace, Some(io)).await?;
                     let pinned = (self).generation(&opened, &generation, Some(io)).await?;
-                    let bytes = io.receive(
-                        pinned
-                            .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
-                            .await,
-                    )?;
-                    let capacity = bytes.retained_capacity().ok_or_else(|| {
-                        stock_boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "content producer does not expose its owned capacity",
-                        )
-                    })?;
-                    io.retain_owned(capacity as u64)?;
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    crate::test_support::differential::record("read", maximum_bytes);
+                    let bytes = pinned
+                        .read(&path, maximum_bytes, original, io.cancellation())
+                        .await
+                        .map_err(|source| Error::NativeWorkspace {
+                            source: Box::new(source),
+                            custody: None,
+                        })?;
                     fork_preparer_io::retain(&pinned, Some(io)).await?;
-                    bytes
+                    crate::executor::with_history_io(Some(io), |work| {
+                        reference.descriptor().verify(&bytes, work)
+                    })?;
+                    drop(path);
+                    drop(path_custody);
+                    return Ok(bytes);
                 }
-                None => {
-                    self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                        .await?
+                if reference.volume().provider() != &self.provider
+                    || reference.descriptor().byte_length() > maximum_bytes
+                {
+                    return Err(Error::Invalid(
+                        "content provider or size limit mismatch".into(),
+                    ));
                 }
-            };
-            crate::executor::with_history_io(io, |work| {
-                reference.descriptor().verify(&bytes, work)
-            })?;
-            drop(generation);
-            drop(generation_hold);
-            Ok(bytes)
+                if let Some(io) = io {
+                    io.retain_owned((reference.path().len() + 1) as u64)?;
+                }
+                let _path_hold = io
+                    .map(|io| io.guard_owned((reference.path().len() + 1) as u64))
+                    .transpose()?;
+                let generation = self.file_generation(reference, io)?;
+                let generation_hold = io
+                    .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
+                    .transpose()?;
+                let workspace =
+                    fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
+                let _workspace_hold = io
+                    .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
+                    .transpose()?;
+                let path = format!("/{}", reference.path());
+                let bytes = match io {
+                    Some(io) => {
+                        let opened = (self).open(&workspace, Some(io)).await?;
+                        let pinned = (self).generation(&opened, &generation, Some(io)).await?;
+                        #[cfg(all(test, not(target_arch = "wasm32")))]
+                        crate::test_support::differential::record("read", maximum_bytes);
+                        let bytes = io.receive(
+                            pinned
+                                .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
+                                .await,
+                        )?;
+                        let capacity = bytes.retained_capacity().ok_or_else(|| {
+                            stock_boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "content producer does not expose its owned capacity",
+                            )
+                        })?;
+                        io.retain_owned(capacity as u64)?;
+                        fork_preparer_io::retain(&pinned, Some(io)).await?;
+                        bytes
+                    }
+                    None => {
+                        self.read(&workspace, Some(&generation), &path, maximum_bytes, None)
+                            .await?
+                    }
+                };
+                crate::executor::with_history_io(io, |work| {
+                    reference.descriptor().verify(&bytes, work)
+                })?;
+                drop(generation);
+                drop(generation_hold);
+                Ok(bytes)
+            })
         })?
         .await
     }
@@ -597,6 +623,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pinned_read_tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;

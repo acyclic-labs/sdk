@@ -1,5 +1,7 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod differential;
 pub(crate) mod admission_work;
 mod scripted;
 mod search;

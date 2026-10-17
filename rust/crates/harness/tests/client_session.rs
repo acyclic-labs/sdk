@@ -19,10 +19,6 @@ use std::sync::{
 mod client_command;
 use client_command::{command, owner};
 
-#[path = "support/client_views.rs"]
-mod view_fixture;
-use view_fixture::file_views;
-
 fn session() -> ClientSession<MemoryClientState> {
     let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
     session
@@ -37,7 +33,7 @@ fn session() -> ClientSession<MemoryClientState> {
 #[tokio::test]
 async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically() {
     use acyclic_harness::{
-        client::{CommandCatalog, CommandQuery, CommandResolution, FileQueryView},
+        client::{CommandCatalog, CommandQuery, CommandResolution, TaskFileQueryView},
         conversation::CompositeContentVerifier,
         task_volume::{Change, FileKey, Query, TaskVolume, Write},
     };
@@ -53,7 +49,9 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
     let initial = volume.snapshot(&Query::Plans, 2).await.unwrap();
     let identity = (initial.cursor.volume, initial.cursor.query);
     let mut generation = initial.generation;
-    let mut client = file_views();
+    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
+        .await
+        .unwrap();
     let reader = CompositeContentVerifier::new(Vec::new(), None).unwrap();
     let CommandResolution::Select { query } = CommandCatalog::builtins()
         .unwrap()
@@ -81,8 +79,8 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         let cursor = change.cursor.clone();
         let payload = file.bytes.as_ptr();
         assert!(client.query_change(change).unwrap());
-        let view = client.selection(&identity).unwrap();
-        assert_eq!(view.files()[&file.key].segments[0].as_ptr(), payload);
+        let view = &client.session().views().queries[&identity];
+        assert_eq!(view.files()[&file.key].bytes.as_ptr(), payload);
         assert_eq!(
             view.plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
@@ -97,7 +95,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
                 })
                 .unwrap()
         );
-        let before = client.clone();
+        let before = client.session().views().clone();
         for mutation in [
             "gap",
             "epoch",
@@ -132,13 +130,13 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
                 _ => unreachable!(),
             }
             assert!(client.query_change(invalid).is_err(), "{mutation}");
-            assert_eq!(&client, &before, "{mutation}");
+            assert_eq!(client.session().views(), &before, "{mutation}");
         }
     }
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
-    assert!(FileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
+    assert!(TaskFileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
-    assert!(FileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
+    assert!(TaskFileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
     // Check both the bounded source and the client's independent revision validation.
     let mut volume_changes = volume
         .follow(
@@ -165,14 +163,16 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
             ));
         }
         let change = volume_changes.next().await.unwrap().unwrap();
-        let before = client.clone();
-        let result = client.query_change(change);
+        let mut updates =
+            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
+        let before = client.session().views().clone();
+        let result = client.next_update(&mut updates).await;
         if path == "plans/second.md" {
             assert!(result.unwrap());
-            assert_eq!(client.selection(&identity).unwrap().files().len(), 2);
+            assert_eq!(client.session().views().queries[&identity].files().len(), 2);
         } else {
             assert!(result.is_err());
-            assert_eq!(&client, &before);
+            assert_eq!(client.session().views(), &before);
         }
     }
     assert!(
@@ -197,7 +197,9 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
     let source = storage
         .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
         .unwrap();
-    let mut client = file_views();
+    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
+        .await
+        .unwrap();
     let CommandResolution::Select { query } = CommandCatalog::builtins()
         .unwrap()
         .resolve("/plan", storage.content_reader(), 128)
@@ -210,11 +212,7 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
         .select_file_view(query, &source, 2, 128)
         .await
         .unwrap();
-    let identity = *client
-        .selections()
-        .map(|(identity, _)| identity)
-        .next()
-        .unwrap();
+    let identity = *client.session().views().queries.keys().next().unwrap();
     for text in ["- [ ] Build", "* [~] Build", "1. [x] Build"] {
         storage
             .stage(
@@ -231,9 +229,11 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert!(client.query_change(change).unwrap());
+        let mut updates =
+            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
+        assert!(client.next_update(&mut updates).await.unwrap());
         assert_eq!(
-            client.selection(&identity).unwrap().plan_lines(),
+            client.session().views().queries[&identity].plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
         );
     }
@@ -301,15 +301,18 @@ fn replay_recovers_projection_and_cursor_and_deduplicates() {
     original
         .receive(frame(delivery(0, LifecycleState::Completed)))
         .unwrap();
-    let revision = original.replay_revision(&owner());
+    let views = original.views().clone();
     let mut recovered = ClientSession::open(original.into_store()).unwrap();
-    assert_eq!(recovered.replay_revision(&owner()), 0);
+    assert_eq!(recovered.views(), &Default::default());
     recovered
         .receive(frame(delivery(0, LifecycleState::Completed)))
         .unwrap();
-    assert_eq!(recovered.replay_revision(&owner()), revision);
+    assert_eq!(recovered.views(), &views);
     assert_eq!(recovered.resume().cursors[0].revision, 1);
-    assert_eq!(recovered.replay_request().cursors[0].revision, 1);
+    assert_eq!(
+        recovered.views().tasks["AGGREGATE_KIND_TASK:task"].status,
+        LifecycleState::Completed
+    );
 }
 
 #[test]
@@ -336,7 +339,7 @@ fn invalid_deliveries_never_advance_or_publish() {
         assert!(session.receive(frame(case)).is_err());
     }
     assert_eq!(session.resume().cursors[0].revision, 0);
-    assert_eq!(session.replay_revision(&owner()), 0);
+    assert!(session.views().tasks.is_empty());
     assert_eq!(session.into_store().load().unwrap().len(), 1);
 }
 
@@ -378,7 +381,7 @@ fn storage_failure_precedes_publication_and_acknowledgement() {
             .receive(frame(delivery(0, LifecycleState::Completed)))
             .is_err()
     );
-    assert_eq!(session.replay_revision(&owner()), 0);
+    assert!(session.views().tasks.is_empty());
     assert_eq!(session.resume().cursors[0].revision, 0);
     fail.store(false, Ordering::Relaxed);
     session
@@ -753,33 +756,11 @@ async fn autospawn_only_for_missing_service() {
     assert_eq!(denied.spawns.load(Ordering::Relaxed), 1);
 }
 
-#[test]
-fn canonical_jsonl_golden_frames() {
-    let frame = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Admission(wire::Admission {
-            operation: Some(wire::OperationIdentity {
-                operation_id: "op".into(),
-                idempotency_key: "key".into(),
-            }),
-            state: wire::AdmissionState::Accepted as i32,
-            error: None,
-        })),
-    };
-    let line = jsonl::server_frame(&frame).unwrap();
-    assert_eq!(
-        line,
-        r#"{"admission":{"operation":{"operationId":"op","idempotencyKey":"key"},"state":"ADMISSION_STATE_ACCEPTED"}}"#
-    );
-    assert_eq!(jsonl::parse_server_frame(&line).unwrap(), frame);
-    let line = r#"{"acknowledge":{"authority":{"kind":"AGGREGATE_KIND_TASK","id":"task"},"generation":"g","throughRevision":"18446744073709551615"}}"#;
-    let frame = jsonl::parse_client_frame(line).unwrap();
-    assert_eq!(jsonl::client_frame(&frame).unwrap(), line);
-    assert!(jsonl::parse_client_frame(r#"{"bogus":1}"#).is_err());
-    assert!(jsonl::parse_client_frame("{} {}").is_err());
-}
+#[path = "client_session_jsonl.rs"]
+mod jsonl_tests;
 
-#[path = "client_session_headless.rs"]
-mod headless;
+#[path = "client_session_views.rs"]
+mod views;
 
 #[path = "client_session_recovery.rs"]
 mod recovery;
@@ -787,11 +768,14 @@ mod recovery;
 #[path = "client_session_admissions.rs"]
 mod admissions;
 
-#[path = "client_session_lifecycle.rs"]
-mod lifecycle;
-
 #[path = "client_session_review.rs"]
 mod review;
+
+fn tool_text(text: &str) -> acyclic_harness::model::ToolResultContent {
+    acyclic_harness::model::ToolResultContent::Parts {
+        parts: vec![acyclic_harness::model::ModelDataPart::Text { text: text.into() }],
+    }
+}
 
 #[path = "support/client_files.rs"]
 #[cfg(feature = "filesystem")]
@@ -803,3 +787,6 @@ mod files;
 #[path = "client_session_usage.rs"]
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 mod usage;
+
+#[path = "client_session_documents.rs"]
+mod documents;
