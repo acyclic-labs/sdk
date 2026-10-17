@@ -24,6 +24,7 @@ pub(super) fn kind(key: &FileKey) -> Option<u8> {
         } => 5,
         TaskFile::Tool { .. } => 4,
         TaskFile::ExecutionResult(_) => 6,
+        TaskFile::Completion(_) => 7,
         _ => return None,
     })
 }
@@ -84,7 +85,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             return Err(Error::LimitExceeded);
         }
         let mut files = Vec::new();
-        for kind in 0..=6 {
+        for kind in 0..=7 {
             for ((_, _, sequence), key) in index
                 .view_order
                 .range((task.clone(), kind, 0)..=(task.clone(), kind, u64::MAX))
@@ -115,7 +116,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
 }
 type Window = BTreeMap<FileKey, (u64, FileValue)>;
 fn trim(files: &mut Window, maximum: usize, bytes: usize, recent: usize) {
-    for kind in 0..=6 {
+    for kind in 0..=7 {
         while files
             .values()
             .filter(|(_, file)| file_kind(file) == Some(kind))

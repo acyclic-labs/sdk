@@ -104,6 +104,43 @@ pub(super) fn snapshot(views: &mut ClientViews, files: &FileQueryView) {
     }
 }
 
+pub(super) fn projected_task(key: &FileKey) -> Option<crate::task_volume::Component> {
+    match key {
+        FileKey::Task {
+            task,
+            file:
+                TaskFile::Chunk { .. }
+                | TaskFile::ExecutionResult(_)
+                | TaskFile::Tool {
+                    file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
+                    ..
+                },
+        } => Some(task.clone()),
+        _ => None,
+    }
+}
+
+// Eviction is a bounded query-window replacement, not another text delta.
+// Rebuild only affected tasks, visiting their retained segments once.
+pub(super) fn replace_tasks(
+    views: &mut ClientViews,
+    tasks: BTreeSet<crate::task_volume::Component>,
+    mut files: Vec<FileValue>,
+) {
+    for task in tasks {
+        let key = owner(&task);
+        views.transcripts.remove(&key);
+        views.tools.remove(&key);
+        views.task_folds.remove(&key);
+    }
+    files.sort_by_cached_key(|file| {
+        super::command_output::text(file).map_or((0, 0), |(sequence, _)| (1, sequence))
+    });
+    for file in files {
+        append(views, &file);
+    }
+}
+
 pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
     let FileKey::Task { task, file: kind } = &file.key else {
         return 0;
@@ -116,7 +153,16 @@ pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
             };
             let fold = views.task_folds.entry(key.clone()).or_default();
             let tail = fold.streams.entry((*turn, channel)).or_default();
+            if tail.frozen || tail.through.is_some_and(|through| *sequence <= through) {
+                return 0;
+            }
             let transcript = views.transcripts.entry(key).or_default();
+            let start = if channel == Channel::Reasoning {
+                &mut transcript.reasoning_start
+            } else {
+                &mut transcript.file_start
+            };
+            start.get_or_insert_with(|| file.key.clone());
             let target = if channel == Channel::Reasoning {
                 &mut transcript.reasoning
             } else {
@@ -131,7 +177,13 @@ pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
             transcript.streaming_turn = Some(crate::OperationId::from_bytes(
                 u128::from(*turn).to_be_bytes(),
             ));
-            tail.append(*sequence, &file.bytes, target)
+            let work = tail.append(*sequence, &file.bytes, target);
+            if channel == Channel::Text {
+                transcript.text_pending = tail.pending_text;
+            } else {
+                transcript.reasoning_pending = tail.pending_text;
+            }
+            work
         }
         TaskFile::Tool {
             turn,
@@ -197,6 +249,13 @@ pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
                 for channel in [Channel::Text, Channel::Reasoning] {
                     if let Some(tail) = fold.streams.get_mut(&(*turn, channel)) {
                         tail.frozen = true;
+                        if let Some(transcript) = views.transcripts.get_mut(&key) {
+                            if channel == Channel::Text {
+                                transcript.text_pending = 0;
+                            } else {
+                                transcript.reasoning_pending = 0;
+                            }
+                        }
                     }
                 }
             }

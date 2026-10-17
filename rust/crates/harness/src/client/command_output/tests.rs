@@ -25,3 +25,103 @@ proptest! {
         prop_assert_eq!(&views.transcripts["owner"].streaming_text, &format!("{prefix}\n\n{}", "abcdefgh".repeat(count)));
     }
 }
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+fn check_partition(text: &str, cuts: &[bool]) {
+    use crate::{
+        client::{ClientViews, task_projection},
+        task_volume::{Channel, Component, FileKey, TaskFile},
+        tui::ClientRenderer,
+        wire,
+    };
+    let task = crate::TaskId::from_bytes([42; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "composed".into(),
+    };
+    let mut views = ClientViews::default();
+    let mut projection = Projection {
+        owner: "AGGREGATE_KIND_TASK:composed".into(),
+        ..Default::default()
+    };
+    let mut renderer = ClientRenderer::default();
+    let mut fold_work = 0;
+    let mut compose_work = 0;
+    let mut chunks = 0;
+    let mut start = 0;
+    for end in 1..=text.len() {
+        if end != text.len() && !cuts.get(end - 1).copied().unwrap_or(false) {
+            continue;
+        }
+        let file = FileValue {
+            publication: None,
+            key: FileKey::Task {
+                task: Component::new(task.to_string()).unwrap(),
+                file: TaskFile::Chunk {
+                    turn: 0,
+                    sequence: chunks,
+                },
+            },
+            channel: Some(Channel::Text),
+            bytes: text.as_bytes()[start..end].to_vec().into(),
+        };
+        fold_work += task_projection::append(&mut views, &file);
+        compose_work += projection.apply(&mut views, Some(task));
+        renderer.update(&views, &owner);
+        let composed = &views.transcripts["AGGREGATE_KIND_TASK:composed"];
+        assert_eq!(
+            composed.streaming_text,
+            String::from_utf8_lossy(&text.as_bytes()[..end])
+        );
+        start = end;
+        chunks += 1;
+    }
+    let mut unsplit = ClientViews::default();
+    let transcript = unsplit
+        .transcripts
+        .entry("AGGREGATE_KIND_TASK:composed".into())
+        .or_default();
+    transcript.streaming_text = text.into();
+    transcript.streaming_turn = views.transcripts["AGGREGATE_KIND_TASK:composed"].streaming_turn;
+    let mut expected = ClientRenderer::default();
+    expected.update(&unsplit, &owner);
+    assert_eq!(renderer.screen().transcript, expected.screen().transcript);
+    assert!(fold_work <= text.len() + 3 * chunks as usize);
+    assert!(compose_work <= text.len() + 6 * chunks as usize);
+    assert_eq!(
+        renderer.text_work(),
+        text.len(),
+        "stable Markdown bytes must be fed exactly once"
+    );
+}
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+#[test]
+fn every_partition_repairs_same_length_utf8_in_composition_and_rendering() {
+    // The old length-only cursor cannot distinguish these equal-size strings.
+    let provisional = String::from_utf8_lossy(&[0xe6]).into_owned();
+    let repaired = "日";
+    let broken = format!("{provisional}{}", &repaired[provisional.len()..]);
+    assert_ne!(
+        broken, repaired,
+        "length-only negative control must miss the repair"
+    );
+    let text = "日a€";
+    for mask in 0..(1usize << (text.len() - 1)) {
+        let cuts: Vec<_> = (0..text.len() - 1)
+            .map(|bit| mask & (1 << bit) != 0)
+            .collect();
+        check_partition(text, &cuts);
+    }
+}
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Any UTF-8 byte partition preserves composed text, Markdown styling and
+    // linear work, including repairs shorter than the provisional replacement.
+    #[test]
+    fn utf8_byte_partitions_preserve_rendered_text_and_linear_work(
+        text in "[a-z日é€🙂\\n*# ]{1,40}", cuts in prop::collection::vec(any::<bool>(), 0..200)
+    ) { check_partition(&text, &cuts); }
+}

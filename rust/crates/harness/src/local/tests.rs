@@ -751,6 +751,7 @@ mod mcp;
 #[path = "tests/command_files.rs"]
 mod command_files;
 
+#[cfg(all(feature = "tui", feature = "terminal"))]
 #[path = "tests/documents.rs"]
 mod documents;
 
@@ -760,6 +761,6 @@ mod headless;
 #[path = "tests/task_files.rs"]
 mod task_files;
 
-#[cfg(feature = "tui")]
+#[cfg(all(feature = "tui", feature = "terminal"))]
 #[path = "tests/live_ui.rs"]
 mod live_ui;

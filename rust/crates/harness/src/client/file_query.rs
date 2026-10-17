@@ -443,15 +443,33 @@ impl super::ClientViews {
     /// Updates the same shared views consumed by terminal, headless and browser renderers.
     pub fn query_change(&mut self, change: Change) -> Result<bool> {
         let key = (change.cursor.volume, change.cursor.query);
+        let affected: BTreeSet<_> = change
+            .removed
+            .iter()
+            .filter_map(super::task_projection::projected_task)
+            .collect();
         let updates: Vec<_> = change.file.iter().chain(&change.files).cloned().collect();
         let view = self
             .queries
             .get_mut(&key)
             .ok_or_else(|| Error::Conflict("file query snapshot is missing".into()))?;
         let changed = view.apply(change)?;
+        if changed && !affected.is_empty() {
+            let mut retained = Vec::new();
+            for task in &affected {
+                for range in Query::Task(task.clone()).ranges() {
+                    retained.extend(view.files().range(range).map(|(_, file)| file.clone()));
+                }
+            }
+            super::task_projection::replace_tasks(self, affected.clone(), retained);
+        }
         if changed {
             for file in updates {
-                super::task_projection::append(self, &file);
+                if !super::task_projection::projected_task(&file.key)
+                    .is_some_and(|task| affected.contains(&task))
+                {
+                    super::task_projection::append(self, &file);
+                }
             }
         }
         Ok(changed)

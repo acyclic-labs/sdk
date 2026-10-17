@@ -56,6 +56,15 @@ pub(super) fn completion(bytes: &[u8]) -> Result<HeadlessOutcome> {
 }
 
 pub(super) fn text(file: &FileValue) -> Option<(u64, String)> {
+    if !matches!(
+        file.key,
+        crate::task_volume::FileKey::Task {
+            file: crate::task_volume::TaskFile::ExecutionResult(_),
+            ..
+        }
+    ) {
+        return None;
+    }
     let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).ok()?;
     if settled(&outcome).ok()? != HeadlessOutcome::Completed {
         return None;
@@ -78,6 +87,10 @@ pub(super) struct Projection {
     live_len: usize,
     reasoning_len: usize,
     active: Option<crate::TaskId>,
+    text_pending: usize,
+    reasoning_pending: usize,
+    live_start: Option<crate::task_volume::FileKey>,
+    reasoning_start: Option<crate::task_volume::FileKey>,
 }
 
 impl Projection {
@@ -132,36 +145,47 @@ impl Projection {
                 .get(&format!("AGGREGATE_KIND_TASK:{task}"))
         });
         if self.after == 0 && live.is_none() {
+            if self.live_start.is_some()
+                || self.reasoning_start.is_some()
+                || self.live_len != 0
+                || self.reasoning_len != 0
+            {
+                views.transcripts.remove(&self.owner);
+                self.live_start = None;
+                self.reasoning_start = None;
+                self.live_len = 0;
+                self.reasoning_len = 0;
+            }
             return 0;
         }
-        let live_size = live.map_or(0, |text| text.streaming_text.len());
-        let restart = reset || archived || self.active != active || live_size < self.live_len;
-        let offset = if restart { 0 } else { self.live_len };
-        // Copy only newly accepted live bytes. The retained archive is shared
-        // segments and each segment is appended to the owner projection once.
-        let delta = live
-            .map(|text| {
-                text.streaming_text
-                    .get(offset..)
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-            .unwrap_or_default();
-        let reasoning_size = live.map_or(0, |text| text.reasoning.len());
-        let reasoning_reset = restart || reasoning_size < self.reasoning_len;
+        let live_start = live.and_then(|text| text.file_start.clone());
+        let reasoning_start = live.and_then(|text| text.reasoning_start.clone());
+        let text_pending = live.map_or(0, |text| text.pending(false));
+        let reasoning_pending = live.map_or(0, |text| text.pending(true));
+        let text = live.map_or("", |text| text.streaming_text.as_str());
+        let live_size = text.len();
+        let restart = reset
+            || archived
+            || self.active != active
+            || live_size < self.live_len.saturating_sub(self.text_pending)
+            || self.live_start != live_start
+            || self.reasoning_start != reasoning_start;
+        let offset = if restart {
+            0
+        } else {
+            self.live_len.saturating_sub(self.text_pending)
+        };
+        let delta = text.get(offset..).unwrap_or_default().to_owned();
+        let text = live.map_or("", |text| text.reasoning.as_str());
+        let reasoning_size = text.len();
+        let reasoning_reset =
+            restart || reasoning_size < self.reasoning_len.saturating_sub(self.reasoning_pending);
         let reasoning_offset = if reasoning_reset {
             0
         } else {
-            self.reasoning_len
+            self.reasoning_len.saturating_sub(self.reasoning_pending)
         };
-        let reasoning = live
-            .map(|text| {
-                text.reasoning
-                    .get(reasoning_offset..)
-                    .unwrap_or_default()
-                    .to_owned()
-            })
-            .unwrap_or_default();
+        let reasoning = text.get(reasoning_offset..).unwrap_or_default().to_owned();
         let mut work = delta.len() + reasoning.len();
         let transcript = views.transcripts.entry(self.owner.clone()).or_default();
         if reset {
@@ -185,11 +209,31 @@ impl Projection {
         if offset == 0 && !delta.is_empty() && self.archive_len != 0 {
             transcript.streaming_text.push_str("\n\n");
         }
+        if !restart {
+            transcript.streaming_text.truncate(
+                transcript
+                    .streaming_text
+                    .len()
+                    .saturating_sub(self.text_pending),
+            );
+        }
         transcript.streaming_text.push_str(&delta);
         if reasoning_reset {
             transcript.reasoning.clear();
         }
+        if !reasoning_reset {
+            transcript.reasoning.truncate(
+                transcript
+                    .reasoning
+                    .len()
+                    .saturating_sub(self.reasoning_pending),
+            );
+        }
         transcript.reasoning.push_str(&reasoning);
+        transcript.text_pending = text_pending;
+        transcript.reasoning_pending = reasoning_pending;
+        self.text_pending = text_pending;
+        self.reasoning_pending = reasoning_pending;
         transcript.streaming_turn = Some(active.map_or_else(
             || crate::OperationId::from_bytes(u128::from(self.after).to_be_bytes()),
             |task| crate::OperationId::from_bytes(task.into_bytes()),
@@ -199,6 +243,10 @@ impl Projection {
         self.live_len = live_size;
         self.reasoning_len = reasoning_size;
         self.active = active;
+        transcript.file_start.clone_from(&live_start);
+        self.live_start = live_start;
+        transcript.reasoning_start.clone_from(&reasoning_start);
+        self.reasoning_start = reasoning_start;
         work
     }
 }

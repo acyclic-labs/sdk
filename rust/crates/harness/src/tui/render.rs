@@ -16,16 +16,58 @@ use acyclic_markdown::Markdown;
 struct StreamText {
     markdown: Markdown,
     fed: usize,
+    // Pending suffix repair: replace the last three displayed bytes, then append.
+    provisional: bool,
+    provisional_newline: bool,
+    #[cfg(test)]
+    work: usize,
 }
 
 impl StreamText {
-    fn push(&mut self, text: &str) -> usize {
+    fn push(&mut self, text: &str, pending: usize) -> usize {
+        // Display the repairable suffix separately from the stable parser cut.
+        // Replacing these at most three bytes never replays stable Markdown.
+        let provisional = pending != 0;
+        let text = &text[..text.len().saturating_sub(pending)];
+        let previous_provisional = self.provisional;
         if text.len() < self.fed {
             *self = Self::default();
         }
+        self.provisional = provisional;
+        self.provisional_newline = text.ends_with('\n');
         let delta = text.get(self.fed..).unwrap_or_default();
         self.fed = text.len();
-        self.markdown.push(delta)
+        #[cfg(test)]
+        {
+            self.work += delta.len();
+        }
+        let changed = self.markdown.push(delta);
+        if previous_provisional || provisional {
+            changed.min(self.markdown.lines().len().saturating_sub(1))
+        } else {
+            changed
+        }
+    }
+    fn rows(&self, changed: usize) -> Vec<Line<'static>> {
+        let mut rows: Vec<_> = self
+            .markdown
+            .lines()
+            .iter()
+            .skip(changed)
+            .map(line)
+            .collect();
+        if self.provisional {
+            if rows.is_empty() || self.provisional_newline {
+                rows.push(Line::default());
+            }
+            let last = rows.last_mut().expect("provisional row");
+            let style = last
+                .spans
+                .last()
+                .map_or(Style::default(), |span| span.style);
+            last.spans.push(Span::styled("\u{fffd}", style));
+        }
+        rows
     }
 }
 
@@ -40,6 +82,8 @@ pub struct ClientRenderer {
     seen: usize,
     stable: usize,
     turn: Option<crate::OperationId>,
+    file_start: Option<crate::task_volume::FileKey>,
+    reasoning_start: Option<crate::task_volume::FileKey>,
     stream: StreamText,
     reasoning: StreamText,
     reasoning_rows: Vec<Line<'static>>,
@@ -75,6 +119,10 @@ pub struct ClientRenderer {
 }
 
 impl ClientRenderer {
+    #[cfg(test)]
+    pub(crate) fn text_work(&self) -> usize {
+        self.stream.work + self.reasoning.work
+    }
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
     pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
@@ -118,29 +166,31 @@ impl ClientRenderer {
                 self.stable = self.transcript.len();
                 self.stream = StreamText::default();
             }
-            if self.turn != transcript.streaming_turn {
+            if self.turn != transcript.streaming_turn
+                || self.file_start != transcript.file_start
+                || self.reasoning_start != transcript.reasoning_start
+            {
                 self.turn = transcript.streaming_turn;
+                self.file_start.clone_from(&transcript.file_start);
+                self.reasoning_start.clone_from(&transcript.reasoning_start);
                 self.reasoning = StreamText::default();
                 self.stream = StreamText::default();
                 self.transcript_changed = self.transcript_changed.min(self.stable);
                 self.transcript.truncate(self.stable);
             }
-            let changed_reasoning = self.reasoning.push(&transcript.reasoning);
+            let changed_reasoning = self
+                .reasoning
+                .push(&transcript.reasoning, transcript.pending(true));
             self.reasoning_changed = self.reasoning_changed.min(changed_reasoning);
             self.reasoning_rows.truncate(changed_reasoning);
-            self.reasoning_rows.extend(
-                self.reasoning
-                    .markdown
-                    .lines()
-                    .iter()
-                    .skip(changed_reasoning)
-                    .map(line),
-            );
-            let changed = self.stream.push(&transcript.streaming_text);
+            self.reasoning_rows
+                .extend(self.reasoning.rows(changed_reasoning));
+            let changed = self
+                .stream
+                .push(&transcript.streaming_text, transcript.pending(false));
             self.transcript_changed = self.transcript_changed.min(self.stable + changed);
             self.transcript.truncate(self.stable + changed);
-            self.transcript
-                .extend(self.stream.markdown.lines().iter().skip(changed).map(line));
+            self.transcript.extend(self.stream.rows(changed));
         } else {
             self.seen = 0;
             self.stable = 0;

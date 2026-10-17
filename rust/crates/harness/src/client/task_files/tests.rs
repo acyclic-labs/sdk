@@ -265,3 +265,6 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
         1
     );
 }
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+mod retention;

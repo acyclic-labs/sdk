@@ -163,6 +163,7 @@ fuzz_target!(|data: &[u8]| {
                 acyclic_harness::client::TaskFileClient::observe(volume.as_ref(), &owner, 16, 8192)
                     .await
                     .unwrap();
+            let mut renderer = ClientRenderer::default();
             let mut cut = volume.snapshot(&Query::Tasks, 16).await.unwrap().generation;
             for (index, bytes) in [&data[..data.len() / 2], &data[data.len() / 2..]]
                 .into_iter()
@@ -188,12 +189,16 @@ fuzz_target!(|data: &[u8]| {
                     .await
                     .unwrap();
                 client.next_change().await.unwrap();
+                renderer.update(client.views(), &owner);
             }
             let replay =
                 acyclic_harness::client::TaskFileClient::observe(volume.as_ref(), &owner, 16, 8192)
                     .await
                     .unwrap();
             assert_eq!(client.views().transcripts, replay.views().transcripts);
+            let mut rebuilt = ClientRenderer::default();
+            rebuilt.update(replay.views(), &owner);
+            assert_eq!(renderer.screen().transcript, rebuilt.screen().transcript);
             assert_eq!(
                 client.views().transcripts[&format!("AGGREGATE_KIND_TASK:{}", owner.id)]
                     .streaming_text,

@@ -241,10 +241,15 @@ impl LocalFileClient {
                 && self.host_done
                 && self.query.cursor().position >= self.drain_through
             {
-                return Err(self
+                let error = self
                     .host_error
                     .take()
-                    .unwrap_or(Error::Indeterminate(operation)));
+                    .unwrap_or(Error::Indeterminate(operation));
+                return if HeadlessOutcome::from_error(&error) == HeadlessOutcome::Indeterminate {
+                    Ok(HeadlessOutcome::Indeterminate)
+                } else {
+                    Err(error)
+                };
             }
             if let Some(outcome) = settled {
                 if input_open {

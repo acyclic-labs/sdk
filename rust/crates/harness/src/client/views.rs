@@ -71,8 +71,35 @@ pub struct TranscriptView {
     pub streaming_turn: Option<crate::OperationId>,
     /// Text received for the current assistant message.
     pub streaming_text: String,
+    /// First retained task chunk; a query-window change invalidates render caches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_start: Option<crate::task_volume::FileKey>,
+    /// First retained reasoning chunk, independent of the text window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_start: Option<crate::task_volume::FileKey>,
+    /// Provisional UTF-8 suffix bytes, replaced when the next segment repairs it.
+    #[serde(default)]
+    pub text_pending: usize,
+    /// Independent provisional suffix in reasoning.
+    #[serde(default)]
+    pub reasoning_pending: usize,
     /// Provider-exposed reasoning for the current step.
     pub reasoning: String,
+}
+
+impl TranscriptView {
+    pub(crate) fn pending(&self, reasoning: bool) -> usize {
+        let (text, pending) = if reasoning {
+            (&self.reasoning, self.reasoning_pending)
+        } else {
+            (&self.streaming_text, self.text_pending)
+        };
+        if pending == 3 && text.ends_with('\u{fffd}') {
+            3
+        } else {
+            0
+        }
+    }
 }
 
 /// A tool invocation, including incremental stdout/stderr supplied by the host.
@@ -203,6 +230,10 @@ impl ClientViews {
                     })
                 {
                     transcript.streaming_text.clear();
+                    transcript.file_start = None;
+                    transcript.text_pending = 0;
+                    transcript.reasoning_pending = 0;
+                    transcript.reasoning_start = None;
                     transcript.reasoning.clear();
                     transcript.streaming_turn = None;
                 }
@@ -271,6 +302,10 @@ impl ClientViews {
                     return Ok(());
                 }
                 transcript.streaming_text.clear();
+                transcript.file_start = None;
+                transcript.text_pending = 0;
+                transcript.reasoning_pending = 0;
+                transcript.reasoning_start = None;
                 transcript.reasoning.clear();
                 transcript.streaming_turn = Some(turn);
             }
