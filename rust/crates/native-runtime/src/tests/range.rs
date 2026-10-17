@@ -99,7 +99,7 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
                 );
                 prop_assert_eq!(&borrowed, &owned);
                 cursor_matches(&borrowed.0, borrowed.1, length)?;
-                // Negative control: retaining an extra byte must fail the same
+                // Cursor-only control: retaining an extra byte must fail the same
                 // cursor invariant, even when the read itself fails.
                 prop_assert!(
                     cursor_matches(&borrowed.0, borrowed.1.saturating_add(1), length).is_err()

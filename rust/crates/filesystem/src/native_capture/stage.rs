@@ -59,6 +59,8 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         return Ok(staged);
     }
     let native = native_positional_file(file, meter)?;
+    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+    let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {
         Some(ranges) => Some(
@@ -73,8 +75,11 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let data_ranges = ranges.as_deref().unwrap_or(&full);
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
-        let mut bounded =
-            acyclic_native_runtime::AsyncRangeReader::new(&native, range.offset, range.length);
+        let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
+            std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
+            range.offset,
+            range.length,
+        );
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
         let content = stager
             .stage_content_with_accounting(
