@@ -170,6 +170,7 @@ pub(super) fn result_bound(
                     }
                 }
             }
+            ToolResultContent::Error { message } => history_step(work, message.len() as u64)?,
         }
     }
     crate::executor::json::json_byte_length(content, maximum, work).map(|_| ())
@@ -285,6 +286,9 @@ impl ToolResultContent {
                         },
                     })
                 })?,
+            },
+            Self::Error { message } => Self::Error {
+                message: copy_text(message, quota)?,
             },
         })
     }

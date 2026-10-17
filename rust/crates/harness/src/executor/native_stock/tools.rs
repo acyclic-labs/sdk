@@ -20,20 +20,6 @@ pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
     }
 }
 
-pub(in crate::executor) fn stock_tool_lookup<'a>(
-    registry: &'a ToolRegistry,
-    name: &str,
-    io: Option<&PreparationIo>,
-) -> Result<&'a crate::tool::Tool> {
-    registry.get(name, None, io)?.ok_or_else(|| {
-        stock_boundary(
-            io,
-            crate::wire::ErrorCode::NotFound,
-            "tool is not bound to this stock composition",
-        )
-    })
-}
-
 pub(in crate::executor) fn stock_authorize_tool(
     tool: &crate::tool::Tool,
     context: Option<&crate::runtime::ToolContext>,

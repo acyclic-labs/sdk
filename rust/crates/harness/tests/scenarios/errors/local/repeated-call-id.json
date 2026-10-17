@@ -1,0 +1,8 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"same","name":"fs","arguments":{"command":"status"}},
+  {"type":"event","kind":"tool_call","call_id":"same","name":"fs","arguments":{"command":"status"}},
+  {"type":"event","kind":"completed","metadata":null}]],
+ "expect":{"outcome":"failed",
+  "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed","outcome":{"Failed":{"message":
+    {"$contains":"model tool call limit exceeded or identity repeated"}}}}],
+  "statuses":[{"state":"pending","attention":false,"parent":null},
+    {"state":"failed","attention":true,"parent":null,"error":{"$contains":"identity repeated"}}]}}

@@ -742,8 +742,20 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
     Ok(())
 }
 
+/// The text a rejected or failed call returned to the model, if `call` received one.
+fn tool_error_text(messages: &[crate::model::ModelMessage], call: &str) -> Option<String> {
+    messages.iter().find_map(|message| match &message.content {
+        ModelContent::Part(ModelContentPart::ToolResult {
+            call_id,
+            content: crate::model::ToolResultContent::Error { message },
+            ..
+        }) if call_id == call => Some(message.clone()),
+        _ => None,
+    })
+}
+
 #[tokio::test]
-async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
+async fn malformed_tool_arguments_return_to_the_model_without_dispatch() -> Result<()> {
     let model = Arc::new(slipping_model());
     let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
     let tools = echo_tools(
@@ -777,12 +789,23 @@ async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         max_steps: 4,
     };
 
-    assert!(matches!(
-        executor.execute(input, &journal).await,
-        Err(Error::Invalid(_))
-    ));
-    assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
-    assert_eq!(model.requests().len(), 1);
+    let output = executor.execute(input.clone(), &journal).await?;
+    assert_eq!(output.text, "done");
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let rejected = tool_error_text(&requests[1].messages, "call-1")
+        .ok_or_else(|| Error::Invalid("the model never saw the rejection".into()))?;
+    assert!(
+        rejected.contains("example.echo") && rejected.contains("failed validation"),
+        "rejection lost its cause: {rejected}"
+    );
+    // Negative control: the corrected call dispatches once and returns its real result.
+    assert_eq!(tool_error_text(&requests[2].messages, "call-2"), None);
+    assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+    // Replay recomputes the same rejection from the bound composition, dispatching nothing.
+    assert_eq!(executor.execute(input, &journal).await?, output);
+    assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+    assert_eq!(model.requests().len(), 3);
     Ok(())
 }
 
@@ -802,7 +825,7 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
     )?;
     let executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
-        model,
+        model.clone(),
         ContextPipeline::default(),
         tools,
     )
@@ -820,16 +843,20 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
         selected_context: None,
         max_steps: 4,
     };
-    let outcome = executor.execute(input, &journal).await;
-    assert!(
-        matches!(&outcome, Err(Error::Unauthorized(message)) if message.contains("example.echo")),
-        "expected an unauthorized refusal, got {outcome:?}"
-    );
-    let rendered = format!("{outcome:?}");
-    assert!(
-        !rendered.contains("additionalProperties") && !rendered.contains("failed validation"),
-        "schema detail leaked through the refusal: {rendered}"
-    );
+    assert_eq!(executor.execute(input, &journal).await?.text, "done");
+    let requests = model.requests();
+    for (step, call) in [(1, "call-1"), (2, "call-2")] {
+        let refused = tool_error_text(&requests[step].messages, call)
+            .ok_or_else(|| Error::Invalid("the model never saw the refusal".into()))?;
+        assert!(
+            refused.contains("example.echo") && refused.contains("not available"),
+            "expected an unavailable refusal, got {refused}"
+        );
+        assert!(
+            !refused.contains("additionalProperties") && !refused.contains("failed validation"),
+            "schema detail leaked through the refusal: {refused}"
+        );
+    }
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -945,7 +972,8 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
 }
 
 #[tokio::test]
-async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() -> Result<()> {
+async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_redispatch()
+-> Result<()> {
     for (output_schema, projection_schema, expected) in [
         (
             json!({"type":"string"}),
@@ -983,7 +1011,7 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
         )?;
         let executor = uncompacted_executor(
             Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
-            model,
+            model.clone(),
             ContextPipeline::default(),
             tools,
         )
@@ -1001,11 +1029,15 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
             selected_context: None,
             max_steps: 4,
         };
-        assert!(matches!(executor.execute(input.clone(), &journal).await,
-            Err(Error::Invalid(message)) if message == expected.message()));
-        assert!(matches!(executor.execute(input, &journal).await,
-            Err(Error::Invalid(message)) if message == expected.message()));
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "done");
+        assert_eq!(
+            tool_error_text(&model.requests()[1].messages, "call-1").as_deref(),
+            Some(expected.message())
+        );
+        assert_eq!(executor.execute(input, &journal).await?, output);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+        assert_eq!(model.requests().len(), 2);
     }
     Ok(())
 }
@@ -1073,8 +1105,10 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
     assert_eq!((calls, reconciles), (1, 1));
     let (rejected, replay, calls, reconciles) =
         outcome(|| Error::Invalid("tool refused".into())).await?;
-    assert!(matches!(rejected, Err(Error::Invalid(_))));
-    assert!(matches!(replay, Err(Error::Invalid(_))));
+    // A definitive refusal is the call's result: the turn continues and replay reproduces it
+    // without redispatch or reconciliation.
+    let rejected = rejected?;
+    assert_eq!(rejected, replay?);
     assert_eq!((calls, reconciles), (1, 0));
     Ok(())
 }

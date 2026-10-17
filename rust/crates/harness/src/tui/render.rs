@@ -532,6 +532,7 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        ToolResultContent::Error { message } => message.clone(),
     };
     if text.is_empty() {
         return rows;

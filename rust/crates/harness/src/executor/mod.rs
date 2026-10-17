@@ -273,7 +273,8 @@ pub enum ExecutionEvent {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
     },
-    /// A terminal tool failure recorded without exception bodies or secrets.
+    /// A settled tool failure, returned to the model as the call's result; recorded without
+    /// exception bodies or secrets.
     ToolFailed {
         /// Zero-based executor step.
         step: u32,
@@ -284,7 +285,7 @@ pub enum ExecutionEvent {
     },
 }
 
-/// Stable, non-secret terminal tool failure classes.
+/// Stable, non-secret classes of a settled tool failure the model receives as its result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -511,7 +512,9 @@ pub(crate) struct ModelEventAdmission {
 mod tests;
 
 mod validation;
-pub(crate) use validation::{compile_json_schema, preparation_format, validate_json_schema_value};
+pub(crate) use validation::{
+    check_json_schema_value, compile_json_schema, preparation_format, validate_json_schema_value,
+};
 
 /// Bounded JSON shared by the existing IO adapters.
 pub mod json;

@@ -58,7 +58,9 @@ impl StockExecution<'_> {
         }
     }
 
-    pub(super) async fn reject_tool_call<T>(
+    /// Settles an admitted call as failed. The model receives `reason` as the call's result and
+    /// the turn continues; only the journal append itself can still fail the command.
+    pub(super) async fn reject_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
@@ -66,10 +68,17 @@ impl StockExecution<'_> {
         call_id: &str,
         reason: ToolFailureKind,
         error: Error,
-    ) -> Result<T> {
+    ) -> Result<ToolFailureKind> {
         if error.is_native_failure() {
             return Err(error);
         }
+        tracing::warn!(
+            %operation_id,
+            call_id,
+            ?reason,
+            cause = ?error,
+            "tool call failed; returning the failure to the model"
+        );
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -96,11 +105,7 @@ impl StockExecution<'_> {
             .append_if_tail(operation_id, tail, &key, &event, self.io)?
             .await
         {
-            Ok(true) => Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                reason.message(),
-            )),
+            Ok(true) => Ok(reason),
             Err(error) if !error.leaves_effect_uncertain() => Err(error),
             Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
@@ -114,16 +119,16 @@ impl StockExecution<'_> {
         call: &str,
         kind: &str,
         value: &T,
-    ) -> Result<FileRef> {
+    ) -> Result<std::result::Result<FileRef, ToolFailureKind>> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:{step}:{call}:{kind}"), work)
         })?;
         match stage_json(journal, operation, &key, value, self.io).await {
-            Ok(reference) => Ok(reference),
+            Ok(reference) => Ok(Ok(reference)),
             Err(error) if error.is_native_failure() => Err(error),
             Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
-            Err(error) => {
-                self.reject_tool_call(
+            Err(error) => self
+                .reject_tool_call(
                     journal,
                     operation,
                     step,
@@ -132,7 +137,7 @@ impl StockExecution<'_> {
                     error,
                 )
                 .await
-            }
+                .map(Err),
         }
     }
 

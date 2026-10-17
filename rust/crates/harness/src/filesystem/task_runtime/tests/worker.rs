@@ -1,8 +1,9 @@
 use super::*;
 
 #[tokio::test]
-async fn indeterminate_command_traces_the_underlying_failure() -> Result<()> {
-    struct FailedCommand;
+async fn failed_command_settles_with_its_cause_and_only_uncertain_effects_are_indeterminate()
+-> Result<()> {
+    struct FailedCommand(fn() -> Error);
     impl TaskCommandHost for FailedCommand {
         fn execute<'a>(
             &'a self,
@@ -11,7 +12,8 @@ async fn indeterminate_command_traces_the_underlying_failure() -> Result<()> {
             _: WorkflowCommand,
             _: Value,
         ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-            Box::pin(async { Err(Error::Unsupported("original command cause".into())) })
+            let error = (self.0)();
+            Box::pin(async { Err(error) })
         }
     }
     let (seen, _capture) = crate::obs::capture::install();
@@ -19,14 +21,36 @@ async fn indeterminate_command_traces_the_underlying_failure() -> Result<()> {
     let runtime = fixture.runtime(None).await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    runtime.run_task(lease, &FailedCommand, 2).await?;
+    runtime
+        .run_task(
+            lease,
+            &FailedCommand(|| Error::Unsupported("original command cause".into())),
+            2,
+        )
+        .await?;
     assert!(matches!(
         runtime.task_host().outcome(task).await?,
-        Some(Outcome::Indeterminate { .. })
+        Some(Outcome::Failed { message }) if message.contains("original command cause")
     ));
     assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
         *field == "cause" && value.contains("original command cause")
     }));
+    // Negative control: a failure that may have left its effect behind stays uncertain.
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime(None).await?;
+    let lease = fixture.admit(&runtime).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    runtime
+        .run_task(
+            lease,
+            &FailedCommand(|| Error::Storage("response lost after effect".into())),
+            2,
+        )
+        .await?;
+    assert!(matches!(
+        runtime.task_host().outcome(task).await?,
+        Some(Outcome::Indeterminate { .. })
+    ));
     Ok(())
 }
 
