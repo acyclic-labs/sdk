@@ -32,6 +32,7 @@ pub(super) struct Expectations {
 pub(super) enum ExpectedOutcome {
     #[default]
     Succeeded,
+    Failed,
     Indeterminate,
 }
 

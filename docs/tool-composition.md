@@ -21,6 +21,11 @@ envelope independently. Both schemas are compiled and included in the admitted
 definition digest. Dispatch, reconciliation, durable execution, completed-prefix
 reconstruction, and retained replay enforce their respective contracts. Canonical
 results and model projections retain separate artifacts and the same call identity.
+A call the harness refuses (unknown or ungranted tool, schema-invalid arguments) or
+whose admitted execution fails definitively completes with the harness-authored
+`ToolResultContent::Error { message }` instead, outside the tool's projection
+contract: the model reads why and the turn continues. Only an effect left uncertain
+ends the turn as indeterminate.
 Changing the projector or its schema requires new admission; no implicit schema
 alias or old-data migration is installed.
 

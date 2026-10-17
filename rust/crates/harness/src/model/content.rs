@@ -123,6 +123,12 @@ pub enum ToolResultContent {
         /// Text and file parts.
         parts: Vec<ModelDataPart>,
     },
+    /// Harness-authored refusal or failure of the paired call, outside the tool's projection
+    /// contract: the model reads why its call produced no result and may correct the next one.
+    Error {
+        /// Bounded model-visible cause.
+        message: String,
+    },
 }
 
 impl ModelContent {
@@ -316,6 +322,11 @@ impl ToolResultContent {
             if references > limits.attachments.saturating_add(1) {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
             }
+        }
+        if let Self::Error { message } = self
+            && message.len() as u64 > limits.render_bytes
+        {
+            return Err(invalid(work, "tool error exceeds render limit"));
         }
         preparation::result_bound(self, limits.render_bytes, work)
     }

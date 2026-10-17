@@ -29,6 +29,8 @@ export type ModelDataPart = PublicModelDataPart<ModelDataPartWire>;
 type PublicToolResultContent<Content extends ToolResultContentWire, Value> =
   Content extends Readonly<{ kind: "json" }>
     ? Readonly<Omit<Content, "value"> & { value: Value }>
+    : Content extends Readonly<{ kind: "error" }>
+    ? Readonly<Content>
     : Readonly<Omit<Content, "parts"> & { parts: readonly ModelDataPart[] }>;
 /** Complete, nonrecursive result envelope derived from the Rust content contract. */
 export type ToolResultContent<Value = unknown> = PublicToolResultContent<ToolResultContentWire, Value>;

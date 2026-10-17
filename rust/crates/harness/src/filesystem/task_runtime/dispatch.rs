@@ -161,7 +161,9 @@ where
                     Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
                         return Err(error);
                     }
-                    Err(error) => {
+                    // Only a failure that may have left its effect behind is uncertain; every
+                    // other failure settles the task as failed with its cause.
+                    Err(error) if error.leaves_effect_uncertain() => {
                         let reason = crate::executor::with_history_io(io, |work| -> Result<_> {
                             Ok(crate::CommandIndeterminacyReason::Failed {
                                 code: crate::executor::preparation_format(
@@ -175,6 +177,18 @@ where
                             })
                         })?;
                         return command_indeterminate(task, command, reason, io);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %task,
+                            operation = %command.operation_id,
+                            command = %command.kind,
+                            cause = ?error,
+                            "task command failed"
+                        );
+                        return Ok(CommandDispatch::Failed {
+                            message: error.to_string(),
+                        });
                     }
                     Ok(TaskCommandProgress::Indeterminate) => {
                         return command_indeterminate(

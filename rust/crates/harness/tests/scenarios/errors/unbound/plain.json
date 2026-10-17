@@ -1,2 +1,4 @@
 {
+  "expect":{"requests":[{},{"messages":[{"role":"tool","content":{"kind":"tool_result","call_id":"missing","name":"set_name",
+    "content":{"kind":"error","message":"tool `set_name` is not available; call one of the declared tools"}}}]}]}
 }

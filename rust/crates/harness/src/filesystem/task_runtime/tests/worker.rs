@@ -33,7 +33,7 @@ async fn command_cause_path() -> Result<()> {
             *self.kind.lock().unwrap() = Some(command.kind);
             Box::pin(async move {
                 match self.mode {
-                    0 => Err(Error::Unsupported("original command cause".into())),
+                    0 => Err(Error::Storage("original command cause".into())),
                     1 => Ok(TaskCommandProgress::Indeterminate),
                     _ => Ok(TaskCommandProgress::Ready(Value::String("x".repeat(8192)))),
                 }
@@ -62,8 +62,8 @@ async fn command_cause_path() -> Result<()> {
         let kind = command.kind.lock().unwrap().clone().expect("command ran");
         let reason = match mode {
             0 => crate::CommandIndeterminacyReason::Failed {
-                code: "ERROR_CODE_UNSUPPORTED".into(),
-                error: "unsupported capability: original command cause".into(),
+                code: "ERROR_CODE_STORAGE".into(),
+                error: "storage failure: original command cause".into(),
             },
             1 => crate::CommandIndeterminacyReason::Unsettled,
             _ => crate::CommandIndeterminacyReason::InputLimit,
@@ -126,6 +126,60 @@ async fn command_cause_path() -> Result<()> {
             });
         assert_eq!(logged, fail);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_command_settles_with_its_cause_and_only_uncertain_effects_are_indeterminate()
+-> Result<()> {
+    struct FailedCommand(fn() -> Error);
+    impl TaskCommandHost for FailedCommand {
+        fn execute<'a>(
+            &'a self,
+            _: TaskContext,
+            _: LeaseFence,
+            _: WorkflowCommand,
+            _: Value,
+        ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+            let error = (self.0)();
+            Box::pin(async { Err(error) })
+        }
+    }
+    let (seen, _capture) = crate::obs::capture::install();
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime(None).await?;
+    let lease = fixture.admit(&runtime).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    runtime
+        .run_task(
+            lease,
+            &FailedCommand(|| Error::Unsupported("original command cause".into())),
+            2,
+        )
+        .await?;
+    assert!(matches!(
+        runtime.task_host().outcome(task).await?,
+        Some(Outcome::Failed { message }) if message.contains("original command cause")
+    ));
+    assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
+        *field == "cause" && value.contains("original command cause")
+    }));
+    // Negative control: a failure that may have left its effect behind stays uncertain.
+    let fixture = Fixture::new().await?;
+    let runtime = fixture.runtime(None).await?;
+    let lease = fixture.admit(&runtime).await?;
+    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+    runtime
+        .run_task(
+            lease,
+            &FailedCommand(|| Error::Storage("response lost after effect".into())),
+            2,
+        )
+        .await?;
+    assert!(matches!(
+        runtime.task_host().outcome(task).await?,
+        Some(Outcome::Indeterminate { .. })
+    ));
     Ok(())
 }
 

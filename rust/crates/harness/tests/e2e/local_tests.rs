@@ -139,9 +139,10 @@ proptest::proptest! {
         let file = json!({"volume":{"provider":{"namespace":"fixture","family":"filesystem","version":"1"},
             "id":"project","class":"project","owner":{"kind":"project","id":"fixture"}},
             "path":"result","version":"v1","descriptor":{"sha256":vec![0;32],"byte_length":0,"media_type":"text/plain"},"display_name":"result"});
-        for outcome in [ExpectedOutcome::Succeeded,ExpectedOutcome::Indeterminate] {
+        for outcome in [ExpectedOutcome::Succeeded,ExpectedOutcome::Failed,ExpectedOutcome::Indeterminate] {
             let completed = match outcome {
                 ExpectedOutcome::Succeeded => json!({"Succeeded":file}),
+                ExpectedOutcome::Failed => json!({"Failed":{"message":"expected failure"}}),
                 ExpectedOutcome::Indeterminate => json!({"Indeterminate":{"operation_id":operation,"cause":"Unobserved"}}),
             };
             let frames = vec![json!({"kind":"declared"}),json!({"kind":"admitted"}),json!({"kind":"completed","operation_id":operation,"outcome":completed,"fence":null})];
@@ -150,8 +151,8 @@ proptest::proptest! {
             let mut duplicate = frames.clone();duplicate.push(frames[2].clone());
             proptest::prop_assert!(check(&duplicate).is_err());
             proptest::prop_assert!(check(&frames[..2]).is_err());
-            let mut failed = frames.clone();failed[2]["outcome"]=json!({"Failed":{"message":"expected failure"}});
-            proptest::prop_assert!(check(&failed).is_err());
+            let mut cancelled = frames.clone();cancelled[2]["outcome"]=json!("Cancelled");
+            proptest::prop_assert!(check(&cancelled).is_err());
             let mut foreign = id;foreign[0]^=1;
             proptest::prop_assert!(super::drivers::check_frames(&expected,&frames,acyclic_harness::OperationId::from_bytes(foreign),outcome).is_err());
             let other = if outcome == ExpectedOutcome::Succeeded {ExpectedOutcome::Indeterminate} else {ExpectedOutcome::Succeeded};
@@ -218,7 +219,7 @@ async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
         .await
         .expect_err("parser dispatch passed unchanged schema-rejection expectations");
     assert!(
-        error.to_string().contains("scripted model turns"),
+        error.to_string().contains("model tool result"),
         "{error}"
     );
     Ok(())

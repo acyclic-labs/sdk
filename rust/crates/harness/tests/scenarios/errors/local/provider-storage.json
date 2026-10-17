@@ -1,0 +1,4 @@
+{"turns":[[{"type":"error","error":"provider response lost"}]],
+ "expect":{"outcome":"indeterminate",
+  "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed","outcome":{"Indeterminate":{}}}],
+  "statuses":[{"state":"pending","attention":false,"parent":null},{"state":"indeterminate","attention":true,"parent":null}]}}

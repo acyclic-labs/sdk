@@ -93,6 +93,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
             if Some(&output.text) == case.expect.text.as_ref() => {}
+        (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
+            if task == task_id => {}
         (
             ExpectedOutcome::Indeterminate,
             Err(
@@ -398,6 +400,13 @@ pub(crate) fn check_frames(
             ExpectedOutcome::Succeeded,
             acyclic_harness::scheduler::SchedulerEvent::Completed {
                 outcome: acyclic_harness::Outcome::Succeeded(_),
+                ..
+            },
+        ) => {}
+        (
+            ExpectedOutcome::Failed,
+            acyclic_harness::scheduler::SchedulerEvent::Completed {
+                outcome: acyclic_harness::Outcome::Failed { .. },
                 ..
             },
         ) => {}

@@ -24,9 +24,13 @@ impl LocalHarness {
                 .snapshot(&Query::File(key.clone()), 1)
                 .await
                 .map_err(storage)?;
+            let mut error = None;
             let mut state = match self.runtime.task_host().terminal_status(task).await? {
                 Some(Outcome::Succeeded(_)) => "completed",
-                Some(Outcome::Failed { .. }) => "failed",
+                Some(Outcome::Failed { message }) => {
+                    error = Some(message);
+                    "failed"
+                }
                 Some(Outcome::Cancelled) => "cancelled",
                 Some(Outcome::Indeterminate { .. }) => "indeterminate",
                 None => "pending",
@@ -50,7 +54,10 @@ impl LocalHarness {
             }
             let attention = admission.task.name == "acyclic.stock_turn"
                 && matches!(state, "completed" | "failed" | "indeterminate");
-            let value = json!({"task":task,"parent":admission.parent,"state":state,"attention":attention,"owner_agent":self.signed.agent()});
+            let mut value = json!({"task":task,"parent":admission.parent,"state":state,"attention":attention,"owner_agent":self.signed.agent()});
+            if let Some(error) = error {
+                value["error"] = Value::String(error);
+            }
             let bytes = serde_json::to_vec(&value).map_err(storage)?;
             match self
                 .task_files
