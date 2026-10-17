@@ -47,7 +47,14 @@ async fn model<const BOUND: bool>(updates: &[bool], length: usize) {
             assert!(client.presentation_revision() > before);
         }
         if BOUND {
-            renderer.update_files(&client, &authority);
+            let allocations =
+                acyclic_test_support::measure(|| renderer.update_files(&client, &authority));
+            if !changed {
+                assert_eq!(
+                    allocations.count_total, 0,
+                    "an unchanged cache key is borrowed"
+                );
+            }
         } else {
             renderer.update(client.views(), &authority);
         }
@@ -78,4 +85,47 @@ fn long_transcripts_and_scroll_frames_reuse_the_same_fold() {
 #[should_panic(expected = "unchanged frames must not refold client views")]
 fn raw_per_frame_fold_negative_control() {
     futures::executor::block_on(model::<false>(&[true, false], 8192));
+}
+
+async fn authority_model<const OMIT_KIND: bool>(kinds: &[i32]) {
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("authority-cut").unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut owner = wire::Authority {
+        kind: 0,
+        id: crate::TaskId::from_bytes([35; 16]).to_string(),
+    };
+    let client = TaskFileClient::observe(&volume, &owner, 128, 65536)
+        .await
+        .unwrap();
+    let mut renderer = ClientRenderer::default();
+    let mut previous = None;
+    let mut expected = 0;
+    for kind in kinds {
+        if previous != Some(*kind) {
+            expected += 1;
+        }
+        previous = Some(*kind);
+        owner.kind = if OMIT_KIND { 0 } else { *kind };
+        renderer.update_files(&client, &owner);
+        assert_eq!(
+            renderer.folded_views, expected,
+            "the render cut includes authority kind"
+        );
+    }
+}
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn authority_changes_invalidate_the_same_file_cut(kinds in proptest::collection::vec(0i32..4,1..12)) {
+        futures::executor::block_on(authority_model::<false>(&kinds));
+    }
+}
+#[test]
+#[should_panic(expected = "the render cut includes authority kind")]
+fn omitted_authority_kind_negative_control() {
+    futures::executor::block_on(authority_model::<true>(&[1, 2, 1]));
 }
