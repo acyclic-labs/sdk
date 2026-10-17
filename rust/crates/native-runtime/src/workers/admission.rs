@@ -4,8 +4,10 @@ use crate::*;
 // Lock order: queue admission, then channel or waiter nodes. Admission serializes
 // edits to adjacent nodes; release notification holds only one node at a time.
 // Wakes run after every lock is released. A notifier may still hold a node
-// while it wakes the owner, so the owner retires the node's charge itself. The Loom model exercises both orders
-// of registration and capacity release on these same locks.
+// while it wakes the owner, so the owner takes the node's charge out under the
+// lock that unlinks it and drops it after admission. The Loom models exercise
+// both orders of registration and capacity release, and owner admission or
+// cancellation against a notifier that still holds the node, on these locks.
 
 pub(crate) struct AdmissionState {
     pub(crate) head: Option<Arc<CapacityWaiter>>,
@@ -16,6 +18,9 @@ pub(crate) struct AdmissionState {
     pub(crate) broken_wake: bool,
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_accounting: bool,
+    /// Leaves a retired waiter's charge on its node, for the Loom control.
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_charge: bool,
 }
 
 pub(crate) struct CapacityWaiter {
@@ -42,6 +47,8 @@ impl AdmissionState {
             broken_wake: false,
             #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_accounting: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_charge: false,
         }
     }
 
@@ -80,30 +87,27 @@ impl AdmissionState {
     }
 
     /// Retires the owner's waiter and returns the next waiter's waker with the
-    /// owner's charge, which the caller drops after releasing admission.
+    /// owner's charge, which the caller drops after releasing admission. The
+    /// charge leaves the node under the same lock that unlinks it, queued or
+    /// not, because a notifier may still hold the node after the owner lets go.
     pub(crate) fn retire_owner(
         &mut self,
         node: Arc<CapacityWaiter>,
     ) -> (Option<Waker>, Option<ReadAllocation>) {
-        let next = self.retire(&node);
-        let charge = node
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .charge
-            .take();
-        // The owner's reference ends here; a notifier may still hold the node.
-        drop(node);
-        (next, charge)
-    }
-
-    fn retire(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
         let mut state = node
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        let charge = if self.broken_charge {
+            None
+        } else {
+            state.charge.take()
+        };
+        #[cfg(not(all(test, acyclic_native_runtime_loom)))]
+        let charge = state.charge.take();
         if !state.queued {
-            return None;
+            return (None, charge);
         }
         state.queued = false;
         let previous = state.previous.upgrade();
@@ -126,8 +130,10 @@ impl AdmissionState {
             self.tail = previous.as_ref().map_or_else(Weak::new, Arc::downgrade);
         }
         self.waiter_count -= 1;
+        // The owner's reference ends here; a notifier may still hold the node.
         drop(state);
-        if previous.is_none() {
+        drop(node);
+        let next = if previous.is_none() {
             self.head.as_ref().map(|head| {
                 head.state
                     .lock()
@@ -137,7 +143,8 @@ impl AdmissionState {
             })
         } else {
             None
-        }
+        };
+        (next, charge)
     }
 }
 
