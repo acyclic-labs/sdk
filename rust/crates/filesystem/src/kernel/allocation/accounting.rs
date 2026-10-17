@@ -338,6 +338,28 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
+    pub(crate) fn perform<T>(
+        &mut self,
+        delta: WorkCounters,
+        effect: impl FnOnce() -> T,
+    ) -> Result<T, crate::FsError> {
+        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        if super::effects::broken_reservation() {
+            self.admit(delta)?;
+            let output = effect();
+            self.record_completed(delta)?;
+            return Ok(output);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeOriginal { work, cancellation } = self {
+            return super::effects::perform(work, cancellation, delta, effect);
+        }
+        self.admit(delta)?;
+        let output = effect();
+        self.record_completed(delta)?;
+        Ok(output)
+    }
+
     /// Checks work before performing it.
     #[inline]
     pub fn admit(&self, delta: WorkCounters) -> Result<(), crate::FsError> {
