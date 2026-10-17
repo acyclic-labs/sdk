@@ -1,4 +1,6 @@
 //! Independent current-thread runs with an ordered, caller-defined operation trace.
+pub mod oracle;
+
 use std::{any::Any, cell::RefCell};
 thread_local! {
     static TRACE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
