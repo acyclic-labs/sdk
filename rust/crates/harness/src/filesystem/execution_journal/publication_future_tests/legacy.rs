@@ -28,7 +28,10 @@ pub(super) fn append<'a>(
             journal
                 .append_validated(operation, None, key, event, io)
                 .await?;
-            journal.publish_chunk(key, event, io).await.map(|_| ())
+            if io.is_some() {
+                journal.publish_chunk(key, event, io).await?;
+            }
+            Ok(())
         })
         .await
     })
