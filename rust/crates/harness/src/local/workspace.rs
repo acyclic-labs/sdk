@@ -8,7 +8,7 @@ mod bootstrap;
 
 mod mounts;
 pub(super) mod volumes;
-#[cfg(test)]
+#[cfg(all(test, feature = "native-execution", unix))]
 pub(super) use crate::sync::owned::lock_owned;
 pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
