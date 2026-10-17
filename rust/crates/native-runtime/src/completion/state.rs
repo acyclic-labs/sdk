@@ -10,6 +10,8 @@ pub(crate) struct CompletionState<T> {
     pub(crate) broken_wake: bool,
     #[cfg(all(test, acyclic_native_runtime_loom))]
     pub(crate) broken_accounting: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_charge: bool,
 }
 
 impl<T> Default for CompletionState<T> {
@@ -24,11 +26,23 @@ impl<T> Default for CompletionState<T> {
             broken_wake: false,
             #[cfg(all(test, acyclic_native_runtime_loom))]
             broken_accounting: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_charge: false,
         }
     }
 }
 
 impl<T> CompletionState<T> {
+    /// Moves the state's charge to the observer, which retires it after
+    /// releasing the lock.
+    pub(crate) fn take_charge(&mut self) -> Option<ReadAllocation> {
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if self.broken_charge {
+            return None;
+        }
+        self._allocation.take()
+    }
+
     pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
         if !self.task_pending
             && let Some(result) = self.result.take()

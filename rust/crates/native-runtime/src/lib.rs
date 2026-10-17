@@ -78,11 +78,11 @@ pub use meter::{
 mod blocking;
 #[cfg(feature = "test-support")]
 pub mod testing;
+pub use blocking::{InlineBlocking, run_blocking_io};
 pub(crate) use blocking::{
-    BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
+    PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
 };
-pub use blocking::{InlineBlocking, run_blocking_io};
 mod completion;
 pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]
