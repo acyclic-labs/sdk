@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::history::PIN_GUARD_DISABLED;
 use proptest::test_runner::TestCaseError;
 
 struct Turn {
@@ -6,6 +7,7 @@ struct Turn {
     calls: Vec<(usize, Option<usize>)>,
     pending: Option<Uuid>,
     outcome: Option<usize>,
+    digests: Vec<[u8; 32]>,
 }
 
 impl Turn {
@@ -25,6 +27,7 @@ impl Turn {
             calls: Vec::new(),
             pending: None,
             outcome: None,
+            digests: Vec::new(),
         };
         turn.push(&mut state, MessageKind::User, None, None, None);
         let user = Uuid::from_u128(1);
@@ -84,6 +87,7 @@ impl Turn {
         }
         // The submitted reply always belongs to user 1. A newer user has no reply.
         turn.pending = next_id.or_else(|| (!closed).then_some(user));
+        turn.digests = turn.input.digests();
         (turn, state)
     }
 
@@ -144,21 +148,25 @@ impl Turn {
         state: &ConversationState,
         base: usize,
         cut: usize,
+        pin: bool,
         fault: RetirementFault,
-    ) -> std::result::Result<ConversationState, TestCaseError> {
-        let mut actual = state
-            .checkpointed_suffix(&self.selection(cut, true), &mut None, None)
-            .unwrap()
-            .0;
+    ) -> std::result::Result<Option<ConversationState>, TestCaseError> {
+        let disabled = matches!(fault, RetirementFault::DisablePinGuard);
+        let previous = PIN_GUARD_DISABLED.replace(disabled);
+        let result = state.checkpointed_suffix(&self.selection(cut, pin), &mut None, None);
+        PIN_GUARD_DISABLED.set(previous);
+        let mut actual = result
+            .map(|(actual, _)| actual)
+            .map_err(|error| error.to_string());
         match fault {
             RetirementFault::ForceRetirement => {
                 // Deliberately bypass both retention guards while preserving the archive format.
-                actual = ConversationState::from_wire(
+                actual = Ok(ConversationState::from_wire(
                     ConversationStateWire {
                         agent: Some(self.input.agent),
                         archived_prefix: Some(ArchivedConversationPrefix {
                             through_sequence: cut as u64,
-                            history_digest: self.input.digests()[cut],
+                            history_digest: self.digests[cut],
                             checkpoint: self.input.checkpoint.clone(),
                         }),
                         messages: self.input.messages[cut..].to_vec(),
@@ -167,126 +175,133 @@ impl Turn {
                     &mut None,
                 )
                 .unwrap()
-                .0;
+                .0);
             }
-            RetirementFault::SkipRetirement => actual = state.copy(&mut None, None).unwrap().0,
+            RetirementFault::SkipRetirement => actual = Ok(state.copy(&mut None, None).unwrap().0),
             RetirementFault::DropSuffix => {
-                actual.messages.pop();
+                actual.as_mut().unwrap().messages.pop();
             }
-            RetirementFault::DropIndex => actual.by_id.clear(),
+            RetirementFault::DropIndex => actual.as_mut().unwrap().by_id.clear(),
             RetirementFault::DropOutcomeIndex => {
-                actual.by_id.get_mut(&Uuid::from_u128(1)).unwrap().1 = None
+                let index = actual.as_mut().unwrap().by_id.get_mut(&Uuid::from_u128(1));
+                index.unwrap().1 = None;
             }
             RetirementFault::WrongCheckpoint => {
-                actual.archived_prefix.as_mut().unwrap().checkpoint =
-                    self.input.other_checkpoint.clone()
+                let prefix = actual.as_mut().unwrap().archived_prefix.as_mut();
+                prefix.unwrap().checkpoint = self.input.other_checkpoint.clone();
             }
             RetirementFault::WrongCut => {
-                actual.archived_prefix.as_mut().unwrap().through_sequence += 1
+                let prefix = actual.as_mut().unwrap().archived_prefix.as_mut();
+                prefix.unwrap().through_sequence += 1;
             }
-            RetirementFault::DropPending => actual.pending_user = None,
-            RetirementFault::RestoreOldPending => actual.pending_user = Some(Uuid::from_u128(1)),
-            RetirementFault::None => {}
+            RetirementFault::DropPending => actual.as_mut().unwrap().pending_user = None,
+            RetirementFault::RestoreOldPending => {
+                actual.as_mut().unwrap().pending_user = Some(Uuid::from_u128(1));
+            }
+            RetirementFault::None | RetirementFault::DisablePinGuard => {}
         }
         let expected_base = self.expected_base(base, cut);
-        let digests = self.input.digests();
-        let archive = actual.archived_prefix.as_ref().map(|prefix| {
-            (
-                prefix.through_sequence,
-                prefix.history_digest,
-                &prefix.checkpoint,
-            )
-        });
-        let expected_archive = (expected_base > 0).then(|| {
-            (
-                expected_base as u64,
-                digests[expected_base],
-                &self.input.checkpoint,
-            )
-        });
-        let lookups = self
-            .input
-            .messages
-            .iter()
-            .map(|message| actual.message(message.id).cloned())
-            .collect::<Vec<_>>();
-        let expected_lookups = self
-            .input
-            .messages
-            .iter()
-            .map(|message| (message.sequence > expected_base as u64).then(|| message.clone()))
-            .collect::<Vec<_>>();
-        let users = self
-            .input
-            .messages
-            .iter()
-            .filter(|message| message.kind == MessageKind::User);
-        let outcomes = users
-            .clone()
-            .map(|user| actual.turn_outcome(user.id).cloned())
-            .collect::<Vec<_>>();
-        let expected_outcomes = users
-            .map(|user| {
-                self.outcome
-                    .filter(|sequence| user.sequence == 1 && *sequence > expected_base)
-                    .map(|sequence| self.input.messages[sequence - 1].clone())
-            })
-            .collect::<Vec<_>>();
-        let prefixes = (expected_base..=self.input.messages.len())
-            .map(|through| actual.history_prefix_digest(through as u64, &mut None).ok())
-            .collect::<Vec<_>>();
-        let expected_prefixes = digests[expected_base..]
-            .iter()
-            .copied()
-            .map(Some)
-            .collect::<Vec<_>>();
-        prop_assert_eq!(
-            (
-                state.unresolved_user(),
-                actual.agent,
-                actual.logical_revision(),
-                actual.resident_after_sequence(),
-                actual.unresolved_user(),
-                actual.messages(),
-                archive,
-                lookups,
-                outcomes,
-                prefixes
-            ),
-            (
+        let users = || {
+            self.input
+                .messages
+                .iter()
+                .filter(|message| message.kind == MessageKind::User)
+        };
+        let observed = match &actual {
+            Err(error) => Err(error.as_str()),
+            Ok(actual) => {
+                let archive = actual.archived_prefix.as_ref().map(|prefix| {
+                    (
+                        prefix.through_sequence,
+                        prefix.history_digest,
+                        &prefix.checkpoint,
+                    )
+                });
+                let lookups = self
+                    .input
+                    .messages
+                    .iter()
+                    .map(|message| actual.message(message.id).cloned())
+                    .collect::<Vec<_>>();
+                let outcomes = users()
+                    .map(|user| actual.turn_outcome(user.id).cloned())
+                    .collect::<Vec<_>>();
+                let prefixes = (expected_base..=self.input.messages.len())
+                    .map(|through| actual.history_prefix_digest(through as u64, &mut None).ok())
+                    .collect::<Vec<_>>();
+                Ok((
+                    state.unresolved_user(),
+                    actual.agent,
+                    actual.logical_revision(),
+                    actual.resident_after_sequence(),
+                    actual.unresolved_user(),
+                    actual.messages(),
+                    archive,
+                    lookups,
+                    outcomes,
+                    prefixes,
+                ))
+            }
+        };
+        let missing;
+        let expected = if !pin {
+            // A missing pin must be rejected before any retirement decision.
+            missing =
+                Error::Invalid("history retirement requires a checkpoint pin".into()).to_string();
+            Err(missing.as_str())
+        } else {
+            let digests = &self.digests;
+            let archive = (expected_base > 0).then(|| {
+                (
+                    expected_base as u64,
+                    digests[expected_base],
+                    &self.input.checkpoint,
+                )
+            });
+            let lookups = self
+                .input
+                .messages
+                .iter()
+                .map(|message| (message.sequence > expected_base as u64).then(|| message.clone()))
+                .collect::<Vec<_>>();
+            let outcomes = users()
+                .map(|user| {
+                    self.outcome
+                        .filter(|sequence| user.sequence == 1 && *sequence > expected_base)
+                        .map(|sequence| self.input.messages[sequence - 1].clone())
+                })
+                .collect::<Vec<_>>();
+            let prefixes = digests[expected_base..]
+                .iter()
+                .copied()
+                .map(Some)
+                .collect::<Vec<_>>();
+            Ok((
                 self.pending,
                 Some(self.input.agent),
                 self.input.messages.len() as u64,
                 expected_base as u64,
                 self.pending,
                 &self.input.messages[expected_base..],
-                expected_archive,
-                expected_lookups,
-                expected_outcomes,
-                expected_prefixes
-            ),
+                archive,
+                lookups,
+                outcomes,
+                prefixes,
+            ))
+        };
+        prop_assert_eq!(
+            observed,
+            expected,
             "retirement differs from input turn and call history"
         );
-        Ok(actual)
-    }
-
-    fn check_missing_pin(
-        &self,
-        state: &ConversationState,
-        cut: usize,
-        supply_pin: bool,
-    ) -> TestCaseResult {
-        let rejected = state
-            .checkpointed_suffix(&self.selection(cut, supply_pin), &mut None, None)
-            .is_err();
-        prop_assert!(rejected, "retirement accepted a missing checkpoint pin");
-        Ok(())
+        Ok(actual.ok())
     }
 }
 
 #[derive(Clone, Copy)]
 enum RetirementFault {
     None,
+    DisablePinGuard,
     ForceRetirement,
     SkipRetirement,
     DropSuffix,
@@ -310,12 +325,12 @@ fn run(
     let mut restored = reopen(&state);
     let mut base = 0;
     for cut in 0..=turn.input.messages.len() {
-        turn.check(&state, 0, cut, RetirementFault::None)?;
-        turn.check_missing_pin(&state, cut, false)?;
-        let retired = turn.check(&restored, base, cut, RetirementFault::None)?;
+        turn.check(&state, 0, cut, true, RetirementFault::None)?;
+        turn.check(&state, 0, cut, false, RetirementFault::None)?;
+        let retired = turn.check(&restored, base, cut, true, RetirementFault::None)?;
         base = turn.expected_base(base, cut);
-        restored = reopen(&retired);
-        turn.check(&restored, base, cut, RetirementFault::None)?;
+        restored = reopen(&retired.unwrap());
+        turn.check(&restored, base, cut, true, RetirementFault::None)?;
     }
     Ok(())
 }
@@ -368,7 +383,7 @@ fn expect_fault(result: TestCaseResult, target: &str) {
 fn control(calls: u8, results: u8, flags: [bool; 4], cut: usize, fault: RetirementFault) {
     let (turn, state) = Turn::new(calls, results, flags, 1, false, false);
     expect_fault(
-        turn.check(&state, 0, cut, fault).map(|_| ()),
+        turn.check(&state, 0, cut, true, fault).map(|_| ()),
         "retirement differs from input turn and call history",
     );
 }
@@ -462,19 +477,24 @@ fn negative_control_drops_pending_turn_identity() {
 }
 
 #[test]
-fn negative_control_supplies_a_checkpoint_for_missing_pin_input() {
-    let (turn, state) = Turn::new(0, 0, [false, true, false, false], 1, false, false);
-    expect_fault(
-        turn.check_missing_pin(&state, 1, true),
-        "retirement accepted a missing checkpoint pin",
-    );
+fn negative_control_disables_production_pin_guard() {
+    let (turn, state) = Turn::new(1, 1, [false, true, false, false], 1, false, false);
+    for cut in 0..=turn.input.messages.len() {
+        turn.check(&state, 0, cut, false, RetirementFault::None)
+            .unwrap();
+        expect_fault(
+            turn.check(&state, 0, cut, false, RetirementFault::DisablePinGuard)
+                .map(|_| ()),
+            "retirement differs from input turn and call history",
+        );
+    }
 }
 
 #[test]
 fn negative_control_does_not_settle_system_outcome() {
     let (turn, state) = Turn::new(0, 0, [false, true, false, false], 1, true, false);
     expect_fault(
-        turn.check(&state, 0, 0, RetirementFault::RestoreOldPending)
+        turn.check(&state, 0, 0, true, RetirementFault::RestoreOldPending)
             .map(|_| ()),
         "retirement differs from input turn and call history",
     );
@@ -485,7 +505,7 @@ fn negative_controls_stale_replies_settle_newer_user() {
     for outcome in [false, true] {
         let (turn, state) = Turn::new(0, 0, [false, true, true, false], 1, outcome, true);
         expect_fault(
-            turn.check(&state, 0, 0, RetirementFault::DropPending)
+            turn.check(&state, 0, 0, true, RetirementFault::DropPending)
                 .map(|_| ()),
             "retirement differs from input turn and call history",
         );
@@ -496,7 +516,7 @@ fn negative_controls_stale_replies_settle_newer_user() {
 fn negative_control_loses_system_outcome_index() {
     let (turn, state) = Turn::new(0, 0, [false, true, false, false], 1, true, false);
     expect_fault(
-        turn.check(&state, 0, 0, RetirementFault::DropOutcomeIndex)
+        turn.check(&state, 0, 0, true, RetirementFault::DropOutcomeIndex)
             .map(|_| ()),
         "retirement differs from input turn and call history",
     );
