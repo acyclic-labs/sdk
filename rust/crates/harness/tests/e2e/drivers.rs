@@ -71,6 +71,13 @@ impl Driver for super::swarm_case::SwarmCase {
     }
 }
 
+impl Driver for super::subagents::SubagentCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::subagents::run(case).await
+    }
+}
+
 impl Driver for super::provider_case::ProviderCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -100,6 +107,12 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         }
         Some("task_query") => {
             Box::pin(TaskQueryCase::execute(serde_json::from_value(value)?)).await
+        }
+        Some("subagents") => {
+            Box::pin(super::subagents::SubagentCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
         }
         Some("provider") => {
             Box::pin(super::provider_case::ProviderCase::execute(
