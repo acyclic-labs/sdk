@@ -37,7 +37,7 @@ fuzz_target!(|data: &[u8]| {
         let raw: serde_json::Value = serde_json::from_slice(data).unwrap();
         assert_eq!(Some(projected.sequence), raw["sequence"].as_u64());
         if let Some(text) = projected.text {
-            assert_eq!(raw["ok"]["text"].as_str(), Some(text.as_str()));
+            assert_eq!(raw["ok"]["text"].as_str(), Some(text.as_ref()));
         }
     }
     // Every batch is all-or-nothing even when a later command file is malformed.
