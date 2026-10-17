@@ -7,20 +7,31 @@ use acyclic_harness::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+/// The stream's per-event byte limit used by the fuzz target.
+const MAXIMUM: usize = 1 << 20;
+/// Upper bound on a single call's retained bookkeeping besides its arguments.
+const BOOKKEEPING: usize = 256;
+
 /// Tool-call arguments from raw bytes, through the real Chat stream. A call is
 /// emitted exactly when its arguments are a JSON object that the independent
 /// recording reference admits, and then unchanged; anything else fails the
 /// whole stream rather than failing later when the executor records the call.
+/// An event larger than the stream's limit fails with its typed limit error.
 pub fn assert_tool_arguments(input: &[u8]) {
+    check(input, MAXIMUM);
+}
+
+pub(super) fn check(input: &[u8], maximum: usize) {
     let Ok(text) = std::str::from_utf8(input) else {
         return;
     };
     let calls =
         serde_json::json!([{"index":0,"id":"call","function":{"name":"echo","arguments":text}}]);
-    let sse = format!(
-        "data: {}\n\ndata: [DONE]\n\n",
+    let event = format!(
+        "data: {}",
         serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]})
     );
+    let sse = format!("{event}\n\ndata: [DONE]\n\n");
     let body = Box::pin(futures::stream::iter([Ok(Bytes::from(sse))]));
     let dispatch = ModelDispatch {
         operation_id: OperationId::from_bytes([1; 16]),
@@ -28,8 +39,28 @@ pub fn assert_tool_arguments(input: &[u8]) {
         request_digest: [0; 32],
     };
     let events: Result<Vec<_>, _> = futures::executor::block_on(
-        stream::events(Adapter::Chat, body, 1 << 20, dispatch).try_collect(),
+        stream::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
     );
+    // Limits are typed rejections, never a rejected portable object. An event
+    // line over the limit fails at framing. Retained state is the argument
+    // text plus the call's bookkeeping (entry, id and name capacities, under
+    // `BOOKKEEPING` bytes), so it can fail only when the text nears the limit.
+    let limited = |reason: &str| matches!(&events, Err(acyclic_harness::Error::Invalid(actual)) if actual == reason);
+    if event.len() > maximum {
+        assert!(
+            limited("SSE event exceeds configured byte limit"),
+            "an over-limit event must fail with the stream's limit error, got {events:?}"
+        );
+        return;
+    }
+    if limited("retained model state exceeds aggregate byte or item limit") {
+        assert!(
+            text.len() + BOOKKEEPING > maximum,
+            "retained state rejected {} argument bytes far below the {maximum} limit",
+            text.len()
+        );
+        return;
+    }
     let emitted = events.ok().and_then(|events| {
         events.into_iter().find_map(|event| match event {
             ModelEvent::ToolCall(call) => Some(call),
@@ -93,7 +124,7 @@ pub(crate) fn portable(value: &serde_json::Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{assert_tool_arguments, portable};
+    use super::{assert_tool_arguments, check, portable};
     use proptest::prelude::*;
     use serde_json::json;
 
@@ -118,6 +149,14 @@ mod tests {
         }
     }
 
+    // Greptile on #872: a portable object larger than the event limit is a
+    // typed limit rejection, not a rejected portable object.
+    #[test]
+    fn arguments_beyond_the_event_limit_expect_the_limit_rejection() {
+        let text = format!("{{\"a\":\"{}\"}}", "x".repeat(2 << 20));
+        assert_tool_arguments(text.as_bytes());
+    }
+
     #[test]
     fn checked_in_byte_corpus() {
         for bytes in [
@@ -129,8 +168,11 @@ mod tests {
             include_bytes!("../../fuzz/corpus/tool_arguments/non-object").as_slice(),
             include_bytes!("../../fuzz/corpus/tool_arguments/duplicate-keys").as_slice(),
             include_bytes!("../../fuzz/corpus/tool_arguments/lone-surrogate").as_slice(),
+            include_bytes!("../../fuzz/corpus/tool_arguments/over-event-limit").as_slice(),
         ] {
             assert_tool_arguments(bytes);
+            // The same seeds against a small event limit take the limit path.
+            check(bytes, 1024);
         }
     }
 
