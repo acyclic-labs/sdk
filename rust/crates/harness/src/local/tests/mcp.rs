@@ -249,6 +249,10 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             .settings(
                 SettingsConfig::new(root.path(), root.path()).codex_home(root.path().join("codex")),
             )
+            // This exercises MCP bounds, not summaries: the stock catalog's canonical
+            // definitions plus the deliberately oversized exchange exceed the scripted 32k
+            // byte-counted threshold with no older source to compact.
+            .compaction(crate::context::CompactionPolicy::Disabled)
             .mcp_limits(crate::mcp::McpClientLimits {
                 catalog_bytes: CATALOG_BYTES,
                 tool_bytes: 8192,

@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"nonexistent_tool",
+  "arguments":{}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"name":"nonexistent_tool","content":{"kind":"error",
+  "message":"tool `nonexistent_tool` is not available; call one of the declared tools"}}}}}

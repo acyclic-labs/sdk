@@ -122,6 +122,9 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
               } else throw new TypeError("unsupported Pi tool result data");
             }
             content.push({ type: "tool_result", callId: part.callId, name: part.name, value: data });
+          } else if (part.content?.kind === "error") {
+            const data: PiText[] = [{ type: "text", text: part.content.message }];
+            content.push({ type: "tool_result", callId: part.callId, name: part.name, value: data });
           } else throw new TypeError("invalid Pi tool result projection");
           break;
         default: throw new TypeError("unsupported Pi content part");

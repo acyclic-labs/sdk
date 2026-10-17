@@ -1,6 +1,6 @@
 {
   "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name@1","arguments":{"name":"No route"}},{"type":"event",
-    "kind":"completed","metadata":null}]],
+    "kind":"completed","metadata":null}],"done"],
   "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"set_name@1",
     "arguments":{"name":"No route"}}},{"kind":"model","event":{"kind":"completed"}}]}
 }

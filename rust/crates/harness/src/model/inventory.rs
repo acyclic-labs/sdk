@@ -81,6 +81,7 @@ impl ToolResultContent {
                     add(bytes, payload)
                 },
             ),
+            Self::Error { message } => Ok(message.capacity() as u64),
         }
     }
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {

@@ -56,23 +56,39 @@ pub(crate) fn validate_json_schema_value(
     label: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
+    check_json_schema_value(schema, value, label, work)?
+}
+
+/// Separates a value that violates its schema (inner error) from a schema, budget or
+/// diagnostic failure (outer error), so callers can return the violation to its author.
+pub(crate) fn check_json_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    label: &str,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Result<()>> {
     if work.is_none() {
-        return compile_json_schema(schema, label, work)?
+        return Ok(compile_json_schema(schema, label, work)?
             .validate(value)
-            .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}")));
+            .map_err(|error| Error::Invalid(format!("{label} failed validation: {error}"))));
     }
     let mut scope = CodecQuota::new(work, 0)?;
     admit_schema_value(schema, &mut scope)?;
     let validator = compile_validator(schema, label, &mut scope)?;
     admit_schema_value(value, &mut scope)?;
     schema_step(scope.work())?;
-    match validator.validate(value) {
-        Ok(()) => Ok(()),
-        Err(source) => Err(schema_error(
-            source.to_owned(),
-            format_args!("{label} failed validation"),
-            &mut scope,
-        )),
+    let Err(source) = validator.validate(value) else {
+        return Ok(Ok(()));
+    };
+    match schema_error(
+        source.to_owned(),
+        format_args!("{label} failed validation"),
+        &mut scope,
+    ) {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        violation @ Error::NativeSchema { .. } => Ok(Err(violation)),
+        violation @ Error::Invalid(_) => Ok(Err(violation)),
+        failure => Err(failure),
     }
 }
 

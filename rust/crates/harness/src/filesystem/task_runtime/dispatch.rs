@@ -155,15 +155,29 @@ where
                     Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
                         return Err(error);
                     }
-                    Err(error) => {
-                        tracing::trace!(
+                    // Only a failure that may have left its effect behind is uncertain; every
+                    // other failure settles the task as failed with its cause.
+                    Err(error) if error.leaves_effect_uncertain() => {
+                        tracing::warn!(
                             %task,
                             operation = %command.operation_id,
                             command = %command.kind,
                             cause = ?error,
-                            "task command failed; recording indeterminate outcome"
+                            "task command outcome is uncertain; recording indeterminate outcome"
                         );
                         return Ok(CommandDispatch::Indeterminate);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %task,
+                            operation = %command.operation_id,
+                            command = %command.kind,
+                            cause = ?error,
+                            "task command failed"
+                        );
+                        return Ok(CommandDispatch::Failed {
+                            message: error.to_string(),
+                        });
                     }
                     Ok(TaskCommandProgress::Indeterminate) => {
                         tracing::trace!(
@@ -177,13 +191,15 @@ where
                     Ok(progress) => {
                         results.push_result(command.operation_id, progress)?;
                         if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
-                            tracing::trace!(
+                            tracing::warn!(
                                 %task,
                                 operation = %command.operation_id,
                                 command = %command.kind,
-                                "task command result exceeds input limit; recording indeterminate outcome"
+                                "task command result exceeds input limit"
                             );
-                            return Ok(CommandDispatch::Indeterminate);
+                            return Ok(CommandDispatch::Failed {
+                                message: "task command result exceeds input limit".into(),
+                            });
                         }
                     }
                 }

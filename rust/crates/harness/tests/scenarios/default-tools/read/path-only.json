@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read",
+  "arguments":{"path":"plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"name":"read","content":{"kind":"error",
+  "message":{"$contains":"tool `read` rejected its arguments: "}}}}}}

@@ -42,6 +42,75 @@ fn content(request: &ModelRequest) -> &ToolResultContent {
     content
 }
 
+// A refused call stays in history beside its typed error so the next request can deliver it;
+// only that typed error waives binding and argument validation.
+#[test]
+fn typed_tool_errors_carry_refused_calls_that_projected_results_cannot() {
+    let refused = |name: &str, arguments: Value, content: ToolResultContent| {
+        let mut request = request().unwrap();
+        exchange(&mut request);
+        let ModelContent::Part(ModelContentPart::ToolCall(call)) = &mut request.messages[1].content
+        else {
+            panic!("call")
+        };
+        call.name = name.into();
+        call.arguments = arguments;
+        let ModelContent::Part(ModelContentPart::ToolResult {
+            name: result_name,
+            content: result,
+            ..
+        }) = &mut request.messages[2].content
+        else {
+            panic!("result")
+        };
+        *result_name = name.into();
+        *result = content;
+        request
+    };
+    let error = || ToolResultContent::Error {
+        message: "tool `missing` is not available; call one of the declared tools".into(),
+    };
+    let projected = || ToolResultContent::Json { value: json!("é") };
+    for (name, arguments) in [("missing", json!({})), ("echo", json!(7))] {
+        let mut accepted = refused(name, arguments.clone(), error());
+        accepted.validate(Limits::default(), None).unwrap();
+        let prepared =
+            PreparedModelRequest::prepare(accepted.clone(), Limits::default(), None).unwrap();
+        assert_eq!(
+            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)
+                .unwrap()
+                .request(),
+            &accepted
+        );
+        // Negative control: the same call with a projected result is still refused.
+        let mut rejected = refused(name, arguments, projected());
+        assert!(
+            rejected.validate(Limits::default(), None).is_err(),
+            "{name}"
+        );
+    }
+    // Negative control: a typed error cannot complete a call it is not paired with.
+    let mut unpaired = refused("missing", json!({}), error());
+    let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+        &mut unpaired.messages[2].content
+    else {
+        panic!("result")
+    };
+    *call_id = "call-2".into();
+    assert!(unpaired.validate(Limits::default(), None).is_err());
+    // Negative control: the typed error is bounded like any rendered text.
+    let limits = Limits {
+        render_bytes: 4096,
+        ..Limits::default()
+    };
+    let bounded = |bytes| {
+        let message = "x".repeat(bytes);
+        refused("missing", json!({}), ToolResultContent::Error { message }).validate(limits, None)
+    };
+    bounded(1024).unwrap();
+    assert!(bounded(4097).is_err());
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 

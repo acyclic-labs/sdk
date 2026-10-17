@@ -3,9 +3,12 @@
   "prompt":"Use only registered tools.",
   "seed":{"route-sentinel.txt":"unchanged\n"},
   "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name","arguments":{"name":"No route"}},{"type":"event",
-    "kind":"completed","metadata":null}]],
-  "expect":{"error":"tool is not bound to this stock composition","request_count":1,"reconciliation_count":0,"requests":[{"tools":[],
-    "messages":[{"role":"user","content":"Use only registered tools."}]}],"events":[{"kind":"model","event":{"kind":"tool_call","call_id":
-    "missing","name":"set_name","arguments":{"name":"No route"}}},{"kind":"model","event":{"kind":"completed"}}],"not_events":[{"kind":"tool_started"},{"kind":"tool_completed"},{"kind":
+    "kind":"completed","metadata":null}],"done"],
+  "expect":{"text":"done","request_count":2,"reconciliation_count":0,"requests":[{"tools":[],
+    "messages":[{"role":"user","content":"Use only registered tools."}]},{"tools":[],"messages":[{"role":"tool","content":{"kind":
+    "tool_result","call_id":"missing","content":{"kind":"error","message":{"$contains":
+    "is not available; call one of the declared tools"}}}}]}],"events":[{"kind":"model","event":{"kind":"tool_call","call_id":
+    "missing","name":"set_name","arguments":{"name":"No route"}}},{"kind":"model","event":{"kind":"completed"}},{"kind":"model",
+    "event":{"kind":"content","delta":"done"}}],"not_events":[{"kind":"tool_started"},{"kind":"tool_completed"},{"kind":
     "tool_failed"}],"files":{"route-sentinel.txt":"unchanged\n","unbound-output.txt":null}}
 }

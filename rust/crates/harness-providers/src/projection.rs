@@ -380,7 +380,14 @@ fn project_message<'a>(
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
                 let text = result_text(content, files)?;
+                let error = matches!(content, ToolResultContent::Error { .. });
                 let result = match adapter {
+                    Adapter::Anthropic if error => json!(
+                        {"type":"tool_result","tool_use_id":call_id,"content":text,"is_error":true}
+                    ),
+                    Adapter::Gemini if error => json!(
+                        {"functionResponse":{"id":call_id,"name":name,"response":{"error":text}}}
+                    ),
                     Adapter::Anthropic => {
                         json!({"type":"tool_result","tool_use_id":call_id,"content":text})
                     }
@@ -494,6 +501,7 @@ fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<Stri
             })
             .collect::<Result<Vec<_>>>()
             .map(|parts| parts.join("\n")),
+        ToolResultContent::Error { message } => Ok(message.clone()),
     }
 }
 

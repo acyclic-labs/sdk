@@ -322,15 +322,12 @@ where
                     crate::executor::replay_execution(journal.as_ref(), operation, 3, select, io)
                         .await?;
                 let records = crate::executor::retain_preparation((records, hold))?;
+                // A failed call is settled: the model received the failure as its result.
                 if records
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
                 {
-                    return Err(observed::boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "retained model tool failed",
-                    ));
+                    continue;
                 }
                 if records
                     .iter()
@@ -365,18 +362,17 @@ where
                 if !records.is_empty() {
                     return Err(Error::Indeterminate(invocation.operation_id));
                 }
-                let pinned = request
+                // Calls the executor refuses before admission (an undeclared or ungranted tool,
+                // or arguments outside the pinned schema) settle as model-visible results and
+                // never wait for approval.
+                let Some(pinned) = request
                     .request()
                     .tools
                     .iter()
                     .find(|definition| definition.name == invocation.name)
-                    .ok_or_else(|| {
-                        observed::boundary(
-                            io,
-                            crate::wire::ErrorCode::Conflict,
-                            "approval tool is absent from model request",
-                        )
-                    })?;
+                else {
+                    continue;
+                };
                 let definition = self.tool_definition(&pinned.name, &pinned.revision, io)?;
                 if definition != pinned {
                     return Err(observed::boundary(
@@ -397,12 +393,18 @@ where
                 let allowed = scope.grants().contains(&grant);
                 drop(grant);
                 drop(grant_hold);
-                if !allowed {
-                    return Err(observed::boundary(
-                        io,
-                        crate::wire::ErrorCode::Unauthorized,
-                        "model wait lacks tool capability",
-                    ));
+                if !allowed
+                    || crate::executor::with_history_io(io, |work| {
+                        crate::executor::check_json_schema_value(
+                            &pinned.input_schema,
+                            &invocation.arguments,
+                            "tool input",
+                            work,
+                        )
+                    })?
+                    .is_err()
+                {
+                    continue;
                 }
                 return self
                     .tool_approval_ready(context, definition, &invocation, io)

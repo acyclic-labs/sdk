@@ -232,6 +232,19 @@ where
                                     .await?;
                                 return Ok(WorkerTurn::Reconciling);
                             }
+                            CommandDispatch::Failed { message } => {
+                                self.task_host()
+                                    .settle_task(
+                                        task,
+                                        fence,
+                                        Outcome::Failed { message },
+                                        &mut observed::history(io)?
+                                            .as_mut()
+                                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                                    )
+                                    .await?;
+                                return Ok(WorkerTurn::Completed { task });
+                            }
                         }
                     }
                     let outcome = match &mut transition.status {
