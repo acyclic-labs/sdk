@@ -7,7 +7,7 @@ pub(crate) enum NativeJob {
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        state: Arc<Mutex<CompletionState<Vec<Bytes>>>>,
+        state: Arc<CompletionMutex<CompletionState<Vec<Bytes>>>>,
         completion: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
     },
@@ -17,7 +17,7 @@ pub(crate) enum NativeJob {
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
-        state: Arc<Mutex<CompletionState<()>>>,
+        state: Arc<CompletionMutex<CompletionState<()>>>,
         completion: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
     },

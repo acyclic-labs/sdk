@@ -1,7 +1,7 @@
 use crate::*;
 
 pub(crate) struct FileCompletion<T> {
-    state: Option<Arc<Mutex<CompletionState<T>>>>,
+    state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     fence: Option<Arc<OperationFence>>,
     health: Option<Arc<FileHealth>>,
     file: Option<Arc<NativeFilePayload>>,
@@ -10,7 +10,7 @@ pub(crate) struct FileCompletion<T> {
 
 impl<T> FileCompletion<T> {
     pub(crate) fn new(
-        state: Arc<Mutex<CompletionState<T>>>,
+        state: Arc<CompletionMutex<CompletionState<T>>>,
         fence: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
         file: Option<Arc<NativeFilePayload>>,

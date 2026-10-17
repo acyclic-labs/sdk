@@ -6,14 +6,13 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-#[cfg(acyclic_native_runtime_loom)]
-use loom::sync::Mutex;
-#[cfg(not(acyclic_native_runtime_loom))]
-use std::sync::Mutex;
+use crate::sync::Mutex;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
 #[cfg(all(test, not(acyclic_native_runtime_loom)))]
 mod queue;
+#[cfg(all(test, acyclic_native_runtime_loom))]
+mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 

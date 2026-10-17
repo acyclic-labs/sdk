@@ -336,10 +336,9 @@ async fn case(
     baseline: &[&'static str],
     seed: Option<&Seed>,
 ) -> Result<Coverage> {
-    // Every caller uses a current-thread runtime. Outside the controlled run,
-    // execute physical host I/O on that same replay worker rather than handing
-    // each metadata read to the shared blocking pool. The scoped test adapter
-    // intercepts submissions first, so all cancellation barriers remain intact.
+    let profile = read_profile::start();
+    // Each worker reuses its current-thread runtime. Bootstrap/recovery closures
+    // use the shared host queue; the scoped adapter retains the original gates.
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let owned_seed = if seed.is_none() {
         Some(Seed::new(scenario).await?)
@@ -347,8 +346,9 @@ async fn case(
         None
     };
     let seed = seed.or(owned_seed.as_ref());
+    let restore_started = profile.map(|_| std::time::Instant::now());
     let fixture = Fixture::new(scenario, seed).await?;
-    let _reads = read_profile::install(&fixture.schedule);
+    let _reads = read_profile::install(&fixture.schedule, profile, restore_started);
     let result: Result<Coverage> = Box::pin(async {
         let harness = fixture.open().await?;
         let schedule = &fixture.schedule;
@@ -484,7 +484,10 @@ async fn case(
         })
     })
     .await;
-    result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
+    let result = result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())));
+    drop(fixture);
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:cleanup");
+    result
 }
 
 fn temporary_directory(preferred: &Path) -> std::io::Result<tempfile::TempDir> {
@@ -639,7 +642,8 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         .enable_all()
         .build()
         .map_err(storage)?;
-    let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
+    let seed = runtime.block_on(Seed::new(Scenario::Text))?;
+    let observed = runtime.block_on(case(Scenario::Text, None, &[], Some(&seed)))?;
     let baseline = observed.points;
     coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
     let cut: usize =
@@ -655,7 +659,7 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         "task:submitted",
         "named admission cut moved"
     );
-    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, None))?;
+    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
     assert_eq!(recovered.points.len(), cut);
     assert!(
         recovered.admission_committed,

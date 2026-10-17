@@ -35,11 +35,25 @@ impl<S: tracing::Subscriber> Layer<S> for Reads {
     }
 }
 
-pub(super) fn install(schedule: &Arc<Schedule>) -> Option<impl Sized> {
-    std::env::var_os("GC_LOCAL_READ_PROFILE").map(|_| {
+pub(super) fn start() -> Option<std::time::Instant> {
+    std::env::var_os("GC_LOCAL_READ_PROFILE").map(|_| std::time::Instant::now())
+}
+
+pub(super) fn install(
+    schedule: &Arc<Schedule>,
+    started: Option<std::time::Instant>,
+    restored: Option<std::time::Instant>,
+) -> Option<tracing::subscriber::DefaultGuard> {
+    started.map(|started| {
+        let restored = restored.expect("profile restore started");
+        eprintln!(
+            "READ_PROFILE setup: seed={:?} restore={:?}",
+            restored.duration_since(started),
+            restored.elapsed(),
+        );
         tracing::subscriber::set_default(
             tracing_subscriber::registry().with(
-                Reads(Arc::clone(schedule), std::time::Instant::now()).with_filter(
+                Reads(Arc::clone(schedule), started).with_filter(
                     tracing_subscriber::filter::Targets::new()
                         .with_target("acyclic_harness::read_profile", tracing::Level::TRACE),
                 ),
