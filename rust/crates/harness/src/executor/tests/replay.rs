@@ -414,7 +414,9 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
     )
-    .with_tool_authority(scope, None)?;
+    .with_tool_authority(scope, None)?
+    // This context has no private summary writer, so it cannot enable compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = Journal::default();
     let mut messages = vec![call_message(&invocation)];
     let before = messages.clone();

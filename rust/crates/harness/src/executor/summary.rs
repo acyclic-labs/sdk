@@ -178,8 +178,9 @@ impl StockExecution<'_> {
             // another step or any of the task's tool publications.
             let publication = summary_publication(operation_id, step, self.io)?;
             self.verify_execution_owner().await?;
+            let summaries = context.private_summaries(self.io)?;
             let output = context
-                .stage_private_file_once(publication, &path, text.as_bytes(), self.io)
+                .stage_private_file_once(summaries, publication, &path, text.as_bytes(), self.io)
                 .await?;
             self.verify_execution_owner().await?;
             output

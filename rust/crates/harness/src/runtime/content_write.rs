@@ -78,6 +78,11 @@ impl AgentHarness {
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
+/// A validated agent-owned private writer, constructed only by
+/// [`TaskContext::private_summaries`].
+#[derive(Clone, Copy)]
+pub(crate) struct PrivateSummaries<'a>(&'a ContentBindings);
+
 pub(super) enum ContentPublication<'a> {
     PathBound,
     OperationBound,
@@ -85,19 +90,24 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
-    pub(crate) async fn stage_private_file_once(
-        &self,
-        operation_id: OperationId,
-        path: &str,
-        bytes: &[u8],
-        io: Option<&ContentIo>,
-    ) -> Result<FileRef> {
+    /// The task's validated summary writer: its created private content, the
+    /// runtime's private volume, or an output volume that is itself agent
+    /// private. Compaction is armed only when this resolves, so a due summary
+    /// never discovers a missing writer.
+    pub(crate) fn private_summaries(&self, io: Option<&ContentIo>) -> Result<PrivateSummaries<'_>> {
         let binding = self
             .scope
             .created_private_content()
             .or(self.harness.artifacts.as_ref())
-            .or_else(|| self.content_binding(None));
-        let writer = bound_content_writer(binding, &self.scope, io)?;
+            .or_else(|| self.content_binding(None))
+            .ok_or_else(|| {
+                content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "summaries require the task's private volume",
+                )
+            })?;
+        let writer = bound_content_writer(Some(binding), &self.scope, io)?;
         if writer.volume().class() != crate::conversation::VolumeClass::AgentPrivate
             || !matches!(
                 writer.volume().owner(),
@@ -110,8 +120,19 @@ impl TaskContext {
                 "private content requires an agent-owned private volume",
             ));
         }
+        Ok(PrivateSummaries(binding))
+    }
+
+    pub(crate) async fn stage_private_file_once(
+        &self,
+        summaries: PrivateSummaries<'_>,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        io: Option<&ContentIo>,
+    ) -> Result<FileRef> {
         self.stage_bound_file(
-            binding,
+            Some(summaries.0),
             operation_id,
             path,
             bytes,

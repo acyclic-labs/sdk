@@ -244,7 +244,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         recent_tokens: 16,
         retention: Default::default(),
     });
-    let runtime = open(&fixture, &private).await?;
+    let runtime = open(&fixture, Some(&private)).await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     runtime.task_host().start_task(&lease, &mut None).await?;
@@ -322,7 +322,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
     );
     drop(execution);
     drop(runtime);
-    let reopened = open(&fixture, &private).await?;
+    let reopened = open(&fixture, Some(&private)).await?;
     for _ in 0..2 {
         let execution = reopened
             .stock_execution(
@@ -345,17 +345,42 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         );
     }
     assert_eq!(model.reconciliations().len(), 1);
+    drop(reopened);
+    // Negative control: the same turn on a runtime without a private summary
+    // volume is rejected at entry, before replay or any model request.
+    let unbound = open(&fixture, None).await?;
+    let execution = unbound
+        .stock_execution(
+            task,
+            fence.clone(),
+            turn,
+            model_identity.clone(),
+            model.clone(),
+            ContextPipeline::default(),
+            crate::tool::ToolRegistry::default(),
+            None,
+        )
+        .await?
+        .with_compaction_policy(policy.clone());
+    let error = execution
+        .execute(input.clone())
+        .await
+        .expect_err("compaction armed without a private summary writer");
+    // Without the private volume, the only candidate is the output binding,
+    // which has no owner-bound writer, so compaction cannot be armed.
+    assert!(matches!(&error, Error::Unauthorized(_)), "{error:?}");
+    assert_eq!(model.requests().len(), 2);
     Ok(())
 }
 
-async fn open(fixture: &Fixture, private: &VolumeRef) -> Result<Runtime> {
+async fn open(fixture: &Fixture, private: Option<&VolumeRef>) -> Result<Runtime> {
     // This scenario admits two model effects: one summary and one response.
     // The shared deadline/tool fixture admits only a single model effect.
     Runtime::open(
         fixture.stream.clone(),
         fixture.filesystem.clone(),
         &fixture.volume,
-        Some(private),
+        private,
         &fixture.issuer.verifier(&mut None)?,
         &fixture.signed,
         &fixture.scope,

@@ -196,7 +196,9 @@ pub(super) async fn stock_restart_with_publication_fault(
             stream.clone(),
             filesystem.clone(),
             &volume,
-            None,
+            // The direct executor arms threshold compaction, which requires
+            // the private summary volume.
+            Some(&volume),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             &scope,

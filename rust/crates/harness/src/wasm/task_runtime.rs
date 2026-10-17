@@ -275,9 +275,9 @@ impl WasmTaskRuntime {
             stream,
             filesystem.clone(),
             &options.volume,
-            // Browser stock execution has no native task context, so its
-            // summaries stay in the journal.
-            None,
+            // The authorized private journal volume also holds the stock
+            // turn's compaction summaries.
+            Some(&options.volume),
             &verifier,
             &scope,
             &root,

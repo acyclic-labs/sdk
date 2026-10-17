@@ -47,7 +47,9 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         ContextPipeline::default(),
         tools,
     )
-    .with_tool_authority(scope.clone(), None)?;
+    .with_tool_authority(scope.clone(), None)?
+    // This context has no private summary writer, so it cannot enable compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let operation = OperationId::new();
     let executor = base.clone().with_task_context(&original, operation)?;
     let input = TurnInput {
@@ -1050,6 +1052,8 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
                 tools,
             )
             .with_tool_authority(scope, None)?
+            // This context has no private summary writer, so it cannot enable compaction.
+            .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_task_context(&original, operation)?;
             let input = TurnInput {
                 operation_id: operation,

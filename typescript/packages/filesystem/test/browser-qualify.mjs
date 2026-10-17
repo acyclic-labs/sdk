@@ -31,6 +31,7 @@ const PAGES = [
   "../harness/test/browser-task-tool.html?profile=http",
   "../harness/test/browser-task-tool-malformed.html",
   "../harness/test/browser-task-model.html",
+  "../harness/test/browser-task-compaction.html",
   "../harness/test/browser-task-mail.html",
 ];
 // The one deadline a page has. Pages wait on their own actors without one,
