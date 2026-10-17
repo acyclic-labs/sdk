@@ -323,3 +323,28 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    // Property: after output exhaustion, every PreToolUse guard form is still
+    // folded: stop, block, deny, ask and explicit exit-2. Reasons remain borrowed.
+    #[test]
+    fn exhausted_pretool_fold_preserves_all_guard_forms(mode in 0usize..5, reason in ".{0,48}") {
+        let mut output = HookOutput::default();
+        let mut budget = Budget::new(4096)?;
+        budget.apply(&mut output, HookEvent::PreToolUse, HookFailure::Report,
+            Ok((Some(3),vec![],vec![0;1000])));
+        let (code, value) = match mode {
+            0 => (0, json!({"continue":false,"stopReason":reason})),
+            1 => (0, json!({"decision":"block","reason":reason})),
+            2 => (0, json!({"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":reason}})),
+            3 => (0, json!({"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":reason}})),
+            _ => (2, json!({})),
+        };
+        budget.apply(&mut output, HookEvent::PreToolUse, HookFailure::Report,
+            Ok((Some(code),serde_json::to_vec(&value)?,reason.into_bytes())));
+        budget.finish(&mut output);
+        prop_assert_eq!(output.blocks(), mode != 3);
+        prop_assert_eq!(output.approval.is_some(), mode == 3);
+        prop_assert_output_bound(&output,4096)?;
+    }
+}
