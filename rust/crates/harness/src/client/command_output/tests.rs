@@ -187,6 +187,6 @@ fn task_scoped_commands_are_indexed_by_their_logical_session() {
     let owner = OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap());
     assert_eq!(index.after(&owner, 0).count(), 1);
     // A physical-task-only index is the previous implementation.
-    index.rows.remove(&Scope::Owner(owner));
+    index.rows.remove(&Scope::Owner(owner.clone()));
     assert_ne!(index.after(&owner, 0).count(), 1);
 }
