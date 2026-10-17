@@ -9,7 +9,11 @@ fn scope(
 ) -> crate::NativeMaterializationWork {
     let mut work = root.clone();
     for limit in limits {
-        work = work.native_volume_work(*limit).unwrap();
+        // Linking the invocation examines one cancellation registration.
+        // Keep the generated allowance available after that setup charge.
+        let mut limit = *limit;
+        limit.items_examined = limit.items_examined.saturating_add(u64::from(invocation));
+        work = work.native_volume_work(limit).unwrap();
     }
     if invocation {
         work = work.invocation_view().unwrap().0;
