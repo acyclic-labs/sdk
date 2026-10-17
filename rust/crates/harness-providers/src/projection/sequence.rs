@@ -1,6 +1,9 @@
 //! Portable role boundaries and stateless reasoning-item adjacency.
 use super::wire::{Item, Message};
-use crate::{Adapter, protocol::sequence::ResponseItem};
+use crate::{
+    Adapter,
+    protocol::sequence::{self, ResponseItem},
+};
 use acyclic_harness::Result;
 use serde_json::json;
 
@@ -19,12 +22,6 @@ pub(super) fn push_with_successor<'a>(
     mut next: Message<'a>,
     allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
-    if matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
-        && messages.is_empty()
-        && role(&next) != "user"
-    {
-        messages.push(continuation(adapter));
-    }
     if adapter == Adapter::Responses
         && messages
             .last()
@@ -70,7 +67,22 @@ pub(super) fn push_with_successor<'a>(
     }
     Ok(())
 }
+/// The shared protocol rules `finish` applies; negative controls substitute one.
+#[derive(Clone, Copy)]
+pub(super) struct Rules {
+    pub boundary: fn(Option<&str>) -> bool,
+    pub order: fn(&mut [Message<'_>]),
+}
+pub(super) const RULES: Rules = Rules {
+    boundary: sequence::user_boundary,
+    order: super::gemini_results::order,
+};
+
 pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
+    finish_with(adapter, messages, RULES)
+}
+
+pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rules: Rules) {
     match adapter {
         Adapter::Anthropic | Adapter::Gemini => {
             // N-01: role merging establishes the whole text run. Native parts
@@ -105,13 +117,13 @@ pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
                 }
                 _ => false,
             });
-            if messages.first().is_some_and(|first| role(first) != "user") {
+            if !(rules.boundary)(messages.first().map(role)) {
                 messages.insert(0, continuation(adapter));
             }
             if adapter == Adapter::Gemini {
-                super::gemini_results::order(messages);
+                (rules.order)(messages);
             }
-            if messages.is_empty() || messages.last().is_some_and(|last| role(last) != "user") {
+            if !(rules.boundary)(messages.last().map(role)) {
                 messages.push(continuation(adapter));
             }
         }

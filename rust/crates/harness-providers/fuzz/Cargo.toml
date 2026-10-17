@@ -26,3 +26,10 @@ path = "fuzz_targets/response_sequence.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "turns"
+path = "fuzz_targets/turns.rs"
+test = false
+doc = false
+bench = false

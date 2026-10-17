@@ -1,6 +1,6 @@
 //! GEM-TOOL-05/06: results follow their parallel calls in call order.
 use super::wire::{Item, Message};
-use serde_json::Value;
+use crate::protocol::sequence::{Exchange, GeminiPart, answered, exchange};
 use std::collections::HashMap;
 
 pub(super) fn order(messages: &mut [Message<'_>]) {
@@ -22,29 +22,27 @@ pub(super) fn order(messages: &mut [Message<'_>]) {
     }
 }
 
-fn key(value: &Value) -> (&str, &str) {
-    (
-        value["id"].as_str().unwrap_or_default(),
-        value["name"].as_str().unwrap_or_default(),
-    )
+fn response<'a>(item: &'a Item<'_>) -> Option<Exchange<'a>> {
+    match item {
+        Item::Json(value) => match GeminiPart::of(value) {
+            GeminiPart::Response(response) => Some(exchange(response)),
+            _ => None,
+        },
+        Item::Native(_) | Item::Call(_) => None,
+    }
 }
 
 fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     let calls = calls.iter().filter_map(|item| match item {
-        Item::Json(value) => value.get("functionCall").map(key),
-        Item::Call(call) => Some((call.id.as_str(), call.name.as_ref())),
+        Item::Json(value) => match GeminiPart::of(value) {
+            GeminiPart::Call(call) => Some(exchange(call)),
+            _ => None,
+        },
+        Item::Call(call) => Some((Some(call.name.as_ref()), Some(call.id.as_str()))),
         Item::Native(_) => None,
     });
-    // The normal call-ordered path borrows both sequences and allocates nothing.
-    // Incomplete prefixes are left to the validator, as in the repair path below.
-    if calls
-        .clone()
-        .zip(results.iter().filter_map(|item| match item {
-            Item::Json(value) => value.get("functionResponse"),
-            Item::Native(_) | Item::Call(_) => None,
-        }))
-        .all(|(call, result)| call == key(result))
-    {
+    // The answered path borrows both sequences and allocates nothing.
+    if answered(calls.clone(), results.iter().filter_map(response)) {
         return;
     }
     let count = calls.clone().count();
@@ -62,13 +60,7 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
     let mut seen = vec![false; count];
     let mut extra = count;
     for result in results.iter() {
-        let position = match result {
-            Item::Json(value) => value
-                .get("functionResponse")
-                .and_then(|result| positions.get(&key(result)))
-                .copied(),
-            Item::Native(_) | Item::Call(_) => None,
-        };
+        let position = response(result).and_then(|key| positions.get(&key).copied());
         ranks.push(if let Some(position) = position {
             if std::mem::replace(&mut seen[position], true) {
                 return;

@@ -71,3 +71,140 @@ fn checked_in_byte_corpus() {
         .is_err()
     );
 }
+
+mod turns {
+    use super::super::super::wire::replay_turns_with;
+    use super::super::{RULES, Rules};
+    use crate::Adapter;
+    use crate::fuzzing::{assert_turns, turn_repair_violation};
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
+
+    fn part(adapter: Adapter, kind: u8, key: u8) -> Value {
+        let (name, id) = (format!("f{}", key % 2), format!("c{key}"));
+        match (adapter, kind % 4) {
+            (_, 0) => json!({"type":"text","text":format!("t{key}")}),
+            (_, 1) => json!({"type":"text","text":" "}),
+            (Adapter::Anthropic, 2) => json!({"type":"tool_use","id":id,"name":name,"input":{}}),
+            (Adapter::Anthropic, _) => {
+                json!({"type":"tool_result","tool_use_id":id,"content":"ok"})
+            }
+            (_, 2) => json!({"functionCall":{"name":name,"id":id,"args":{}}}),
+            _ => json!({"functionResponse":{"name":name,"id":id,"response":{}}}),
+        }
+    }
+
+    fn input(adapter: Adapter, turns: &[(bool, Vec<(u8, u8)>)]) -> Vec<u8> {
+        let (field, model) = match adapter {
+            Adapter::Anthropic => ("content", "assistant"),
+            _ => ("parts", "model"),
+        };
+        let messages: Vec<_> = turns
+            .iter()
+            .map(|(user, parts)| {
+                let parts: Vec<_> = parts
+                    .iter()
+                    .map(|(k, key)| part(adapter, *k, *key))
+                    .collect();
+                json!({"role": if *user { "user" } else { model }, field: parts})
+            })
+            .collect();
+        let mut bytes = vec![u8::from(adapter == Adapter::Gemini)];
+        bytes.extend(serde_json::to_vec(&messages).unwrap());
+        bytes
+    }
+
+    fn batch() -> Vec<Value> {
+        let call = |id: &str| json!({"functionCall":{"name":"f","id":id,"args":{}}});
+        let response = |id: &str| json!({"functionResponse":{"name":"f","id":id,"response":{}}});
+        vec![
+            json!({"role":"user","parts":[{"text":"q"}]}),
+            json!({"role":"model","parts":[call("a"), call("b")]}),
+            json!({"role":"user","parts":[{"text":"interrupt"}, response("b"), response("a")]}),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn structured_turns_are_repaired(
+            gemini in any::<bool>(),
+            turns in prop::collection::vec(
+                (any::<bool>(), prop::collection::vec((0u8..4, 0u8..3), 0..5)),
+                0..8,
+            ),
+        ) {
+            let adapter = if gemini { Adapter::Gemini } else { Adapter::Anthropic };
+            assert_turns(&input(adapter, &turns));
+        }
+
+        #[test]
+        fn shuffled_parallel_batches_are_ordered(
+            order in Just((0..6u8).collect::<Vec<_>>()).prop_shuffle(),
+        ) {
+            let calls = (0..6u8).map(|key| (2, key)).collect();
+            let responses = order.iter().map(|key| (3, *key)).collect();
+            let turns = [(true, vec![(0, 9)]), (false, calls), (true, responses)];
+            assert_turns(&input(Adapter::Gemini, &turns));
+        }
+
+        #[test]
+        fn arbitrary_bytes_keep_the_turn_oracle_total(input in prop::collection::vec(any::<u8>(), 0..512)) {
+            assert_turns(&input);
+        }
+    }
+
+    #[test]
+    fn negative_controls_fault_each_production_rule() {
+        let model_first = [json!({"role":"model","parts":[{"text":"answer"}]})];
+        let assistant_last = [
+            json!({"role":"user","content":[{"type":"text","text":"q"}]}),
+            json!({"role":"assistant","content":[{"type":"text","text":"a"}]}),
+        ];
+        for (adapter, messages, violation) in [
+            (Adapter::Gemini, &model_first[..], "open"),
+            (Adapter::Anthropic, &assistant_last[..], "close"),
+        ] {
+            let healthy = replay_turns_with(adapter, messages, RULES).unwrap();
+            assert_eq!(turn_repair_violation(adapter, messages, &healthy), None);
+            let never = Rules {
+                boundary: |_| true,
+                ..RULES
+            };
+            let broken = replay_turns_with(adapter, messages, never).unwrap();
+            assert_eq!(
+                turn_repair_violation(adapter, messages, &broken),
+                Some(violation)
+            );
+        }
+        let batch = batch();
+        let healthy = replay_turns_with(Adapter::Gemini, &batch, RULES).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Gemini, &batch, &healthy),
+            None
+        );
+        let unordered = Rules {
+            order: |_| {},
+            ..RULES
+        };
+        let broken = replay_turns_with(Adapter::Gemini, &batch, unordered).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Gemini, &batch, &broken),
+            Some("unordered responses")
+        );
+    }
+
+    #[test]
+    fn checked_in_byte_corpus() {
+        for bytes in [
+            include_bytes!("../../../fuzz/corpus/turns/anthropic-assistant-first").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/anthropic-empty").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-model-only").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-reversed-batch").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-missing-id").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-call-and-response").as_slice(),
+        ] {
+            assert_turns(bytes);
+        }
+    }
+}
