@@ -2,6 +2,7 @@
 //! stream; keep viewport layout and task/query ownership in the consuming client.
 
 mod code;
+pub mod directive;
 mod context;
 mod delimiters;
 mod events;

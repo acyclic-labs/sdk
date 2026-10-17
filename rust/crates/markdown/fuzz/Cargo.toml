@@ -29,3 +29,10 @@ bench = false
 [workspace]
 members = ["."]
 resolver = "2"
+
+[[bin]]
+name = "directives"
+path = "fuzz_targets/directives.rs"
+test = false
+doc = false
+bench = false
