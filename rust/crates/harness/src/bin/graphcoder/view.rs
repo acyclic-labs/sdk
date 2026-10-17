@@ -2,11 +2,12 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport, crossterm,
+        self, PromptBox, PromptInput, Viewport,
         ratatui::layout::Size,
         term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
 };
+use futures::StreamExt;
 use std::{sync::Arc, time::Instant};
 
 pub async fn run(
@@ -34,10 +35,12 @@ pub async fn run(
         ScreenMode::Alternate
     })?;
     let (tty, output) = tty.split();
-    let terminal_size =
-        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
-    let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
-    let mut events = client::terminal_events(tty);
+    let events = tty.events()?;
+    let (width, height) = events.size();
+    let mut size = Size::new(width, height);
+    let mut terminal = FrameTerminal::new(output, size)?;
+    let mut events = events
+        .map(|event| event.map_err(|error| acyclic_harness::Error::Storage(error.to_string())));
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;
@@ -68,7 +71,6 @@ pub async fn run(
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
         input.busy = renderer.is_busy();
-        let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;
         terminal.draw(size, |frame| {
@@ -91,6 +93,9 @@ pub async fn run(
             continue;
         };
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let tui::key_event::InputEvent::Resize(width, height) = event {
+            size = Size::new(width, height);
+        }
         let effects = input.event(
             event,
             PromptBox::input_area(areas.prompt),

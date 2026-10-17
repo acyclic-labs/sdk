@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::task::{Poll, Waker};
 
 #[cfg(acyclic_harness_tui_loom)]
 pub(crate) use loom::sync::{Arc, Mutex};
@@ -12,6 +13,9 @@ pub(crate) struct State<W: Write> {
     active: bool,
     closed: bool,
     restored: bool,
+    /// The input stream parked on suspension or awaiting fd readiness. Close
+    /// and resume take it under this lock, so neither transition is missed.
+    input: Option<Waker>,
 }
 
 #[cfg(any(unix, acyclic_harness_tui_loom))]
@@ -75,6 +79,7 @@ impl<W: Write> State<W> {
             active: true,
             closed: false,
             restored: false,
+            input: None,
         }
     }
 }
@@ -96,6 +101,32 @@ pub(crate) fn active<W: Write, T>(
     action(&mut state.guard)
 }
 
+/// Input entry: the close fence, the suspension check and waker registration
+/// share one critical section with `restore(terminate)` and `resume`, so a
+/// parked or readiness-waiting reader observes either transition.
+#[cfg(any(unix, acyclic_harness_tui_loom))]
+pub(crate) fn poll_input<W: Write, T>(
+    state: &Mutex<State<W>>,
+    waker: &Waker,
+    action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<T>,
+) -> Poll<io::Result<T>> {
+    let mut state = match state.lock() {
+        Ok(state) => state,
+        Err(_) => return Poll::Ready(Err(io::ErrorKind::Other.into())),
+    };
+    if state.closed {
+        return Poll::Ready(Err(io::ErrorKind::NotConnected.into()));
+    }
+    match &mut state.input {
+        Some(current) => current.clone_from(waker),
+        input => *input = Some(waker.clone()),
+    }
+    if !state.active {
+        return Poll::Pending;
+    }
+    Poll::Ready(action(&mut state.guard))
+}
+
 pub(crate) fn restore<W: Write>(
     state: &Mutex<State<W>>,
     terminate: bool,
@@ -108,13 +139,21 @@ pub(crate) fn restore<W: Write>(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.closed |= terminate;
     state.active = false;
-    if state.restored {
-        return Ok(());
+    // Wake after unlocking: the reader re-enters through poll_input.
+    let input = if terminate { state.input.take() } else { None };
+    let result = if state.restored {
+        Ok(())
+    } else {
+        let dec = state.guard.restore();
+        let os = os_restore(state.guard.writer());
+        let result = dec.and(os);
+        state.restored = result.is_ok();
+        result
+    };
+    drop(state);
+    if let Some(input) = input {
+        input.wake();
     }
-    let dec = state.guard.restore();
-    let os = os_restore(state.guard.writer());
-    let result = dec.and(os);
-    state.restored = result.is_ok();
     result
 }
 
@@ -129,6 +168,11 @@ pub(crate) fn resume<W: Write>(
         state.guard.reapply()?;
         state.active = true;
         state.restored = false;
+        let input = state.input.take();
+        drop(state);
+        if let Some(input) = input {
+            input.wake();
+        }
     }
     Ok(())
 }
@@ -435,5 +479,77 @@ mod terminal_lifecycle_model {
     #[test]
     fn negative_control_detects_repeated_os_restoration() {
         assert!(std::panic::catch_unwind(|| stale_restore_model(true)).is_err());
+    }
+
+    struct Flag(loom::sync::atomic::AtomicBool);
+    impl std::task::Wake for Flag {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.store(true, loom::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    // The reader polls once against a descriptor that is not ready while the
+    // other thread closes the terminal or resumes it from suspension.
+    fn input_wake_model(close: bool, broken: bool) {
+        loom::model(move || {
+            let state = Arc::new(Mutex::new(State::new(Vec::<u8>::new())));
+            if !close {
+                restore(&state, false, |_| Ok(())).unwrap();
+            }
+            let flag = std::sync::Arc::new(Flag(loom::sync::atomic::AtomicBool::new(false)));
+            let waker = Waker::from(std::sync::Arc::clone(&flag));
+            let other = Arc::clone(&state);
+            let transition = loom::thread::spawn(move || {
+                if close {
+                    restore(&other, true, |_| Ok(())).unwrap();
+                } else {
+                    resume(&other, |_| Ok(())).unwrap();
+                }
+            });
+            let parked = if broken {
+                // Negative control: the fence check and the waker registration
+                // in separate critical sections lose a transition between them.
+                let waiting = {
+                    let state = state.lock().unwrap();
+                    !state.closed && (close || !state.active)
+                };
+                loom::thread::yield_now();
+                if waiting {
+                    state.lock().unwrap().input = Some(waker.clone());
+                }
+                waiting
+            } else {
+                match poll_input(&state, &waker, |_| {
+                    Err::<(), _>(io::ErrorKind::WouldBlock.into())
+                }) {
+                    Poll::Pending => true,
+                    // Waiting on readiness: only close must wake it.
+                    Poll::Ready(Err(error)) => close && error.kind() == io::ErrorKind::WouldBlock,
+                    Poll::Ready(Ok(())) => false,
+                }
+            };
+            transition.join().unwrap();
+            assert!(
+                !parked || flag.0.load(loom::sync::atomic::Ordering::SeqCst),
+                "terminal transition lost the parked reader's wakeup"
+            );
+        });
+    }
+
+    #[test]
+    fn close_wakes_a_reader_waiting_for_readiness() {
+        input_wake_model(true, false);
+    }
+    #[test]
+    fn negative_control_detects_close_lost_between_check_and_registration() {
+        assert!(std::panic::catch_unwind(|| input_wake_model(true, true)).is_err());
+    }
+    #[test]
+    fn resume_wakes_a_reader_parked_on_suspension() {
+        input_wake_model(false, false);
+    }
+    #[test]
+    fn negative_control_detects_resume_lost_between_check_and_registration() {
+        assert!(std::panic::catch_unwind(|| input_wake_model(false, true)).is_err());
     }
 }

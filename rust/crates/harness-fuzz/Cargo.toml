@@ -305,3 +305,10 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "console_utf16"
+path = "fuzz_targets/console_utf16.rs"
+test = false
+doc = false
+bench = false
