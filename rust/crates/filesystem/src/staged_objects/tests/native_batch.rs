@@ -61,6 +61,8 @@ enum Mode {
     Staged,
 }
 
+type Contents = Result<Vec<Vec<u8>>, String>;
+
 // Each run creates its own provider, journal, staging, and ledger. The old
 // implementation writes each object separately; Batch is an independent batch
 // oracle for the exact additional staging work and allocations.
@@ -69,8 +71,7 @@ fn run(
     mode: Mode,
     cancelled: bool,
     count: usize,
-) -> Result<((Result<Vec<Vec<u8>>, String>, WorkCounters), Vec<Event>), Box<dyn std::error::Error>>
-{
+) -> Result<(Contents, WorkCounters, Vec<Event>), Box<dyn std::error::Error>> {
     let (result, trace) = observe(
         || {
             runtime.block_on(async {
@@ -136,17 +137,16 @@ fn run(
                 };
                 let elapsed = began.elapsed();
                 let cost = native.receipt();
-                let result = match result {
-                    Err(error) => Err(error.to_string()),
-                    Ok(()) => {
+                let result = if let Err(error) = result {
+                    Err(error.to_string())
+                } else {
                         let read_token = CancellationToken::new();
                         let mut read_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &read_token);
                         let mut output = Vec::new();
                         for &id in &ids {
                             output.push(store.inner.read(id, 32, &mut read_work).await?.bytes.to_vec());
                         }
-                        Ok(output)
-                    }
+                    Ok(output)
                 };
                 eprintln!(
                     "staged publication {mode:?} count={count} cancelled={cancelled}: {elapsed:?}, {cost:?}"
@@ -160,7 +160,8 @@ fn run(
             })
         },
     );
-    Ok((result?, trace))
+    let (result, cost) = result?;
+    Ok((result, cost, trace))
 }
 
 fn exact_batch_work(actual: WorkCounters, batch: WorkCounters, count: usize) -> bool {
@@ -186,9 +187,9 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
         .enable_all()
         .build()?;
     for count in [4, 8] {
-        let ((old_result, old), old_trace) = run(&runtime, Mode::Individual, false, count)?;
-        let ((batch_result, batch), batch_trace) = run(&runtime, Mode::Batch, false, count)?;
-        let ((result, cost), trace) = run(&runtime, Mode::Staged, false, count)?;
+        let (old_result, old, old_trace) = run(&runtime, Mode::Individual, false, count)?;
+        let (batch_result, batch, batch_trace) = run(&runtime, Mode::Batch, false, count)?;
+        let (result, cost, trace) = run(&runtime, Mode::Staged, false, count)?;
         assert_eq!(result, old_result);
         assert_eq!(result, batch_result);
         assert_eq!(trace, old_trace);
@@ -204,8 +205,8 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
         );
         assert!(old.durability_operations > cost.durability_operations);
     }
-    let ((old_error, _), old_trace) = run(&runtime, Mode::Individual, true, 4)?;
-    let ((error, cost), trace) = run(&runtime, Mode::Staged, true, 4)?;
+    let (old_error, _, old_trace) = run(&runtime, Mode::Individual, true, 4)?;
+    let (error, cost, trace) = run(&runtime, Mode::Staged, true, 4)?;
     assert!(error.is_err());
     assert_eq!(error, old_error);
     assert_eq!(trace, old_trace);
