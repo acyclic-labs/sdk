@@ -132,7 +132,8 @@ fn baseline_read(
         let mut bytes = vec![0_u8; length];
         let mut filled = 0;
         while filled < length {
-            let count = read_at(file, offset + filled as u64, &mut bytes[filled..]);
+            let rest = bytes.get_mut(filled..).ok_or_else(unavailable)?;
+            let count = read_at(file, offset + filled as u64, rest);
             if count == 0 {
                 return Err(unavailable());
             }
@@ -153,7 +154,9 @@ fn baseline_read(
             if blake3::hash(&body).as_bytes() != digest {
                 return Err(unavailable());
             }
-            Ok(body[start..end].to_vec())
+            body.get(start..end)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(unavailable)
         }
         LocalBodyLocation::Segment { id, offset } => {
             let path = directory
@@ -163,8 +166,8 @@ fn baseline_read(
             let file_length = file.metadata().map_err(|_| unavailable())?.len();
             let mut prefix = vec![0_u8; 28 + 1024 * 40];
             let mut filled = 0;
-            loop {
-                let count = read_at(&file, filled as u64, &mut prefix[filled..]);
+            while let Some(rest) = prefix.get_mut(filled..) {
+                let count = read_at(&file, filled as u64, rest);
                 if count == 0 {
                     break;
                 }
@@ -184,17 +187,18 @@ fn baseline_read(
             }
             let mut position = (28 + count * 40) as u64;
             let mut found = false;
-            for record in prefix[28..28 + count * 40].chunks(40) {
-                let record_length = u64::from_le_bytes(record[32..40].try_into().unwrap());
+            let table = prefix.get(28..28 + count * 40).ok_or_else(unavailable)?;
+            for record in table.as_chunks::<40>().0 {
+                let (record_digest, record_length) = record.split_at(32);
+                let record_length =
+                    u64::from_le_bytes(record_length.try_into().map_err(|_| unavailable())?);
                 let record_end = position
                     .checked_add(record_length)
                     .ok_or_else(unavailable)?;
                 if record_end > file_length {
                     return Err(unavailable());
                 }
-                if position == *offset
-                    && record[..32] == digest[..]
-                    && record_length == length as u64
+                if position == *offset && record_digest == digest && record_length == length as u64
                 {
                     found = true;
                     break;
@@ -269,7 +273,7 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
         .enumerate()
         .map(|(index, size)| {
             (0..*size)
-                .map(|byte| (byte * 31 + index * 7) as u8)
+                .map(|byte| (byte * 31 + index * 7).to_le_bytes()[0])
                 .collect()
         })
         .collect();
@@ -297,7 +301,9 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
             (payload, digest, LocalBodyLocation::Segment { id, offset })
         })
         .collect();
-    let inline: Vec<u8> = (0..journal).map(|byte| (byte * 13 + 5) as u8).collect();
+    let inline: Vec<u8> = (0..journal)
+        .map(|byte| (byte * 13 + 5).to_le_bytes()[0])
+        .collect();
     let mut log = vec![0xa5; 3];
     log.extend_from_slice(&inline);
     fs::write(directory.path().join(JOURNAL_FILE), &log).unwrap();
@@ -312,9 +318,9 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
 }
 
 fn segment_path_of(fixture: &Fixture) -> PathBuf {
-    match &fixture.bodies[0].2 {
-        LocalBodyLocation::Segment { id, .. } => segment_path(fixture.directory.path(), id),
-        LocalBodyLocation::Journal { .. } => unreachable!(),
+    match fixture.bodies.first().map(|(_, _, location)| location) {
+        Some(LocalBodyLocation::Segment { id, .. }) => segment_path(fixture.directory.path(), id),
+        _ => unreachable!("the fixture's first body is a segment"),
     }
 }
 
@@ -332,25 +338,24 @@ proptest! {
         position in any::<prop::sample::Index>(),
     ) {
         let fixture = fixture(&sizes, journal);
-        let (payload, digest, location) = &fixture.bodies[selected.index(fixture.bodies.len())];
+        let (payload, digest, location) = selected.get(&fixture.bodies);
         let (a, b) = (range.0.index(payload.len() + 1), range.1.index(payload.len() + 1));
         let span = (a.min(b), a.max(b));
         let segment = segment_path_of(&fixture);
-        let segment_length = fs::metadata(&segment).unwrap().len() as usize;
+        let segment_length = usize::try_from(fs::metadata(&segment).unwrap().len()).unwrap();
         match fault {
             1 => OpenOptions::new().write(true).open(&segment).unwrap()
                 .set_len(position.index(segment_length) as u64).unwrap(),
             2 => {
                 let mut bytes = fs::read(&segment).unwrap();
                 let table = 28 + sizes.len() * 40;
-                bytes[position.index(table)] ^= 0x40;
+                *position.get_mut(bytes.get_mut(..table).unwrap()) ^= 0x40;
                 fs::write(&segment, bytes).unwrap();
             }
             3 => {
                 let journal_path = fixture.directory.path().join(JOURNAL_FILE);
                 let mut bytes = fs::read(&journal_path).unwrap();
-                let index = position.index(bytes.len());
-                bytes[index] ^= 1;
+                *position.get_mut(&mut bytes) ^= 1;
                 fs::write(&journal_path, bytes).unwrap();
             }
             _ => {}
@@ -359,7 +364,7 @@ proptest! {
         let ((ordinary, native), _, _) =
             production_read(&fixture.root, digest, payload.len(), location, span);
         if fault == 0 {
-            prop_assert_eq!(expected.as_deref(), Ok(&payload[span.0..span.1]));
+            prop_assert_eq!(expected.as_deref().ok(), payload.get(span.0..span.1));
         }
         prop_assert_eq!(&ordinary, &expected);
         prop_assert_eq!(&native, &expected);
@@ -375,10 +380,13 @@ fn segment_reads_do_exact_uninitialized_work() {
     let fixture = fixture(&[100_000, 20], 64);
     let table = (28 + 2 * 40) as u64;
     let maximum = (28 + 1024 * 40) as u64;
-    let cases: Vec<(usize, (usize, usize))> = vec![(0, (10, 4106)), (1, (0, 20)), (2, (1, 63))];
+    // One span per fixture body: both segment bodies, then the journal body.
+    let spans = [(10, 4106), (0, 20), (1, 63)];
+    assert_eq!(fixture.bodies.len(), spans.len());
     for broken in [false, true] {
-        for (index, span) in &cases {
-            let (payload, digest, location) = &fixture.bodies[*index];
+        for (index, (span, (payload, digest, location))) in
+            spans.iter().zip(&fixture.bodies).enumerate()
+        {
             let run = || production_read(&fixture.root, digest, payload.len(), location, *span);
             let ((ordinary, native), work, counts) = if broken {
                 crate::body::work::restoring_old_work(run)
@@ -386,13 +394,13 @@ fn segment_reads_do_exact_uninitialized_work() {
                 run()
             };
             let selected = (span.1 - span.0) as u64;
-            let expected_bytes = &payload[span.0..span.1];
+            let expected_bytes = payload.get(span.0..span.1).unwrap();
             assert_eq!(ordinary.as_deref(), Ok(expected_bytes));
             assert_eq!(native.as_deref(), Ok(expected_bytes));
             let (expected_work, expected_counts) = match location {
                 LocalBodyLocation::Segment { offset, .. } => {
                     let prefix = (*offset).min(maximum);
-                    assert_eq!(prefix, if *index == 0 { table } else { maximum });
+                    assert_eq!(prefix, if index == 0 { table } else { maximum });
                     let at = offset + span.0 as u64;
                     (
                         vec![
@@ -428,7 +436,7 @@ fn segment_reads_do_exact_uninitialized_work() {
             if broken {
                 // The negative control restores the full prefix and zero-fill.
                 assert_ne!(work, expected_work, "restored work was not detected");
-                if *index == 0 {
+                if index == 0 {
                     assert_ne!(
                         counts, expected_counts,
                         "restored prefix bytes were not counted"
@@ -608,8 +616,8 @@ fn header_truncations_match_baseline() {
     let original = fs::read(&segment).unwrap();
     let table = 28 + 2 * 40;
     for length in (0..=table + 1).chain([original.len() - 1, original.len()]) {
-        fs::write(&segment, &original[..length]).unwrap();
-        for (payload, digest, location) in &fixture.bodies[..2] {
+        fs::write(&segment, original.get(..length).unwrap()).unwrap();
+        for (payload, digest, location) in fixture.bodies.iter().take(2) {
             let span = (0, payload.len());
             let expected = baseline_read(
                 fixture.directory.path(),
@@ -640,7 +648,7 @@ fn measure_object_reads() {
         ("segment 4 KiB body", 1, (0, 4096)),
         ("journal 4 KiB", 2, (0, 4096)),
     ] {
-        let (payload, digest, location) = &fixture.bodies[index];
+        let (payload, digest, location) = fixture.bodies.get(index).unwrap();
         let mut nanos = [0_u128; 2];
         for round in 0..2_000 {
             let old = round % 2 == 0;
@@ -651,13 +659,15 @@ fn measure_object_reads() {
             } else {
                 run()
             };
-            nanos[usize::from(!old)] += started.elapsed().as_nanos();
+            let [restored, new] = &mut nanos;
+            *if old { restored } else { new } += started.elapsed().as_nanos();
             assert!(ordinary.is_ok() && native.is_ok());
         }
+        let [restored, new] = nanos;
         println!(
             "{name}: restored-old {} ns, new {} ns per ordinary+native pair",
-            nanos[0] / 1_000,
-            nanos[1] / 1_000
+            restored / 1_000,
+            new / 1_000
         );
     }
 }

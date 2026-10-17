@@ -88,13 +88,17 @@ impl PersistenceCut for Cutter {
     }
 }
 
-pub(crate) struct CrashCuts<O> {
+pub(crate) struct CrashCuts<O, T = ()> {
     /// Journal frames persisted by the uncrashed operation.
     pub(crate) writes: usize,
     /// Recovery observation after the uncrashed operation.
     pub(crate) clean: O,
+    /// Original outcome returned before reopening the clean operation.
+    pub(crate) clean_result: T,
     /// Every cut, in boundary order, with its recovery observation.
     pub(crate) cuts: Vec<(Cut, O)>,
+    /// Original outcomes, in the same boundary order as `cuts`.
+    pub(crate) cut_results: Vec<(Cut, T)>,
 }
 
 async fn open(root: &Path, limits: LocalStreamLimits) -> Arc<LocalStream> {
@@ -105,18 +109,18 @@ async fn open(root: &Path, limits: LocalStreamLimits) -> Arc<LocalStream> {
     )
 }
 
-async fn once<O, S, SF, R, RF, V, VF>(
+async fn once<O, T, S, SF, R, RF, V, VF>(
     limits: LocalStreamLimits,
     cut: Option<Cut>,
     setup: &S,
     run: &R,
     recover: &V,
-) -> Result<(usize, O), CutSimulationError>
+) -> Result<(usize, T, O), CutSimulationError>
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
     R: Fn(Arc<LocalStream>) -> RF,
-    RF: Future<Output = ()>,
+    RF: Future<Output = T>,
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
@@ -130,7 +134,7 @@ where
         unfaithful: Mutex::new(None),
     });
     stream.cut_persistence(cutter.clone());
-    run(stream.clone()).await;
+    let result = run(stream.clone()).await;
     let unfaithful = cutter.unfaithful.lock().expect("simulation slot").take();
     if let Some(error) = unfaithful {
         return Err(error);
@@ -141,20 +145,20 @@ where
     };
     drop(stream);
     let observed = recover(open(directory.path(), limits).await).await;
-    Ok((writes, observed))
+    Ok((writes, result, observed))
 }
 
 /// [`enumerate_with`] under the default limits, which never compact.
-pub(crate) async fn enumerate<O, S, SF, R, RF, V, VF>(
+pub(crate) async fn enumerate<O, T, S, SF, R, RF, V, VF>(
     setup: S,
     run: R,
     recover: V,
-) -> Result<CrashCuts<O>, CutSimulationError>
+) -> Result<CrashCuts<O, T>, CutSimulationError>
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
     R: Fn(Arc<LocalStream>) -> RF,
-    RF: Future<Output = ()>,
+    RF: Future<Output = T>,
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
@@ -162,32 +166,34 @@ where
 }
 
 /// Runs `setup` uncounted, then `run` once cleanly and once per durable cut,
-/// every provider opened with `limits`. `run` must ignore its own result;
-/// `recover` reopens and observes.
-pub(crate) async fn enumerate_with<O, S, SF, R, RF, V, VF>(
+/// every provider opened with `limits`. The original return value is retained
+/// alongside each reopened observation, so the oracle can check acknowledgements.
+pub(crate) async fn enumerate_with<O, T, S, SF, R, RF, V, VF>(
     limits: LocalStreamLimits,
     setup: S,
     run: R,
     recover: V,
-) -> Result<CrashCuts<O>, CutSimulationError>
+) -> Result<CrashCuts<O, T>, CutSimulationError>
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
     R: Fn(Arc<LocalStream>) -> RF,
-    RF: Future<Output = ()>,
+    RF: Future<Output = T>,
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
-    let (writes, clean) = once(limits, None, &setup, &run, &recover).await?;
+    let (writes, clean_result, clean) = once(limits, None, &setup, &run, &recover).await?;
     assert!(writes > 0, "operation made no durable write to cut");
     let mut cuts = Vec::with_capacity(2 * writes + 1);
+    let mut cut_results = Vec::with_capacity(2 * writes + 1);
     for landed in 0..=writes {
         let mut boundary = vec![Cut::BeforeWrite(landed)];
         if landed > 0 {
             boundary.insert(0, Cut::LostAck(landed));
         }
         for cut in boundary {
-            let (reached, observed) = once(limits, Some(cut), &setup, &run, &recover).await?;
+            let (reached, result, observed) =
+                once(limits, Some(cut), &setup, &run, &recover).await?;
             // Every cut lands exactly its own writes. BeforeWrite(writes)
             // never fires, so it replays the clean run's durable state.
             let expected = match cut {
@@ -195,11 +201,14 @@ where
             };
             assert_eq!(reached, expected, "{cut:?} did not reach its boundary");
             cuts.push((cut, observed));
+            cut_results.push((cut, result));
         }
     }
     Ok(CrashCuts {
         writes,
         clean,
+        clean_result,
         cuts,
+        cut_results,
     })
 }

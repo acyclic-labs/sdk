@@ -1,4 +1,4 @@
-use crate::buffer::{Buffer, normalize};
+use crate::buffer::{Buffer, normalize, slice};
 use std::{collections::BTreeSet, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,7 +35,7 @@ impl Delta {
     pub fn capture(buffer: &Buffer, range: Range<usize>, text: &str) -> Self {
         Self {
             start: range.start,
-            removed: buffer.text[range].to_owned(),
+            removed: slice(&buffer.text, range).to_owned(),
             inserted: text.to_owned(),
             before: Selection::of(buffer),
             after: Selection::of(buffer),
@@ -74,17 +74,17 @@ impl Delta {
             .take_while(|(a, b)| a == b)
             .map(|(c, _)| c.len_utf8())
             .sum();
-        let suffix: usize = before.text[prefix..]
+        let suffix: usize = slice(&before.text, prefix..)
             .chars()
             .rev()
-            .zip(after.text[prefix..].chars().rev())
+            .zip(slice(&after.text, prefix..).chars().rev())
             .take_while(|(a, b)| a == b)
             .map(|(c, _)| c.len_utf8())
             .sum();
         let mut delta = Self::capture(
             before,
             prefix..before.text.len() - suffix,
-            &after.text[prefix..after.text.len() - suffix],
+            slice(&after.text, prefix..after.text.len() - suffix),
         );
         delta.finish(after);
         delta
@@ -199,7 +199,12 @@ impl PromptHistory {
 
     /// Record a nonblank prompt, suppressing adjacent duplicates.
     pub fn push(&mut self, text: String) {
-        let text = normalize(&text);
+        // Only carriage returns need rewriting; keep the caller's allocation otherwise.
+        let text = if text.contains('\r') {
+            normalize(&text)
+        } else {
+            text
+        };
         if !text.trim().is_empty() && self.entries.last() != Some(&text) {
             self.entries.push(text);
         }

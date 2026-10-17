@@ -1,7 +1,7 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
 use acyclic_harness::{
     OperationId,
-    client::prepare_local_prompt,
+    client::{jsonl, prepare_local_prompt},
     task_volume::{Change, FileKey, TaskFile},
 };
 use axum::{Json, Router, routing::post};
@@ -37,7 +37,7 @@ async fn execute(
     let request = if jsonl {
         format!(
             "{}\n",
-            serde_json::to_string(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+            jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
         )
         .into_bytes()
     } else {
@@ -185,7 +185,7 @@ async fn scenario(mode: Mode) {
     assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
     let mut answers = Vec::new();
     for line in lines {
-        let change: Change = serde_json::from_str(line).unwrap();
+        let change: Change = jsonl::parse_change(line).unwrap();
         for file in change.file.into_iter().chain(change.files) {
             if matches!(
                 file.key,

@@ -55,20 +55,19 @@ fn paint(frame: &mut Frame<'_>, (rows, cursor): &Scene) {
 }
 
 /// The removed path: ratatui writing each queued command straight to the device.
-fn per_command(scenes: &[Scene]) -> Vec<Vec<Vec<u8>>> {
+fn per_command(scenes: &[Scene]) -> io::Result<Vec<Vec<Vec<u8>>>> {
     let device = Device::default();
     let mut terminal = Terminal::with_options(
         CrosstermBackend::new(device.clone()),
         TerminalOptions {
             viewport: Viewport::Fixed(Rect::new(0, 0, WIDTH, HEIGHT)),
         },
-    )
-    .unwrap();
+    )?;
     scenes
         .iter()
         .map(|scene| {
-            terminal.draw(|frame| paint(frame, scene)).unwrap();
-            device.take()
+            terminal.draw(|frame| paint(frame, scene))?;
+            Ok(device.take())
         })
         .collect()
 }
@@ -82,17 +81,15 @@ fn caps(synchronized: bool) -> Capabilities {
     caps
 }
 
-fn per_frame(scenes: &[Scene], synchronized: bool) -> Vec<Vec<Vec<u8>>> {
+fn per_frame(scenes: &[Scene], synchronized: bool) -> io::Result<Vec<Vec<Vec<u8>>>> {
     let device = Device::default();
     let guard = RestoreGuard::new(device.clone(), &caps(synchronized));
-    let mut terminal = FrameTerminal::new(guard, Size::new(WIDTH, HEIGHT)).unwrap();
+    let mut terminal = FrameTerminal::new(guard, Size::new(WIDTH, HEIGHT))?;
     scenes
         .iter()
         .map(|scene| {
-            terminal
-                .draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, scene))
-                .unwrap();
-            device.take()
+            terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, scene))?;
+            Ok(device.take())
         })
         .collect()
 }
@@ -132,14 +129,15 @@ fn screen(bytes: &[u8]) -> (String, (usize, usize)) {
     // A synchronized update is applied when it ends; flush any pending batch.
     parser.stop_sync(&mut term);
     let mut text = String::new();
-    for row in 0..usize::from(HEIGHT) {
+    for row in 0..i32::from(HEIGHT) {
         for column in 0..usize::from(WIDTH) {
-            text.push(term.grid()[Point::new(Row(row as i32), Column(column))].c);
+            text.push(term.grid()[Point::new(Row(row), Column(column))].c);
         }
         text.push('\n');
     }
     let cursor = term.grid().cursor.point;
-    (text, (cursor.line.0 as usize, cursor.column.0))
+    let line = usize::try_from(cursor.line.0).unwrap_or_default();
+    (text, (line, cursor.column.0))
 }
 
 fn scenes() -> impl Strategy<Value = Vec<Scene>> {
@@ -159,9 +157,9 @@ proptest! {
     // and the emulated screen and cursor are identical.
     #[test]
     fn frames_are_one_write_with_identical_bytes(scenes in scenes()) {
-        let old = per_command(&scenes);
-        let plain = per_frame(&scenes, false);
-        let synchronized = per_frame(&scenes, true);
+        let old = per_command(&scenes)?;
+        let plain = per_frame(&scenes, false)?;
+        let synchronized = per_frame(&scenes, true)?;
         assert_one_write_per_frame(&plain);
         assert_one_write_per_frame(&synchronized);
         for ((old, plain), synchronized) in old.iter().zip(&plain).zip(&synchronized) {
@@ -231,18 +229,20 @@ fn resize_repaints_in_one_write() {
         .draw(Size::new(WIDTH - 4, HEIGHT), |frame| paint(frame, &scene))
         .unwrap();
     let writes = device.take();
-    assert_eq!(writes.len(), 1);
+    let [write] = writes.as_slice() else {
+        panic!("one device write, not {}", writes.len());
+    };
     // The clear for the new size and the repaint share the synchronized update.
-    assert!(writes[0].starts_with(b"\x1b[?2026h"));
-    assert!(writes[0].ends_with(b"\x1b[?2026l"));
-    assert!(writes[0].windows(4).any(|bytes| bytes == b"\x1b[2J"));
+    assert!(write.starts_with(b"\x1b[?2026h"));
+    assert!(write.ends_with(b"\x1b[?2026l"));
+    assert!(write.windows(4).any(|bytes| bytes == b"\x1b[2J"));
 }
 
 #[test]
 #[should_panic(expected = "reached the device")]
 fn negative_control_per_command_writes_are_detected() {
     let scenes = vec![(vec!["hello".into(), "world".into()], Some((2, 1)))];
-    assert_one_write_per_frame(&per_command(&scenes));
+    assert_one_write_per_frame(&per_command(&scenes).unwrap());
 }
 
 /// Submissions reaching the real terminal output half: writes for the old
@@ -309,7 +309,10 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
                     Span::raw("Streaming ").bold(),
                     Span::styled("markdown", Style::default().fg(Color::Rgb(200, 120, 60))),
                     // Distinct text per row, as when paging through a transcript.
-                    Span::raw(format!(" {}", &PROSE[row % 25..row % 25 + 80])),
+                    Span::raw(format!(
+                        " {}",
+                        PROSE.get(row % 25..row % 25 + 80).unwrap_or_default()
+                    )),
                 ])
             })
             .collect();
@@ -351,7 +354,9 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             }
             let elapsed = start.elapsed();
             let after = device_io();
-            let per_frame = |count: u64| count as f64 / FRAMES as f64;
+            let frames = f64::from(u32::try_from(FRAMES).unwrap_or(u32::MAX));
+            let per_frame =
+                |count: u64| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / frames;
             report.push(format!(
                 "{} {}x{} {}: {:.0} bytes/frame, {:.1} submissions/frame, {:.1} device writes/frame, {:.2} full-queue waits/frame, {:.1} us/frame",
                 std::env::consts::OS,
@@ -362,7 +367,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
                 per_frame(calls.get()),
                 per_frame(after.writes - before.writes),
                 per_frame(after.waits - before.waits),
-                elapsed.as_secs_f64() * 1e6 / FRAMES as f64
+                elapsed.as_secs_f64() * 1e6 / frames
             ));
         }
     }

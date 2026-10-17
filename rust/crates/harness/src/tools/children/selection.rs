@@ -2,7 +2,11 @@ use super::*;
 use crate::runtime::OwnedTaskMailbox;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
-thread_local! { pub(super) static IGNORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! {
+    pub(super) static IGNORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static SWALLOW_SAVE_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static DROP_METADATA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 pub(super) fn key(task: crate::TaskId, operation: crate::OperationId) -> Result<FileKey> {
     Ok(FileKey::Task {
@@ -64,6 +68,13 @@ pub(super) async fn load<P: StreamProvider + ?Sized>(
                 .outcome,
         )
         .map_err(storage)?;
+    }
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    if DROP_METADATA.with(std::cell::Cell::get) {
+        if let Some(outcome) = result["agents"][0]["result"]["outcome"]["Succeeded"].as_object_mut()
+        {
+            outcome.remove("metadata");
+        }
     }
     Ok(Some(result))
 }

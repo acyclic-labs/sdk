@@ -1,7 +1,6 @@
 //! Provenance-preserving projection of canonical history into model context.
 
 mod artifacts;
-pub(crate) use artifacts::{read_tool_call, read_value};
 mod attachments;
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod custody_tests;

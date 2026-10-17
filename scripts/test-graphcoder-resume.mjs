@@ -68,7 +68,7 @@ try {
   else {
     const records = resumed.stdout.trim().split("\n").map(JSON.parse);
     assert.equal(records[0][0].TaskSession.session, operation, "private launch identity must survive kill");
-    assert.ok(records.slice(1).flatMap(change => [change.file, ...change.files].filter(Boolean)).some(file => file.key.Session?.file.ExecutionResult === operation && JSON.parse(Buffer.from(file.bytes).toString()).completion === "completed"));
+    assert.ok(records.slice(1).flatMap(change => [change.file, ...change.files].filter(Boolean)).some(file => file.key.Session?.file.ExecutionResult === operation && JSON.parse(file.bytes.text).completion === "completed"));
   }
   assert.equal(host.calls(), 1, "resume dispatches the retained turn exactly once");
   if (!interactive) {

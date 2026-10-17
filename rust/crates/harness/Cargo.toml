@@ -30,6 +30,11 @@ path = "tests/main.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "decoder-properties"
+path = "tests/decoder_properties.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "git_executor"
 path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
@@ -100,21 +105,12 @@ name = "filesystem_access"
 path = "tests/filesystem_access.rs"
 
 [[test]]
-name = "client_journal_model"
-path = "tests/client_journal_model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "client_session"
-path = "tests/client_session.rs"
-
-[[test]]
-name = "decoder_properties"
-path = "tests/decoder_properties.rs"
-
-[[test]]
 name = "client_history"
 path = "tests/client_history.rs"
+
+[[test]]
+name = "jsonl-wire"
+path = "tests/jsonl_wire.rs"
 
 [[test]]
 name = "mcp-durable"

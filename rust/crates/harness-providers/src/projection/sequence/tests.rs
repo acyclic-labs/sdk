@@ -73,10 +73,11 @@ fn checked_in_byte_corpus() {
 }
 
 mod turns {
+    use super::super::super::wire::Item;
     use super::super::super::wire::replay_turns_with;
     use super::super::{RULES, Rules};
     use crate::Adapter;
-    use crate::fuzzing::{assert_turns, turn_repair_violation};
+    use crate::fuzzing::{assert_turns, canonical_turns, turn_repair_violation};
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
@@ -264,6 +265,98 @@ mod turns {
     }
 
     #[test]
+    fn negative_controls_fault_exact_preservation() {
+        let anthropic = [
+            json!({"role":"user","content":[{"type":"text","text":"q"}]}),
+            json!({"role":"assistant","content":[
+                {"type":"tool_use","id":"a","name":"f","input":{}},
+                {"type":"tool_use","id":"b","name":"f","input":{}}]}),
+            json!({"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"a","content":"ok"},
+                {"type":"tool_result","tool_use_id":"b","content":"ok"}]}),
+        ];
+        let gemini = [
+            json!({"role":"user","parts":[{"text":"q"}]}),
+            json!({"role":"model","parts":[{"text":"answer"}]}),
+            json!({"role":"user","parts":[{"text":"more"}]}),
+        ];
+        let reversed = Rules {
+            normalize: |_, parts| parts.reverse(),
+            ..RULES
+        };
+        let replaced = Rules {
+            normalize: |_, parts| {
+                for part in parts {
+                    if let Item::Json(value) = part
+                        && value["text"].is_string()
+                    {
+                        value["text"] = json!("x");
+                    }
+                }
+            },
+            ..RULES
+        };
+        for (adapter, messages, broken, violation) in [
+            (
+                Adapter::Anthropic,
+                &anthropic[..],
+                reversed,
+                "reordered parts",
+            ),
+            (Adapter::Gemini, &gemini[..], replaced, "changed text"),
+        ] {
+            // Valid canonical input passes through repair unchanged...
+            assert!(canonical_turns(adapter, messages));
+            let healthy = replay_turns_with(adapter, messages, RULES).unwrap();
+            assert_eq!(healthy, messages);
+            // ...and an idempotent fault that rewrites it is named.
+            let faulty = replay_turns_with(adapter, messages, broken).unwrap();
+            assert_ne!(faulty, messages);
+            assert_eq!(
+                turn_repair_violation(adapter, messages, &faulty),
+                Some(violation)
+            );
+        }
+    }
+    #[test]
+    fn negative_control_internal_whitespace_loss_beside_a_blank_fragment() {
+        let messages = [json!({"role":"user","content":[
+            {"type":"text","text":"a b"},
+            {"type":"text","text":" "}]})];
+        // Healthy repair joins the blank fragment and keeps every character...
+        let healthy = replay_turns_with(Adapter::Anthropic, &messages, RULES).unwrap();
+        assert_eq!(healthy[0]["content"][0]["text"], "a b ");
+        assert_eq!(
+            turn_repair_violation(Adapter::Anthropic, &messages, &healthy),
+            None
+        );
+        // ...while a repair that also squeezes internal whitespace is named,
+        // although the blank fragment rules out canonical identity.
+        assert!(!canonical_turns(Adapter::Anthropic, &messages));
+        let squeezed = Rules {
+            normalize: |adapter, parts| {
+                (RULES.normalize)(adapter, parts);
+                for part in parts {
+                    if let Item::Json(value) = part
+                        && let Some(text) = value["text"]
+                            .as_str()
+                            .map(|text| text.split_whitespace().collect::<String>())
+                    {
+                        value["text"] = json!(text);
+                    }
+                }
+            },
+            ..RULES
+        };
+        let faulty = replay_turns_with(Adapter::Anthropic, &messages, squeezed).unwrap();
+        assert_eq!(faulty[0]["content"][0]["text"], "ab");
+        assert_eq!(
+            turn_repair_violation(Adapter::Anthropic, &messages, &faulty),
+            Some("changed text")
+        );
+    }
+
+    #[test]
     fn checked_in_byte_corpus() {
         for bytes in [
             include_bytes!("../../../fuzz/corpus/turns/anthropic-assistant-first").as_slice(),
@@ -277,6 +370,9 @@ mod turns {
             include_bytes!("../../../fuzz/corpus/turns/gemini-result-moved-past-blank").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-ordered-behind-text").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/anthropic-text-before-result").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-envelope-extra-field").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/anthropic-spaced-text-beside-blank")
+                .as_slice(),
         ] {
             assert_turns(bytes);
         }

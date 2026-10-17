@@ -368,7 +368,7 @@ impl Pool {
     /// End a route with the server's status after its earlier records.
     fn closed(&mut self, id: u64, closed: &wire::SessionClosed) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        let error = StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
+        let error = StreamError::from_session_close(&closed.code);
         if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
             && let Some(ready) = route.ready.take()
         {

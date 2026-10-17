@@ -14,7 +14,7 @@ fn synchronized() -> Capabilities {
 /// Present `len` bytes in calls of at most `chunk`; return each call's size
 /// and the device bytes.
 fn parts(len: usize, chunk: usize) -> (Vec<usize>, Vec<u8>) {
-    let frame: Vec<u8> = (0..len).map(|index| b'a' + (index % 26) as u8).collect();
+    let frame: Vec<u8> = (b'a'..=b'z').cycle().take(len).collect();
     let mut device = Vec::new();
     let mut sizes = Vec::new();
     {

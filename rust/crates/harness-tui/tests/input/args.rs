@@ -55,7 +55,7 @@ proptest! {
         let words: Vec<String> = std::iter::once(r#"C:\Program Files\Editor\edit.exe"#.to_owned()).chain(args.clone()).collect();
         let encoded = super::sequences::windows_command_line(&words);
         let (program, restored) = windows_editor_command(&encoded)?;
-        prop_assert_eq!(program, OsString::from(&words[0]));
+        prop_assert_eq!(Some(program), words.first().map(OsString::from));
         prop_assert_eq!(restored, args.into_iter().map(OsString::from).collect::<Vec<_>>());
     }
 }

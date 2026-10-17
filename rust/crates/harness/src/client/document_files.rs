@@ -1,61 +1,33 @@
-//! GOAL.md and plans/ are ordinary authorized snapshot-plus-follow queries.
-use super::ViewUpdate;
+//! Ordinary document queries feed the one shared file fold.
+use super::ClientViews;
 use crate::{
     Error, Result,
-    task_volume::{FileKey, FileQuerySource, Query},
-    wire,
+    task_volume::{ChangeStream, FileKey, FileQuerySource, Query},
 };
-use acyclic_stream::BoxProviderStream;
-use futures::{StreamExt, future, stream};
-
-/// Follow only document files; no task transcript or completed history is loaded.
-/// Each query retains its atomic snapshot cut and the provider's push follow.
+/// Install each atomic snapshot before following its exact cursor.
 pub async fn document_files(
     files: &(impl FileQuerySource + ?Sized),
-    authority: &wire::Authority,
+    views: &mut ClientViews,
     maximum_plans: usize,
     maximum_bytes: usize,
-) -> Result<BoxProviderStream<'static, Result<ViewUpdate>>> {
-    let goal_query = Query::File(FileKey::Goal);
+) -> Result<ChangeStream> {
+    let query = Query::File(FileKey::Goal);
     let goal = files
-        .observe_files(goal_query.clone(), None, 1, maximum_bytes)
+        .observe_files(query.clone(), None, 1, maximum_bytes)
         .await?;
     let plans = files
         .observe_files(Query::Plans, None, maximum_plans, maximum_bytes)
         .await?;
-    let initial = [
-        ViewUpdate::DocumentSnapshot {
-            authority: authority.clone(),
-            query: goal_query,
-            snapshot: goal
-                .snapshot
-                .ok_or_else(|| Error::Conflict("goal snapshot missing".into()))?,
-        },
-        ViewUpdate::DocumentSnapshot {
-            authority: authority.clone(),
-            query: Query::Plans,
-            snapshot: plans
-                .snapshot
-                .ok_or_else(|| Error::Conflict("plans snapshot missing".into()))?,
-        },
-    ];
-    let authority = authority.clone();
-    let changes = stream::select(goal.changes, plans.changes).filter_map(move |change| {
-        future::ready(match change {
-            Ok(change) => {
-                if change.file.is_none() && change.files.is_empty() && change.removed.is_empty() {
-                    None
-                } else {
-                    Some(Ok(ViewUpdate::DocumentChange {
-                        authority: authority.clone(),
-                        change,
-                    }))
-                }
-            }
-            Err(error) => Some(Err(error.into())),
-        })
-    });
-    Ok(Box::pin(
-        stream::iter(initial.into_iter().map(Ok)).chain(changes),
-    ))
+    let goal_snapshot = goal
+        .snapshot
+        .ok_or_else(|| Error::Conflict("goal snapshot missing".into()))?;
+    let plan_snapshot = plans
+        .snapshot
+        .ok_or_else(|| Error::Conflict("plans snapshot missing".into()))?;
+    views.query_snapshot(query, goal_snapshot, 1, maximum_bytes)?;
+    views.query_snapshot(Query::Plans, plan_snapshot, maximum_plans, maximum_bytes)?;
+    Ok(Box::pin(futures::stream::select(
+        goal.changes,
+        plans.changes,
+    )))
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::WrappedLines;
 use proptest::prelude::*;
 use ratatui::{text::Line, widgets::Widget};
 
@@ -99,7 +100,10 @@ fn next_key_cancels_partial_count_and_transcript_changes_refresh_the_index() {
     assert!(search.pending());
     search.update(&projection, "b", 0, Style::default());
     finish(&mut search, &projection);
-    assert_eq!(search.matches, [20000..20001]);
+    assert_eq!(
+        search.matches.as_slice(),
+        std::slice::from_ref(&(20000..20001))
+    );
     projection.update(&[Line::raw("Straße STRASSE")], 0, 80);
     search.update(&projection, "strasse", 0, Style::default());
     finish(&mut search, &projection);
@@ -178,7 +182,7 @@ fn background_prefix_rescan_negative_control() {
     let projection = projection(&"a".repeat(4096));
     WORK.with(|work| work.set((0, 0)));
     for end in (32..=4096).step_by(32) {
-        scan(&projection, "b", &[0], 0..end, true, |_| {});
+        scan((&projection).into(), "b", &[0], 0..end, true, |_| {});
     }
     assert!(
         WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
@@ -202,7 +206,7 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
     assert!(!search.pending());
     assert_eq!(search.count(), count);
     assert_eq!(search.generation, generation);
-    assert_eq!(search.viewport.unwrap().1, projection.revision());
+    assert_eq!(search.viewport.unwrap().1, (projection.revision(), None));
 }
 
 #[test]
@@ -213,7 +217,7 @@ fn appended_sources_index_the_preceding_separator() {
     let mut search = TranscriptSearch::default();
     search.update(&projection, "first\nsecond", 0, Style::default());
     finish(&mut search, &projection);
-    assert_eq!(search.matches, [0..12]);
+    assert_eq!(search.matches.as_slice(), std::slice::from_ref(&(0..12)));
 }
 
 fn slice_model<const LINEAR: bool>(size: usize, budget: usize, index: i64) {
@@ -221,7 +225,11 @@ fn slice_model<const LINEAR: bool>(size: usize, budget: usize, index: i64) {
     let mut search = TranscriptSearch::default();
     search.update(&projection, "a", index, Style::default());
     search.prepare(&projection, projection.rows().len().saturating_sub(2), 1);
-    let selected = search.active()[search.position(index) - 1].clone();
+    let selected = search
+        .active()
+        .get(search.position(index) - 1)
+        .unwrap()
+        .clone();
     while search.pending() {
         WORK.with(|work| work.set((0, 0)));
         search.advance(&projection, budget);
@@ -237,7 +245,10 @@ fn slice_model<const LINEAR: bool>(size: usize, budget: usize, index: i64) {
             "every cooperative slice must be bounded: {work}"
         );
     }
-    assert_eq!(search.active()[search.position(index) - 1], selected);
+    assert_eq!(
+        search.active().get(search.position(index) - 1),
+        Some(&selected)
+    );
     assert_eq!(search.count(), size);
 }
 
@@ -278,7 +289,12 @@ fn stable_selection_model<const IDENTITY: bool>(size: usize, initial: usize, del
             // The old implementation reapplied the index to the rebuilt local list.
             search.selected = search
                 .active()
-                .get(delta.rem_euclid(search.active().len() as i64) as usize)
+                .get(
+                    usize::try_from(
+                        delta.rem_euclid(i64::try_from(search.active().len()).unwrap()),
+                    )
+                    .unwrap(),
+                )
                 .cloned();
         }
         search.advance(&projection, 31);
@@ -324,11 +340,13 @@ fn mixed_navigation_model<const LOCAL_WRAP: bool>(size: usize, gap: usize, event
     resize_navigation_model::<LOCAL_WRAP, false>(size, gap, false, &events);
 }
 
+type NavigationEvent = (i8, u8, Option<(u16, u16)>);
+
 fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
     size: usize,
     gap: usize,
     initially_hidden: bool,
-    events: &[(i8, u8, Option<(u16, u16)>)],
+    events: &[NavigationEvent],
 ) {
     let mut text = format!("needle{}\n", "日x".repeat(gap)).repeat(size);
     if initially_hidden {
@@ -345,21 +363,25 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
     let mut expected = reference
         .iter()
         .position(|r| Some(r) == search.selected.as_ref())
-        .map(|r| r as i64);
+        .map(|r| i64::try_from(r).unwrap());
     let mut index = 0;
     for &(direction, frames, resize) in events {
         index += i64::from(direction);
-        expected =
-            expected.map(|rank| (rank + i64::from(direction)).rem_euclid(reference.len() as i64));
+        expected = expected.map(|rank| {
+            (rank + i64::from(direction)).rem_euclid(i64::try_from(reference.len()).unwrap())
+        });
         if LOCAL_WRAP && direction != 0 {
             let rank = search
                 .local
                 .iter()
                 .position(|r| Some(r) == search.selected.as_ref())
                 .unwrap_or(0);
-            let rank =
-                (rank as i64 + i64::from(direction)).rem_euclid(search.local.len() as i64) as usize;
-            search.selected = Some(search.local[rank].clone());
+            let rank = usize::try_from(
+                (i64::try_from(rank).unwrap() + i64::from(direction))
+                    .rem_euclid(i64::try_from(search.local.len()).unwrap()),
+            )
+            .unwrap();
+            search.selected = Some(search.local.get(rank).unwrap().clone());
             search.index = index;
         }
         search.update(&projection, "needle", index, Style::default());
@@ -380,18 +402,7 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
             if expected.is_none() {
                 // Reference viewport matches use source identities, independently
                 // of the production selection and its queued navigation state.
-                let visible: Vec<_> = reference
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, range)| {
-                        (first..first + height).contains(&projection.source_rows[range.start])
-                    })
-                    .map(|(rank, _)| rank)
-                    .collect();
-                if !visible.is_empty() {
-                    expected =
-                        Some(visible[index.rem_euclid(visible.len() as i64) as usize] as i64);
-                }
+                expected = visible_reference(&projection, &reference, first, height, index);
             }
             if REPLAY_INITIAL && unanchored && search.selected.is_some() {
                 // Restore the old handoff: initial rank consumes index but leaves
@@ -406,19 +417,12 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
                 "directional slice must stay bounded"
             );
             if expected.is_none() {
-                expected = if !search.pending() {
-                    Some(index.rem_euclid(reference.len() as i64))
-                } else {
-                    reference
-                        .iter()
-                        .position(|range| Some(range) == search.nearest.as_ref())
-                        .map(|rank| rank as i64)
-                };
+                expected = initial_reference(&search, &reference, index);
             }
             if search.steps == 0 {
                 assert_eq!(
                     search.selected.as_ref(),
-                    expected.map(|rank| &reference[rank as usize]),
+                    expected.map(|rank| reference.get(usize::try_from(rank).unwrap()).unwrap()),
                     "mixed navigation must consume each move once across frames and resize"
                 );
             }
@@ -429,20 +433,13 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
         // The first identity can also appear during the final background drain,
         // before any resize exposes it. Observe that handoff in the reference.
         if expected.is_none() {
-            expected = if !search.pending() {
-                Some(index.rem_euclid(reference.len() as i64))
-            } else {
-                reference
-                    .iter()
-                    .position(|range| Some(range) == search.nearest.as_ref())
-                    .map(|rank| rank as i64)
-            };
+            expected = initial_reference(&search, &reference, index);
         }
     }
     let expected = expected.expect("nonempty reference has a selected match");
     assert_eq!(
         search.selected.as_ref(),
-        Some(&reference[expected as usize]),
+        reference.get(usize::try_from(expected).unwrap()),
         "mixed navigation must consume each move once across frames and resize"
     );
 }
@@ -529,4 +526,51 @@ fn initial_selection_replays_queued_move_negative_control() {
 #[test]
 fn first_match_discovered_while_draining_background_keeps_its_identity() {
     resize_navigation_model::<false, false>(256, 0, true, &[(-3, 0, None)]);
+}
+
+fn initial_reference(
+    search: &TranscriptSearch,
+    reference: &[Range<usize>],
+    index: i64,
+) -> Option<i64> {
+    if search.pending() {
+        reference
+            .iter()
+            .position(|range| Some(range) == search.nearest.as_ref())
+            .map(|rank| i64::try_from(rank).unwrap())
+    } else {
+        Some(index.rem_euclid(i64::try_from(reference.len()).ok()?))
+    }
+}
+
+proptest! {
+    #[test]
+    fn modular_rank_matches_wide_signed_reference(count in 1usize..=usize::MAX, initial in any::<usize>(), steps in any::<i64>()) {
+        let rank = initial % count;
+        let expected = (i128::try_from(rank).unwrap() + i128::from(steps))
+            .rem_euclid(i128::try_from(count).unwrap());
+        prop_assert_eq!(cyclic_rank(rank, steps, count), usize::try_from(expected).unwrap());
+    }
+}
+
+fn visible_reference(
+    projection: &WrappedLines,
+    reference: &[Range<usize>],
+    first: usize,
+    height: usize,
+    index: i64,
+) -> Option<i64> {
+    let visible: Vec<_> = reference
+        .iter()
+        .enumerate()
+        .filter(|(_, range)| {
+            (first..first + height).contains(projection.source_rows.get(range.start).unwrap())
+        })
+        .map(|(rank, _)| rank)
+        .collect();
+    if visible.is_empty() {
+        return None;
+    }
+    let rank = usize::try_from(index.rem_euclid(i64::try_from(visible.len()).ok()?)).ok()?;
+    i64::try_from(*visible.get(rank)?).ok()
 }

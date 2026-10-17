@@ -22,7 +22,7 @@ pub struct RestoreGuard<W: Write> {
 }
 
 impl<W: Write> RestoreGuard<W> {
-    /// No terminal changes occur until setup or enable_mode is called.
+    /// No terminal changes occur until setup or `enable_mode` is called.
     pub fn new(writer: W, caps: &Capabilities) -> Self {
         Self {
             writer,
@@ -115,8 +115,8 @@ impl<W: Write> RestoreGuard<W> {
     }
 }
 
-const SHOW_CURSOR: (u16, &'static [u8]) = (25, b"[?25h");
-const END_SYNCHRONIZED: (u16, &'static [u8]) = (2026, b"[?2026l");
+const SHOW_CURSOR: (u16, &[u8]) = (25, b"[?25h");
+const END_SYNCHRONIZED: (u16, &[u8]) = (2026, b"[?2026l");
 const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
 
 /// Frame presentation under the restoration journal: a synchronized update's

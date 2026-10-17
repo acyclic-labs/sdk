@@ -12,6 +12,7 @@ pub(crate) use reasoning::family;
 use crate::{Adapter, invalid, json, sse};
 use acyclic_harness::{
     Result,
+    conversation::validate_portable_json,
     model::{ModelDispatch, ModelEvent},
 };
 use acyclic_stream::BoxProviderStream;
@@ -145,7 +146,10 @@ pub(crate) fn finish(
         if !arguments.is_object() {
             return Err(invalid("tool arguments must be a JSON object"));
         }
-        validate_numbers(&arguments)?;
+        // The recording rule owns numbers and marker keys, so a call emitted
+        // here is never rejected later when the executor records it.
+        validate_portable_json(&arguments)?;
+        validate_portable_json(&call.metadata)?;
         // Admit the canonical ID and binding graph before allocating either.
         // The original provider ID is moved into the binding without copying.
         let native = !call.metadata.is_null();
@@ -311,7 +315,7 @@ fn text(events: &mut Vec<ModelEvent>, value: &Value, reasoning: bool) {
 fn index(value: &Value, field: &str) -> Result<u64> {
     value[field]
         .as_u64()
-        .filter(|value| *value <= 9_007_199_254_740_991)
+        .filter(|value| *value <= acyclic_harness::conversation::MAX_EXACT_JS_INTEGER)
         .ok_or_else(|| invalid("invalid tool index"))
 }
 
@@ -320,19 +324,4 @@ fn string(value: &Value) -> Result<&str> {
         .as_str()
         .filter(|text| !text.trim().is_empty())
         .ok_or_else(|| invalid("missing tool identity or string"))
-}
-
-fn validate_numbers(value: &Value) -> Result<()> {
-    match value {
-        Value::Number(number)
-            if number
-                .as_f64()
-                .is_none_or(|number| number.abs() > 9_007_199_254_740_991.0) =>
-        {
-            Err(invalid("tool number exceeds the portable exact range"))
-        }
-        Value::Array(values) => values.iter().try_for_each(validate_numbers),
-        Value::Object(values) => values.values().try_for_each(validate_numbers),
-        _ => Ok(()),
-    }
 }

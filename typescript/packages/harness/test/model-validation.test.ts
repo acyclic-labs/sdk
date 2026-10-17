@@ -1,5 +1,6 @@
 import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 import { expect, test } from "bun:test";
+import fc from "fast-check";
 import { readFile } from "node:fs/promises";
 import {
   DEFAULT_LIMITS, jsonToolProjection, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef, type PinnedContextPath,
@@ -337,6 +338,46 @@ test("stale WASM modules fail compatibility checks before model dispatch", () =>
   expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow();
   expect(() => assertHarnessWasmExports(rawWasmExports)).not.toThrow();
   expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmcontentstore_stage: undefined })).toThrow();
+});
+
+const constructedWasmClasses = [
+  ["WasmContentStore", "wasmcontentstore_new"],
+  ["WasmStream", "wasmstream_new"],
+  ["WasmHypothesisClient", "wasmhypothesisclient_new"],
+  ["WasmSwarmClient", "wasmswarmclient_new"],
+  ["WasmReducer", "wasmreducer_new"],
+  ["WasmProviderRegistry", "wasmproviderregistry_new"],
+] as const;
+
+function checkConstructorRemoval(check: (value: unknown) => void): void {
+  // Every absent constructor, alone or in combination, must fail before dispatch.
+  const removed = (missing: readonly (typeof constructedWasmClasses)[number][]) => {
+    const raw: Record<string, unknown> = { ...rawWasmExports };
+    const wrappers: Record<string, unknown> = { ...harnessWasm };
+    for (const [name, symbol] of missing) {
+      delete raw[symbol];
+      delete wrappers[name];
+    }
+    expect(() => check(raw)).toThrow();
+    expect(() => check(wrappers)).toThrow();
+  };
+  for (const entry of constructedWasmClasses) removed([entry]);
+  fc.assert(fc.property(fc.subarray([...constructedWasmClasses], { minLength: 1 }), removed), { numRuns: 64 });
+}
+
+test("all constructed WASM classes are required before dispatch", () => {
+  checkConstructorRemoval(assertHarnessWasmExports);
+});
+
+test("constructor-removal oracle rejects the former method-only check", () => {
+  const methodOnly = (value: unknown) => {
+    const exports = { ...(value as Record<string, unknown>) };
+    for (const [, symbol] of constructedWasmClasses) {
+      exports[symbol] ??= (rawWasmExports as unknown as Record<string, unknown>)[symbol];
+    }
+    assertHarnessWasmExports(exports);
+  };
+  expect(() => checkConstructorRemoval(methodOnly)).toThrow();
 });
 
 test("fresh WASM initialization accepts the raw content-store ABI", async () => {
