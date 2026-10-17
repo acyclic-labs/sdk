@@ -260,7 +260,7 @@ fn checked_in_wire_corpus() {
     macro_rules! seed {
         ($name:literal) => {
             std::str::from_utf8(include_bytes!(concat!(
-                "../../../fuzz/task-volume/corpus/jsonl_wire/",
+                "fixtures/wire-corpus/",
                 $name
             )))
             .unwrap()
