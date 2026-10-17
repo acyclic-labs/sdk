@@ -11,12 +11,15 @@ use serde::Serialize;
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct GoalProgress {
     /// Admitted or staged task occupying the ordinary request head.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation: OperationId,
     /// Original user turn for this goal loop.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub root: OperationId,
     /// Automatic continuations retained by that loop; edits never reset it.
     pub continuations: u32,
     /// GOAL.md write publication acknowledged by this retained request head.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub goal_revision: Option<OperationId>,
 }
 

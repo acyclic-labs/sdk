@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct ChildStatus {
     /// Current or most recently settled turn.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub task: crate::TaskId,
     /// Lifecycle state reached by the worker.
     pub state: ChildState,

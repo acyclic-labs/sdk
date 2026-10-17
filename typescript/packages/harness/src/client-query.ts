@@ -25,5 +25,13 @@ export {
   type SwarmDelivery,
   type SwarmStatusInfo,
   type SwarmStatusValue,
+  type ModelQueryView,
+  type ModelFileView,
+  type GoalQueryView,
+  type GoalFileView,
+  type GoalProgress,
+  type GoalState,
+  type GoalStatus,
+  type ChildStatus,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureHarnessWasm as initializeClientQueries } from "./wasm-runtime.js";
