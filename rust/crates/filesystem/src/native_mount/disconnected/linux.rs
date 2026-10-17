@@ -6,21 +6,52 @@ pub(super) struct Pinned {
     file: OwnedFd,
     parent: OwnedFd,
     path: PathBuf,
-    mount: u64,
+    mount: Option<u64>,
 }
 
-fn stat(file: impl std::os::fd::AsFd, flags: AtFlags) -> std::io::Result<rustix::fs::Statx> {
+fn stat(file: &OwnedFd, flags: AtFlags) -> std::io::Result<(FileType, Option<u64>)> {
     #[cfg(all(test, acyclic_fs_native_loom))]
     if let Some(kernel) = super::kernel::current() {
-        return kernel.stat(file.as_fd().as_raw_fd(), flags);
+        return metadata(file, flags, kernel.stat(file.as_raw_fd(), flags), || {
+            kernel
+                .stat(file.as_raw_fd(), AtFlags::STATX_FORCE_SYNC)
+                .map(|_| ())
+        });
     }
-    rustix::fs::statx(
+    let result = rustix::fs::statx(
         file,
         c"",
         flags | AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
         StatxFlags::TYPE | StatxFlags::MNT_ID,
     )
-    .map_err(Into::into)
+    .map_err(Into::into);
+    metadata(file, flags, result, || {
+        rustix::fs::fstatfs(file).map(|_| ()).map_err(Into::into)
+    })
+}
+
+fn metadata(
+    file: &OwnedFd,
+    flags: AtFlags,
+    result: std::io::Result<rustix::fs::Statx>,
+    fresh_probe: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<(FileType, Option<u64>)> {
+    match result {
+        Ok(metadata) => Ok((
+            FileType::from_raw_mode(metadata.stx_mode.into()),
+            (metadata.stx_mask & StatxFlags::MNT_ID.bits() != 0).then_some(metadata.stx_mnt_id),
+        )),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::ENOSYS)) => {
+            // fstat may return cached FUSE attributes after disconnect. Only a
+            // fresh operation on this same descriptor may establish liveness.
+            if flags.contains(AtFlags::STATX_FORCE_SYNC) {
+                fresh_probe()?;
+            }
+            let metadata = rustix::fs::fstat(file)?;
+            Ok((FileType::from_raw_mode(metadata.st_mode), None))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl Pinned {
@@ -46,21 +77,16 @@ impl Pinned {
             Err(error) => return Err(std::io::Error::from(error).into()),
         };
         let metadata = stat(&file, AtFlags::STATX_DONT_SYNC)?;
-        if FileType::from_raw_mode(metadata.stx_mode.into()) != FileType::Directory {
+        if metadata.0 != FileType::Directory {
             return Err(NativeMountError::InvalidDestination);
         }
         // Resolve the held object, never the possibly aliased input pathname.
-        if metadata.stx_mask & StatxFlags::MNT_ID.bits() == 0 {
-            return Err(NativeMountError::CapabilityUnavailable(
-                "statx mount identity",
-            ));
-        }
         let path = std::fs::read_link(format!("/proc/self/fd/{}", parent.as_raw_fd()))?.join(leaf);
         Ok(Some(Self {
             file,
             parent,
             path,
-            mount: metadata.stx_mnt_id,
+            mount: metadata.1,
         }))
     }
 }
@@ -75,6 +101,12 @@ impl Pinned {
     }
 
     pub(super) fn acquire(&self) -> Result<NativeMountRecoveryOwner, NativeMountError> {
+        // Healthy destinations never require recovery-only mount identity.
+        if self.mount.is_none() {
+            return Err(NativeMountError::CapabilityUnavailable(
+                "statx mount identity",
+            ));
+        }
         NativeMountRecoveryOwner::acquire_in_parent(&self.path, &self.parent)
     }
 
@@ -87,7 +119,8 @@ impl Pinned {
         if FileType::from_raw_mode(metadata.stx_mode.into()) != FileType::Directory {
             return Err(NativeMountError::InvalidDestination);
         }
-        Ok(metadata.stx_mask & StatxFlags::MNT_ID.bits() != 0 && metadata.stx_mnt_id == self.mount)
+        Ok(metadata.stx_mask & StatxFlags::MNT_ID.bits() != 0
+            && Some(metadata.stx_mnt_id) == self.mount)
     }
 
     fn current_stat(&self) -> rustix::io::Result<rustix::fs::Statx> {
@@ -127,3 +160,6 @@ impl Pinned {
         }
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_native_loom)))]
+mod tests;
