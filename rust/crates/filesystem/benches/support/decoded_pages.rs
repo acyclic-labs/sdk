@@ -1,6 +1,6 @@
 use acyclic_fs::kernel::{
     CanonicalDecodeError, DecodeLimits, FileKind, FilePayload, FileRecord, FileTablePage,
-    encode_file_table_page, file_table_page_id, lookup_file_record,
+    decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record,
 };
 use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, CancellationToken, FileId, LogicalObjectStore, ObjectId,
@@ -98,5 +98,18 @@ fn lookup(bencher: Bencher, count: u8) {
     }
     measured(bencher, "lookup", count, || {
         std::hint::black_box(operation());
+    });
+}
+
+#[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
+fn decode(bencher: Bencher, count: u8) {
+    let bytes = encoded(&page(count));
+    measured(bencher, "decode", count, || {
+        std::hint::black_box(
+            decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+                Ok::<_, CanonicalDecodeError>(())
+            })
+            .unwrap_or_else(fail),
+        );
     });
 }
