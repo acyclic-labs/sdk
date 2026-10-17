@@ -266,7 +266,8 @@ fuzz_target!(|data: &[u8]| {
             .unwrap();
             file_views::put(&mut documents, result_key.clone(), data.to_vec(), None);
             renderer.update(&documents, &owner);
-            assert_eq!(renderer.screen().transcript.len(), 1);
+            assert!(renderer.screen().transcript.is_empty());
+            assert_eq!(renderer.screen().tools.len(), 1);
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
                 // Raw duplicate fields may be rejected by the typed parser even
                 // though Value keeps the last one. Check its canonical form
@@ -278,7 +279,7 @@ fuzz_target!(|data: &[u8]| {
                     None,
                 );
                 renderer.update(&documents, &owner);
-                let title = renderer.screen().transcript[0].to_string();
+                let title = renderer.screen().tools[0].to_string();
                 let valid = value.is_object()
                     && (value["success"].is_null() || value["success"].is_boolean())
                     && (value["exit_code"].is_null()
@@ -336,12 +337,12 @@ fuzz_target!(|data: &[u8]| {
                 .unwrap();
             renderer.update(&documents, &owner);
             renderer.configure(&documents, &owner, &files).unwrap();
-            assert!(renderer.screen().transcript.len() <= 21);
+            assert!(renderer.screen().tools.len() <= 21);
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
                 if value.as_object().is_some_and(|fields| {
                     fields.contains_key("stdout") || fields.contains_key("stderr")
                 }) {
-                    assert_eq!(renderer.screen().transcript.len(), 1);
+                    assert_eq!(renderer.screen().tools.len(), 1);
                 }
             }
             if let Some(bytes) = layout {
