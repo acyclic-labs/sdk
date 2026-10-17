@@ -228,11 +228,7 @@ fn pinned_umount(path: &CStr) -> std::io::Result<()> {
 }
 
 fn helper_pause() {
-    #[cfg(all(test, acyclic_fs_native_loom))]
-    {
-        loom::thread::yield_now();
-        return;
-    }
+    // Modeled process observations have their own instrumented transitions.
     #[cfg(not(all(test, acyclic_fs_native_loom)))]
     std::thread::sleep(Duration::from_millis(10));
 }

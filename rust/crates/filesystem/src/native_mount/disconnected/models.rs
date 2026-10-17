@@ -62,18 +62,27 @@ fn scenario(
     kernel.assert_safe();
 }
 
-fn remount_first(destination: &Path, base: rustix::fs::Statx, helper_stat: rustix::fs::Stat) {
+fn remount_first(
+    destination: &Path,
+    base: rustix::fs::Statx,
+    helper_stat: rustix::fs::Stat,
+    retained: bool,
+) {
     let kernel = kernel::Kernel::install(base, helper_stat, false);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let mounted = remount(destination, &kernel).unwrap();
-    assert!(matches!(
-        recover(&pinned),
-        Err(NativeMountError::DestinationBusy)
-    ));
-    drop(mounted);
-    // Detection used the old disconnected descriptor. The real fenced recheck
-    // must preserve the new mount once its session releases the fence.
-    assert!(!recover(&pinned).unwrap());
+    if retained {
+        assert!(matches!(
+            recover(&pinned),
+            Err(NativeMountError::DestinationBusy)
+        ));
+        drop(mounted);
+    } else {
+        drop(mounted);
+        // Detection used the old disconnected descriptor. The real fenced
+        // recheck must preserve the new mount after its fence is released.
+        assert!(!recover(&pinned).unwrap());
+    }
     kernel.wait_for_retirement();
     kernel.assert_safe();
 }
@@ -96,10 +105,19 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
     // Registry serialization admits exactly two acquisition orders. Check the
     // remount-first order, then explore all syscall interleavings after the
     // recovery-first acquisition, including real owner/worker retirement.
-    let contended_destination = destination.clone();
-    check_case("remount-first", move || {
-        remount_first(&contended_destination, base, helper_stat)
-    });
+    // These independent rejection/recheck invocations each have one real
+    // retirement worker; their unrelated worker tails need no cross-product.
+    for retained in [true, false] {
+        let contended_destination = destination.clone();
+        check_case(
+            if retained {
+                "busy-remount"
+            } else {
+                "stale-remount"
+            },
+            move || remount_first(&contended_destination, base, helper_stat, retained),
+        );
+    }
     let positive_destination = destination.clone();
     check_case("recovery-first", move || {
         scenario(&positive_destination, base, helper_stat, false)

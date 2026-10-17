@@ -243,8 +243,9 @@ impl Helper {
             return real.try_wait(meter);
         }
         // The child can finish umount while still alive. A pending observation
-        // makes the real wait loop retain custody across that interval.
-        loom::thread::yield_now();
+        // makes the real wait loop retain custody across that interval. The
+        // separate modeled mutex transitions already explore both sides of
+        // unmount and exit; extra clock yields add only stuttering schedules.
         if !self.unmounted {
             let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
             if state.mount == Some(1) {
