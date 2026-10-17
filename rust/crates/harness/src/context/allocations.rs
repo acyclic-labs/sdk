@@ -30,20 +30,12 @@ pub(super) fn context_contract<T: Serialize>(
         let mut observer = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );
-        let encoded = (|| {
-            crate::executor::json::count_json_bytes_trusted(
-                value,
-                bounds,
-                Some(ErrorCode::Invalid),
-                &mut |charge| observer.codec_charge(charge),
-            )?;
-            crate::executor::json::json_value_bounded(
-                value,
-                bounds,
-                Some(ErrorCode::Invalid),
-                &mut |charge| observer.codec_charge(charge),
-            )
-        })();
+        let encoded = crate::executor::json::json_value_bounded(
+            value,
+            bounds,
+            Some(ErrorCode::Invalid),
+            &mut |charge| observer.codec_charge(charge),
+        );
         return match encoded {
             Ok(value) => {
                 io.absorb_native_custody(observer.into_custody()?)?;

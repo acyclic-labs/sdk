@@ -9,6 +9,7 @@ pub(super) struct Scope<'a> {
     charge: &'a mut dyn FnMut(JsonCodecCharge) -> Result<()>,
     failed: Option<Error>,
     retained: u64,
+    grow_output: bool,
     lexical: admission::Lexical,
 }
 impl Scope<'_> {
@@ -119,7 +120,12 @@ impl Write for Writer<'_, '_, '_> {
                         }
                         event => event,
                     };
-                    charge(event)
+                    // The chunk charge above checks cancellation. Items funded
+                    // by the admission pass need no second zero-work callback.
+                    match event {
+                        JsonCodecCharge::Work { bytes: 0, items: 0 } => Ok(()),
+                        event => charge(event),
+                    }
                 };
                 let charge =
                     RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
@@ -135,6 +141,9 @@ impl Write for Writer<'_, '_, '_> {
                 }
             }
             if let Some(output) = &mut self.output {
+                if scope.grow_output {
+                    reserve_output(output, written, self.maximum, &mut scope)?;
+                }
                 scope.event(JsonCodecCharge::Copy {
                     bytes: bytes.len() as u64,
                 })?;
@@ -384,6 +393,42 @@ fn write<T: Serialize + ?Sized>(
     }
     Ok(written)
 }
+fn reserve_output(
+    output: &mut Vec<u8>,
+    written: u64,
+    maximum: u64,
+    scope: &mut Scope<'_>,
+) -> Result<()> {
+    let required = usize::try_from(written)
+        .map_err(|_| boundary("JSON output exceeds address space", scope.code))?;
+    if required <= output.capacity() {
+        return Ok(());
+    }
+    let capacity = required
+        .max(output.capacity().saturating_mul(2).max(64))
+        .min(usize::try_from(maximum).unwrap_or(usize::MAX));
+    // Admit both the old-buffer copy and the incoming fragment before
+    // allocating their replacement. The fragment itself is charged below.
+    scope.event(JsonCodecCharge::CopyAdmission { bytes: written })?;
+    scope.retain(capacity as u64)?;
+    scope.event(JsonCodecCharge::AllocationOperation {
+        bytes: capacity as u64,
+    })?;
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(capacity)
+        .map_err(Error::Allocation)?;
+    scope.retain((replacement.capacity() - capacity) as u64)?;
+    scope.event(JsonCodecCharge::Copy {
+        bytes: output.len() as u64,
+    })?;
+    replacement.extend_from_slice(output);
+    let old = std::mem::replace(output, replacement);
+    let released = old.capacity() as u64;
+    drop(old);
+    scope.release(released)
+}
+
 fn output<T: Serialize + ?Sized>(
     value: &T,
     scope: &mut Scope<'_>,
@@ -434,6 +479,16 @@ fn output<T: Serialize + ?Sized>(
     Ok((bytes, prefix))
 }
 fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Value> {
+    let (value, bytes) = build_buffered(value, scope)?;
+    let capacity = bytes.capacity() as u64;
+    drop(bytes);
+    scope.release(capacity)?;
+    Ok(value)
+}
+fn build_buffered<T: Serialize + ?Sized>(
+    value: &T,
+    scope: &mut Scope<'_>,
+) -> Result<(Value, Vec<u8>)> {
     let (mut bytes, prefix) = output(value, scope, true, true)?;
     let shape = JsonValueShape {
         input_bytes: (bytes.len() - prefix) as u64,
@@ -451,15 +506,12 @@ fn build<T: Serialize + ?Sized>(value: &T, scope: &mut Scope<'_>) -> Result<Valu
     let mut value = super::decode::value(document, table, scope)?;
     let actual = records::json_value_retained_owned_bytes(&value)?;
     let released = checked(
-        owned
-            .checked_sub(actual)
-            .and_then(|release| release.checked_add(bytes.capacity() as u64)),
+        owned.checked_sub(actual),
         "JSON retention accounting differs",
     )?;
-    drop(bytes);
     scope.release(released)?;
     value.sort_all_objects();
-    Ok(value)
+    Ok((value, bytes))
 }
 fn scope<'a>(
     bounds: JsonBounds,
@@ -475,6 +527,7 @@ fn scope<'a>(
         charge,
         failed: None,
         retained: 0,
+        grow_output: false,
         lexical: admission::Lexical::default(),
     }
 }
@@ -486,7 +539,17 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     charge: &mut F,
 ) -> Result<Vec<u8>> {
     let mut scope = scope(bounds, code, charge);
-    let (bytes, _) = output(value, &mut scope, false, false)?;
+    scope.grow_output = true;
+    let mut bytes = Vec::new();
+    write(
+        value,
+        &mut scope,
+        Some(&mut bytes),
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     scope.retained = 0;
     Ok(bytes)
@@ -542,8 +605,20 @@ pub fn canonical_json_bytes_bounded<
     charge: &mut F,
 ) -> Result<Vec<u8>> {
     let mut scope = scope(bounds, code, charge);
-    let value = build(value, &mut scope)?;
-    let (bytes, _) = output(&value, &mut scope, false, false)?;
+    let (value, mut bytes) = build_buffered(value, &mut scope)?;
+    // The indexed document is no longer needed after decoding. Its capacity
+    // remains funded while the sorted value is encoded into the same buffer.
+    bytes.clear();
+    scope.grow_output = true;
+    write(
+        &value,
+        &mut scope,
+        Some(&mut bytes),
+        None,
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
     let released = checked(
         scope.retained.checked_sub(bytes.capacity() as u64),
         "JSON retention accounting differs",
@@ -668,3 +743,7 @@ pub(crate) fn json_digest_bounded<T: Serialize + ?Sized>(
             .then(|| (size, *digest.finalize().as_bytes())),
     )
 }
+
+#[cfg(test)]
+#[path = "single_pass_properties.rs"]
+mod single_pass_properties;

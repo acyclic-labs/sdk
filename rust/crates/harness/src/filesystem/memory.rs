@@ -73,6 +73,12 @@ async fn new_memory_content(
         )?,
     ));
     host.create_volume(&volume).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let host = {
+        let reference = super::fork_preparer_io::content_workspace(&host.provider, &volume, None)?;
+        let workspace = host.open(&reference, None).await?;
+        host.for_workspace(&volume, workspace)?
+    };
     Ok((host, volume, memory_store))
 }
 
@@ -564,3 +570,7 @@ mod tests;
 #[cfg(test)]
 #[path = "memory_summary_tests/mod.rs"]
 mod summary_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "memory/workspace_binding_properties.rs"]
+mod workspace_binding_properties;

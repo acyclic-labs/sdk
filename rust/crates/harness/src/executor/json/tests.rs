@@ -155,10 +155,34 @@ mod digest_properties {
     }
 
     fn exhausted_serialization<T: Serialize + ?Sized>(value: &T, extra_slack: u64) {
-        let normalized = serde_json::to_value(value).unwrap();
+        let mut normalized = serde_json::to_value(value).unwrap();
+        normalized.sort_all_objects();
         let encoded = serde_json::to_vec(&normalized).unwrap();
         let expected: Value = serde_json::from_slice(&encoded).unwrap();
         let slack = map_slack(&expected) + extra_slack;
+        exhausted_encoding(&expected, slack, |work| {
+            json_value_bounded(
+                value,
+                BOUNDS,
+                Some(crate::wire::ErrorCode::Invalid),
+                &mut |event| crate::store::HistoryIo::codec_charge(work, event),
+            )
+        });
+        exhausted_encoding(&encoded, slack, |work| {
+            canonical_json_bytes_bounded(
+                value,
+                BOUNDS,
+                Some(crate::wire::ErrorCode::Invalid),
+                &mut |event| crate::store::HistoryIo::codec_charge(work, event),
+            )
+        });
+    }
+
+    fn exhausted_encoding<T: PartialEq + std::fmt::Debug>(
+        expected: &T,
+        slack: u64,
+        encode: impl Fn(&mut crate::store::HistoryWork) -> Result<T>,
+    ) {
         let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
         let reference = acyclic_fs::NativeMaterializationWork::new(
             budget,
@@ -169,14 +193,8 @@ mod digest_properties {
         let mut work = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&reference).unwrap(),
         );
-        let result = json_value_bounded(
-            value,
-            BOUNDS,
-            Some(crate::wire::ErrorCode::Invalid),
-            &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
-        )
-        .unwrap();
-        assert_eq!(result, expected);
+        let result = encode(&mut work).unwrap();
+        assert_eq!(&result, expected);
         drop(result);
         let operations = reference.receipt().allocation_operations - construction;
         for prefix in 0..=operations {
@@ -193,12 +211,7 @@ mod digest_properties {
             );
             let mut succeeded = false;
             let measured = acyclic_test_support::measure(|| {
-                let result = json_value_bounded(
-                    value,
-                    BOUNDS,
-                    Some(crate::wire::ErrorCode::Invalid),
-                    &mut |event| crate::store::HistoryIo::codec_charge(&mut work, event),
-                );
+                let result = encode(&mut work);
                 succeeded = result.is_ok();
                 if let Err(error) = &result {
                     assert!(matches!(error, Error::NativeWork { .. }));
@@ -657,6 +670,7 @@ mod object_work {
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/nested"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/duplicates"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wide"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/compact_growth"),
         ] {
             oracle::check(bytes);
         }

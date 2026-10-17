@@ -68,9 +68,12 @@ pub(super) fn split_references<'a>(
                 work,
             )
         })?;
-        let private = crate::conversation::is_internal_path(file.path())
-            && !crate::conversation::is_inherited_context_path(file.path());
-        if private && !file.path().starts_with(".system/execution/") {
+        let task_summary = file.volume().class() == VolumeClass::AgentPrivate
+            && file.path().starts_with("summaries/");
+        let private = task_summary
+            || crate::conversation::is_internal_path(file.path())
+                && !crate::conversation::is_inherited_context_path(file.path());
+        if private && !task_summary && !file.path().starts_with(".system/execution/") {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Unsupported,
