@@ -31,8 +31,14 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
+mod cache;
+use cache::VerifiedSummary;
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub use cache::verify_cached_summary_publication;
 mod cancellation;
 mod canonical;
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+mod chunk_tests;
 mod chunks;
 mod configuration;
 mod content;
@@ -68,7 +74,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,
-    verified: tokio::sync::Mutex<ExecutionSummary>,
+    verified: crate::sync::Mutex<VerifiedSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,

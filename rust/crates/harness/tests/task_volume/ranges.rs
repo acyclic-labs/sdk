@@ -110,6 +110,7 @@ fn task_session_selection<const FILTER: bool>(selected: &str, session: &str, tur
         for file in [
             TaskFile::Request(Component::new("r").unwrap()),
             TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn,
                 sequence: u64::MAX,
             },

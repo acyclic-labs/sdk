@@ -1,11 +1,11 @@
 //! Incremental folds over immutable task segments and their sequence cursors.
-use super::{TaskFileViews, TaskFileQueryView};
+use super::{TaskFileQueryView, TaskFileViews};
 use crate::task_volume::{Channel, FileKey, FileValue, TaskFile, ToolFile};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Fold {
-    streams: BTreeMap<(u64, Channel), Tail>,
+    streams: BTreeMap<(u64, crate::OperationId, Channel), Tail>,
     tools: BTreeMap<(u64, String, bool), Tail>,
     results: BTreeSet<u64>,
     streamed: bool,
@@ -80,9 +80,9 @@ pub(super) fn snapshot(views: &mut TaskFileViews, files: &TaskFileQueryView) {
         views.tools.remove(&key);
         views.task_folds.remove(&key);
     }
-    // Chunk keys are ordered by turn/sequence. Fallback outcomes use committed
-    // order, independent of their request UUID's lexical order.
-    for file in files.files().values().filter(|file| {
+    // The source snapshot/follow order comes from durable publication positions.
+    // File keys identify streams; per-turn ordinals do not order different streams.
+    for file in files.ordered_files().filter(|file| {
         !matches!(
             file.key,
             FileKey::Task {
@@ -147,12 +147,19 @@ pub(super) fn append(views: &mut TaskFileViews, file: &FileValue) -> usize {
     };
     let key = owner(task);
     match kind {
-        TaskFile::Chunk { turn, sequence } => {
+        TaskFile::Chunk {
+            turn,
+            execution,
+            sequence,
+        } => {
             let Some(channel) = file.channel else {
                 return 0;
             };
             let fold = views.task_folds.entry(key.clone()).or_default();
-            let tail = fold.streams.entry((*turn, channel)).or_default();
+            let tail = fold
+                .streams
+                .entry((*turn, *execution, channel))
+                .or_default();
             if tail.frozen || tail.through.is_some_and(|through| *sequence <= through) {
                 return 0;
             }
@@ -251,13 +258,18 @@ pub(super) fn append(views: &mut TaskFileViews, file: &FileValue) -> usize {
                         .streams
                         .keys()
                         .rev()
-                        .find_map(|(turn, found)| (*found == channel).then_some(*turn));
-                    if let Some(tail) = fold.streams.get_mut(&(*turn, channel)) {
+                        .find_map(|(turn, execution, found)| {
+                            (*found == channel).then_some((*turn, *execution))
+                        });
+                    if let Some((latest_turn, execution)) = latest
+                        && latest_turn == *turn
+                        && let Some(tail) = fold.streams.get_mut(&(*turn, execution, channel))
+                    {
                         tail.frozen = true;
                         if let Some(transcript) = views
                             .transcripts
                             .get_mut(&key)
-                            .filter(|_| latest == Some(*turn))
+                            .filter(|_| latest.is_some_and(|(latest, _)| latest == *turn))
                         {
                             if channel == Channel::Text {
                                 transcript.text_pending = 0;

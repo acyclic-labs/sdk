@@ -165,10 +165,25 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
     let (file, channel) = match index % 12 {
         0 => (TaskFile::Status, None),
         1 => (TaskFile::TurnRequest(turn), None),
-        2 => (TaskFile::Chunk { turn, sequence }, Some(Channel::Text)),
-        3 => (TaskFile::Chunk { turn, sequence }, Some(Channel::Reasoning)),
+        2 => (
+            TaskFile::Chunk {
+                turn,
+                execution: crate::OperationId::from_bytes([0; 16]),
+                sequence,
+            },
+            Some(Channel::Text),
+        ),
+        3 => (
+            TaskFile::Chunk {
+                turn,
+                execution: crate::OperationId::from_bytes([0; 16]),
+                sequence,
+            },
+            Some(Channel::Reasoning),
+        ),
         4 => (
             TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn,
                 channel: Channel::Reasoning,
             },
@@ -194,6 +209,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
         8 => (TaskFile::Completion(turn), None),
         9 => (
             TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn,
                 channel: Channel::Text,
             },
@@ -211,6 +227,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
         key,
         channel,
         publication: None,
+        requester: None,
         bytes: vec![index; size].into(),
     }
 }

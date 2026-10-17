@@ -65,11 +65,17 @@ pub enum TaskFile {
     Chunk {
         /// Turn/attempt identity.
         turn: u64,
-        /// Assigned monotonically increasing chunk identity.
+        /// Execution journal identity; separates attempts that restart their ordinals.
+        #[serde(default = "legacy_execution")]
+        execution: crate::OperationId,
+        /// Ordinal within this execution and model step; never a publication clock.
         sequence: u64,
     },
     /// Read-only materialized text head, assembled from immutable chunk slices.
     TextHead {
+        /// Execution journal identity.
+        #[serde(default = "legacy_execution")]
+        execution: crate::OperationId,
         /// Turn/attempt identity.
         turn: u64,
         /// Assistant channel represented by this head.
@@ -101,6 +107,18 @@ pub enum TaskFile {
     Context(Component),
 }
 
+fn legacy_execution() -> crate::OperationId {
+    crate::OperationId::from_bytes([0; 16])
+}
+
+fn execution_id(value: &str) -> Result<crate::OperationId> {
+    let id = uuid::Uuid::parse_str(value).map_err(|_| Error::InvalidPath)?;
+    if id.is_nil() || id.hyphenated().encode_lower(&mut [0; 36]) != value {
+        return Err(Error::InvalidPath);
+    }
+    Ok(crate::OperationId::from_bytes(id.into_bytes()))
+}
+
 impl TaskFile {
     pub(super) fn turn(&self) -> Option<u64> {
         match self {
@@ -123,9 +141,28 @@ impl TaskFile {
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
             Self::ChildWait(id) => format!("child-waits/{}.json", id.as_str()),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
-            Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
-            Self::TextHead { turn, channel } => format!(
-                "turns/{turn}/{}",
+            Self::Chunk {
+                turn,
+                execution,
+                sequence,
+            } => {
+                if *execution == legacy_execution() {
+                    format!("turns/{turn}/chunks/{sequence}")
+                } else {
+                    format!("turns/{turn}/chunks/{execution}/{sequence}")
+                }
+            }
+            Self::TextHead {
+                turn,
+                execution,
+                channel,
+            } => format!(
+                "{}/{}",
+                if *execution == legacy_execution() {
+                    format!("turns/{turn}")
+                } else {
+                    format!("turns/{turn}/executions/{execution}")
+                },
                 match channel {
                     Channel::Text => "text.md",
                     Channel::Reasoning => "reasoning.md",
@@ -208,17 +245,7 @@ impl FileKey {
             return None;
         };
         let (first, last, sequence) = match file {
-            TaskFile::Chunk { turn, sequence } => (
-                TaskFile::Chunk {
-                    turn: *turn,
-                    sequence: 0,
-                },
-                TaskFile::Chunk {
-                    turn: *turn,
-                    sequence: u64::MAX,
-                },
-                *sequence,
-            ),
+            TaskFile::Chunk { .. } => return None,
             TaskFile::Tool { turn, call, file } => {
                 let (first, last, sequence) = match file {
                     ToolFile::Arguments(n) => {
@@ -320,14 +347,31 @@ impl FileKey {
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: number(n)?,
                 channel: Channel::Text,
             },
             ["turns", n, "reasoning.md"] => TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: number(n)?,
                 channel: Channel::Reasoning,
             },
+            ["turns", n, "executions", execution, leaf] => TaskFile::TextHead {
+                execution: execution_id(execution)?,
+                turn: number(n)?,
+                channel: match *leaf {
+                    "text.md" => Channel::Text,
+                    "reasoning.md" => Channel::Reasoning,
+                    _ => return Err(Error::InvalidPath),
+                },
+            },
+            ["turns", n, "chunks", execution, seq] => TaskFile::Chunk {
+                turn: number(n)?,
+                execution: execution_id(execution)?,
+                sequence: number(seq)?,
+            },
             ["turns", n, "chunks", seq] => TaskFile::Chunk {
+                execution: legacy_execution(),
                 turn: number(n)?,
                 sequence: number(seq)?,
             },

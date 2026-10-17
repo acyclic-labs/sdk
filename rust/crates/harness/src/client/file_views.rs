@@ -28,6 +28,7 @@ pub struct QueryViewLimits {
 pub struct FileViews {
     pub(super) cursor: Cursor,
     pub(super) files: Files,
+    stream_order: Vec<FileKey>,
     limits: QueryViewLimits,
     segments: usize,
     pub(super) bytes: u64,
@@ -69,6 +70,7 @@ impl FileViews {
         let mut view = Self {
             cursor: snapshot.cursor,
             files: Files::default(),
+            stream_order: Vec::new(),
             limits,
             segments: 0,
             bytes: 0,
@@ -116,6 +118,9 @@ impl FileViews {
                 segments,
                 bytes,
             )?;
+            if stream_key(&file.key) {
+                view.stream_order.push(file.key.clone());
+            }
             if view.files.insert(file.key.clone(), file).is_some() {
                 return Err(Error::InvalidSegment);
             }
@@ -140,9 +145,16 @@ impl FileViews {
     pub fn file(&self, key: &FileKey) -> Option<&HeadFile> {
         self.files.get(key)
     }
-    /// Materialized files in canonical key order.
+    /// Materialized streams preserve authoritative snapshot and follow order.
     pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
-        self.files.values()
+        self.files
+            .values()
+            .filter(|head| !stream_key(&head.key))
+            .chain(
+                self.stream_order
+                    .iter()
+                    .filter_map(|key| self.files.get(key)),
+            )
     }
 
     pub(super) fn replace(
@@ -156,6 +168,9 @@ impl FileViews {
             .chain(change.file.iter().chain(&change.files).map(|f| &f.key))
         {
             if let Some(old) = self.files.remove(key) {
+                if stream_key(key) {
+                    self.stream_order.retain(|old| old != key);
+                }
                 self.bytes -= old.length;
                 self.segments -= old.segments.len();
             }
@@ -166,6 +181,9 @@ impl FileViews {
             }
             self.bytes += file.bytes.len() as u64;
             self.segments += 1;
+            if stream_key(&file.key) {
+                self.stream_order.push(file.key.clone());
+            }
             self.files.insert(
                 file.key.clone(),
                 HeadFile {
@@ -215,7 +233,12 @@ impl FileViews {
             Some((
                 FileKey::Task {
                     task,
-                    file: TaskFile::TextHead { turn, channel },
+                    file:
+                        TaskFile::TextHead {
+                            turn,
+                            execution,
+                            channel,
+                        },
                 },
                 _,
             )) => {
@@ -227,6 +250,7 @@ impl FileViews {
                     .get(&FileKey::Task {
                         task: task.clone(),
                         file: TaskFile::TextHead {
+                            execution: *execution,
                             turn: *turn,
                             channel,
                         },
@@ -354,6 +378,9 @@ impl FileViews {
                         head.channel = file.channel;
                     }
                     Entry::Vacant(entry) => {
+                        if stream_key(&key) {
+                            view.stream_order.push(key.clone());
+                        }
                         entry.insert(HeadFile {
                             key,
                             publication: file.publication,
@@ -377,6 +404,7 @@ impl FileViews {
                     .sum::<u64>();
                 head.length -= removed;
                 if head.segments.is_empty() {
+                    view.stream_order.retain(|key| key != entry.key());
                     entry.remove();
                 }
             }
@@ -386,4 +414,14 @@ impl FileViews {
             Ok(())
         })
     }
+}
+
+fn stream_key(key: &FileKey) -> bool {
+    matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::Chunk { .. } | TaskFile::TextHead { .. },
+            ..
+        }
+    )
 }

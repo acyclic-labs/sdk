@@ -335,7 +335,7 @@ async fn turn(
 }
 
 #[test]
-fn journal_unmetered_task_files_match_main() {
+fn journal_wrappers_preserve_atomic_unmetered_task_files() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -361,6 +361,28 @@ fn journal_unmetered_task_files_match_main() {
                 )
                 .await?;
                 let journal = fixture.execution(fixture.running(80).await?, operation)?;
+                // Independent stores need identical initial entropy: the atomic
+                // chunk transaction now authenticates the task-volume header.
+                fixture
+                    .stream
+                    .append(acyclic_stream::AppendRequest {
+                        path: acyclic_stream::StreamPath::new(format!(
+                            "harness/task-volumes/{}",
+                            fixture.storage.storage_name(&mut None)?
+                        ))?,
+                        records: vec![
+                            serde_json::to_vec(&serde_json::json!({
+                                "volume":"06060606-0606-0606-0606-060606060606",
+                                "epoch":"07070707-0707-0707-0707-070707070707",
+                                "schema":crate::task_volume::SCHEMA,
+                            }))
+                            .unwrap()
+                            .into(),
+                        ],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    })
+                    .await?;
                 let files = crate::task_volume::TaskFiles::open(
                     fixture.stream.clone(),
                     &fixture.storage,
@@ -373,49 +395,36 @@ fn journal_unmetered_task_files_match_main() {
             })
             .unwrap()
     };
-    for broken in [false, true] {
-        let [expected, actual] =
-            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
-                runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
-                        .await
-                        .unwrap();
-                    if broken && !old {
-                        // Restore the erroneous unconditional publication on a fresh
-                        // candidate fixture; canonical journal bytes stay unchanged.
-                        let records = journal.records(operation, 0, 64, None).await.unwrap();
-                        let record = records
-                            .iter()
-                            .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
-                            .unwrap();
-                        journal
-                            .publish_chunk("model:0:event:0", &record.event, None)
-                            .await
-                            .unwrap();
-                    }
-                    let snapshot = journal
-                        .task_files
-                        .as_ref()
-                        .unwrap()
-                        .snapshot(&crate::task_volume::Query::Root, 16)
-                        .await
-                        .unwrap();
-                    (artifacts, snapshot.files)
-                })
-            });
-        assert_eq!(expected.0.0, actual.0.0);
-        assert!(expected.0.1.is_empty());
-        if broken {
-            assert_eq!(actual.0.1.len(), 1);
-            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
-            assert_ne!(
-                expected, actual,
-                "unconditional publication was not detected"
-            );
-        } else {
-            assert_eq!(expected, actual);
-        }
-    }
+    let [expected, actual] =
+        differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
+            runtime.block_on(async {
+                let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
+                    .await
+                    .unwrap();
+                let snapshot = journal
+                    .task_files
+                    .as_ref()
+                    .unwrap()
+                    .snapshot(&crate::task_volume::Query::Root, 16)
+                    .await
+                    .unwrap();
+                (artifacts, snapshot.files)
+            })
+        });
+    assert_eq!(
+        expected, actual,
+        "the wrapper changed atomic task-file publication"
+    );
+    assert_eq!(actual.0.1.len(), 1);
+    assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
+    let crate::task_volume::FileKey::Task {
+        file: crate::task_volume::TaskFile::Chunk { execution, .. },
+        ..
+    } = &actual.0.1[0].key
+    else {
+        panic!("chunk missing")
+    };
+    assert_eq!(*execution, operation);
 }
 
 proptest! {
@@ -513,8 +522,8 @@ proptest! {
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Main added chunk publication to the accounted append frame (+64 bytes).
-            let saved = [21200, 21024, 14304, 11840, 14192][mode];
+            // Retained summary custody adds128bytes; the replay fence adds160.
+            let saved = [21328, 21152, 14464, 11840, 14192][mode];
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");

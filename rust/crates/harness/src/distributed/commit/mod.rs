@@ -4,9 +4,9 @@ mod observation;
 mod request;
 mod sdk;
 pub(super) use observation::observe_commit;
-#[cfg(feature = "filesystem")]
-pub(crate) use request::journal_request;
 pub(crate) use request::{add_condition, add_record, commit_request};
+#[cfg(feature = "filesystem")]
+pub(crate) use request::{commit_journal, journal_request};
 pub(super) use sdk::inspect_idempotency;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use sdk::native_call_result;
@@ -334,3 +334,7 @@ pub(super) async fn append_if_execution_idle<P: StreamProvider>(
         "invalid guarded suspension receipt",
     ))
 }
+
+/// Real prepared-transaction race for the dedicated Loom target.
+#[cfg(all(acyclic_harness_loom, acyclic_loom, feature = "filesystem"))]
+pub use request::verify_prepared_journal_identity;

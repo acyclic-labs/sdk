@@ -12,16 +12,13 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         self.refresh().await?;
         let index = self.index.lock().await;
         let mut keys = Vec::new();
-        for range in query.ranges() {
-            for (key, _) in index.files.range(range) {
-                if query.matches(key) {
-                    if keys.len() == maximum_files {
-                        return Err(Error::LimitExceeded);
-                    }
-                    keys.push(key.clone());
-                }
+        index.visit::<true>(query, |stored| {
+            if keys.len() == maximum_files {
+                return Err(Error::LimitExceeded);
             }
-        }
+            keys.push(stored.file.key.clone());
+            Ok(())
+        })?;
         Ok(keys)
     }
 }

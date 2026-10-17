@@ -7,6 +7,7 @@ mod tests;
 pub(super) struct ExecutionSummary {
     pub(super) operation: Option<OperationId>,
     pub(super) tail: u64,
+    pub(super) fence: Option<acyclic_stream::CommitId>,
     pub(super) retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
     pub(super) contexts: BTreeMap<u32, bool>,
     pub(super) models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
@@ -14,6 +15,20 @@ pub(super) struct ExecutionSummary {
 }
 
 impl ExecutionSummary {
+    pub(super) fn accept_page(
+        &mut self,
+        page: Vec<(ExecutionRecord, Option<ModelEvent>)>,
+        fence: Option<acyclic_stream::CommitId>,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        for (record, model) in page {
+            self.accept(&record, model.as_ref(), limits, io)?;
+        }
+        self.fence = fence;
+        Ok(())
+    }
+
     pub(super) fn require_next(
         &self,
         event: &ExecutionEvent,
@@ -168,19 +183,19 @@ impl ExecutionSummary {
         let digest = crate::executor::with_history_io(digest_io, |work| {
             crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
         })?;
-        if let Some(io) = io {
-            let extra = match &record.event {
-                ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
-                ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<(
-                    (u32, crate::executor::ModelPurpose),
-                    Option<ModelEventAdmission>,
-                )>(),
-                ExecutionEvent::ToolStarted { .. } => {
-                    std::mem::size_of::<((u32, [u8; 32]), bool)>()
-                }
-                _ => 0,
-            };
-            io.retain_owned((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
+        reserve_map_entry::<[u8; 32], (u64, [u8; 32])>(self.retries.len(), io)?;
+        match &record.event {
+            ExecutionEvent::ContextPrepared { .. } => {
+                reserve_map_entry::<u32, bool>(self.contexts.len(), io)?
+            }
+            ExecutionEvent::ModelStarted { .. } => reserve_map_entry::<
+                (u32, crate::executor::ModelPurpose),
+                Option<ModelEventAdmission>,
+            >(self.models.len(), io)?,
+            ExecutionEvent::ToolStarted { .. } => {
+                reserve_map_entry::<(u32, [u8; 32]), bool>(self.tools.len(), io)?
+            }
+            _ => {}
         }
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
@@ -271,6 +286,28 @@ impl ExecutionSummary {
         }
         Ok(true)
     }
+}
+
+// Retain all unused slots and internal edges, not merely live pairs. A B-tree
+// root owns at least one entry and every other node at least five. Admit each
+// increase before insertion; those prepaid nodes cover later splits as well.
+fn reserve_map_entry<K, V>(length: usize, io: Option<&PreparationIo>) -> Result<()> {
+    let Some(io) = io else { return Ok(()) };
+    let nodes = |n: usize| if n == 0 { 0 } else { 1 + (n - 1) / 5 };
+    let next = length
+        .checked_add(1)
+        .ok_or_else(|| io.invalid("execution summary length overflows"))?;
+    let bytes = nodes(next)
+        .checked_sub(nodes(length))
+        .and_then(|n| {
+            n.checked_mul(11 * std::mem::size_of::<(K, V)>() + 14 * std::mem::size_of::<usize>())
+        })
+        .ok_or_else(|| io.invalid("execution summary ownership overflows"))? as u64;
+    if bytes > 0 {
+        io.allocation_attempt(bytes)?;
+        io.retain_owned(bytes)?;
+    }
+    Ok(())
 }
 
 pub(super) const OBSERVATION_VERSION: u32 = 2;

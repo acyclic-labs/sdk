@@ -33,7 +33,7 @@ where
             .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
             let before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let (page_hold, page) = {
+            let (page_hold, page, fence) = {
                 let page = match io {
                     #[cfg(not(target_arch = "wasm32"))]
                     Some(io) if io.original_native_work().is_some() => {
@@ -41,49 +41,51 @@ where
                             io.invalid("execution replay requires original native work")
                         })?;
                         crate::NativeFutureBundle::new(work, || {
-                            self.replay_page(
+                            self.replay_page_fenced(
                                 operation,
                                 summary.tail,
                                 EXECUTION_REPLAY_PAGE_RECORDS,
                                 true,
+                                summary.fence,
                                 Some(io),
                             )
                         })?
                         .await?
                     }
                     Some(io) => {
-                        Box::pin(self.replay_page(
+                        Box::pin(self.replay_page_fenced(
                             operation,
                             summary.tail,
                             EXECUTION_REPLAY_PAGE_RECORDS,
                             true,
+                            summary.fence,
                             Some(io),
                         ))
                         .await?
                     }
                     None => {
-                        self.replay_page(
+                        self.replay_page_fenced(
                             operation,
                             summary.tail,
                             EXECUTION_REPLAY_PAGE_RECORDS,
                             true,
+                            summary.fence,
                             None,
                         )
                         .await?
                     }
                 };
+                let (page, fence) = page;
                 let page_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                     _ => None,
                 };
-                (page_hold, page)
+                (page_hold, page, fence)
             };
             if page.is_empty() {
                 return Ok(());
             }
-            for (record, model) in page {
-                summary.accept(&record, model.as_ref(), limits, io)?;
-            }
+            summary.accept_page(page, fence, limits, io)?;
             drop(page_hold);
         }
     }
@@ -110,7 +112,13 @@ where
                 None
             };
             let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            if let Some(shared) = shared.as_deref_mut() {
+                shared.bind(*operation, io)?;
+            }
+            let summary = shared
+                .as_deref_mut()
+                .map(|cache| &mut cache.summary)
+                .unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             self.refresh_summary(*operation, summary, io).await?;
             let summary_hold = io
@@ -189,7 +197,18 @@ where
                 None
             };
             let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            if let Some(shared) = shared.as_deref_mut() {
+                shared.bind(
+                    self.owner
+                        .as_ref()
+                        .map_or(command, |(_, operation)| *operation),
+                    io,
+                )?;
+            }
+            let summary = shared
+                .as_deref_mut()
+                .map(|cache| &mut cache.summary)
+                .unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let result = async {
                 let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
@@ -252,7 +271,7 @@ where
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
+        let _retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(64)?;
             let copying = acyclic_fs::WorkCounters {
@@ -328,80 +347,103 @@ where
                 work,
             )
         })?;
-        let mut shared = if io.is_none() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let cacheable = io.is_none() || io.and_then(PreparationIo::original_native_work).is_some();
+        #[cfg(target_arch = "wasm32")]
+        let cacheable = io.is_none();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let cacheable = cacheable && !crate::test_support::accounted::append_scan_enabled();
+        let mut shared = if cacheable {
             Some(self.verified.lock().await)
         } else {
             None
         };
-        let mut transient = ExecutionSummary::default();
-        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-        loop {
-            self.refresh_summary(operation_id, summary, io).await?;
-            if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .verify_execution(
-                        operation_id,
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
+        let mut transient = VerifiedSummary::default();
+        let cache = shared.as_deref_mut().unwrap_or(&mut transient);
+        cache.bind(operation_id, io)?;
+        let VerifiedSummary { summary, funding } = cache;
+        let summary_io = funding.as_ref().or(io);
+        let result = async {
+            loop {
+                self.refresh_summary(operation_id, summary, summary_io)
                     .await?;
-            }
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
-                if *previous != event_digest {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Conflict,
-                            reason: "execution journal retry identity reused",
-                        });
-                    }
-                    return Err(Error::Conflict(
-                        "execution journal retry identity reused".into(),
-                    ));
+                if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .verify_execution(
+                            operation_id,
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await?;
                 }
-                return Ok(expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence)));
-            }
-            if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(false);
-            }
-            summary.validate_next(event, model.as_ref(), limits, io)?;
-            let committed = if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .append_execution(
-                        operation_id,
+                if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+                    if *previous != event_digest {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if io.is_some() {
+                            return Err(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Conflict,
+                                reason: "execution journal retry identity reused",
+                            });
+                        }
+                        return Err(Error::Conflict(
+                            "execution journal retry identity reused".into(),
+                        ));
+                    }
+                    return Ok(
+                        expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence))
+                    );
+                }
+                if expected_tail.is_some_and(|tail| tail != summary.tail) {
+                    return Ok(false);
+                }
+                summary.validate_next(event, model.as_ref(), limits, io)?;
+                let preparing = self.prepare_chunk(operation_id, event, model.as_ref(), io);
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await?;
+                #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+                let chunk = preparing.await?;
+                let committed = if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .append_execution(
+                            operation_id,
+                            summary.tail,
+                            &key,
+                            bytes.clone(),
+                            event,
+                            chunk,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await?
+                } else {
+                    self.append_local_with_io(
+                        &observation,
                         summary.tail,
-                        &key,
+                        key.clone(),
                         bytes.clone(),
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        io,
                     )
                     .await?
-            } else {
-                self.append_local_with_io(
-                    &observation,
-                    summary.tail,
-                    key.clone(),
-                    bytes.clone(),
-                    io,
-                )
-                .await?
-            };
-            if committed {
-                drop(key);
-                drop(key_hold);
-                drop(bytes);
-                drop(body_hold);
-                drop(retry_digest);
-                drop(retry_hold);
-                return Ok(true);
+                };
+                if committed {
+                    drop(key);
+                    drop(key_hold);
+                    drop(bytes);
+                    drop(body_hold);
+                    return Ok(true);
+                }
             }
         }
+        .await;
+        if result.is_err() {
+            cache.clear();
+        }
+        result
     }
 
     async fn append_local_with_io(

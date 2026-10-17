@@ -432,7 +432,7 @@ proptest! {
             let task=Component::new("00000000-0000-0000-0000-000000000001").unwrap();
             let query=Query::TaskView { task:task.clone(), recent, reasoning:false,details:false,terminal:false };
             let add=|sequence| {
-                let mut file = FileValue::new(FileKey::Task { task:task.clone(), file:TaskFile::Chunk { turn:0,sequence } }, vec![b'x'; 8]);
+                let mut file = FileValue::new(FileKey::Task { task:task.clone(), file:TaskFile::Chunk { execution: acyclic_harness::OperationId::from_bytes([0; 16]), turn:0,sequence } }, vec![b'x'; 8]);
                 file.channel = Some(acyclic_harness::task_volume::Channel::Text);
                 file
             };

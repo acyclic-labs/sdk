@@ -59,6 +59,7 @@ type ViewIndex<V> = BTreeMap<FileKey, V>;
 pub struct FileQueryView {
     query: Query,
     files: ViewIndex<FileValue>,
+    chunk_order: Vec<FileKey>,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     models: ViewIndex<super::ModelFileView>,
     rejected_models: BTreeSet<FileKey>,
@@ -104,6 +105,7 @@ impl FileQueryView {
             return Err(invalid());
         }
         let mut files = ViewIndex::default();
+        let mut chunk_order = Vec::new();
         let mut rejected_models = BTreeSet::new();
         let mut bytes = 0usize;
         for file in snapshot.files {
@@ -121,6 +123,15 @@ impl FileQueryView {
                 .checked_add(file.bytes.len())
                 .filter(|size| *size <= maximum_bytes)
                 .ok_or_else(invalid)?;
+            if matches!(
+                file.key,
+                FileKey::Task {
+                    file: crate::task_volume::TaskFile::Chunk { .. },
+                    ..
+                }
+            ) {
+                chunk_order.push(file.key.clone());
+            }
             files.insert(file.key.clone(), file);
         }
         let rows = files
@@ -153,6 +164,7 @@ impl FileQueryView {
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
+            chunk_order,
             cursor,
             bytes,
             maximum_files,
@@ -181,6 +193,22 @@ impl FileQueryView {
         {
             &self.files
         }
+    }
+
+    // Retain publication order across snapshot reconstruction and display eviction.
+    pub(in crate::client) fn ordered_files(&self) -> impl Iterator<Item = &FileValue> {
+        self.chunk_order
+            .iter()
+            .filter_map(|key| self.files.get(key))
+            .chain(self.files.values().filter(|file| {
+                !matches!(
+                    file.key,
+                    FileKey::Task {
+                        file: crate::task_volume::TaskFile::Chunk { .. },
+                        ..
+                    }
+                )
+            }))
     }
 
     /// Borrows model identities; rendering never reparses request bytes.
@@ -316,6 +344,9 @@ impl FileQueryView {
         if bytes > self.maximum_bytes || count > self.maximum_files {
             return Err(invalid());
         }
+        if !change.removed.is_empty() {
+            self.chunk_order.retain(|key| !change.removed.contains(key));
+        }
         for key in change.removed {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
@@ -361,6 +392,16 @@ impl FileQueryView {
             {
                 self.models
                     .insert(file.key.clone(), super::ModelFileView::from_file(&file));
+            }
+            if matches!(
+                file.key,
+                FileKey::Task {
+                    file: crate::task_volume::TaskFile::Chunk { .. },
+                    ..
+                }
+            ) && !self.files.contains_key(&file.key)
+            {
+                self.chunk_order.push(file.key.clone());
             }
             self.files.insert(file.key.clone(), file);
         }
@@ -468,9 +509,11 @@ impl super::ClientViews {
         if changed && !affected.is_empty() {
             let mut retained = Vec::new();
             for task in &affected {
-                for range in Query::Task(task.clone()).ranges() {
-                    retained.extend(view.files().range(range).map(|(_, file)| file.clone()));
-                }
+                retained.extend(
+                    view.ordered_files()
+                        .filter(|file| Query::Task(task.clone()).matches(&file.key))
+                        .cloned(),
+                );
             }
             super::task_projection::replace_tasks(self, affected.clone(), retained);
         }

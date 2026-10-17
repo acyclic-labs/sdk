@@ -55,6 +55,43 @@ where
             .await
     }
 
+    pub(crate) async fn task_files(&self) -> Result<Arc<crate::task_volume::TaskFiles<P>>> {
+        Ok(Arc::new(
+            crate::task_volume::TaskFiles::open(
+                self.stream.clone(),
+                &self.storage,
+                &self.issuer.verifier(&mut None)?,
+                &self.host.owner_scope,
+                65_536,
+            )
+            .await?,
+        ))
+    }
+
+    pub(crate) async fn native_execution(
+        &self,
+        byte: u8,
+        operation: OperationId,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<Execution<P, A, O>> {
+        let fence = self.owner(byte).await?.task_binding().1.clone();
+        Execution::for_task(
+            self.host
+                .journal_owner(TaskId::from_bytes([byte; 16]), &fence, Some(io))
+                .await?,
+            operation,
+            operation,
+            self.files.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.storage,
+                verifier: &self.issuer.verifier(&mut None)?,
+                scope: &self.host.owner_scope,
+                maximum_bytes: 65_536,
+                io: Some(io),
+            },
+        )
+    }
+
     pub(crate) fn execution(
         &self,
         owner: TaskJournalOwner<P>,

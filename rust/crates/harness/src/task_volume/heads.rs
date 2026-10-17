@@ -41,13 +41,19 @@ impl FileValue {
             (
                 FileKey::Task {
                     task,
-                    file: TaskFile::Chunk { turn, sequence },
+                    file:
+                        TaskFile::Chunk {
+                            turn,
+                            execution,
+                            sequence,
+                        },
                 },
                 Some(channel),
             ) => (
                 FileKey::Task {
                     task: task.clone(),
                     file: TaskFile::TextHead {
+                        execution: *execution,
                         turn: *turn,
                         channel,
                     },
@@ -62,17 +68,23 @@ impl FileValue {
 impl Snapshot {
     /// Converts a selected snapshot into zero-copy materialized head files.
     pub fn into_heads(self) -> Result<HeadSnapshot> {
-        let mut heads = BTreeMap::<FileKey, HeadFile>::new();
+        let mut positions = BTreeMap::<FileKey, usize>::new();
+        let mut heads: Vec<HeadFile> = Vec::new();
         for file in self.files {
             let (key, sequence) = file.head_key()?;
-            let head = heads.entry(key.clone()).or_insert_with(|| HeadFile {
-                key,
-                publication: file.publication,
-                channel: file.channel,
-                segments: Vec::new(),
-                length: 0,
-                through_sequence: None,
+            let position = *positions.entry(key.clone()).or_insert_with(|| {
+                let position = heads.len();
+                heads.push(HeadFile {
+                    key,
+                    publication: file.publication,
+                    channel: file.channel,
+                    segments: Vec::new(),
+                    length: 0,
+                    through_sequence: None,
+                });
+                position
             });
+            let head = &mut heads[position];
             head.length = head
                 .length
                 .checked_add(file.bytes.len() as u64)
@@ -81,7 +93,7 @@ impl Snapshot {
             head.segments.push(file.bytes);
         }
         Ok(HeadSnapshot {
-            files: heads.into_values().collect(),
+            files: heads,
             cursor: self.cursor,
             generation: self.generation,
         })
@@ -175,20 +187,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
-            let mut files = Vec::new();
-            for range in query.ranges() {
-                for (_, file) in index
-                    .files
-                    .range(range)
-                    .filter(|(_, f)| query.snapshot_matches_file(&f.file))
-                {
-                    if files.len() == maximum_files {
-                        return Err(Error::LimitExceeded);
-                    }
-                    files.push(file.file.clone());
-                }
-            }
-            files
+            index.select::<true>(query, maximum_files)?
         };
         Ok(Snapshot {
             files,

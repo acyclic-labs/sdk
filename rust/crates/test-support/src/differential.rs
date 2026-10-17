@@ -6,6 +6,18 @@ thread_local! {
     static TRACE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
 }
 
+/// Reserves observer storage outside measured work; returns capacity during capture.
+pub fn reserve<T: 'static>(additional: usize) -> Option<usize> {
+    TRACE.with_borrow_mut(|trace| {
+        let trace = trace
+            .as_mut()?
+            .downcast_mut::<Vec<T>>()
+            .expect("trace event type");
+        trace.reserve(additional);
+        Some(trace.capacity())
+    })
+}
+
 /// Record an event; inactive recording does nothing. A mismatched event type panics.
 pub fn record<T: 'static>(event: T) {
     let mut pending = Some(event);

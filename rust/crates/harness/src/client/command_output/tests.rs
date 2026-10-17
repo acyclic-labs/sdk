@@ -66,6 +66,7 @@ fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
             key: FileKey::Task {
                 task: Component::new(task.to_string()).unwrap(),
                 file: TaskFile::Chunk {
+                    execution: crate::OperationId::from_bytes([0; 16]),
                     turn: 0,
                     sequence: chunks,
                 },
