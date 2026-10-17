@@ -8,9 +8,21 @@ use futures::TryStreamExt;
 
 impl LocalHarness {
     pub(super) async fn summary_source(&self, target: TaskId) -> Result<SummarySource> {
-        let selected = self.selected_checkpoint(target).await?;
+        let (cut, selection, identity) = super::checkpoints::capture_selection(
+            &self.task_files.inner,
+            target,
+            self.limits.file_bytes,
+        )
+        .await?;
+        let selected = match selection {
+            Some(selection) => {
+                let checkpoint = self.read_checkpoint(&selection.checkpoint).await?;
+                Some((selection, checkpoint))
+            }
+            None => None,
+        };
         let query = Query::Turns(Component::new(target.to_string()).map_err(storage)?);
-        let now = self.task_files.inner.cut(&query).await.map_err(storage)?;
+        let now = cut.cursor;
         let frozen = selected.as_ref().and_then(|(selection, checkpoint)| {
             (checkpoint.boundary.task == target)
                 .then_some(selection.through.as_ref())
@@ -37,36 +49,29 @@ impl LocalHarness {
         let bytes = owner.read_file(&command.payload, None).await?;
         let input: ModelTaskCommand = serde_json::from_slice(&bytes).map_err(storage)?;
         let prior = match &selected {
-            Some((_, checkpoint)) => Some(self.summary_text(checkpoint).await?),
+            Some((selection, checkpoint)) => Some(self.retained_text(selection, checkpoint).await?),
             None => self.resolved_value(target, "summary").await?,
         };
+        let raw_prompt = selected
+            .as_ref()
+            .and_then(|(selection, _)| selection.continuation.as_ref())
+            .map(|turn| ModelContent::Text(turn.prompt.clone()));
         let mut text = crate::context::summary_source::retained_source::<true>(
-            prior.as_deref(),
-            same_task.is_none().then_some(&input.input),
+            prior,
+            same_task
+                .is_none()
+                .then_some(raw_prompt.as_ref().unwrap_or(&input.input)),
             self.limits,
         )?;
         if let Some((_, checkpoint)) = same_task {
-            let mut cursor = checkpoint.boundary.through.clone();
-            if cursor.position > through.position {
-                return Err(Error::Invalid("rewind precedes selected checkpoint".into()));
-            }
-            if cursor.position < through.position {
-                let mut changes = self
-                    .task_files
-                    .inner
-                    .follow(query.clone(), cursor.clone())
-                    .await
-                    .map_err(storage)?;
-                while cursor.position < through.position {
-                    let change = changes.try_next().await.map_err(storage)?.ok_or_else(|| {
-                        Error::Invalid("summary history ended before its cut".into())
-                    })?;
-                    for file in change.file.iter().chain(&change.files) {
-                        append_file(&mut text, file, self.limits)?;
-                    }
-                    cursor = change.cursor;
-                }
-            }
+            self.append_turns(
+                &mut text,
+                target,
+                &checkpoint.boundary.through,
+                &through,
+                true,
+            )
+            .await?;
         } else {
             let snapshot = self
                 .task_files
@@ -86,6 +91,17 @@ impl LocalHarness {
                     .map_err(storage)?
             };
             for file in snapshot.files {
+                if raw_prompt.is_some()
+                    && matches!(
+                        file.key,
+                        FileKey::Task {
+                            file: TaskFile::TurnRequest(_),
+                            ..
+                        }
+                    )
+                {
+                    continue;
+                }
                 for bytes in file.segments {
                     append_bytes(
                         &mut text,
@@ -121,15 +137,62 @@ impl LocalHarness {
                 task: target,
                 through,
                 captured_at: now.position,
-                previous: selected
-                    .as_ref()
-                    .map(|(selection, _)| selection.checkpoint.clone()),
+                previous: identity,
                 outcome_included,
                 frozen: frozen.is_some(),
                 manifest: input.context_manifest,
                 model: self.command_model(Some(target)).await?.name,
             },
         })
+    }
+
+    pub(in crate::local) async fn append_turns(
+        &self,
+        text: &mut String,
+        task: TaskId,
+        from: &crate::task_volume::Cursor,
+        through: &crate::task_volume::Cursor,
+        requests: bool,
+    ) -> Result<()> {
+        if from.position > through.position {
+            return Err(Error::Invalid("rewind precedes selected checkpoint".into()));
+        }
+        if from.position == through.position {
+            return Ok(());
+        }
+        let query = Query::Turns(Component::new(task.to_string()).map_err(storage)?);
+        let mut cursor = from.clone();
+        let mut changes = self
+            .task_files
+            .inner
+            .follow(query, cursor.clone())
+            .await
+            .map_err(storage)?;
+        while cursor.position < through.position {
+            let change = changes
+                .try_next()
+                .await
+                .map_err(storage)?
+                .ok_or_else(|| Error::Invalid("summary history ended before its cut".into()))?;
+            for file in change.file.iter().chain(&change.files) {
+                if requests
+                    || matches!(
+                        file.key,
+                        FileKey::Task {
+                            file: TaskFile::Tool {
+                                file: ToolFile::Result,
+                                ..
+                            },
+                            ..
+                        }
+                    )
+                {
+                    append_file(text, file, self.limits)?;
+                }
+            }
+            cursor = change.cursor;
+        }
+        Ok(())
     }
 }
 

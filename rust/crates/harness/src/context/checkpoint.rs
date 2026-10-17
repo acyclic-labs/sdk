@@ -14,9 +14,6 @@ pub struct ContextSummary {
     pub source_messages: u32,
     /// Digest of the source: its descriptor SHA-256 for a pinned file, otherwise canonical BLAKE3.
     pub source_digest: [u8; 32],
-    /// An already published source selected by the durable command; never restaged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_file: Option<FileRef>,
     /// Immutable summary text staged through the execution journal.
     pub output: FileRef,
 }

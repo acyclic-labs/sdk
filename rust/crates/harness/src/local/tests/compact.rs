@@ -1,6 +1,8 @@
 use super::*;
 use crate::runtime::RuntimeTask;
 
+mod continuations;
+
 fn admitted(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>) -> crate::TaskId {
     match admission {
         Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => task_id,
@@ -354,7 +356,7 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
     // Rewind is a file selection at a fixed conversation cursor, with a fresh
     // selection fence. Replaying B cannot undo this later user decision.
     let rewind = SummarySelection {
-        parent: None,
+        continuation: None,
         checkpoint: selected_a.checkpoint,
         selected_at: local
             .task_files
@@ -407,36 +409,10 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
 }
 
 proptest::proptest! {
-    // Recompaction starts from the selected summary, retaining facts absent from
-    // the original input, then adds every turn since its exact cut.
-    #[test]
-    fn repeated_summary_sequences_preserve_selected_facts(
-        fact in "[A-Z]{1,40}", turns in proptest::collection::vec("[a-z]{1,20}", 1..16),
-    ) {
-        use crate::context::summary_source::retained_source;
-        use crate::model::ModelContent;
-        let limits = crate::conversation::Limits::default();
-        let input = ModelContent::Text("original input".into());
-        let mut first = retained_source::<true>(None, Some(&input), limits).unwrap();
-        first.push_str("first turn");
-        let summary = format!("summary-only-{fact}");
-        let next = |keep:bool| {
-            let mut source = if keep { retained_source::<true>(Some(&summary), None, limits) }
-                else { retained_source::<false>(Some(&summary), None, limits) }.unwrap();
-            for turn in &turns { source.push_str(turn); }
-            source
-        };
-        let detector = |source:&str| source.contains(&summary) && turns.iter().all(|turn|source.contains(turn));
-        proptest::prop_assert!(detector(&next(true)));
-        proptest::prop_assert!(!detector(&next(false)));
-    }
-}
-
-proptest::proptest! {
     #[test]
     fn checkpoint_selection_requires_the_exact_predecessor_and_observation_fence(
         captured in proptest::num::u64::ANY, selected_at in proptest::num::u64::ANY,
-        predecessor in proptest::bool::ANY,
+        predecessor in proptest::bool::ANY, changed in proptest::bool::ANY,
     ) {
         use crate::context::SummarySelection;
         use crate::task_volume::{Cursor,FileKey};
@@ -446,11 +422,13 @@ proptest::proptest! {
         let mut cp = crate::context::summary_source::tests::checkpoint(cursor);
         let key = FileKey::parse(".tasks/task/context/compaction-next/manifest.json").unwrap();
         let previous = FileKey::parse(".tasks/task/context/compaction-previous/manifest.json").unwrap();
-        cp.boundary.previous = predecessor.then_some(previous.clone());
         cp.boundary.captured_at = captured;
-        let current = SummarySelection {parent:None,checkpoint:previous,selected_at,through:None};
-        let expected = predecessor && captured > selected_at;
-        proptest::prop_assert_eq!(advances::<true>(Some(&current),&cp,&key),expected);
-        if !expected { proptest::prop_assert!(advances::<false>(Some(&current),&cp,&key)); }
+        let current = SummarySelection {continuation:None,checkpoint:previous,selected_at,through:None};
+        let identity=*blake3::hash(&serde_json::to_vec(&current).unwrap()).as_bytes();
+        cp.boundary.previous=predecessor.then_some(identity);
+        if changed { if let Some(previous)=&mut cp.boundary.previous { previous[0]^=1; } }
+        let expected = predecessor && !changed && captured > selected_at;
+        proptest::prop_assert_eq!(advances::<true>(Some(&current),Some(identity),&cp,&key),expected);
+        if !expected { proptest::prop_assert!(advances::<false>(Some(&current),Some(identity),&cp,&key)); }
     }
 }

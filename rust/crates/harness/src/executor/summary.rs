@@ -198,12 +198,6 @@ impl StockExecution<'_> {
                 .await?
         };
         let summary = crate::context::ContextSummary {
-            source_file: self
-                .stock
-                .summary_source
-                .as_deref()
-                .map(|file| crate::model::clone_file(file, self.io))
-                .transpose()?,
             operation_id,
             step,
             source_messages,

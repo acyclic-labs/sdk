@@ -22,7 +22,6 @@ async fn fixture() -> Result<Fixture> {
 
 fn proof(operation: OperationId, output: FileRef) -> ContextSummary {
     ContextSummary {
-        source_file: None,
         operation_id: operation,
         step: 0,
         source_messages: 1,

@@ -28,6 +28,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+// Independent disk/credential fixtures must execute on workers, rather than
+// monopolize a current-thread join. Share the worker pool across both sweeps.
+pub(super) static WORKERS: std::sync::LazyLock<tokio::runtime::Runtime> =
+    std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
+
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }

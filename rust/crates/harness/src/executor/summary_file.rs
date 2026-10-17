@@ -35,7 +35,7 @@ impl StockExecution<'_> {
         #[cfg(feature = "filesystem")]
         let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
         let source_hold: Option<crate::conversation::ContentHold<'_>>;
-        let source = match self.io {
+        let captured = match self.io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 let (source, hold) = io.decode(
@@ -60,23 +60,21 @@ impl StockExecution<'_> {
         })?;
         #[cfg(feature = "filesystem")]
         let _instruction_hold = self.io.map(|io| io.guard_owned(_owned)).transpose()?;
-        let boundary = source.boundary;
+        let boundary = captured.boundary;
         let (summary, text) = self
             .summarize(
                 journal,
                 Some(input),
                 input.operation_id,
                 0,
-                source.context,
+                captured.context,
                 instruction,
             )
             .await?;
         let checkpoint = crate::context::SummaryCheckpoint {
             operation: input.operation_id,
             boundary,
-            source: summary
-                .source_file
-                .ok_or_else(|| Error::Invalid("summary lost its pinned source".into()))?,
+            source: crate::model::clone_file(source, self.io)?,
             summary: summary.output,
         };
         let metadata = match self.io {

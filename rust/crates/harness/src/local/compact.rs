@@ -164,10 +164,19 @@ impl LocalHarness {
 }
 
 fn append_source(text: &mut String, suffix: &str, limits: Limits) -> Result<()> {
-    if text.len().saturating_add(suffix.len()).saturating_add(1) as u64 > limits.file_bytes {
+    let separator = !text.is_empty() && !text.ends_with('\n');
+    if text
+        .len()
+        .saturating_add(suffix.len())
+        .saturating_add(1 + usize::from(separator)) as u64
+        > limits.file_bytes
+    {
         return Err(Error::Invalid(
             "compaction source exceeds file bound".into(),
         ));
+    }
+    if separator {
+        text.push('\n');
     }
     text.push_str(suffix);
     text.push('\n');

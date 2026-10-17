@@ -236,8 +236,7 @@ proptest! {
             let (prefix, _) = crate::context::clone_context(&source, Some(2), &mut None)?;
             let output = journal.stage(input.operation_id, "summary", b"summary", "text/plain", None)?.await?;
             let summary = crate::context::ContextSummary {
-                source_file: None,
-                operation_id: input.operation_id,
+                        operation_id: input.operation_id,
                 step: 0,
                 source_messages: 2,
                 source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,

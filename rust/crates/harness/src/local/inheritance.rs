@@ -224,7 +224,7 @@ impl LocalHarness {
                 None => match self.continuation_selection(task).await? {
                     Some(selected) => {
                         let checkpoint = self.read_checkpoint(&selected.checkpoint).await?;
-                        Ok(json!({"model":checkpoint.boundary.model,"summary":self.summary_text(&checkpoint).await?}))
+                        Ok(json!({"model":checkpoint.boundary.model,"summary":null}))
                     }
                     None => Ok(json!({"model":null,"summary":null})),
                 },

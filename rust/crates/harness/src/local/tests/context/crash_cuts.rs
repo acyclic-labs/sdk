@@ -2,15 +2,6 @@ use super::*;
 use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Independent disk/credential fixtures must execute on workers, rather than
-// monopolize a current-thread join. Share the worker pool across both sweeps.
-static WORKERS: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-});
-
 pub(in crate::local::tests) struct Interrupted<'a> {
     publisher: &'a dyn ContentPublisher,
     cut: usize,

@@ -130,6 +130,7 @@ test("summary checkpoint qualification instruments real locks and requires both 
     const calls = [];
     const run = (command, args, options) => {
       calls.push([command, args]);
+      if (command !== "cargo") assert.equal(options.timeout, 9500);
       if (command === "cargo") assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
       return { status: 0, stderr: "", stdout: command === "cargo"
         ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) : summary(passed, 0, 100) };

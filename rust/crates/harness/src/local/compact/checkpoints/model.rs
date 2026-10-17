@@ -1,108 +1,115 @@
 use super::*;
-use crate::sync::SyncMutex;
-use acyclic_stream::verification::block_on;
-use loom::sync::Arc;
+use acyclic_stream::{MemoryStream, StreamPath, verification::block_on};
+use std::sync::Arc;
 
-// Atomic snapshots and conditional appends model the existing volume contract.
-// This is a leaf lock: no protocol/provider call runs while it is held.
-type State = SyncMutex<(u64, SummarySelection)>;
-async fn read(state: &State) -> Result<(u64, Option<SummarySelection>)> {
-    let state = state.lock().unwrap();
-    Ok((state.0, Some(state.1.clone())))
-}
-async fn append(state: &State, expected: u64, value: SummarySelection) -> Result<bool> {
-    let mut state = state.lock().unwrap();
-    if state.0 != expected {
-        return Ok(false);
-    }
-    state.0 += 1;
-    state.1 = value;
-    Ok(true)
-}
-async fn publish<const CHECK: bool>(state: &State, value: &SummaryCheckpoint, key: &FileKey) {
-    select_with::<_, _, _, CHECK>(
-        value,
-        key,
-        || read(state),
-        |version, value| append(state, version, value),
-    )
-    .await
-    .unwrap();
-}
-fn race<const CHECK: bool>(rewind: bool) {
-    let cursor = crate::task_volume::Cursor {
-        volume: [0; 32],
-        epoch: uuid::Uuid::nil(),
-        schema: crate::task_volume::SCHEMA,
-        query: [0; 32],
-        position: 1,
-        accepted: 1,
-        durable: 1,
-        commit: [0; 32],
-    };
-    let a = crate::context::summary_source::tests::checkpoint(cursor);
-    let task = a.boundary.task;
-    let a_key = checkpoint_key(task, 1, OperationId::from_bytes([1; 16])).unwrap();
-    let b_key = checkpoint_key(task, 2, OperationId::from_bytes([2; 16])).unwrap();
-    let initial = SummarySelection {
-        parent: None,
-        checkpoint: a_key.clone(),
-        selected_at: 1,
-        through: None,
-    };
-    let state = Arc::new(State::new((0, initial.clone())));
-    let mut b = a.clone();
-    b.boundary.previous = Some(a_key.clone());
-    b.boundary.captured_at = 2;
-    let first = {
-        let state = state.clone();
-        let key = a_key.clone();
-        loom::thread::spawn(move || {
-            block_on(async {
-                if rewind {
-                    let mut selected = initial;
-                    selected.selected_at = 2;
-                    selected.through = Some(a.boundary.through);
-                    loop {
-                        let (version, _) = read(&state).await.unwrap();
-                        if append(&state, version, selected.clone()).await.unwrap() {
-                            break;
-                        }
-                    }
-                } else {
-                    publish::<CHECK>(&state, &a, &key).await;
-                }
-            })
-        })
-    };
-    let second = {
-        let state = state.clone();
-        let key = b_key.clone();
-        loom::thread::spawn(move || block_on(publish::<CHECK>(&state, &b, &key)))
-    };
-    first.join().unwrap();
-    second.join().unwrap();
-    assert_eq!(
-        state.lock().unwrap().1.checkpoint,
-        if rewind { a_key } else { b_key },
-        "summary selection crossed its retained boundary"
-    );
-}
-#[test]
-fn publication_fences_stale_replay() {
-    loom::model(|| race::<true>(false));
-}
-#[test]
-fn publication_respects_a_concurrent_rewind_fence() {
-    loom::model(|| race::<true>(true));
-}
-#[test]
-#[should_panic(expected = "summary selection crossed its retained boundary")]
-fn negative_control_detects_unfenced_publication() {
-    loom::model(|| race::<false>(false));
+// The actual MemoryStream and TaskVolume use the cfg-selected synchronization
+// shims. No replacement volume, snapshot, CAS or model-only file map is used.
+fn capture_and_publish<const ATOMIC: bool, const FENCE: bool>(racing_capture: bool) {
+    loom::model(move || {
+        let volume = Arc::new(
+            block_on(TaskVolume::open(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("summary-selection").unwrap(),
+            ))
+            .unwrap(),
+        );
+        let task = TaskId::from_bytes([1; 16]);
+        let head = commands::compact_key(task).unwrap();
+        let query = Query::Turns(Component::new(task.to_string()).unwrap());
+        let initial_cut = block_on(volume.cut(&query)).unwrap();
+        let a_key = checkpoint_key(task, 1, OperationId::from_bytes([1; 16])).unwrap();
+        let b_key = checkpoint_key(task, 2, OperationId::from_bytes([2; 16])).unwrap();
+        let initial = SummarySelection {
+            continuation: None,
+            checkpoint: a_key.clone(),
+            selected_at: 0,
+            through: None,
+        };
+        let generation = block_on(volume.head()).unwrap();
+        let generation = block_on(volume.append(
+            generation,
+            &FileValue::new(head.clone(), serde_json::to_vec(&initial).unwrap()),
+        ))
+        .unwrap();
+        let rewind = SummarySelection {
+            through: Some(initial_cut.clone()),
+            ..initial.clone()
+        };
+        let publish_rewind = {
+            let volume = volume.clone();
+            let head = head.clone();
+            let rewind = rewind.clone();
+            move || {
+                block_on(volume.append(
+                    generation,
+                    &FileValue::new(head, serde_json::to_vec(&rewind).unwrap()),
+                ))
+                .unwrap()
+            }
+        };
+        // The sequential case isolates equality of the complete selection:
+        // even an unchanged checkpoint and old user-supplied fence differ.
+        let mut writer = None;
+        let before = if racing_capture {
+            writer = Some(loom::thread::spawn(publish_rewind));
+            None
+        } else {
+            let captured = block_on(capture_selection(&volume, task, 4096)).unwrap();
+            publish_rewind();
+            Some(captured)
+        };
+        let (mut cut, selected, identity) =
+            before.unwrap_or_else(|| block_on(capture_selection(&volume, task, 4096)).unwrap());
+        if !ATOMIC {
+            // Former production route: selection, then an independent live cut.
+            cut.cursor = block_on(volume.cut(&query)).unwrap();
+        }
+        if let Some(writer) = writer {
+            writer.join().unwrap();
+        }
+        if racing_capture {
+            let observed_rewind = cut.cursor.position > generation.position;
+            assert_eq!(
+                selected.as_ref() == Some(&rewind),
+                observed_rewind,
+                "capture mixed selection and history generations"
+            );
+        }
+        let mut checkpoint = crate::context::summary_source::tests::checkpoint(initial_cut);
+        checkpoint.boundary.captured_at = cut.cursor.position;
+        checkpoint.boundary.previous = identity;
+        if let Some(frozen) = selected.as_ref().and_then(|value| value.through.as_ref()) {
+            checkpoint.boundary.through = frozen.clone();
+            checkpoint.boundary.frozen = true;
+        }
+        let accepted =
+            block_on(select::<_, FENCE>(&volume, task, &checkpoint, &b_key, 4096)).unwrap();
+        let (_, current, _) = block_on(capture_selection(&volume, task, 4096)).unwrap();
+        let expected = selected.as_ref() == Some(&rewind);
+        assert_eq!(
+            accepted, expected,
+            "publication ignored the complete selection identity"
+        );
+        if !expected {
+            assert_eq!(current, Some(rewind));
+        }
+    });
 }
 #[test]
-#[should_panic(expected = "summary selection crossed its retained boundary")]
-fn negative_control_detects_an_omitted_rewind_fence() {
-    loom::model(|| race::<false>(true));
+fn capture_and_publication_share_the_real_volume_observation() {
+    capture_and_publish::<true, true>(true);
+}
+#[test]
+fn publication_checks_the_complete_selection_identity() {
+    capture_and_publish::<true, true>(false);
+}
+#[test]
+#[should_panic(expected = "capture mixed selection and history generations")]
+fn negative_control_detects_separate_selection_and_history_reads() {
+    capture_and_publish::<false, true>(true);
+}
+#[test]
+#[should_panic(expected = "publication ignored the complete selection identity")]
+fn negative_control_detects_an_omitted_selection_fence() {
+    capture_and_publish::<true, false>(false);
 }

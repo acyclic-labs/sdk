@@ -18,7 +18,7 @@ export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesys
 export function qualifySummaryCheckpointsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filter: "local::compact::checkpoints::model::",
-    exact: false,
+    exact: false, timeout: 9500,
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }
@@ -73,7 +73,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
-  const result = run(binaries[0], options.filter ? [options.filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8" });
+  const result = run(binaries[0], options.filter ? [options.filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
   if (result.error) throw result.error;
   process.stdout.write(result.stdout ?? "");
   process.stderr.write(result.stderr ?? "");

@@ -240,13 +240,13 @@ fn summary_sequence_sends_summary_only_facts_and_new_turns_to_the_next_request()
                     let source = |keep| {
                         let mut source = if keep {
                             crate::context::summary_source::retained_source::<true>(
-                                Some(&first.text),
+                                Some(first.text.clone()),
                                 None,
                                 Limits::default(),
                             )
                         } else {
                             crate::context::summary_source::retained_source::<false>(
-                                Some(&first.text),
+                                Some(first.text.clone()),
                                 None,
                                 Limits::default(),
                             )

@@ -15,8 +15,8 @@ pub struct SummaryBoundary {
     pub through: Cursor,
     /// Global task-volume position observed at source capture.
     pub captured_at: u64,
-    /// Selected predecessor checkpoint, if any.
-    pub previous: Option<FileKey>,
+    /// Digest of the exact selected file bytes observed with the history cut.
+    pub previous: Option<[u8; 32]>,
     /// The source already covers the terminal task outcome.
     pub outcome_included: bool,
     /// Capture follows an explicitly fixed rewind boundary.
@@ -55,9 +55,8 @@ pub struct SummaryCheckpoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SummarySelection {
-    /// Requested parent, present only in a protected continuation selection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<TaskId>,
+    /// Original prompt and parent history, present only on protected continuations.
+    pub continuation: Option<SummaryContinuation>,
     /// Immutable protected checkpoint file.
     pub checkpoint: FileKey,
     /// Cut before selection publication; only a later source capture can advance it.
@@ -66,14 +65,38 @@ pub struct SummarySelection {
     pub through: Option<Cursor>,
 }
 
+/// A continuation pins its parent's history without copying any summary text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SummaryContinuation {
+    /// Completed conversation whose subsequent turns are retained.
+    pub parent: TaskId,
+    /// Exclusive parent turns cut at admission.
+    pub through: Cursor,
+    /// This continuation's original user prompt, without inherited context.
+    pub prompt: String,
+}
+
 // Capture starts at the selected summary, never at the discarded conversation.
 // The false variant is exercised by sequence properties as a deletion control.
 pub(crate) fn retained_source<const KEEP: bool>(
-    prior: Option<&str>,
+    prior: Option<String>,
     input: Option<&ModelContent>,
     limits: Limits,
 ) -> Result<String> {
-    let mut text = String::new();
+    let mut text = if KEEP {
+        prior.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if text.len().saturating_add(usize::from(!text.is_empty())) as u64 > limits.file_bytes {
+        return Err(crate::Error::Invalid(
+            "compaction source exceeds file bound".into(),
+        ));
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
     let mut append = |value: &str| -> Result<()> {
         if text.len().saturating_add(value.len()).saturating_add(1) as u64 > limits.file_bytes {
             return Err(crate::Error::Invalid(
@@ -84,11 +107,6 @@ pub(crate) fn retained_source<const KEEP: bool>(
         text.push('\n');
         Ok(())
     };
-    if KEEP {
-        if let Some(prior) = prior {
-            append(prior)?;
-        }
-    }
     if let Some(input) = input {
         append(
             &serde_json::to_string(input)
@@ -149,6 +167,11 @@ pub(crate) mod tests {
             "/fuzz-context/corpus/context_manifest/summary-source.json"
         )))
         .unwrap();
+        serde_json::from_slice::<SummarySource>(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fuzz-context/corpus/context_manifest/summary-source-previous.json"
+        )))
+        .unwrap();
         serde_json::from_slice::<SummaryCheckpoint>(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/fuzz-context/corpus/context_manifest/summary-checkpoint.json"
@@ -166,7 +189,8 @@ pub(crate) mod tests {
         #[test]
         fn checkpoint_and_selection_round_trip(
             position in 1u64..u64::MAX, fence in proptest::num::u64::ANY,
-            text in ".{0,64}", frozen in proptest::bool::ANY,
+            text in ".{0,64}", frozen in proptest::bool::ANY, continuation in proptest::bool::ANY,
+            predecessor in proptest::bool::ANY,
         ) {
             let cursor = Cursor {volume:[1;32],epoch:uuid::Uuid::nil(),schema:crate::task_volume::SCHEMA,
                 query:[2;32],position,accepted:position,durable:position,commit:[3;32]};
@@ -175,8 +199,8 @@ pub(crate) mod tests {
             cp.boundary.frozen = frozen;
             cp.boundary.model = text.clone();
             let key = FileKey::parse(".tasks/task/context/compaction-test/manifest.json").unwrap();
-            cp.boundary.previous = Some(key.clone());
-            let selected = SummarySelection {parent:frozen.then_some(TaskId::from_bytes([2;16])),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
+            let selected = SummarySelection {continuation:continuation.then(||SummaryContinuation {parent:TaskId::from_bytes([2;16]),through:cursor.clone(),prompt:text.clone()}),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
+            cp.boundary.previous = predecessor.then(||*blake3::hash(&serde_json::to_vec(&selected).unwrap()).as_bytes());
             let mut context = Context::default();
             context.messages.push(crate::model::ModelMessage {role:crate::model::ModelRole::User,
                 content:crate::model::ModelContent::Text(text)});

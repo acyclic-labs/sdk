@@ -43,13 +43,14 @@ fn selection(bytes: &[u8], maximum: u64) -> Result<Option<SummarySelection>> {
 // cannot replace a descendant, nor undo a later explicit rewind selection.
 pub(in crate::local) fn advances<const CHECK: bool>(
     current: Option<&SummarySelection>,
+    identity: Option<[u8; 32]>,
     next: &SummaryCheckpoint,
     key: &FileKey,
 ) -> bool {
     if !CHECK {
         return current.is_none_or(|current| current.checkpoint != *key);
     }
-    current.map(|current| &current.checkpoint) == next.boundary.previous.as_ref()
+    identity == next.boundary.previous
         && current.is_none_or(|current| next.boundary.captured_at > current.selected_at)
 }
 
@@ -61,79 +62,63 @@ pub(in crate::local) async fn select<P: StreamProvider + ?Sized, const CHECK: bo
     maximum: u64,
 ) -> Result<bool> {
     let head = commands::compact_key(target)?;
-    let head = &head;
-    select_with::<_, _, _, CHECK>(
-        next,
-        key,
-        move || async move {
-            let cut = volume
-                .snapshot(&Query::File(head.clone()), 1)
-                .await
-                .map_err(storage)?;
-            let current = match cut.files.first() {
-                Some(file) => selection(&file.bytes, maximum)?,
-                None => volume
-                    .snapshot(&Query::File(continuation_key(target)?), 1)
-                    .await
-                    .map_err(storage)?
-                    .files
-                    .first()
-                    .map(|file| selection(&file.bytes, maximum))
-                    .transpose()?
-                    .flatten(),
-            };
-            Ok((cut.generation, current))
-        },
-        move |generation, value| async move {
-            let bytes = serde_json::to_vec(&value).map_err(storage)?;
-            match volume
-                .append(generation, &FileValue::new(head.clone(), bytes))
-                .await
-            {
-                Ok(_) => Ok(true),
-                Err(crate::task_volume::Error::Conflict(_)) => Ok(false),
-                Err(error) => Err(storage(error)),
-            }
-        },
-    )
-    .await
-}
-
-// The production selection protocol depends only on the volume's atomic
-// snapshot and conditional-append contract. Keep decoding/indexing outside the
-// protocol model; TaskVolume models verify those implementation details.
-async fn select_with<G, Read, Append, const CHECK: bool>(
-    next: &SummaryCheckpoint,
-    key: &FileKey,
-    read: impl Fn() -> Read + Send + Sync,
-    append: impl Fn(G, SummarySelection) -> Append + Send + Sync,
-) -> Result<bool>
-where
-    G: Send,
-    Read: Future<Output = Result<(G, Option<SummarySelection>)>> + Send,
-    Append: Future<Output = Result<bool>> + Send,
-{
     loop {
-        let (generation, current) = read().await?;
+        let (cut, current, identity) = capture_selection(volume, target, maximum).await?;
         if current
             .as_ref()
             .is_some_and(|current| current.checkpoint == *key)
         {
             return Ok(true);
         }
-        if !advances::<CHECK>(current.as_ref(), next, key) {
+        if !advances::<CHECK>(current.as_ref(), identity, next, key) {
             return Ok(false);
         }
         let value = SummarySelection {
-            parent: None,
+            continuation: None,
             checkpoint: key.clone(),
             selected_at: next.boundary.captured_at,
             through: next.boundary.frozen.then(|| next.boundary.through.clone()),
         };
-        if append(generation, value).await? {
-            return Ok(true);
+        let bytes = serde_json::to_vec(&value).map_err(storage)?;
+        match volume
+            .append(cut.generation, &FileValue::new(head.clone(), bytes))
+            .await
+        {
+            Ok(_) => return Ok(true),
+            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(error) => return Err(storage(error)),
         }
     }
+}
+
+// Selection and history are sampled under the same real task-volume index lock.
+// Both capture and publication use this observation, including continuation
+// fallback; a concurrent rewind cannot be paired with a later history cut.
+pub(in crate::local) async fn capture_selection<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    task: TaskId,
+    maximum: u64,
+) -> Result<(
+    crate::task_volume::Snapshot,
+    Option<SummarySelection>,
+    Option<[u8; 32]>,
+)> {
+    let keys = [commands::compact_key(task)?, continuation_key(task)?];
+    let query = Query::Turns(Component::new(task.to_string()).map_err(storage)?);
+    let cut = volume
+        .snapshot_files(&keys, &query)
+        .await
+        .map_err(storage)?;
+    let mut selected = None;
+    let mut identity = None;
+    for file in &cut.files {
+        if let Some(value) = selection(&file.bytes, maximum)? {
+            selected = Some(value);
+            identity = Some(*blake3::hash(&file.bytes).as_bytes());
+            break;
+        }
+    }
+    Ok((cut, selected, identity))
 }
 
 impl LocalHarness {
@@ -141,22 +126,8 @@ impl LocalHarness {
         &self,
         task: TaskId,
     ) -> Result<Option<(SummarySelection, SummaryCheckpoint)>> {
-        let snapshot = self
-            .task_files
-            .inner
-            .snapshot(&Query::File(commands::compact_key(task)?), 1)
-            .await
-            .map_err(storage)?;
-        let selected = snapshot
-            .files
-            .first()
-            .map(|file| selection(&file.bytes, self.limits.file_bytes))
-            .transpose()?
-            .flatten();
-        let selected = match selected {
-            Some(value) => Some(value),
-            None => self.continuation_selection(task).await?,
-        };
+        let (_, selected, _) =
+            capture_selection(&self.task_files.inner, task, self.limits.file_bytes).await?;
         match selected {
             Some(value) => {
                 let checkpoint = self.read_checkpoint(&value.checkpoint).await?;
@@ -189,11 +160,20 @@ impl LocalHarness {
         task: TaskId,
         parent: TaskId,
         mut value: SummarySelection,
+        through: crate::task_volume::Cursor,
+        prompt: &str,
     ) -> Result<(SummarySelection, SummaryCheckpoint)> {
-        value.parent = Some(parent);
+        value.continuation = Some(crate::context::SummaryContinuation {
+            parent,
+            through,
+            prompt: prompt.into(),
+        });
         value.through = None; // A continuation has its own live history subtree.
         let key = continuation_key(task)?;
         let bytes = serde_json::to_vec(&value).map_err(storage)?;
+        if bytes.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid("continuation exceeds file bound".into()));
+        }
         loop {
             let snapshot = self
                 .task_files
@@ -204,7 +184,7 @@ impl LocalHarness {
             if let Some(file) = snapshot.files.first() {
                 let retained = selection(&file.bytes, self.limits.file_bytes)?
                     .ok_or_else(|| Error::Invalid("continuation has no checkpoint".into()))?;
-                if retained.parent != Some(parent) {
+                if retained.continuation.as_ref().map(|turn| turn.parent) != Some(parent) {
                     return Err(Error::Conflict(
                         "continuation belongs to another conversation".into(),
                     ));
@@ -266,7 +246,78 @@ impl LocalHarness {
         selected: &SummarySelection,
     ) -> Result<String> {
         let checkpoint = self.read_checkpoint(&selected.checkpoint).await?;
-        self.summary_text(&checkpoint).await
+        self.retained_text(selected, &checkpoint).await
+    }
+
+    pub(in crate::local) async fn retained_text(
+        &self,
+        selected: &SummarySelection,
+        checkpoint: &SummaryCheckpoint,
+    ) -> Result<String> {
+        let mut text = self.summary_text(checkpoint).await?;
+        let mut tails = Vec::new();
+        let mut current = selected.clone();
+        while let Some(turn) = current.continuation {
+            if tails.len() == self.limits.context_messages {
+                return Err(Error::Invalid(
+                    "continuation history exceeds message bound".into(),
+                ));
+            }
+            if turn.parent == checkpoint.boundary.task {
+                self.append_turns(
+                    &mut text,
+                    turn.parent,
+                    &checkpoint.boundary.through,
+                    &turn.through,
+                    true,
+                )
+                .await?;
+                if !checkpoint.boundary.outcome_included {
+                    self.append_completed_outcome(&mut text, turn.parent)
+                        .await?;
+                }
+                break;
+            }
+            let parent = self
+                .continuation_selection(turn.parent)
+                .await?
+                .ok_or_else(|| Error::Invalid("continuation parent lost its history".into()))?;
+            let original = parent
+                .continuation
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("continuation parent has no prompt".into()))?;
+            let mut from = original.through.clone();
+            from.query = turn.through.query;
+            tails.push((turn.parent, original.prompt.clone(), from, turn.through));
+            current = parent;
+        }
+        for (task, prompt, from, through) in tails.into_iter().rev() {
+            super::append_source(&mut text, &prompt, self.limits)?;
+            // The immutable authenticated outcome owns the completed answer;
+            // chunks are optional projections and may not yet have arrived.
+            // Retain intervening tool results at the admitted volume cut.
+            self.append_turns(&mut text, task, &from, &through, false)
+                .await?;
+            self.append_completed_outcome(&mut text, task).await?;
+        }
+        Ok(text)
+    }
+
+    async fn append_completed_outcome(&self, text: &mut String, task: TaskId) -> Result<()> {
+        use crate::runtime::TaskStateProvider;
+        let outcome = self
+            .runtime
+            .task_host()
+            .outcome(task)
+            .await?
+            .ok_or_else(|| {
+                Error::Invalid("continued conversation has no terminal outcome".into())
+            })?;
+        super::append_source(
+            text,
+            &serde_json::to_string(&outcome).map_err(storage)?,
+            self.limits,
+        )
     }
 
     pub(in crate::local) async fn summary_text(
