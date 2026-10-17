@@ -33,6 +33,7 @@ pub(super) async fn read_pinned(
             let path = rendered.0;
             let opened = (host).open(&workspace, Some(io)).await?;
             let pinned = (host).generation(&opened, &generation, Some(io)).await?;
+            crate::test_support::differential::record("read", maximum_bytes);
             let bytes = pinned
                 .read(&path, maximum_bytes, original, io.cancellation())
                 .await
@@ -75,6 +76,7 @@ pub(super) async fn read_pinned(
             Some(io) => {
                 let opened = (host).open(&workspace, Some(io)).await?;
                 let pinned = (host).generation(&opened, &generation, Some(io)).await?;
+                crate::test_support::differential::record("read", maximum_bytes);
                 let bytes = io.receive(
                     pinned
                         .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
