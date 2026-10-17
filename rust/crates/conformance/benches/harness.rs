@@ -23,9 +23,9 @@ fn main() {
     divan::main();
 }
 
+#[track_caller]
 fn failed<T>(error: impl std::fmt::Debug) -> T {
-    eprintln!("benchmark setup or operation failed: {error:?}");
-    std::process::exit(1);
+    unreachable!("benchmark setup or operation failed: {error:?}");
 }
 
 fn authority() -> Authority {
