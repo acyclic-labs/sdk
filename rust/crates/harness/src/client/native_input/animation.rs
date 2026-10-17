@@ -40,22 +40,38 @@ async fn omitted_animation_wakeup_is_detected_negative_control() {
     deadline_model::<false>().await;
 }
 
-async fn visibility_model<const IGNORE_VISIBILITY: bool, const IGNORE_MOTION: bool>() {
+async fn visibility_model<
+    const IGNORE_VISIBILITY: bool,
+    const IGNORE_MOTION: bool,
+    const POPUP_ONLY: bool,
+>() {
     use crate::tui::{
         PromptInput, Screen, Viewport,
         ratatui::{Terminal, backend::TestBackend, text::Line},
     };
     let history = vec![Line::from("retained"); 40];
     let help = vec![Line::from("Help")];
-    for (feedback, overlay, at_tail, reduced) in [
-        (false, false, true, false),
-        (true, false, true, false),
-        (false, true, true, false),
-        (false, false, false, false),
-        (false, false, true, true),
-    ] {
+    for (feedback, overlay, at_tail, reduced, popup) in [
+        (false, false, true, false, false),
+        (true, false, true, false, false),
+        (false, true, true, false, false),
+        (false, false, false, false, false),
+        (false, false, true, true, false),
+        (false, false, true, false, true),
+    ]
+    .into_iter()
+    .filter(|(_, _, _, _, popup)| !POPUP_ONLY || *popup)
+    {
         let mut input = PromptInput::default();
         input.busy = true;
+        if popup {
+            input.editor.set_text("@sec", 0);
+            input
+                .completion
+                .set_file("workspace/second", Some(b"source"))
+                .unwrap();
+            input.refresh_completions();
+        }
         let mut settings = *input.editor.settings();
         settings.reduced_motion = reduced;
         input.set_settings(settings);
@@ -75,14 +91,9 @@ async fn visibility_model<const IGNORE_VISIBILITY: bool, const IGNORE_MOTION: bo
                     0
                 };
                 let visible = screen
-                    .thinking_line(
-                        &input,
-                        screen.areas(frame.area(), &input).transcript,
-                        scroll,
-                        0,
-                    )
+                    .thinking_line(&input, &screen.areas(frame.area(), &input), scroll, 0)
                     .is_some();
-                assert_eq!(visible, !feedback && !overlay && at_tail);
+                assert_eq!(visible, !feedback && !overlay && at_tail && !popup);
                 animate = screen
                     .render(frame, &input, &mut Viewport::default(), scroll, 0)
                     .animation;
@@ -94,7 +105,7 @@ async fn visibility_model<const IGNORE_VISIBILITY: bool, const IGNORE_MOTION: bo
         tokio::time::advance(std::time::Duration::from_secs(3600)).await;
         assert_eq!(
             timer.now_or_never().is_some(),
-            !feedback && !overlay && at_tail && !reduced,
+            !feedback && !overlay && at_tail && !popup && !reduced,
             "hidden or reduced-motion state must not schedule frames"
         );
     }
@@ -102,17 +113,23 @@ async fn visibility_model<const IGNORE_VISIBILITY: bool, const IGNORE_MOTION: bo
 
 #[tokio::test(start_paused = true)]
 async fn composed_visibility_and_motion_gate_animation() {
-    visibility_model::<false, false>().await;
+    visibility_model::<false, false, false>().await;
 }
 
 #[tokio::test(start_paused = true)]
 #[should_panic(expected = "hidden or reduced-motion state must not schedule frames")]
 async fn hidden_timer_negative_control() {
-    visibility_model::<true, false>().await;
+    visibility_model::<true, false, false>().await;
 }
 
 #[tokio::test(start_paused = true)]
 #[should_panic(expected = "hidden or reduced-motion state must not schedule frames")]
 async fn reduced_motion_timer_negative_control() {
-    visibility_model::<false, true>().await;
+    visibility_model::<false, true, false>().await;
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "hidden or reduced-motion state must not schedule frames")]
+async fn popup_occlusion_timer_negative_control() {
+    visibility_model::<true, false, true>().await;
 }

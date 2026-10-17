@@ -169,22 +169,35 @@ impl Screen<'_> {
     pub fn thinking_line(
         &self,
         input: &PromptInput,
-        area: Rect,
+        areas: &ScreenAreas,
         scroll: usize,
         now_ms: u64,
     ) -> Option<Line<'static>> {
+        let area = areas.transcript;
         let row = self.reasoning.len() + self.transcript.len();
-        (input.busy
-            && !self.feedback
-            && self.overlay.is_empty()
-            && area.width > 0
-            && row >= scroll
-            && row - scroll < usize::from(area.height))
-        .then(|| {
+        if !input.busy
+            || self.feedback
+            || !self.overlay.is_empty()
+            || area.width == 0
+            || row < scroll
+            || row - scroll >= usize::from(area.height)
+        {
+            return None;
+        }
+        let label = Rect::new(
+            area.x,
+            area.y + (row - scroll) as u16,
+            area.width.min(crate::Thinking::WIDTH),
+            1,
+        );
+        if areas.completions.intersection(label) == label {
+            return None;
+        }
+        Some(
             crate::Thinking::new(&input.theme, now_ms)
                 .reduced_motion(input.editor.settings().reduced_motion)
-                .line()
-        })
+                .line(),
+        )
     }
 
     /// Compose shared widgets without cloning TaskFileViews or their transcript.
@@ -199,7 +212,7 @@ impl Screen<'_> {
     ) -> ScreenAreas {
         let mut areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
-        let thinking = self.thinking_line(input, areas.transcript, transcript_scroll, now_ms);
+        let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);

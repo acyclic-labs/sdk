@@ -20,6 +20,8 @@ pub struct Thinking<'a> {
 impl<'a> Thinking<'a> {
     /// Minimum delay between animation-only frames; idle tasks need no timer.
     pub const FRAME_MS: u64 = 120;
+    /// Display columns occupied by the activity label.
+    pub const WIDTH: u16 = 9;
 
     /// Uses the same monotonic frame clock as the prompt cursor.
     pub fn new(theme: &'a ThemeStyles, now_ms: u64) -> Self {
