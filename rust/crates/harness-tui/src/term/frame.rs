@@ -14,11 +14,20 @@ pub trait Present {
     /// The buffer's contents are consumed. On error, a begun synchronized
     /// update has been closed or remains journaled for restoration.
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()>;
+
+    /// How many times the device was reached other than by a presented frame
+    /// (setup, restore, suspend and resume, direct writes), or `None` when
+    /// unknown. While it is unchanged since the last frame, the screen state
+    /// that frame left is still the device's.
+    fn outside_writes(&mut self) -> Option<u64>;
 }
 
 impl<P: Present + ?Sized> Present for &mut P {
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
         (**self).present(frame, cursor_hidden)
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        (**self).outside_writes()
     }
 }
 
@@ -140,11 +149,15 @@ struct FrameBackend<D: Present> {
     output: FrameOutput<D>,
     size: Size,
     shown: Shown,
+    /// The device's outside-write count when `shown` was last ours.
+    ours: Option<u64>,
 }
 
 /// The cursor the device shows after the last presented frame. A command that
 /// restates it is not encoded, so a frame identical to the screen encodes no
 /// bytes and reaches no device. `None` is unknown: the command is encoded.
+/// Valid only while the device was reached by nothing but our frames since:
+/// any outside write, failed frame or resize makes it unknown.
 #[derive(Default)]
 struct Shown {
     visible: Option<bool>,
@@ -249,6 +262,7 @@ impl<D: Present> FrameTerminal<D> {
                 },
                 size,
                 shown: Shown::default(),
+                ours: None,
             })?,
         })
     }
@@ -256,7 +270,13 @@ impl<D: Present> FrameTerminal<D> {
     /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
-        self.terminal.backend_mut().size = size;
+        let backend = self.terminal.backend_mut();
+        let outside = backend.output.device.outside_writes();
+        if outside.is_none() || outside != backend.ours || backend.size != size {
+            backend.shown = Shown::default();
+        }
+        backend.ours = outside;
+        backend.size = size;
         let drawn = self.terminal.draw(render).map(drop);
         let backend = self.terminal.backend_mut();
         let committed = backend.output.commit();

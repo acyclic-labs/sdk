@@ -196,7 +196,7 @@ proptest! {
             let wrapped = if plain.is_empty() {
                 Vec::new()
             } else {
-                [b"[?2026h".as_slice(), &plain, b"[?2026l"].concat()
+                [b"\x1b[?2026h".as_slice(), &plain, b"\x1b[?2026l"].concat()
             };
             prop_assert_eq!(&synchronized.concat(), &wrapped);
             old_screen.extend(old.concat());
@@ -238,17 +238,17 @@ fn only_what_changed_reaches_the_device() {
     assert_eq!(
         costs(&[base.clone(), moved, hidden.clone(), hidden]),
         vec![
-            (1, b"[2;4H".to_vec()),
-            (1, b"[?25l".to_vec()),
+            (1, b"\x1b[2;4H".to_vec()),
+            (1, b"\x1b[?25l".to_vec()),
             (0, Vec::new())
         ]
     );
     // One changed cell, then the cursor placed back where it was.
     let (writes, bytes) = costs(&[base, edited]).remove(0);
     assert_eq!(writes, 1);
-    assert!(bytes.starts_with(b"[1;5HO"), "{bytes:?}");
-    assert!(bytes.ends_with(b"[2;3H"), "{bytes:?}");
-    assert!(!bytes.windows(6).any(|window| window == b"[?25h"));
+    assert!(bytes.starts_with(b"\x1b[1;5HO"), "{bytes:?}");
+    assert!(bytes.ends_with(b"\x1b[2;3H"), "{bytes:?}");
+    assert!(!bytes.windows(6).any(|window| window == b"\x1b[?25h"));
 }
 
 #[test]
@@ -301,7 +301,11 @@ fn steady_frames_allocate_exactly_as_the_per_command_path() {
                     .unwrap();
             }
         });
-        assert_eq!(new.count_total + repeats, old.count_total, "{repeats} repeats");
+        assert_eq!(
+            new.count_total + repeats,
+            old.count_total,
+            "{repeats} repeats"
+        );
     }
 }
 
@@ -353,6 +357,9 @@ impl<W: Present> Present for Calls<W> {
         self.1.set(self.1.get() + 1);
         self.2.set(self.2.get() + frame.len() as u64);
         self.0.present(frame, cursor_hidden)
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        self.0.outside_writes()
     }
 }
 
@@ -472,11 +479,11 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
         let mut frame = Vec::new();
         let mut row = 0u32;
         while frame.len() < mib * 1024 * 1024 {
-            frame.extend_from_slice(format!("[{};1H", row % 40 + 1).as_bytes());
+            frame.extend_from_slice(format!("\x1b[{};1H", row % 40 + 1).as_bytes());
             for cell in 0..100u32 {
                 let glyph = char::from(b'a' + (cell % 26) as u8);
                 frame.extend_from_slice(
-                    format!("[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
+                    format!("\x1b[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
                 );
             }
             row += 1;
@@ -491,5 +498,80 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
             device_io().writes - before.writes
         );
     }
-    output.write_all(b"[0m[2J")
+    output.write_all(b"\x1b[0m\x1b[2J")
+}
+
+/// A guard shared with the test, so the session's lifecycle (suspend, resume,
+/// direct writes) can reach the device between frames, as `Output` does.
+#[derive(Clone)]
+struct Shared(Rc<RefCell<RestoreGuard<Device>>>, bool);
+impl Present for Shared {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        self.0.borrow_mut().present(frame, cursor_hidden)
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        // The negative control reports an unchanging count: outside writes go
+        // unseen, as before tracking was tied to the lifecycle path.
+        if self.1 {
+            self.0.borrow_mut().outside_writes()
+        } else {
+            Some(0)
+        }
+    }
+}
+
+/// The screen after a frame, an outside access, and the same frame again
+/// (at `resized` size when given).
+fn after_outside_access(
+    scene: &Scene,
+    tracked: bool,
+    resized: Option<Size>,
+    outside: impl FnOnce(&mut RestoreGuard<Device>),
+) -> (String, (usize, usize), bool) {
+    let device = Device::default();
+    let guard = Rc::new(RefCell::new(RestoreGuard::new(
+        device.clone(),
+        &caps(false),
+    )));
+    let size = Size::new(WIDTH, HEIGHT);
+    let mut terminal = FrameTerminal::new(Shared(Rc::clone(&guard), tracked), size).unwrap();
+    terminal.draw(size, |frame| paint(frame, scene)).unwrap();
+    outside(&mut guard.borrow_mut());
+    terminal
+        .draw(resized.unwrap_or(size), |frame| paint(frame, scene))
+        .unwrap();
+    screen(&device.take().concat())
+}
+
+#[test]
+fn suspend_and_resume_never_leave_a_hidden_cursor_shown() {
+    let hidden: Scene = (vec!["prompt".into()], None);
+    // Suspend restores the cursor (shown); resume re-enters the session.
+    let suspend = |guard: &mut RestoreGuard<Device>| {
+        guard.restore().unwrap();
+        guard
+            .setup(acyclic_harness_tui::term::ScreenMode::Inline)
+            .unwrap();
+    };
+    for resized in [None, Some(Size::new(WIDTH, HEIGHT - 1))] {
+        let (_, _, shown) = after_outside_access(&hidden, true, resized, suspend);
+        assert!(!shown, "resized={resized:?}");
+        // Negative control: with outside writes unseen, the hide is elided.
+        let (_, _, shown) = after_outside_access(&hidden, false, None, suspend);
+        assert!(shown);
+    }
+}
+
+#[test]
+fn an_outside_cursor_move_is_corrected_by_an_unchanged_frame() {
+    let placed: Scene = (vec!["prompt".into()], Some((3, 2)));
+    let move_home = |guard: &mut RestoreGuard<Device>| {
+        guard.writer().write_all(b"\x1b[1;1H").unwrap();
+    };
+    let (_, cursor, shown) = after_outside_access(&placed, true, None, move_home);
+    assert_eq!((cursor, shown), ((2, 3), true));
+    // Negative control: with outside writes unseen, the move is elided and
+    // the cursor stays where the outside write left it.
+    let (_, cursor, _) = after_outside_access(&placed, false, None, move_home);
+    assert_eq!(cursor, (0, 0));
 }

@@ -37,6 +37,11 @@ impl super::Present for Output {
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
         lifecycle::active(&self.state, |guard| guard.present(frame, cursor_hidden))
     }
+    fn outside_writes(&mut self) -> Option<u64> {
+        lifecycle::active(&self.state, |guard| Ok(guard.outside_writes()))
+            .ok()
+            .flatten()
+    }
 }
 impl Drop for Output {
     fn drop(&mut self) {

@@ -91,6 +91,13 @@ impl super::Present for Output {
         }
         presented
     }
+    fn outside_writes(&mut self) -> Option<u64> {
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+            Ok(guard.outside_writes())
+        })
+        .ok()
+        .flatten()
+    }
 }
 
 impl Write for Output {

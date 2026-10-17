@@ -73,6 +73,9 @@ impl Present for Unjournaled {
         let bracketed = [b"\x1b[?2026h".as_slice(), frame, b"\x1b[?2026l"].concat();
         self.0.write_all(&bracketed)
     }
+    fn outside_writes(&mut self) -> Option<u64> {
+        None
+    }
 }
 
 fn synchronized() -> Capabilities {
