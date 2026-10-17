@@ -359,7 +359,6 @@ impl ClientRenderer {
         let width = areas.transcript.width;
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
-        self.search.project(&self.wrapped_transcript);
         self.wrapped_reasoning
             .update(&self.reasoning_rows, self.reasoning_changed, width);
         self.transcript_changed = self.transcript.len();
@@ -378,8 +377,10 @@ impl ClientRenderer {
         let layout = files
             .state(crate::client::CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
-        if layout["open_view"] == "find" && layout["view_input"] == "find" {
-            self.search_open = true;
+        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
+        self.search
+            .project(&self.wrapped_transcript, self.search_open);
+        if self.search_open {
             self.search.update(
                 &self.wrapped_transcript,
                 layout["search_query"].as_str().unwrap_or(""),
@@ -401,8 +402,6 @@ impl ClientRenderer {
             }
             .min(self.wrapped_transcript.rows().len().saturating_sub(height));
             self.search.prepare(&self.wrapped_transcript, first, height);
-        } else {
-            self.search_open = false;
         }
         Ok(())
     }

@@ -210,6 +210,19 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
     prompt.save(&mut files, &mut input).await.unwrap();
     prompt.refresh(&files, &mut input).unwrap();
     assert!(!input.transcript_search());
+    for _ in 0..2 {
+        paint_frame(&mut renderer, &files, &input, 80);
+        assert!(!renderer.search_open);
+        assert!(
+            !renderer.search.pending(),
+            "closed Find must not count in the background"
+        );
+        assert_eq!(
+            renderer.search.count(),
+            0,
+            "closed Find must release its matches"
+        );
+    }
     assert_eq!(
         format!("{:?}", input.editor),
         draft,

@@ -46,29 +46,23 @@ pub struct TranscriptSearch {
 }
 
 impl TranscriptSearch {
-    /// Reserve reusable query storage with transcript updates, never per key.
-    pub fn project(&mut self, projection: &WrappedLines) {
+    /// Observe a transcript cut only while Find is open. Closing releases its query storage.
+    pub fn project(&mut self, projection: &WrappedLines, open: bool) {
+        if !open {
+            *self = Self::default();
+            self.complete = true;
+            return;
+        }
         if self.revision == Some(projection.index.revision) {
             return;
         }
         self.revision = Some(projection.index.revision);
-        let size = projection.index.text.len();
-        for positions in [&mut self.positions, &mut self.previous] {
-            positions.reserve(size.saturating_sub(positions.len()));
-        }
-        for ranges in [&mut self.matches, &mut self.local] {
-            ranges.reserve(size.saturating_sub(ranges.len()));
-        }
-        self.prefix.reserve(size.saturating_sub(self.prefix.len()));
-        self.needle.reserve(size.saturating_sub(self.needle.len()));
-        self.previous_needle
-            .reserve(size.saturating_sub(self.previous_needle.len()));
         self.restart(false);
     }
 
     /// A key only changes the needle and cancels the previous background fold.
     pub fn update(&mut self, projection: &WrappedLines, query: &str, index: i64, style: Style) {
-        self.project(projection);
+        self.project(projection, true);
         self.style = style;
         charge(query.len(), false);
         if query.chars().default_case_fold().eq(self.needle.chars()) {
@@ -105,9 +99,12 @@ impl TranscriptSearch {
     fn restart(&mut self, refine: bool) {
         if refine {
             std::mem::swap(&mut self.positions, &mut self.previous);
+            self.positions.clear();
+        } else {
+            self.positions = Vec::new();
+            self.previous = Vec::new();
         }
-        self.positions.clear();
-        self.matches.clear();
+        self.matches = Vec::new();
         self.local.clear();
         self.cursor = 0;
         self.selected = None;
@@ -459,5 +456,9 @@ impl Widget for SearchRow<'_> {
 #[cfg(test)]
 #[path = "work_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod memory_tests;
 
 mod navigation;

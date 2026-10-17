@@ -19,7 +19,7 @@ fn finish(search: &mut TranscriptSearch, projection: &WrappedLines) {
 fn work_model<const FULL: bool>(size: usize, query: &str) -> (usize, usize) {
     let projection = projection(&"a".repeat(size));
     let mut search = TranscriptSearch::default();
-    search.project(&projection);
+    search.project(&projection, true);
     search.update(&projection, "a", 0, Style::default());
     search.prepare(&projection, 10, 10);
     finish(&mut search, &projection);

@@ -78,23 +78,16 @@ fn allocation_model<const COPIES: bool, const FULL: bool>() {
         let mut projection = WrappedLines::default();
         projection.update(&[Line::raw(text.clone())], 0, 80);
         let mut search = acyclic_harness_tui::TranscriptSearch::default();
-        search.project(&projection);
+        search.project(&projection, true);
         let area = Rect::new(0, 0, 80, 1);
         let mut buffer = Buffer::empty(area);
-        let query = acyclic_test_support::measure(|| {
-            search.update(&projection, "a", 0, selected);
-            search.prepare(&projection, 10, 10);
-        });
-        assert_eq!(query.count_total, 0, "query must reuse index storage");
-        let background = acyclic_test_support::measure(|| {
-            while search.pending() {
-                search.advance(&projection, 256);
-            }
-        });
-        assert_eq!(
-            background.count_total, 0,
-            "background must reuse index storage"
-        );
+        // Cold query/candidate storage grows with the query and actual matches.
+        // Exact cold-allocation and capacity bounds live in memory_tests.
+        search.update(&projection, "a", 0, selected);
+        search.prepare(&projection, 10, 10);
+        while search.pending() {
+            search.advance(&projection, 256);
+        }
         let frame = acyclic_test_support::measure(|| {
             search.update(&projection, "A", 1, selected);
             search.prepare(&projection, 10, 10);
@@ -118,22 +111,25 @@ fn allocation_model<const COPIES: bool, const FULL: bool>() {
             frame.bytes_total, 0,
             "unchanged frame must allocate zero bytes"
         );
-        let refinement = acyclic_test_support::measure(|| {
-            search.update(&projection, "aa", 0, selected);
+        search.update(&projection, "aa", 0, selected);
+        search.prepare(&projection, 10, 10);
+        while search.pending() {
+            search.advance(&projection, 256);
+        }
+        let refinement_frame = acyclic_test_support::measure(|| {
+            search.update(&projection, "AA", 0, selected);
             search.prepare(&projection, 10, 10);
-            while search.pending() {
-                search.advance(&projection, 256);
+            for row in 10..20 {
+                search.row(&projection, row).render(area, &mut buffer);
             }
         });
-        assert_eq!(
-            refinement.count_total, 0,
-            "refinement must reuse index storage"
-        );
+        assert_eq!(refinement_frame.count_total, 0);
+        assert_eq!(refinement_frame.bytes_total, 0);
     }
 }
 
 #[test]
-fn highlights_and_query_folds_allocate_zero_after_projection() {
+fn highlights_and_equivalent_queries_allocate_zero_after_count() {
     allocation_model::<false, false>();
 }
 #[test]
