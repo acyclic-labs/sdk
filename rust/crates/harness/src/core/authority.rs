@@ -522,23 +522,39 @@ impl AuthorityVerifier {
         root: Option<[u8; 32]>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
-        let mut quota = CodecQuota::new(work, 0)?;
-        let path = self.audience.stream_path(quota.work())?;
-        quota.adopt(path.capacity() as u64)?;
-        let proof = self.canonical_proof(
-            b"harness/v1/effect-history-root\0",
-            &(
-                &self.id,
-                &self.audience,
-                &path,
-                revision,
-                canonical_digest,
-                root,
-            ),
-            quota.work(),
-        );
-        drop(path);
-        proof
+        self.audience.validate_with_work(work)?;
+        let domain = b"harness/v2/effect-history-root\0";
+        let texts = [self.id.as_str(), self.audience.id.as_str()];
+        let bytes = texts
+            .iter()
+            .try_fold(
+                (domain.len() + 1 + 8 + 32 + 1 + 32) as u64,
+                |total, text| total.checked_add(8)?.checked_add(text.len() as u64),
+            )
+            .ok_or_else(|| Error::Invalid("effect proof byte count overflows".into()))?;
+        if let Some(io) = work.as_deref_mut() {
+            io.hashed_bytes(bytes)?;
+        }
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("effect-root-hash", bytes));
+        let mut hasher = blake3::Hasher::new_keyed(&self.key);
+        hasher.update(domain);
+        hasher.update(&[match self.audience.kind {
+            AggregateKind::Agent => 1,
+            AggregateKind::Conversation => 2,
+            AggregateKind::Session => 3,
+            AggregateKind::Turn => 4,
+            AggregateKind::Task => 5,
+        }]);
+        for text in texts {
+            hasher.update(&(text.len() as u64).to_le_bytes());
+            hasher.update(text.as_bytes());
+        }
+        hasher.update(&revision.to_le_bytes());
+        hasher.update(&canonical_digest);
+        hasher.update(&[u8::from(root.is_some())]);
+        hasher.update(&root.unwrap_or([0; 32]));
+        Ok(*hasher.finalize().as_bytes())
     }
 
     pub(crate) fn fork_history_proof(
@@ -636,6 +652,10 @@ impl AuthorityVerifier {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "effect_root_tests.rs"]
+mod effect_root_tests;
 
 fn scope_proof(
     key: &[u8; 32],

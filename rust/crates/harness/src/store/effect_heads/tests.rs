@@ -7,6 +7,33 @@ use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, MemoryStrea
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn fixed_certificate_has_one_admitted_allocation(
+        root in proptest::option::of(proptest::arbitrary::any::<[u8;32]>()),
+        proof in proptest::arbitrary::any::<[u8;32]>()
+    ) {
+        let io = crate::filesystem::PreparationIo::from_budget(
+            acyclic_fs::performance::BOUNDARY_BUDGET, &acyclic_fs::CancellationToken::new(),
+        ).unwrap();
+        let mut observer = &io;
+        let bytes = encode_certificate(root.as_ref(), &proof, &mut Some(&mut observer)).unwrap();
+        let expected = effect_certificate::parts(root.as_ref(), &proof).concat();
+        proptest::prop_assert_eq!(bytes.as_slice(), expected.as_slice());
+        proptest::prop_assert_eq!(io.receipt(), acyclic_fs::WorkCounters {
+            allocation_operations: 1, peak_allocation_bytes: 65,
+            bytes_encoded: 65, bytes_copied: 65, items_examined: 3,
+            ..acyclic_fs::WorkCounters::default()
+        });
+        proptest::prop_assert_eq!(io.owned_bytes().unwrap(), 65);
+        drop(bytes);
+        observer.release_owned(65).unwrap();
+        proptest::prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+    }
+}
+
 fn authority() -> Authority {
     Authority {
         kind: AggregateKind::Task,
@@ -154,13 +181,10 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             assert!(matches!(selected, Err(Error::Storage(_))));
         }
     }
-    let mut changed: (Option<Digest>, Digest) =
-        crate::contract::json_from_slice(&certificates[0].value)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-    changed.0 = Some([93; 32]);
+    let (_, proof) = effect_certificate::decode(&certificates[0].value).unwrap();
     let forged = copy_cut(
         &canonical[0].value,
-        OwnedBytes::from(crate::contract::canonical_json_bytes(&changed)?),
+        OwnedBytes::from(encode_certificate(Some(&[93; 32]), proof, &mut None)?),
         true,
     )
     .await?;
