@@ -216,11 +216,11 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
             .await?;
     }
 
-    let ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
+    let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
     let mut actors = grpc::connect(
         &endpoints.actors.remote.endpoint,
         &endpoints.actors.remote.bearer,
-        Some(&ca),
+        Some(&actor_ca),
     )
     .await?;
     let created = observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
@@ -372,7 +372,7 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
     actors = grpc::connect(
         &endpoints.actors.remote.endpoint,
         &endpoints.actors.migration_bearer,
-        Some(&ca),
+        Some(&actor_ca),
     )
     .await?;
     let update = wire::UpdateActorRequest {
