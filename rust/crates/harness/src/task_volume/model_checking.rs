@@ -2,6 +2,9 @@
 use super::*;
 use std::cell::Cell;
 
+mod journal;
+pub(crate) use journal::Journal;
+
 /// Mutations present only in the dedicated harness model build.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub enum Fault {
@@ -22,10 +25,37 @@ pub enum Fault {
     IgnoreDeadline,
     /// Stop output on an unrelated task-file writer's generation advance.
     StopAfterGenerationConflict,
+    /// Return from child control before its live effect future is drained.
+    DropActiveChild,
+    /// Admit child preparation before its staged inputs are durable.
+    SkipChildInputFence,
+    /// Send live child mail without acknowledging its result bound.
+    SkipChildInputAck,
+    /// Return a controller error while sibling effect futures are live.
+    DropSiblingEffects,
 }
 
 loom::thread_local! {
     static FAULT: Cell<Fault> = Cell::new(Fault::None);
+    static PAUSE_PUBLICATION: Cell<bool> = Cell::new(false);
+}
+
+/// Parks the next prepared publication at its provider IO boundary.
+pub fn pause_next_publication() {
+    PAUSE_PUBLICATION.with(|pause| pause.set(true));
+}
+
+pub(crate) async fn publication_ready() {
+    let mut pause = PAUSE_PUBLICATION.with(|pause| pause.replace(false));
+    std::future::poll_fn(|cx| {
+        if std::mem::replace(&mut pause, false) {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await
 }
 
 /// Selects a mutation on the current modeled actor.
@@ -33,7 +63,7 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(super) fn enabled(fault: Fault) -> bool {
+pub(crate) fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 
@@ -58,3 +88,6 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         "acknowledgement overwrote rebuilt files"
     );
 }
+
+#[cfg(test)]
+pub(crate) use super::files::model_files as files;

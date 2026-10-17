@@ -231,23 +231,25 @@ fn owner_pool() -> io::Result<&'static OwnerPool> {
 
 impl OwnerPool {
     fn submit(&self, mut job: OwnerJob) -> io::Result<()> {
-        let count = self.senders.len();
-        let start = self.cursor.fetch_add(1, Ordering::Relaxed) % count;
-        for index in 0..count {
-            let sender = &self.senders[(start + index) % count];
+        let stopped = || io::Error::other("native I/O owner stopped before admission");
+        let start = self
+            .cursor
+            .fetch_add(1, Ordering::Relaxed)
+            .checked_rem(self.senders.len())
+            .ok_or_else(stopped)?;
+        let (before, from_start) = self.senders.split_at_checked(start).ok_or_else(stopped)?;
+        for sender in from_start.iter().chain(before) {
             match sender.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::TrySendError::Full(returned)) => job = returned,
-                Err(mpsc::TrySendError::Disconnected(_)) => {
-                    return Err(io::Error::other(
-                        "native I/O owner stopped before admission",
-                    ));
-                }
+                Err(mpsc::TrySendError::Disconnected(_)) => return Err(stopped()),
             }
         }
-        self.senders[start]
+        from_start
+            .first()
+            .ok_or_else(stopped)?
             .send(job)
-            .map_err(|_| io::Error::other("native I/O owner stopped before admission"))
+            .map_err(|_| stopped())
     }
 }
 

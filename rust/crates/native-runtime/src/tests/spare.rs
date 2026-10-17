@@ -10,8 +10,12 @@ fn prefix_matches(
     if success {
         prop_assert_eq!(data.len(), expected.len());
     }
-    prop_assert_eq!(data, &expected[..data.len()]);
+    prop_assert_eq!(Some(data), expected.get(..data.len()));
     Ok(())
+}
+
+fn charged(meter: &ReadBudgetMeter) -> usize {
+    usize::try_from(meter.read.load(Ordering::Acquire)).unwrap()
 }
 
 fn open_source(path: &Path) -> io::Result<File> {
@@ -60,7 +64,7 @@ fn owned_read_matches_source_prefix_and_retires_custody() -> Result<(), Box<dyn 
                 file.read_bounded_async(offset as u64, maximum, meter.clone(), exact)
                     .unwrap(),
             );
-            let charged = meter.read.load(Ordering::Acquire) as usize;
+            let charged = charged(&meter);
             if post_cancel && available != 0 {
                 prop_assert!((1..=available).contains(&charged));
             } else {
@@ -138,7 +142,7 @@ fn spare_read_prefix_matches_source_and_rejects_overpublication()
                 &meter,
             );
             let success = result.is_ok();
-            let charged = meter.read.load(Ordering::Acquire) as usize;
+            let charged = charged(&meter);
             prop_assert_eq!(charged, data.len());
             if post_cancel && available != 0 {
                 prop_assert!((1..=available).contains(&charged));
@@ -185,7 +189,7 @@ fn spare_reads_miri_initialized_prefixes() -> io::Result<()> {
         meter.cancel_after_read = after_read;
         let result =
             crate::file::read_bounded_spare(&file, offset, &mut data, maximum, exact, &meter);
-        let charged = meter.read.load(Ordering::Acquire) as usize;
+        let charged = charged(&meter);
         assert_eq!(charged, data.len());
         if after_read {
             // Cancellation follows the first positive OS completion, which
@@ -197,7 +201,8 @@ fn spare_reads_miri_initialized_prefixes() -> io::Result<()> {
         assert_eq!(
             data,
             b"actual"
-                .get(offset as usize..offset as usize + data.len())
+                .get(usize::try_from(offset).map_err(io::Error::other)?..)
+                .and_then(|rest| rest.get(..data.len()))
                 .unwrap_or_default()
         );
         assert_eq!(

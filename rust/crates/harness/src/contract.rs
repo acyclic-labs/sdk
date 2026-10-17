@@ -36,7 +36,7 @@ pub(crate) mod capability {
     pub(crate) const OPERATION_DECLARE: &str = "operation:declare";
     pub(crate) const MAIL_SEND: &str = "mail:send";
     pub(crate) const MAIL_READ: &str = "mail:read";
-    #[cfg(any(test, feature = "filesystem"))]
+    #[cfg(feature = "filesystem")]
     pub(crate) const TIMER_WAIT: &str = "timer:wait";
     pub(crate) const MODEL_GENERATE: &str = "model:generate";
     pub(crate) const CONTEXT_BUILD: &str = "context:build";

@@ -3,7 +3,15 @@ use crate::*;
 pub(crate) struct BlockingWaitWake {
     pub(crate) notified: Mutex<bool>,
     pub(crate) changed: Condvar,
-    pub(crate) _allocation: ReadAllocation,
+}
+
+/// A wait's notifier and its charge. The waiting thread owns the charge, not
+/// the shared notifier: the worker that wakes it may still hold its waker
+/// clone for a moment after the waiter returns, and the charge must already
+/// be retired when the observer sees the result.
+pub(crate) struct PreparedWake {
+    wake: Arc<BlockingWaitWake>,
+    _allocation: ReadAllocation,
 }
 
 impl BlockingWaitWake {
@@ -56,13 +64,15 @@ impl std::task::Wake for BlockingWaitWake {
 
 pub(crate) fn allocate_blocking_wait_wake(
     meter: &Arc<dyn NativeReadMeter>,
-) -> io::Result<Arc<BlockingWaitWake>> {
+) -> io::Result<PreparedWake> {
     let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
-    Ok(Arc::new(BlockingWaitWake {
-        notified: Mutex::new(false),
-        changed: Condvar::new(),
+    Ok(PreparedWake {
+        wake: Arc::new(BlockingWaitWake {
+            notified: Mutex::new(false),
+            changed: Condvar::new(),
+        }),
         _allocation: allocation,
-    }))
+    })
 }
 
 pub(crate) fn measured_completion_meter<T>(
@@ -80,16 +90,17 @@ pub(crate) fn measured_completion_meter<T>(
 pub(crate) fn wait_measured_completion<T>(
     task: impl Future<Output = io::Result<T>>,
     meter: &Arc<dyn NativeReadMeter>,
-    prepared_wake: Option<Arc<BlockingWaitWake>>,
+    prepared_wake: Option<PreparedWake>,
     mut deadline: Option<std::time::Instant>,
     cancellation: impl Future<Output = ()>,
     on_deadline: impl FnOnce(),
 ) -> io::Result<T> {
-    let wake = match prepared_wake {
-        Some(wake) => wake,
+    let prepared = match prepared_wake {
+        Some(prepared) => prepared,
         None => allocate_blocking_wait_wake(meter)?,
     };
-    let waker = Waker::from(Arc::clone(&wake));
+    let wake = &prepared.wake;
+    let waker = Waker::from(Arc::clone(wake));
     let mut context = Context::from_waker(&waker);
     let mut task = std::pin::pin!(task);
     let mut cancellation = std::pin::pin!(cancellation);

@@ -22,8 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod child;
 mod dispatch;
 mod effects;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+mod hooks;
 mod mail;
 mod manifest;
 mod model;

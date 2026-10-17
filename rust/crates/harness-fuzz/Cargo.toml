@@ -15,7 +15,7 @@ doc = false
 bench = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]
@@ -182,6 +182,14 @@ bench = false
 [[bin]]
 name = "plan_markdown"
 path = "fuzz_targets/plan_markdown.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "child_control"
+path = "fuzz_targets/child_control.rs"
 required-features = ["runtime"]
 test = false
 doc = false

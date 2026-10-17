@@ -94,6 +94,50 @@ impl LocalWorkspace {
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
+    pub(super) async fn created_mounts(
+        &self,
+        project: &VolumeRef,
+        context: &crate::runtime::ToolContext,
+    ) -> Result<Arc<Mounts>> {
+        let access = context
+            .task()
+            .scope()
+            .created_access
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unauthorized("child mounts require authenticated allocations".into())
+            })?;
+        let mut private = None;
+        for binding in &access.content {
+            if binding.volume.class() != VolumeClass::AgentPrivate {
+                continue;
+            }
+            let granted = [VolumeOperation::Read, VolumeOperation::Write]
+                .into_iter()
+                .map(|operation| binding.volume.capability(operation, &mut None))
+                .collect::<Result<Vec<_>>>()?
+                .iter()
+                .all(|grant| context.effective_scope().grants().contains(grant));
+            if granted && private.replace(binding.volume.clone()).is_some() {
+                return Err(Error::Unauthorized(
+                    "child private mount is ambiguous".into(),
+                ));
+            }
+        }
+        // Bind auxiliary volumes outside the sparse projection. Linux's
+        // elevated mount helper cannot traverse an owner-only FUSE parent.
+        let root = self.mount_directory.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&root).map_err(storage)?;
+        let mut mounts = mounts::owner(
+            &root,
+            project,
+            None,
+            private.map(|volume| ("scratch".into(), volume, None)),
+        )?;
+        volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
+        Ok(Arc::new(mounts))
+    }
+
     #[cfg(all(test, feature = "native-execution", unix))]
     pub(super) async fn current(
         &self,
@@ -115,7 +159,7 @@ impl LocalWorkspace {
         self: &Arc<Self>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+        task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
         Ok(Arc::new(
             super::checkout_tools::CheckoutTools::new(Arc::clone(self), project, clock, task_files)
@@ -196,6 +240,10 @@ pub(super) async fn open(
     store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
+    #[cfg(target_os = "linux")]
+    if native_mounts {
+        volumes::recover_after_crash(&path)?;
+    }
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

@@ -380,13 +380,58 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
+#[inline]
+pub(crate) fn compare_bytes(mut left: &[u8], mut right: &[u8]) -> Ordering {
     #[cfg(test)]
     BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
+    #[cfg(test)]
+    if OLD_BYTE_COMPARE.get() {
+        return compare_suffix(left, right);
+    }
+    if let (Some(a), Some(b)) = (left.first_chunk::<16>(), right.first_chunk::<16>()) {
+        let order = u128::from_be_bytes(*a).cmp(&u128::from_be_bytes(*b));
+        if order != Ordering::Equal {
+            return order;
+        }
+        return compare_suffix(&left[16..], &right[16..]);
+    }
+    // Short keys stay inline. Every load consumes a disjoint prefix; equal
+    // prefixes are never examined again by the remaining comparison.
+    macro_rules! word {
+        ($size:literal, $integer:ty) => {
+            if let (Some(a), Some(b)) = (left.first_chunk::<$size>(), right.first_chunk::<$size>())
+            {
+                let order = <$integer>::from_be_bytes(*a).cmp(&<$integer>::from_be_bytes(*b));
+                if order != Ordering::Equal {
+                    return order;
+                }
+                left = &left[$size..];
+                right = &right[$size..];
+            }
+        };
+    }
+    word!(8, u64);
+    word!(4, u32);
+    word!(2, u16);
+    word!(1, u8);
+    left.len().cmp(&right.len())
+}
+#[inline]
+fn compare_suffix(left: &[u8], right: &[u8]) -> Ordering {
+    #[cfg(test)]
+    {
+        FALLBACK_COMPARISONS.set(FALLBACK_COMPARISONS.get() + 1);
+        FALLBACK_BYTES.set(FALLBACK_BYTES.get() + left.len().min(right.len()));
+    }
     left.cmp(right)
 }
 #[cfg(test)]
-std::thread_local! { static BYTE_COMPARISONS: Cell<usize> = const { Cell::new(0) }; }
+std::thread_local! {
+    static BYTE_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    static FALLBACK_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    static FALLBACK_BYTES: Cell<usize> = const { Cell::new(0) };
+    static OLD_BYTE_COMPARE: Cell<bool> = const { Cell::new(false) };
+}
 #[cfg(test)]
 use std::cell::Cell;
 #[cfg(all(test, not(target_arch = "wasm32")))]

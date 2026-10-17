@@ -200,7 +200,14 @@ impl StreamProvider for Client {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        Ok(self.records(request.path, request.from, Some(request.limit)))
+        // The first page opens the read, so an absent path or a start beyond the
+        // tail fails here as on every provider; later pages fail in the stream.
+        let mut records = self.records(request.path, request.from, Some(request.limit));
+        let first = records.next().await;
+        if let Some(Err(error)) = first {
+            return Err(error);
+        }
+        Ok(stream::iter(first).chain(records).boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {

@@ -63,6 +63,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         request: &ForkRequest,
         io: Option<&PreparationIo>,
     ) -> Result<Vec<ReferenceGrant>> {
+        if request.parent.kind == crate::core::AggregateKind::Task {
+            self.check_request(request, io, self.task_preparation.as_deref())?;
+            return Ok(Vec::new());
+        }
         let maximum_messages = usize::try_from(request.preparation.maximum_inherited_messages)
             .map_err(|_| {
                 stock_boundary(

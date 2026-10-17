@@ -14,6 +14,8 @@ struct Entry {
     key: FileKey,
     channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     publication: Option<crate::OperationId>,
 }
 
@@ -22,6 +24,7 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
     let metadata = serde_json::to_vec(&Entry {
         key: file.key.clone(),
         channel: file.channel,
+        requester: file.requester,
         publication: file.publication,
     })
     .map_err(|_| Error::InvalidSegment)?;
@@ -35,6 +38,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     let entry = Entry {
         key: write.key.clone(),
         channel: write.channel,
+        requester: write.requester,
         publication: write.publication,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -105,6 +109,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
+        requester: entry.requester,
         publication: entry.publication,
         bytes: bytes.slice(PREFIX + metadata.len()..),
     };
@@ -126,6 +131,7 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
+        requester: entry.requester,
         publication: entry.publication,
         bytes: bytes.slice(offset..),
     };

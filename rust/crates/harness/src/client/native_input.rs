@@ -22,9 +22,11 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    animation: bool,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     let delivery = tokio::select! {
+        _ = animation_frame::<true>(animation) => return Ok(None),
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
         update = documents.next() => {
@@ -52,10 +54,15 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    animation: bool,
+    renderer: &mut crate::tui::ClientRenderer,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
+        biased;
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+        _ = animation_frame::<true>(animation) => Ok(None),
+        _ = renderer.search_progress() => Ok(None),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
             client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
@@ -68,6 +75,21 @@ pub async fn next_file_tui_event(
         },
     }
 }
+
+#[cfg(feature = "tui")]
+async fn animation_frame<const ENABLED: bool>(busy: bool) {
+    if !ENABLED || !busy {
+        return std::future::pending().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::tui::Thinking::FRAME_MS,
+    ))
+    .await;
+}
+
+#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[path = "native_input/animation.rs"]
+mod animation;
 
 /// Follow controlling-terminal input through the decoder retained by negotiation.
 /// Terminal waits use Tokio's blocking executor, never the bounded filesystem

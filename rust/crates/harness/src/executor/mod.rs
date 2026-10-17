@@ -56,7 +56,7 @@ pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem"))]
 pub(crate) use content::verify_model_contents_with_summary_authorization;
 mod retained;
 mod turn;
@@ -249,6 +249,13 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing one observed model event.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
+    },
+    /// The local model producer stopped after invocation cancellation.
+    ModelStopped {
+        /// Zero-based executor step.
+        step: u32,
+        /// Admitted response or summary attempt.
+        purpose: ModelPurpose,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {

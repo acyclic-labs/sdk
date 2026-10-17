@@ -1,3 +1,4 @@
+use super::fence_io::MountLockFile;
 use super::*;
 
 pub(super) const NATIVE_FENCE_PREFIX: &str = ".acyclic-fs-mount-";
@@ -8,12 +9,12 @@ pub(super) const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
 
 #[derive(Debug)]
 pub(super) struct MountDestinationGuard {
-    pub(super) file: Option<File>,
+    pub(super) file: Option<MountLockFile>,
     pub(super) lock_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     pub(super) parent_directory: Option<cap_std::fs::Dir>,
     pub(super) fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
-    pub(super) registry_file: Option<File>,
+    pub(super) registry_file: Option<MountLockFile>,
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
 }
@@ -114,14 +115,42 @@ impl MountDestinationGuard {
         guard: &mut Option<Self>,
         recovery: bool,
     ) -> Result<(), NativeMountError> {
+        if guard.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
+        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
+        Self::acquire_in_directory(destination, directory, native, guard, recovery)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(super) fn acquire_in_directory(
+        destination: &Path,
+        directory: cap_std::fs::Dir,
+        native: &NativeMaterializationWork,
+        guard: &mut Option<Self>,
+        recovery: bool,
+    ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
         }
-        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
         #[cfg(unix)]
-        let canonical_owner = crate::native_host::canonical_directory_path_held(directory, work)?;
+        let (canonical_owner, held_recovery_directory) = if recovery {
+            let copy = work.attempt_io(
+                crate::materializer::NativeResourceCredit::ReadOperations.delta(1),
+                || directory.try_clone(),
+            )?;
+            (
+                crate::native_host::canonical_directory_path_held(copy, work)?,
+                Some(directory),
+            )
+        } else {
+            (
+                crate::native_host::canonical_directory_path_held(directory, work)?,
+                None,
+            )
+        };
         #[cfg(windows)]
         let canonical_owner = crate::native_host::canonical_directory_wide(&directory, work)?;
         // The actual native allocation guard stays after the path in this
@@ -171,10 +200,7 @@ impl MountDestinationGuard {
             if recovery && result.is_ok() {
                 #[cfg(unix)]
                 {
-                    crate::native_host::open_root_directory(canonical, work)
-                        .map(|(directory, _)| directory)
-                        .map(Some)
-                        .map_err(Into::into)
+                    Ok(held_recovery_directory)
                 }
                 #[cfg(windows)]
                 {
@@ -342,12 +368,13 @@ impl MountDestinationGuard {
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
-        let registry = crate::native_host::open_leaf(
+        let registry: MountLockFile = crate::native_host::open_leaf(
             &parent_directory,
             Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
-        )?;
+        )?
+        .into();
         lock_mount_file_with_work(&registry, true, work)?;
         let file = crate::native_host::open_leaf(
             &parent_directory,
@@ -358,11 +385,11 @@ impl MountDestinationGuard {
             work,
         )?;
         let admitted = Self {
-            file: Some(file),
+            file: Some(file.into()),
             lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory),
             fence_name: Some(name),
-            registry_file: Some(registry),
+            registry_file: Some(registry.into()),
             cleanup_name,
             birth_cleanup,
         };
@@ -395,7 +422,7 @@ impl MountDestinationGuard {
             .ok_or(NativeMountError::ControlPending)?;
         work.attempt_io(
             crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-            || fs2::FileExt::unlock(registry),
+            || fence_io::unlock(registry),
         )?;
         Ok(())
     }
@@ -420,7 +447,7 @@ impl MountDestinationGuard {
         let file = acquire_mount_lock(&lock_path, false)?;
         drop(registry);
         Ok(Self {
-            file: Some(file),
+            file: Some(file.into()),
             lock_path,
             parent_directory: None,
             fence_name: None,
@@ -544,12 +571,13 @@ impl MountDestinationGuard {
                     .ok_or(NativeMountError::InvalidDestination)?,
             ),
         };
-        let registry = crate::native_host::open_leaf(
+        let registry: MountLockFile = crate::native_host::open_leaf(
             directory,
             Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate,
             work,
-        )?;
+        )?
+        .into();
         lock_mount_file_with_work(&registry, true, work)?;
         match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
@@ -563,7 +591,7 @@ impl MountDestinationGuard {
 }
 
 pub(super) fn lock_mount_file_with_work<W: crate::native_host::NativeHostWork>(
-    file: &File,
+    file: &MountLockFile,
     blocking: bool,
     work: &mut W,
 ) -> Result<(), NativeMountError>
@@ -572,7 +600,7 @@ where
 {
     loop {
         let delta = crate::materializer::NativeResourceCredit::WriteOperations.delta(1);
-        let result = work.attempt_io(delta, || match fs2::FileExt::try_lock_exclusive(file) {
+        let result = work.attempt_io(delta, || match fence_io::try_lock(file) {
             Ok(()) => Ok(true),
             Err(error) if lock_is_contended(&error) => Ok(false),
             Err(error) => Err(error),
@@ -580,7 +608,7 @@ where
         match result {
             Ok(true) => return Ok(()),
             Ok(false) if blocking => {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                fence_io::wait(file);
             }
             Ok(false) => return Err(NativeMountError::DestinationBusy),
             Err(error) => return Err(error.into()),
