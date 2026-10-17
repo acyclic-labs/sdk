@@ -139,12 +139,12 @@ fn paint(source: &Source, matches: &[Range<usize>], output: &mut Vec<Line<'stati
             while matches.get(next).is_some_and(|range| range.end <= at) {
                 next += 1;
             }
-            let index = source
+            let style_index = source
                 .styles
                 .partition_point(|(end, _)| *end <= cell.source.start);
             let mut style = source
                 .styles
-                .get(index)
+                .get(style_index)
                 .map_or(Style::default(), |(_, style)| *style);
             if matches.get(next).is_some_and(|range| {
                 range.start < source.offset + cell.source.end && range.end > at

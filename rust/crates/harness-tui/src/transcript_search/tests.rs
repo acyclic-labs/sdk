@@ -189,3 +189,43 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     wrapped.highlight(&[]);
     assert_eq!(wrapped.rows(), ordinary);
 }
+
+#[test]
+fn partial_matches_preserve_every_style_boundary() {
+    use ratatui::{
+        style::{Modifier, Style},
+        text::{Line, Span},
+    };
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let italic = Style::default().add_modifier(Modifier::ITALIC);
+    let source = [Line::from(vec![
+        Span::styled("ab", bold),
+        Span::styled("cd", italic),
+    ])];
+    let mut wrapped = crate::WrappedLines::default();
+    wrapped.update(&source, 0, 80);
+    let mut search = TranscriptSearch::default();
+    search.update(&mut wrapped, "bc");
+    let spans = &wrapped.rows()[0].spans;
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>(),
+        ["a", "b", "c", "d"]
+    );
+    assert_eq!(spans[0].style, bold);
+    assert_eq!(spans[3].style, italic);
+    assert!(
+        spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::UNDERLINED)
+    );
+    assert!(
+        spans[2]
+            .style
+            .add_modifier
+            .contains(Modifier::ITALIC | Modifier::UNDERLINED)
+    );
+}
