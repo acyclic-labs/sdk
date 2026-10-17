@@ -303,3 +303,65 @@ proptest::proptest! {
         proptest::prop_assert!(check_statuses(&updates, count));
     }
 }
+
+#[test]
+fn ready_membership_cannot_register_before_discovery_is_delivered() {
+    futures::executor::block_on(async {
+        let provider = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+            .await
+            .unwrap();
+        let config = TaskVolume::open(provider.clone(), path("config/files"))
+            .await
+            .unwrap();
+        let count = acyclic_stream::MAX_ITEMS * 2 + 1;
+        for id in 0..count {
+            status::status(&provider, &format!("swarm/a{id:05}"), false).await;
+            status::member(&parent, &format!("a{id:05}")).await;
+        }
+        let (release, waiting) = futures::channel::oneshot::channel::<()>();
+        let waiting = std::sync::Mutex::new(Some(waiting));
+        let responses: runtime::ResponseMap = Arc::new(move |source| {
+            let mut waiting = waiting.lock().unwrap().take();
+            Box::pin(source.then(move |frame| {
+                let waiting = if matches!(&frame, Ok(frame) if matches!(&frame.body,
+                    Some(wire::session_frame::Body::Data(data)) if matches!(data.item, Some(wire::session_data::Item::Child(_))))) {
+                    waiting.take()
+                } else { None };
+                async move { if let Some(waiting) = waiting { waiting.await.unwrap(); } frame }
+            }))
+        });
+        let (session, mut runner, mut observed) =
+            runtime::open(provider, Arc::new(|s| s), responses);
+        let client = super::client(limits(count)).unwrap();
+        let mut consumer = Box::pin(client.follow(
+            &config,
+            &parent,
+            &session,
+            |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
+            async |_| Ok(()),
+        ));
+        assert!(runner.until_idle(consumer.as_mut()).await.is_none());
+        let interests = std::iter::from_fn(|| observed.try_recv().ok())
+            .filter_map(|frame| match frame.body {
+                Some(wire::session_frame::Body::Interest(change)) => Some(change),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            status_paths(&interests).unwrap().len(),
+            0,
+            "snapshot bypassed the discovery flow-control boundary"
+        );
+        release.send(()).unwrap();
+        let settled = runner.until_idle(consumer.as_mut()).await;
+        assert!(settled.is_none(), "paced discovery terminated: {settled:?}");
+        let interests = std::iter::from_fn(|| observed.try_recv().ok())
+            .filter_map(|frame| match frame.body {
+                Some(wire::session_frame::Body::Interest(change)) => Some(change),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(check_statuses(&interests, count));
+    });
+}

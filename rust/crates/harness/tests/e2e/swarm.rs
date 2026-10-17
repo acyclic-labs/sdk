@@ -23,6 +23,7 @@ pub(super) async fn run_with_fault(
     fault: Fault,
     paced: bool,
 ) -> TestResult<serde_json::Value> {
+    let started = std::time::Instant::now();
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());
     let parent = TaskVolume::open(provider.clone(), publish::path("swarm/files")).await?;
@@ -58,6 +59,7 @@ pub(super) async fn run_with_fault(
             .await?;
         volumes.push(volume);
     }
+    let seeded = started.elapsed();
     let Wire {
         client: session,
         mut runtime,
@@ -229,6 +231,7 @@ pub(super) async fn run_with_fault(
     if !matchers::subset(&case.expect.wire, &wire) {
         return Err(format!("swarm wire observations differ: {wire}").into());
     }
+    let followed = started.elapsed();
     // Reopen every index from accepted file records, including unselected agents.
     for volume in &volumes {
         let reopened = TaskVolume::open_existing(provider.clone(), volume.path().clone()).await?;
@@ -248,6 +251,12 @@ pub(super) async fn run_with_fault(
             return Err("reopened agent file differs".into());
         }
     }
+    println!(
+        "swarm phases agents={} seed={seeded:?} follow={:?} reopen={:?}",
+        case.agents,
+        followed - seeded,
+        started.elapsed() - followed
+    );
     measured.sort_unstable();
     if !measured.is_empty() {
         println!(

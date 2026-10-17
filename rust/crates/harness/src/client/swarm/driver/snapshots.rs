@@ -1,9 +1,15 @@
 //! Bounded snapshot I/O polled beside demand and followed records by one owner.
 use super::*;
-use futures::{StreamExt as _, future::LocalBoxFuture, stream::FuturesUnordered};
+use futures::{
+    StreamExt as _,
+    future::LocalBoxFuture,
+    stream::{AbortHandle, Abortable, FuturesUnordered},
+};
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     pin::Pin,
+    rc::Rc,
     task::{Context, Poll},
 };
 
@@ -11,22 +17,37 @@ type Completed = (StreamPath, u64, crate::task_volume::Result<HeadSnapshot>);
 struct PendingSnapshot<'a> {
     agent: StreamPath,
     generation: u64,
-    future: LocalBoxFuture<'a, crate::task_volume::Result<HeadSnapshot>>,
+    future: Rc<RefCell<Option<LocalBoxFuture<'a, crate::task_volume::Result<HeadSnapshot>>>>>,
 }
 impl Future for PendingSnapshot<'_> {
     type Output = Completed;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Completed> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Completed> {
         self.future
+            .borrow_mut()
+            .as_mut()
+            .expect("owned until aborted")
             .as_mut()
             .poll(cx)
             .map(|result| (self.agent.clone(), self.generation, result))
     }
 }
+struct Owner<'a> {
+    generation: u64,
+    future: Rc<RefCell<Option<LocalBoxFuture<'a, crate::task_volume::Result<HeadSnapshot>>>>>,
+    abort: AbortHandle,
+}
+impl Drop for Owner<'_> {
+    fn drop(&mut self) {
+        // Event-loop ownership: no mutex, provider poll or await during removal.
+        self.future.borrow_mut().take();
+        self.abort.abort();
+    }
+}
 pub(super) struct Snapshots<'a> {
     generation: u64,
     maximum: usize,
-    active: BTreeMap<StreamPath, u64>,
-    futures: FuturesUnordered<PendingSnapshot<'a>>,
+    active: BTreeMap<StreamPath, Owner<'a>>,
+    futures: FuturesUnordered<Abortable<PendingSnapshot<'a>>>,
 }
 impl<'a> Snapshots<'a> {
     pub fn new(maximum: usize) -> Self {
@@ -47,13 +68,6 @@ impl<'a> Snapshots<'a> {
                 .tier(agent)
                 .is_some_and(|tier| tier != crate::client::InterestTier::Overview)
         });
-        // Requeue retained pinned futures, and physically drop obsolete I/O now.
-        // An abort-only queue could retain cancelled requests behind repeated
-        // ready layout writes. Here both maps are always bounded by selection.
-        self.futures = std::mem::take(&mut self.futures)
-            .into_iter()
-            .filter(|pending| self.active.get(&pending.agent) == Some(&pending.generation))
-            .collect();
         Ok(())
     }
     pub fn retire(&mut self, agent: &StreamPath) -> Result<()> {
@@ -62,10 +76,6 @@ impl<'a> Snapshots<'a> {
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("snapshot generation overflow".into()))?;
         self.active.remove(agent);
-        self.futures = std::mem::take(&mut self.futures)
-            .into_iter()
-            .filter(|pending| &pending.agent != agent)
-            .collect();
         Ok(())
     }
     pub fn start<F>(&mut self, agent: StreamPath, future: F) -> Result<()>
@@ -78,18 +88,36 @@ impl<'a> Snapshots<'a> {
             ));
         }
         let generation = self.generation;
-        self.active.insert(agent.clone(), generation);
-        self.futures.push(PendingSnapshot {
-            agent,
-            generation,
-            future: future.boxed_local(),
-        });
+        let future = Rc::new(RefCell::new(Some(future.boxed_local())));
+        let (abort, registration) = AbortHandle::new_pair();
+        self.active.insert(
+            agent.clone(),
+            Owner {
+                generation,
+                future: future.clone(),
+                abort,
+            },
+        );
+        self.futures.push(Abortable::new(
+            PendingSnapshot {
+                agent,
+                generation,
+                future,
+            },
+            registration,
+        ));
         Ok(())
     }
     pub async fn next(&mut self) -> Completed {
-        match self.futures.next().await {
-            Some(completed) => completed,
-            None => futures::future::pending().await,
+        // The driver polls this branch before each membership/layout event.
+        // Retired I/O was already dropped by its indexed owner; drain only its
+        // wake-queued shell, never scan other agents or outstanding requests.
+        loop {
+            match self.futures.next().await {
+                Some(Ok(completed)) => return completed,
+                Some(Err(_)) => {}
+                None => return futures::future::pending().await,
+            }
         }
     }
     pub fn finish(
@@ -97,7 +125,7 @@ impl<'a> Snapshots<'a> {
         completed: Completed,
     ) -> Option<(StreamPath, crate::task_volume::Result<HeadSnapshot>)> {
         let (agent, generation, snapshot) = completed;
-        if self.active.get(&agent) != Some(&generation) {
+        if self.active.get(&agent).map(|owner| owner.generation) != Some(generation) {
             return None;
         }
         self.active.remove(&agent);
@@ -107,3 +135,6 @@ impl<'a> Snapshots<'a> {
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod retirement;

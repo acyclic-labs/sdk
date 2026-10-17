@@ -5,7 +5,7 @@ use futures::StreamExt as _;
 
 pub(super) struct Membership {
     root: StreamPath,
-    initial: std::vec::IntoIter<crate::task_volume::FileValue>,
+    initial: std::collections::BTreeSet<StreamPath>,
     changes: ChangeStream,
 }
 impl Membership {
@@ -22,10 +22,30 @@ impl Membership {
             .snapshot
             .ok_or_else(|| Error::Conflict("active membership snapshot missing".into()))?;
         Ok(Self {
-            root,
-            initial: snapshot.files.into_iter(),
+            root: root.clone(),
+            initial: snapshot
+                .files
+                .into_iter()
+                .map(|file| {
+                    let FileKey::Child {
+                        reference,
+                        file: ChildFile::Status,
+                    } = file.key
+                    else {
+                        return Err(Error::Invalid("non-status membership snapshot".into()));
+                    };
+                    StreamPath::new(format!("{root}/{}", reference.as_str()))
+                        .map_err(|e| Error::Invalid(e.to_string()))
+                })
+                .collect::<Result<_>>()?,
             changes: observation.changes,
         })
+    }
+    // Initial status follows are admitted by discovery deliveries, whose wire
+    // credit provides backpressure. A ready in-memory snapshot must not bypass
+    // that boundary and flood the platform's bounded control queue.
+    pub fn discovered(&mut self, agent: &StreamPath) -> bool {
+        self.initial.remove(agent)
     }
     pub async fn next(&mut self) -> Result<Option<(StreamPath, bool)>> {
         let value = |file: crate::task_volume::FileValue| -> Result<_> {
@@ -33,9 +53,7 @@ impl Membership {
                 ChildStatus::parse(&file.bytes).map_err(|e| Error::Invalid(e.to_string()))?;
             Ok((file.key, status.active()))
         };
-        let (key, active) = if let Some(file) = self.initial.next() {
-            value(file)?
-        } else {
+        let (key, active) = {
             let change = self
                 .changes
                 .next()
@@ -60,6 +78,7 @@ impl Membership {
         };
         let agent = StreamPath::new(format!("{}/{}", self.root, reference.as_str()))
             .map_err(|e| Error::Invalid(e.to_string()))?;
+        self.initial.remove(&agent);
         Ok(Some((agent, active)))
     }
 }

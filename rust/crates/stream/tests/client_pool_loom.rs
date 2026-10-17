@@ -186,3 +186,13 @@ fn initial_eof_retry_yields_to_deadline_and_cancellation() {
 fn negative_control_initial_eof_retry_monopolizes_the_executor() {
     acyclic_stream::session::verify_initial_retry_yield(true);
 }
+
+#[test]
+fn discovery_credit_bounds_initial_snapshot_admission() {
+    acyclic_stream::session::verify_discovery_admission(false);
+}
+#[test]
+#[should_panic(expected = "membership snapshot bypassed discovery backpressure")]
+fn negative_control_membership_snapshot_bypasses_discovery_credit() {
+    acyclic_stream::session::verify_discovery_admission(true);
+}

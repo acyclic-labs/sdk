@@ -111,7 +111,14 @@ impl SwarmClient {
         )
         .await?;
         loop {
-            futures::select! {
+            futures::select_biased! {
+                completed = snapshots.next().fuse() => {
+                    if let Some((agent, snapshot)) = snapshots.finish(completed) {
+                        let snapshot = snapshot.map_err(|error| Error::Storage(error.to_string()))?;
+                        follows.content(agent.clone(), &snapshot.cursor)?;
+                        publish(SwarmUpdate::Snapshot { agent, snapshot }).await?;
+                    }
+                },
                 member = membership.next().fuse() => {
                     if let Some((agent, active)) = member? {
                         if active {
@@ -142,13 +149,6 @@ impl SwarmClient {
                         snapshots.start(agent, pending)?;
                     }
                 },
-                completed = snapshots.next().fuse() => {
-                    if let Some((agent, snapshot)) = snapshots.finish(completed) {
-                        let snapshot = snapshot.map_err(|error| Error::Storage(error.to_string()))?;
-                        follows.content(agent.clone(), &snapshot.cursor)?;
-                        publish(SwarmUpdate::Snapshot { agent, snapshot }).await?;
-                    }
-                },
                 routed = follows.next().fuse() => {
                     let routed = routed.ok_or_else(|| Error::Storage("swarm follows ended".into()))?;
                     let frame = routed.frame.map_err(|error| Error::Storage(error.to_string()))?;
@@ -162,6 +162,13 @@ impl SwarmClient {
                             // parent membership files can admit or retire a row.
                             if demand.tier(&agent).is_none() {
                                 return Err(Error::Invalid("discovered agent lies outside swarm".into()));
+                            }
+                            if membership.discovered(&agent)
+                                && follows.discover(&demand, agent.clone(), self.limits.agents)? {
+                                publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
+                                if demand.tier(&agent).is_some_and(|tier| tier != crate::client::InterestTier::Overview) {
+                                    snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
+                                }
                             }
                         }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {

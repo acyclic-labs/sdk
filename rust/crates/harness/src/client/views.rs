@@ -283,6 +283,9 @@ impl ClientViews {
     pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
         match update {
             SwarmUpdate::Retired { agent } => {
+                if &agent == self.layout.root() || self.layout.tier(&agent).is_none() {
+                    return Err(Error::Invalid("retirement outside swarm".into()));
+                }
                 if let Some(retired) = self.agents.remove(&agent) {
                     self.overview_values -= retired.status.values.len();
                     self.overview_bytes -= retired
@@ -293,9 +296,9 @@ impl ClientViews {
                             (v.value.key.len() + v.value.value.len() + v.after.opaque.len()) as u64
                         })
                         .sum::<u64>();
-                    self.goal_sources.retain(|goal, request| {
-                        !retired.files.contains_key(goal) && !retired.files.contains_key(request)
-                    });
+                    // Cross-query bindings belong to the root's standalone
+                    // selections; swarm agents have one Root selection, so
+                    // none can be a File(RequestHead) binding endpoint.
                 }
                 Ok(SwarmChange::Retired { agent })
             }

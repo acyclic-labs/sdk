@@ -41,6 +41,7 @@ fn layout(queue: &mut Snapshots<'static>, model: &mut Model, selected: u8) -> Te
     }
     model.selected = selected;
     prop_assert_eq!(queue.active.len(), model.active.iter().flatten().count());
+    prop_assert!(queue.next().now_or_never().is_none());
     prop_assert_eq!(queue.futures.len(), model.active.iter().flatten().count());
     Ok(())
 }
@@ -54,10 +55,15 @@ fn complete(
     let path = agent(index);
     // A completed future has left FuturesUnordered before dispatch. Its result
     // may then race a demand transition; remove only that exact source epoch.
-    queue.futures = std::mem::take(&mut queue.futures)
-        .into_iter()
-        .filter(|pending| pending.agent != path || pending.generation != generation)
-        .collect();
+    if queue
+        .active
+        .get(&path)
+        .is_some_and(|owner| owner.generation == generation)
+    {
+        // The real next() returns this source's completion before finish().
+        queue.active.get(&path).unwrap().abort.abort();
+        assert!(queue.next().now_or_never().is_none());
+    }
     let expected = model.active[index] == Some(generation);
     let accepted = if broken {
         // Missing-fence mutant accepts any active request for this agent.
@@ -113,6 +119,7 @@ fn property(actions: &[u8], broken: bool) -> TestCaseResult {
     complete(&mut queue, &mut model, 0, old, broken)?;
     let current = model.generation;
     complete(&mut queue, &mut model, 0, current, broken)?;
+    prop_assert!(queue.next().now_or_never().is_none());
     prop_assert!(queue.active.is_empty() && queue.futures.is_empty());
     Ok(())
 }
