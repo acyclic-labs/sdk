@@ -117,7 +117,10 @@ impl PromptFiles {
             for text in appended {
                 merged.push(text.clone());
             }
-            let merged = recent_history(&merged, files.view_bounds().1)?;
+            let merged = recent_history(
+                &merged,
+                files.state_byte_limit(CommandFileRoot::Config, "history.json")?,
+            )?;
             let value = serde_json::to_value(merged.entries())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             if files

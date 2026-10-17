@@ -39,12 +39,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         bytes: Vec<u8>,
         create_only: bool,
     ) -> Result<()> {
-        if bytes.len() as u64 > self.maximum_bytes {
+        let file = files::FileValue::new(key, bytes);
+        if file.bytes.len() as u64 > self.maximum_bytes
+            || files::record_bytes(&file)? > acyclic_stream::MAX_RECORD_BYTES
+        {
             return Err(Error::Invalid(
                 "command publication exceeds byte bound".into(),
             ));
         }
-        let file = files::FileValue::new(key, bytes);
         let before = self.files.get(&file.key).cloned();
         if create_only && before.is_some() {
             if RETRY && before.as_ref() == Some(&file) {

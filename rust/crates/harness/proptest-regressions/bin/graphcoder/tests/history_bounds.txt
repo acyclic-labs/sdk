@@ -1,0 +1,2 @@
+# Exact-framing history regression; replayed before generated cases.
+cc af7b90c1423840a86cf0dd989a73b776ee5629e2a739be34292b7f369df1a192 # lengths = [3000, 3000, 3000, 26772, 31427, 7275], atom = "a"

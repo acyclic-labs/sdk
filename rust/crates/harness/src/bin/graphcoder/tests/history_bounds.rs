@@ -25,6 +25,8 @@ proptest! {
             let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("history-bound").unwrap()).await.unwrap());
             let id = OperationId::new().to_string().parse().unwrap();
             let mut files = CommandSession::open(volume.clone(), id, LIMIT as u64, 128).await.unwrap();
+            let budget = files.state_byte_limit(CommandFileRoot::Config, "history.json").unwrap();
+            prop_assert!(budget <= LIMIT);
             let mut projection = PromptFiles::default();
             let mut input = PromptInput::default();
             projection.refresh(&files, &mut input).unwrap();
@@ -36,12 +38,12 @@ proptest! {
             input.replace_history(history);
             projection.save(&mut files, &mut input).await.unwrap();
             let saved = files.state_file(CommandFileRoot::Config, "history.json").unwrap().unwrap();
-            prop_assert!(saved.bytes.len() <= LIMIT);
+            prop_assert!(saved.bytes.len() <= budget);
             let retained: Vec<String> = serde_json::from_slice(&saved.bytes).unwrap();
             let start = all.len() - retained.len();
             prop_assert_eq!(&retained, &all[start..]);
             if start > 0 {
-                prop_assert!(serde_json::to_vec(&all[start - 1..]).unwrap().len() > LIMIT);
+                prop_assert!(serde_json::to_vec(&all[start - 1..]).unwrap().len() > budget);
             }
             prop_assert_eq!(input.history().entries(), retained.as_slice());
             projection.save(&mut files, &mut input).await.unwrap();
@@ -56,7 +58,7 @@ proptest! {
             replay.replace_history(next);
             replay_files.save(&mut reopened, &mut replay).await.unwrap();
             let saved = reopened.state_file(CommandFileRoot::Config, "history.json").unwrap().unwrap();
-            prop_assert!(saved.bytes.len() <= LIMIT);
+            prop_assert!(saved.bytes.len() <= budget);
             prop_assert_eq!(replay.history().entries().last().map(String::as_str), Some("newest submission"));
             let mut navigation = replay.history().clone();
             replay.editor.set_text(&navigation.previous("").unwrap(), 0);
