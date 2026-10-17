@@ -20,12 +20,10 @@ pub fn encoded(event: u8, sequence: u64, detail: String) -> AttentionNotificatio
     }
 }
 fn file(bytes: &[u8]) -> FileValue {
-    FileValue {
-        key: FileKey::parse(".tasks/t/notifications/n.json").unwrap(),
-        bytes: bytes.to_vec().into(),
-        channel: None,
-        publication: None,
-    }
+    FileValue::new(
+        FileKey::parse(".tasks/t/notifications/n.json").unwrap(),
+        bytes.to_vec(),
+    )
 }
 pub fn check(record: &AttentionNotification, dropped: bool) {
     let value = file(&serde_json::to_vec(record).unwrap());
