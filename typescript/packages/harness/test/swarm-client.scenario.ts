@@ -60,6 +60,9 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   try {
     await wait("snapshot:swarm/a");
     check(segments("swarm/a")?.join("") === "before", "snapshot bytes missing");
+    const task = views.task("swarm/a", "task");
+    check(task?.text.length === 1 && task.text[0]?.turn === turn, "task projection lost its full-width turn");
+    check(views.segments("swarm/a", task.text[0].file.key)?.map(bytes => decode.decode(bytes)).join("") === "before", "task projection uses another file fold");
     await status("swarm/b", true); await wait("attention");
     check(views.agents().join(",") === "swarm/a,swarm/b", "overview discovery incomplete");
     if (recover) await recover();
@@ -70,6 +73,7 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     await layout("open-views", { in_view: ["swarm/a"] }); await wait("visible");
     check(views.cursor("swarm/a")!.position === cursor.position, "promotion reset the cursor");
     check(segments("swarm/a")?.join("") === "before live", "promotion lost streaming text");
+    check(views.task("swarm/a", "task")?.text[0]?.file.segments === 2n, "task projection copied or lost segments");
     check(views.files("swarm/a")[0]?.segments === 2n, "text was concatenated instead of segmented");
     await layout("open-views", {}); await wait("prefetch");
     await layout("layout", { in_view: ["swarm/b"] }); await wait("snapshot:swarm/b");

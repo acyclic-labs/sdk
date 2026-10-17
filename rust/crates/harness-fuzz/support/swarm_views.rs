@@ -84,6 +84,29 @@ fn check_watermark(views: &ClientViews, position: u64, accepted: u64, durable: u
         cursor.position, position,
         "watermarks cannot consume file data"
     );
+    let task = acyclic_harness::task_volume::Component::new("t").unwrap();
+    let projected = views.task(&(cursor.volume, cursor.query), &task).unwrap();
+    assert_eq!(projected.cursor, cursor);
+    let actual: Vec<_> = projected.text().map(|text| text.file).collect();
+    let expected: Vec<_> = views
+        .files(&path("swarm/a"))
+        .filter(|head| {
+            matches!(
+                head.key,
+                FileKey::Task {
+                    file: acyclic_harness::task_volume::TaskFile::TextHead { .. },
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        actual
+            .into_iter()
+            .zip(expected)
+            .all(|(actual, expected)| std::ptr::eq(actual, expected))
+    );
     assert!(cursor.accepted >= accepted);
     assert!(
         cursor.durable >= durable,

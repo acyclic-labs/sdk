@@ -110,7 +110,7 @@ struct SwarmStatusInfo<'a> {
 /// The exact read-only native views, readable while the follow awaits I/O.
 #[wasm_bindgen]
 pub struct WasmClientViews {
-    views: ClientViewHandle,
+    pub(super) views: ClientViewHandle,
 }
 impl From<ClientViewHandle> for WasmClientViews {
     fn from(views: ClientViewHandle) -> Self {

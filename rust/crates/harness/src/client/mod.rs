@@ -51,6 +51,8 @@ mod task_list;
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod file_query;
 pub use file_query::{FileQueryView, GoalFileView};
+mod task_files_view;
+pub use task_files_view::{TaskQueryView, TaskTextView, ToolQueryView};
 mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
