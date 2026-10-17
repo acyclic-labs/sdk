@@ -23,7 +23,16 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
         .list_directory("/", None, 1, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
     assert_eq!(retained.len(), 10_000);
-    assert_eq!(before.value.0, after.value.0);
+    // The listing is identical; only its own work may fall, because decoded objects are cached after the first
+    // listing (#788). Retained workspaces never add work to a pinned listing.
+    let (first, second) = (&before.value.0, &after.value.0);
+    assert_eq!(
+        (&first.entries, first.has_more, &first.next_residency),
+        (&second.entries, second.has_more, &second.next_residency)
+    );
+    assert!(second.work.backend_read_operations <= first.work.backend_read_operations);
+    assert!(second.work.object_bytes_read <= first.work.object_bytes_read);
+    assert_eq!(second.work.source_entries_visited, 0);
     assert_eq!(after.value.0.entries.len(), 1);
     assert!(after.work.backend_read_operations <= before.work.backend_read_operations);
     assert!(after.work.page_reads <= before.work.page_reads);

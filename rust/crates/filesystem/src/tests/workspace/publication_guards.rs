@@ -248,12 +248,16 @@ async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), 
             }),
         )
         .await;
-    assert!(matches!(
-        result,
-        Err(WorkspaceError::Filesystem(FsError::Authority(
-            crate::AuthorityStoreError::RejectedStatic(_)
-        )))
-    ));
+    // The authority admits only Unrestricted or a matching source Lease to a fork; a source Reservation is
+    // rejected as a creation (lineage.rs), before any destination exists.
+    assert!(
+        matches!(
+            result,
+            Err(WorkspaceError::Filesystem(FsError::CreationRejected))
+        ),
+        "{:?}",
+        result.as_ref().err()
+    );
     assert!(unbounded!(fs, open_workspace("destination")).is_err());
     source
         .release_publication(reservation, &original, &cancellation)
