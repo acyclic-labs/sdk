@@ -83,6 +83,27 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
 }
 
 #[test]
+fn interrupted_flush_retries_once_and_admits_both_attempts() -> io::Result<()> {
+    let file = tempfile::tempfile()?;
+    for (durability, command) in [
+        (Durability::Full, libc::F_FULLFSYNC),
+        (Durability::Barrier, libc::F_BARRIERFSYNC),
+    ] {
+        let mut admissions = 0;
+        let (result, calls) = observe(&[libc::EINTR], false, || {
+            sync_once(&file, durability, || {
+                admissions += 1;
+                Ok(())
+            })
+        });
+        result?;
+        assert_eq!(calls, [command, command]);
+        assert_eq!(admissions, 2);
+    }
+    Ok(())
+}
+
+#[test]
 fn only_enotsup_falls_back_and_full_never_acknowledges_the_fallback() -> io::Result<()> {
     let file = tempfile::tempfile()?;
     for (errors, expected) in [

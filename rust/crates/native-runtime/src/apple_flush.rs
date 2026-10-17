@@ -35,22 +35,26 @@ fn syscall(
 ) -> io::Result<()> {
     loop {
         admit()?;
-        #[cfg(test)]
-        let command = tests::intercept(command)?;
-        // SAFETY: each flush operation acts only on the held live descriptor.
-        let result = unsafe {
-            if command == 0 {
-                libc::fsync(file.as_raw_fd())
+        let result = (|| {
+            #[cfg(test)]
+            let command = tests::intercept(command)?;
+            // SAFETY: each flush operation acts only on the held live descriptor.
+            let result = unsafe {
+                if command == 0 {
+                    libc::fsync(file.as_raw_fd())
+                } else {
+                    libc::fcntl(file.as_raw_fd(), command)
+                }
+            };
+            if result == 0 {
+                Ok(())
             } else {
-                libc::fcntl(file.as_raw_fd(), command)
+                Err(io::Error::last_os_error())
             }
-        };
-        if result == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
+        })();
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
         }
     }
 }
