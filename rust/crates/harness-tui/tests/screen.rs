@@ -285,3 +285,25 @@ fn composed_prompt_restores_each_item_draft_and_shared_history_from_files()
 
 #[path = "screen/display_text.rs"]
 mod display_text;
+
+#[test]
+fn feedback_owns_the_viewport_while_a_task_is_busy() -> Result<(), Box<dyn std::error::Error>> {
+    let transcript = vec![Line::from("retained transcript"); 40];
+    let screen = Screen {
+        transcript: &transcript,
+        feedback: true,
+        ..Screen::default()
+    };
+    let mut input = PromptInput::default();
+    input.busy = true;
+    let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    terminal.draw(|frame| {
+        assert_eq!(screen.tail_scroll(frame.area(), &input), 0);
+        screen.render(frame, &input, &mut Viewport::default(), 0, 1000);
+    })?;
+    let text = visible(&terminal);
+    assert!(text.contains("Feedback"));
+    assert!(!text.contains("retained transcript"));
+    assert!(!text.contains("Thinking…"));
+    Ok(())
+}

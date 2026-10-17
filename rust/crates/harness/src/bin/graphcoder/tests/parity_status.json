@@ -377,7 +377,7 @@
   {
     "section": "3. TUI polish",
     "row": "\"Thinking…\" shimmer",
-    "status": "Implemented on hf/gc-graphcoder-thinking: file-backed busy state, themed shimmer, idle-free frame deadline; TestBackend/model controls and held-preparation PTY"
+    "status": "Implemented on hf/gc-graphcoder-thinking-widget: file-backed busy state, themed shimmer, idle-free frame deadline; TestBackend/model controls and held-preparation PTY"
   },
   {
     "section": "3. TUI polish",
