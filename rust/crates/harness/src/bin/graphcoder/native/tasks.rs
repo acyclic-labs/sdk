@@ -36,6 +36,7 @@ impl NativeSession {
         operation: OperationId,
     ) -> Result<WorkflowCommand> {
         let bytes = serde_json::to_vec(&acyclic_harness::filesystem::ModelTaskCommand {
+            context_manifest: self.context_manifest.clone(),
             input: ModelContent::Text(text.into()),
             selected_context: None,
             max_steps: 1,
@@ -86,7 +87,6 @@ impl NativeSession {
         let commands = self.runtime.commands().with_model(
             &crate::provider::model(self.config.deterministic_delay_ms),
             self.model_provider.clone(),
-            &self.context,
             &Default::default(),
             None,
         )?;

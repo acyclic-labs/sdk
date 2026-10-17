@@ -195,7 +195,7 @@ function compilerSource() {
 }
 
 function trackedCompilerPaths() {
-  const roots = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "rust", "proto", "scripts", "release", "typescript", "package.json", "bun.lock", "tsconfig.json", "tsconfig.base.json"];
+  const roots = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "rust", "proto", "scripts", "compatibility", "release", "typescript", "package.json", "bun.lock", "tsconfig.json", "tsconfig.base.json"];
   if (checkedGit(["status", "--porcelain=v1", "--untracked-files=all", "--", ...roots]).trim()) fail("compiler source is not a clean captured checkout");
   if (/^[a-zS] /m.test(checkedGit(["ls-files", "-v", "--", ...roots]))) fail("compiler source has concealed index changes");
   return new Set(checkedGit(["ls-files", "-z", "--", ...roots]).split("\0").filter(Boolean));

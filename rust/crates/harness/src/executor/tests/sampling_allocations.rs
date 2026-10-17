@@ -2,7 +2,7 @@ use super::*;
 use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
 
 fn catalog(count: usize) -> Result<ToolRegistry> {
-    let template = crate::tool::files::read_file()?;
+    let template = crate::tool::files::read()?;
     let mut tools = ToolRegistry::default();
     for index in 0..count {
         let name = format!("tool_{index:05}");
@@ -72,7 +72,7 @@ async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -
         for (index, id) in ["sample", "broken"].into_iter().enumerate() {
             let request = request(parent, id);
             let mut result = None;
-            let allocations = allocation_counter::measure(|| {
+            let allocations = acyclic_test_support::measure(|| {
                 result = Some(futures::executor::block_on(async {
                     if index == 1 {
                         // Deliberately restore the former request-assembly bug:

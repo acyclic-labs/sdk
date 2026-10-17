@@ -10,7 +10,27 @@ default-run = "sdk-generation"
 
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
+sdk-file-identity = { path = "../sdk-docs/file-identity" }
 cargo_metadata = "=0.23.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+ring = "=0.17.14"
+tar = "0.4"
+flate2 = "1"
+tempfile = "=3.27.0"
+
+[dev-dependencies]
+sdk-docs = { path = "../sdk-docs", features = ["test-support"] }
+proptest = "=1.11.0"
+toml = "=0.9.8"
+
+[[bin]]
+name = "registry-transport-fixture"
+path = "tests/support/registry_transport.rs"
+test = false
+bench = false
+doc = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(acyclic_sdk_docs_loom)'] }

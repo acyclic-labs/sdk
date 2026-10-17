@@ -245,23 +245,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
             self.verify_creation(io).await?;
-            let hashing = acyclic_fs::WorkCounters {
-                bytes_hashed: path.len() as u64,
-                ..Default::default()
-            };
-            if let Some(io) = io {
-                io.preflight(hashing)?;
-            }
-            let digest = blake3::hash(path.as_bytes());
-            if let Some(io) = io {
-                io.charge(hashing)?;
-            }
-            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("filesystem-upload:{operation}:{}", digest.to_hex()),
-                    work,
-                )
-            })?)?;
+            let retry = upload_key(operation, path, io)?;
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
                 .transpose()?;
@@ -486,4 +470,72 @@ fn replacement_key(
         })?;
     }
     IdempotencyKey::new(key)
+}
+
+fn upload_key(
+    operation: OperationId,
+    path: &str,
+    io: Option<&PreparationIo>,
+) -> Result<IdempotencyKey> {
+    let hashing = acyclic_fs::WorkCounters {
+        bytes_hashed: path.len() as u64,
+        ..Default::default()
+    };
+    if let Some(io) = io {
+        io.preflight(hashing)?;
+    }
+    let digest = blake3::hash(path.as_bytes());
+    if let Some(io) = io {
+        io.charge(hashing)?;
+    }
+    IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(
+            format_args!("filesystem-upload:{operation}:{}", digest.to_hex()),
+            work,
+        )
+    })?)
+}
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentPublisher<A, O>
+{
+    pub(crate) async fn observe_staged_path(
+        &self,
+        operation: OperationId,
+        path: &str,
+        maximum: u64,
+    ) -> Result<Option<FileRef>> {
+        self.host
+            .content_for_operation(
+                &self.volume,
+                &self.grant,
+                &upload_key(operation, path, None)?,
+                path,
+                maximum.min(self.maximum_bytes),
+                None,
+            )
+            .await
+    }
+    pub(crate) async fn observe_staged_at(
+        &self,
+        operation: OperationId,
+        source: &FileRef,
+        maximum: u64,
+    ) -> Result<Option<FileRef>> {
+        self.host
+            .content_for_operation(
+                &self.volume,
+                &self.grant,
+                &replacement_key(operation, source.path(), None)?,
+                source.path(),
+                maximum.min(self.maximum_bytes),
+                None,
+            )
+            .await
+    }
 }

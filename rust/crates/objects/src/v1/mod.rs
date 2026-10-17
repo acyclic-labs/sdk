@@ -33,6 +33,11 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ),
     ("objects/list", "ListObjectsRequest", "ListObjectsResponse"),
     (
+        "objects/restore",
+        "RestoreObjectsRequest",
+        "RestoreObjectsResponse",
+    ),
+    (
         "multipart/create",
         "CreateMultipartRequest",
         "MultipartUpload",
@@ -74,7 +79,7 @@ mod tests;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
-    include!("../generated/acyclic.objects.v1.rs");
+    include!(concat!(env!("OUT_DIR"), "/acyclic.objects.v1.rs"));
 }
 
 /// Largest caller-supplied PEM CA, client certificate, or private key.
@@ -84,7 +89,8 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Canonical Objects v1 descriptor, including streaming service definitions.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../generated/acyclic-objects-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-objects-v1.bin"));
 
 /// Canonical semantic failure; infrastructure diagnostics remain operator-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -213,6 +219,14 @@ pub trait ObjectsProvider: Send + Sync {
         &self,
         request: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error>;
+    /// Atomically restores a retained prefix. Expired coverage is PreconditionFailed;
+    /// repeating the same mutation identity returns its original result.
+    async fn restore(
+        &self,
+        _request: wire::RestoreObjectsRequest,
+    ) -> Result<wire::RestoreObjectsResponse, Error> {
+        Err(wire::ErrorCode::Unsupported.into())
+    }
     /// Traverses a live eventual listing in lexical key order.
     async fn list(
         &self,

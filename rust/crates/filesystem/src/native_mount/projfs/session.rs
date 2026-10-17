@@ -192,6 +192,8 @@ impl ProjFsSession {
             })?;
         }
         let callbacks = callbacks();
+        #[cfg(test)]
+        let callbacks = super::tests::read_bindings::registered_callbacks(callbacks);
         let context = (&mut &*work).attempt_io(WriteOperations.delta(1), || {
             // SAFETY: this Arc allocation is stable until SDK stop drains callbacks.
             unsafe {

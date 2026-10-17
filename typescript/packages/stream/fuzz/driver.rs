@@ -11,13 +11,12 @@ pub struct Driver {
     output: BufReader<ChildStdout>,
 }
 impl Driver {
-    pub fn open(root: &Path) -> Self {
-        Self::configured(root, "decode", "")
-    }
     pub fn configured(root: &Path, scenario: &str, fault: &str) -> Self {
         let mut child = Command::new("bun")
             .arg(if scenario.starts_with("deadline") {
                 "typescript/packages/stream/test/session-deadline-model-driver.ts"
+            } else if scenario == "queue-work" {
+                "typescript/packages/stream/test/session-queue-work-driver.ts"
             } else if scenario == "queue" {
                 "typescript/packages/stream/test/session-queue-model-driver.ts"
             } else {

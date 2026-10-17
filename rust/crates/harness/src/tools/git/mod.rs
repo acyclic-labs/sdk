@@ -6,12 +6,12 @@ use acyclic_fs::{
     ApplyOptions, CancellationToken, Generation, GitCommand, GitCommandOutput, GitCompatRepository,
     GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult, GitIgnorePolicy, GitTreeRef,
     IdempotencyKey, JoinOutcome, LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore,
-    LocalFs, LocalObjectBackend, MaterializeOptions, MemoryMergeResolutionCache,
-    MergeDriverRegistry, OperationId, OperationWindowCoordinator, OperationWindowLease,
-    PublicationPermit, TransactionCommit, WorkBudget, Workspace as FsWorkspace, WorkspaceError,
-    WorkspaceGraph, WorkspacePathApply, WorkspaceRestore, apply_git_patch, blame_git_generations,
-    capture_git_compatible_generation, capture_git_compatible_generation_incremental,
-    git_compatible_diff_counts, grep_git_generation, resolve_merge_plan, walk_git_tree,
+    LocalFs, LocalObjectBackend, MemoryMergeResolutionCache, MergeDriverRegistry, OperationId,
+    OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
+    WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
+    WorkspaceRestore, apply_git_patch, blame_git_generations, capture_git_compatible_generation,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
+    walk_git_tree,
 };
 use serde_json::json;
 use std::{
@@ -28,8 +28,12 @@ type LocalLazyWorkspace = LazyWorkspace<
     NativeDemandSource,
     LocalCoreStateStore,
 >;
-fn display(error: impl std::fmt::Display) -> crate::Error {
-    crate::Error::Storage(error.to_string())
+fn json_error(source: serde_json::Error) -> Error {
+    Error::NativeJson {
+        code: crate::wire::ErrorCode::Storage,
+        source,
+        custody: None,
+    }
 }
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
@@ -37,8 +41,8 @@ fn now_millis() -> u64 {
         .map(|time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
-use crate::filesystem::NativeDirectory;
 mod helpers;
+mod join;
 use acyclic_fs::facade::FsWork as _;
 use helpers::existing_tracked_paths;
 mod path;
@@ -46,7 +50,9 @@ use path::workspace_path_argument;
 
 use crate::Error;
 /// Executes the full git facade against a managed lazy workspace.
-pub(crate) struct WorkspaceGitExecutor<'a> {
+pub(crate) struct WorkspaceGitExecutor<'a, F> {
+    /// Revalidates task ownership before every effect.
+    pub before_effect: &'a F,
     /// Shared local filesystem.
     pub fs: &'a LocalFs,
     /// Durable compatibility and lineage store.
@@ -54,7 +60,7 @@ pub(crate) struct WorkspaceGitExecutor<'a> {
     /// Current workspace.
     pub current: LocalWorkspace,
     /// Demand-backed workspace view.
-    pub lazy_current: &'a LocalLazyWorkspace,
+    pub lazy_current: View<'a>,
     /// Compatibility repository identity.
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
@@ -70,7 +76,7 @@ pub(crate) struct WorkspaceGitExecutor<'a> {
     /// Merge resolution cache.
     pub merge_cache: AsyncMutex<MemoryMergeResolutionCache>,
     /// Newly selected workspace after checkout.
-    pub switched: Mutex<Option<LocalLazyWorkspace>>,
+    pub switched: Mutex<Option<OwnedView>>,
 }
 
 fn committed(
@@ -80,16 +86,16 @@ fn committed(
         TransactionCommit::Committed(generation)
         | TransactionCommit::AlreadyCommitted(generation) => generation,
         TransactionCommit::Conflict { .. } => {
-            return Err(WorkspaceGitExecutor::error(
-                "Git transaction raced with another workspace writer",
+            return Err(Error::Conflict(
+                "Git transaction raced with another workspace writer".into(),
             ));
         }
         TransactionCommit::Fenced => {
-            return Err(WorkspaceGitExecutor::error("Git transaction was fenced"));
+            return Err(Error::Conflict("Git transaction was fenced".into()));
         }
         TransactionCommit::IdempotencyConflict => {
-            return Err(WorkspaceGitExecutor::error(
-                "Git transaction retry identity was reused",
+            return Err(Error::Conflict(
+                "Git transaction retry identity was reused".into(),
             ));
         }
     };
@@ -102,14 +108,21 @@ fn committed(
     })
 }
 
+mod agents;
 mod commands;
 mod errors;
+mod failure;
+pub use failure::Failure;
 mod executor;
 mod materialize;
 mod resolve;
 mod restore;
 pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_git_command};
 pub(crate) use materialize::RootMaterializingGitExecutor;
+pub(crate) use materialize::publish_checkout_transition;
 
 mod run;
+pub(crate) use run::run_with_guard;
 pub use run::{Output, Workspace, run};
+mod view;
+pub use view::{OwnedView, View};

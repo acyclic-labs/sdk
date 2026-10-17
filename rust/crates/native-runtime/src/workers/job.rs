@@ -32,6 +32,15 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn test_terminal(&self) -> Arc<dyn TaskTerminal> {
+        match self {
+            Self::Read { state, .. } => state.clone(),
+            Self::Write { state, .. } => state.clone(),
+            Self::Task { terminal, .. } => terminal.clone(),
+        }
+    }
+
     pub(crate) fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
             Self::Task { meter, .. } => meter.as_ref(),

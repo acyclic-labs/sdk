@@ -17,33 +17,33 @@ impl StreamProvider for LocalStream {
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        let accepted = self.inner.provider.tail(path.clone()).await?;
-        let synced = {
-            let journal = self
+        self.accepted(async {
+            let accepted = self.inner.provider.tail(path.clone()).await?;
+            // Both frame counters are published before publication is released.
+            // Do not borrow the journal: compaction may hold it during device I/O.
+            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let mut tails = self
                 .inner
-                .journal
+                .durable_tails
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            journal.synced >= journal.appended
-        };
-        let mut tails = self
-            .inner
-            .durable_tails
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.entry(path).or_default();
-        if synced {
-            *durable = (*durable).max(accepted);
-        }
-        Ok(crate::StreamWatermarks {
-            accepted,
-            durable: *durable,
+            let durable = tails.entry(path).or_default();
+            if synced {
+                *durable = (*durable).max(accepted);
+            }
+            Ok(crate::StreamWatermarks {
+                accepted,
+                durable: *durable,
+            })
         })
+        .await?
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("append {} {:?}", request.path, request.idempotency_key)
+        });
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
             items = request.records.len(),
@@ -125,7 +125,27 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await?
+        let changed = self.inner.failed.subscribe();
+        let children = self
+            .accepted(self.inner.provider.children(request))
+            .await??;
+        Ok(stream::try_unfold(
+            (self.clone(), children, changed),
+            |(provider, mut children, mut changed)| async move {
+                let unavailable = Box::pin(LocalInner::unavailable(&mut changed));
+                // No visibility guard is held while either subscription parks.
+                let child = match futures::future::select(unavailable, children.next()).await {
+                    futures::future::Either::Left((error, _)) => return Err(error),
+                    futures::future::Either::Right((child, _)) => child,
+                };
+                let Some(child) = child.transpose()? else {
+                    return Ok(None);
+                };
+                provider.accepted(async {}).await?;
+                Ok(Some((child, (provider, children, changed))))
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(
@@ -249,6 +269,8 @@ async fn commit(
     request: CommitRequest,
     deadline: Option<u64>,
 ) -> Result<CommitOutcome, StreamError> {
+    #[cfg(feature = "test-support")]
+    describe_commit(&request);
     let span = obs::OperationSpan::new(tracing::info_span!(
         "acyclic.stream.commit",
         items = request.mutations.len(),
@@ -270,4 +292,22 @@ async fn commit(
             .await
     })
     .await
+}
+
+#[cfg(feature = "test-support")]
+fn describe_commit(request: &CommitRequest) {
+    acyclic_native_runtime::testing::describe(|| {
+        format!(
+            "commit {:?}: {:?}",
+            request.idempotency_key,
+            request
+                .mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    crate::CommitMutation::Append { path, .. } => path.as_str(),
+                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
+                })
+                .collect::<Vec<_>>()
+        )
+    });
 }

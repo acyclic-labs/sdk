@@ -168,16 +168,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = self
-            .apply_generation(
+        let generation = crate::conversation::BoundedContentFuture::new(None, || {
+            self.apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
-                idempotency_key.clone(),
-                None,
-                None,
-            )?
-            .await?;
+                idempotency_key,
+                true,
+            )
+        })?
+        .await?;
         self.generation_ref_id(generation.id(), None)
     }
 
@@ -187,6 +187,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
+        invalidate_metadata: bool,
     ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -221,7 +222,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction
-                        .write(path, Bytes::copy_from_slice(bytes), budget, &cancellation)
+                        .write(path, bytes.clone(), budget, &cancellation)
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
@@ -234,6 +235,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
                         .map_err(map_error)?;
+                }
+            }
+            // Raw mutations do not carry a descriptor or write publication.
+            // Invalidate the old index atomically, including same-byte writes.
+            // The content writer supplies its own metadata in this transaction.
+            if invalidate_metadata
+                && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                    mutation
+            {
+                let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                match transaction.remove(&metadata, budget, &cancellation).await {
+                    Ok(_) => {}
+                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                    Err(failure) => return Err(map_error(failure.error)),
                 }
             }
         }
@@ -310,6 +325,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }
+        if let Some((bound, workspace)) = &self.workspace_binding
+            && bound == reference
+        {
+            return Ok(workspace.clone());
+        }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
         io.sdk(
@@ -341,13 +361,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .key()
             .try_into()
             .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
+        let generation = GenerationId::new(Digest::from_bytes(key));
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some((root, store)) = &self.project_family
+            && workspace.id() == *root
+        {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || {
+                self.project_generation(workspace, generation, *root, store, io)
+            })?
+            .await;
+        }
+
         io.sdk(
             workspace
-                .generation(
-                    GenerationId::new(Digest::from_bytes(key)),
-                    io,
-                    io.cancellation(),
-                )
+                .generation(generation, io, io.cancellation())
                 .await,
         )
     }
@@ -363,7 +390,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
-                self.apply_generation_unmeasured(reference, expected, mutations, &key)
+                self.apply_generation_unmeasured(reference, expected, mutations, &key, false)
                     .await
             });
         };
@@ -502,3 +529,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bytes_tests;

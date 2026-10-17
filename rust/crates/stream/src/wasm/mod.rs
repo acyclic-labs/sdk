@@ -1,14 +1,11 @@
 //! Browser boundary for canonical Stream request validation.
 
-use futures::{
-    FutureExt, StreamExt,
-    future::{Either, select},
-};
+use futures::StreamExt;
 use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{rc::Rc, sync::Mutex};
+use std::rc::Rc;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 
@@ -30,3 +27,9 @@ include!("wasm_stream.rs");
 include!("follow_state.rs");
 
 include!("wasm_follow.rs");
+
+mod remote;
+mod socket;
+
+mod session_io;
+include!("wasm_session.rs");

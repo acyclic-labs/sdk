@@ -43,12 +43,12 @@ async fn live_model_checks_file_authority_and_rejects_durable_direct_calls() -> 
             ]),
         ])
         .with_token_counter(|request| {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(request.bytes().len())
+            Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+                vec![0; request.request().messages.len()],
+            ))
         }),
     );
     let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;

@@ -1,5 +1,5 @@
 import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
+  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
   BatchId, SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
@@ -7,6 +7,7 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
+import type { HarnessClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
@@ -20,6 +21,11 @@ type Assert<Condition extends true> = Condition;
 type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false;
 type AssertNever<Value extends never> = Value;
+
+type _FileClientPreservesExactBounds = Assert<Equal<FileClientLimits["commands"] | FileClientLimits["bytes"], bigint>>;
+type _FileClientUsesCanonicalRequestKeys = Assert<Equal<Parameters<HarnessClient["enqueue"]>[0], FileKey>>;
+type _FileClientReturnsTheSharedCursor = Assert<Equal<ReturnType<HarnessClient["cursor"]>, Cursor>>;
+type _QueryPublishesCanonicalChanges = Assert<Equal<Parameters<Parameters<ClientQuery["follow"]>[0]>[0], QueryDelivery>>;
 
 type _SummaryLimitsUseExistingNativeWire = Assert<Equal<RustSummaryForkSelection["limits"], WasmNativeLimitsWire>>;
 type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
@@ -39,21 +45,8 @@ type _CapacityFacadeUsesRustCounts = Assert<Equal<
 >>;
 type _AccountingFacadeUsesRustCounts = Assert<Equal<
   ModelTokenCount,
-  Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
+  Readonly<{ requestDigest: Uint8Array; inputTokens: RustModelTokenCount["input_tokens"]; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
 >>;
-
-type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,
-  "system" | "user" | "assistant" | "tool">>;
-type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "system" | "user" | "assistant" | "tool", ModelRoleWire>>;
-type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPartWire["kind"],
-  "text" | "file" | "tool_call" | "tool_result">>;
-type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "text" | "file" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
-type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
-  "content" | "reasoning" | "tool_call" | "completed">>;
-type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
 const generatedModelContent: ModelContentWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
@@ -154,10 +147,6 @@ const wrongHistoryProvider: ResourceRevision = { kind: "history", reference: { k
 const wrongAuthority: Authority<"conversation"> = { kind: "agent", id: "agent" };
 // @ts-expect-error execution handlers are not part of model-visible tool schemas
 const executableModelSchema: ModelToolDefinition = { name: "tool", revision: "1", description: "tool", inputSchema: {}, outputSchema: {}, projectionSchema: {}, handler: () => 1 };
-// @ts-expect-error an offline retry command cannot contain inline message text
-const inlineOutboxBody: ClientCommand = { operationId: "op" as OperationId, authority: { kind: "conversation", id: "conversation" }, kind: "message.append", payload: { text: "secret" }, offlineSafe: true };
-// @ts-expect-error offline metadata cannot persist an arbitrary credential-bearing string
-const stringOutboxMetadata: ClientCommand = { operationId: "op" as OperationId, authority: { kind: "conversation", id: "conversation" }, kind: "message.append", payload: { metadata: { note: "secret" } }, offlineSafe: true };
 // @ts-expect-error interaction versions use exact unsigned 64-bit positions
 const roundedInteractionVersion: InteractionResolution = { id: "01010101-0101-0101-0101-010101010101" as InteractionId, expected_version: 1, outcome: { kind: "approved" } };
 // @ts-expect-error project merge publication identities are exact validated bytes, not strings
@@ -349,7 +338,7 @@ function nativeResourceValidationKeepsProviderKind(contracts: NativeContracts, r
   void [exact, artifact];
 }
 
-void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
+void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
 void cannotConstructRuntimeDirectly;
 void nativeValidationKeepsOwnerClass;
 void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;

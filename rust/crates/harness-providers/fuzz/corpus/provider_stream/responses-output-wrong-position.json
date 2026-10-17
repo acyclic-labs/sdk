@@ -1,0 +1,1 @@
+V{"input":[{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":[{"type":"output_text","text":"bad"}]}]}

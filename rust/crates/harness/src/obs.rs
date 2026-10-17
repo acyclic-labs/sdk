@@ -135,6 +135,13 @@ pub(crate) mod capture {
         }
     }
     impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            event.record(&mut Fields(
+                event.metadata().name(),
+                &mut self.0.lock().unwrap(),
+            ));
+        }
+
         fn on_new_span(&self, attrs: &span::Attributes<'_>, _: &span::Id, _: Context<'_, S>) {
             let name = attrs.metadata().name();
             let mut seen = self.0.lock().unwrap();

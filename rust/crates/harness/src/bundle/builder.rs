@@ -16,6 +16,8 @@ pub struct HarnessBuilder {
     bound_scope: Option<RuntimeScope>,
     original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
+    disable_default_tools: bool,
+    custom_tools: Vec<Tool>,
 }
 
 impl HarnessBuilder {
@@ -86,19 +88,42 @@ impl HarnessBuilder {
         self
     }
 
-    /// Selects the versioned tool registry.
+    /// Adds custom tools without replacing existing registrations.
     #[must_use]
-    pub fn tools(mut self, value: ToolRegistry) -> Self {
-        self.bindings.tools = value;
+    pub fn tools(mut self, tools: impl IntoIterator<Item = Tool>) -> Self {
+        self.custom_tools.extend(tools);
         self
     }
 
-    /// Registers one pinned tool without replacing the rest of the registry.
-    pub fn tool(mut self, value: Tool) -> Result<Self> {
-        self.bindings
-            .tools
-            .register((value, None), &mut None, None)?;
-        Ok(self)
+    /// Replaces the complete registry and disables automatic default registration.
+    /// Retains its pinned revisions, projections and model selections.
+    #[must_use]
+    pub fn replace_tools(mut self, registry: ToolRegistry) -> Self {
+        self.bindings.tools = registry;
+        self.custom_tools.clear();
+        self.disable_default_tools = true;
+        self
+    }
+
+    /// Disables the default set while retaining custom tools.
+    #[must_use]
+    pub fn without_default_tools(mut self) -> Self {
+        self.disable_default_tools = true;
+        self
+    }
+
+    /// Binds command execution to the workspace selected by this task's route.
+    #[must_use]
+    pub fn workspace(mut self, executor: Arc<dyn crate::tool::ToolExecutor>) -> Self {
+        self.bindings.workspace_tools = Some(executor);
+        self
+    }
+
+    /// Adds one custom tool without replacing existing registrations.
+    #[must_use]
+    pub fn tool(mut self, tool: Tool) -> Self {
+        self.custom_tools.push(tool);
+        self
     }
 
     /// Selects exact resumable tool state machines, independently of live tools.
@@ -247,7 +272,21 @@ impl HarnessBuilder {
         if name.trim().is_empty() {
             return Err(Error::Invalid("harness name is empty".into()));
         }
-        let capabilities = Capabilities::new(self.capabilities);
+        let mut grants = self.capabilities;
+        let mut bindings = self.bindings;
+        for tool in self.custom_tools {
+            bindings.tools.register((tool, None), &mut None, None)?;
+        }
+        if !self.disable_default_tools {
+            crate::tools::bind_defaults(
+                &mut bindings.tools,
+                &mut grants,
+                self.bound_scope.as_ref(),
+                bindings.content.is_some(),
+                bindings.workspace_tools.is_some(),
+            )?;
+        }
+        let capabilities = Capabilities::new(grants);
         let mut scope = if let Some(bound) = self.bound_scope {
             bound.narrow(capabilities.clone(), self.limits)?
         } else {
@@ -261,7 +300,6 @@ impl HarnessBuilder {
         if let Some(runtime) = self.extension_runtime {
             scope = scope.with_extension_runtime(runtime)?;
         }
-        let mut bindings = self.bindings;
         bindings.scope = scope.clone();
         let agent_loop = self.agent_loop;
         if let Some(component) = agent_loop.as_ref().cloned() {

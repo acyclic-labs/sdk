@@ -87,7 +87,7 @@ async fn recover_views(chunks: &[String], tokens: &[u16], structured: bool) {
     let mut call = message(
         1,
         MessageKind::ToolCall,
-        json_file(&fixture, "call.json", &invocation).await,
+        json_file(&fixture, "call.json", &json!({"invocation":&invocation,"metadata":{"gemini_thought_signature":"opaque-signature"}})).await,
     );
     call.tool_call_id = Some("call".into());
     let output = if structured {
@@ -140,11 +140,11 @@ async fn recover_views(chunks: &[String], tokens: &[u16], structured: bool) {
         .model_event(
             &owner(),
             turn,
-            ModelEvent::ToolCall {
-                call_id: invocation.call_id,
-                name: invocation.name,
-                arguments: invocation.arguments,
-            },
+            ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                invocation.call_id,
+                invocation.name,
+                invocation.arguments,
+            )),
         )
         .unwrap();
     for chunk in chunks {
@@ -173,11 +173,11 @@ async fn recover_views(chunks: &[String], tokens: &[u16], structured: bool) {
     // Late live records must not overwrite canonical files or double charge usage.
     client.tool_output(&owner(), "call", "late").unwrap();
     for event in [
-        ModelEvent::ToolCall {
-            call_id: "call".into(),
-            name: "wrong".into(),
-            arguments: json!(null),
-        },
+        ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+            "call".into(),
+            "wrong".into(),
+            json!(null),
+        )),
         ModelEvent::Completed {
             metadata: json!({"tokens":999}),
         },
@@ -223,7 +223,12 @@ async fn missing_file_authority_never_commits_or_acknowledges_a_partial_view() {
     let mut call = message(
         1,
         MessageKind::ToolCall,
-        json_file(&fixture, "call.json", &invocation).await,
+        json_file(
+            &fixture,
+            "call.json",
+            &json!({"invocation":&invocation,"metadata":null}),
+        )
+        .await,
     );
     call.tool_call_id = Some("call".into());
     let page = page(vec![call]);

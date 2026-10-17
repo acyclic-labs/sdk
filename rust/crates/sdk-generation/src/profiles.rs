@@ -27,14 +27,14 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     // the locked graph, retaining only those exact local published owners.
     // Registry dependencies must never become documentation owners implicitly.
     let mut command = cargo_metadata::MetadataCommand::new();
-    command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-    if let Some(cargo) = cargo_path {
-        command.cargo_path(cargo);
+    sdk_docs::rustdoc_profiles::CargoExecutionContext {
+        cargo_path,
+        lock_selection: None,
     }
-    let resolved = command
-        .manifest_path(root.join("Cargo.toml"))
-        .other_options(vec!["--locked".to_owned()])
-        .exec()
+    .configure_metadata(&mut command)
+    .map_err(profile_error)?;
+    command.manifest_path(root.join("Cargo.toml"));
+    let resolved = sdk_docs::execute_metadata(&command)
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;
     for name in missing {
@@ -65,11 +65,7 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
 
 pub(super) fn documentation_cargo(root: &Path, historical: bool) -> Result<PathBuf, CliError> {
     if historical {
-        let generator_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .ok_or_else(|| CliError("generator has no source toolchain root".into()))?;
-        pinned_cargo(generator_root)
+        maintained_cargo(root)
     } else {
         pinned_cargo(root)
     }
@@ -174,14 +170,127 @@ pub(super) fn execute_historical_profiles(
     metadata: &Metadata,
     source_sha256: &str,
     cargo: &Path,
-    plan: &historical::Plan,
+    plan: &crate::parallel::Arc<historical::Plan>,
+) -> Result<Vec<ExecutedProfile>, CliError> {
+    // Default receipts use Cargo target names. Preserve sequential behavior
+    // when owners collide, including Windows case aliases.
+    let disjoint = distinct_receipt_names(
+        plan.released_packages
+            .iter()
+            .filter_map(|release| {
+                metadata
+                    .packages
+                    .iter()
+                    .find(|package| release.package == package.name.as_ref())
+            })
+            .flat_map(historical_targets)
+            .map(|(target, _)| target.name.as_str()),
+    );
+    let executed = if plan.released_packages.len() < 2 || !disjoint {
+        compile_historical_profiles(
+            root,
+            output,
+            rustdoc_dir,
+            metadata,
+            cargo,
+            (plan, &plan.released_packages),
+        )?
+    } else {
+        let jobs = plan.released_packages.clone();
+        let plan = crate::parallel::Arc::clone(plan);
+        let (root, output, rustdoc_dir, cargo) = (
+            root.to_owned(),
+            output.to_owned(),
+            rustdoc_dir.to_owned(),
+            cargo.to_owned(),
+        );
+        let metadata = metadata.clone();
+        rustc_host()?;
+        crate::parallel::map(
+            jobs,
+            sdk_docs::rustdoc_worker(move |release| {
+                compile_historical_profiles(
+                    &root,
+                    &output,
+                    &rustdoc_dir,
+                    &metadata,
+                    &cargo,
+                    (&plan, std::slice::from_ref(&release)),
+                )
+            }),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect()
+    };
+    // Retained aliases form one shared inventory, so publish them serially
+    // after every compiler has finished and before admitting any manifest.
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
+}
+
+fn distinct_receipt_names<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = BTreeSet::new();
+    names
+        .into_iter()
+        .all(|name| seen.insert(name.replace('-', "_").to_ascii_lowercase()))
+}
+
+fn historical_targets(
+    package: &Package,
+) -> Vec<(
+    &cargo_metadata::Target,
+    sdk_docs::rustdoc_profiles::RustdocTarget,
+)> {
+    use sdk_docs::rustdoc_profiles::RustdocTarget;
+    let library = package.targets.iter().find(|target| {
+        target.kind.iter().any(|kind| {
+            matches!(
+                kind,
+                TargetKind::ProcMacro
+                    | TargetKind::Lib
+                    | TargetKind::RLib
+                    | TargetKind::CDyLib
+                    | TargetKind::StaticLib
+                    | TargetKind::DyLib
+            )
+        })
+    });
+    if let Some(target) = library {
+        vec![(target, RustdocTarget::Library)]
+    } else {
+        package
+            .targets
+            .iter()
+            .filter(|target| target.kind.contains(&TargetKind::Bin))
+            .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
+            .collect()
+    }
+}
+
+fn compile_historical_profiles(
+    root: &Path,
+    output: &Path,
+    rustdoc_dir: &Path,
+    metadata: &Metadata,
+    cargo: &Path,
+    (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
-    for release in &plan.released_packages {
+    for release in releases {
         let execution_metadata = plan
             .owner_metadata
             .get(&release.package)
@@ -191,35 +300,20 @@ pub(super) fn execute_historical_profiles(
             .iter()
             .find(|package| package.name.as_ref() == release.package)
             .ok_or_else(|| CliError("released Cargo owner is absent".into()))?;
-        let library = package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TargetKind::ProcMacro
-                        | TargetKind::Lib
-                        | TargetKind::RLib
-                        | TargetKind::CDyLib
-                        | TargetKind::StaticLib
-                        | TargetKind::DyLib
-                )
-            })
-        });
-        let targets = if let Some(target) = library {
-            vec![(target, RustdocTarget::Library)]
-        } else {
-            package
-                .targets
-                .iter()
-                .filter(|target| target.kind.contains(&TargetKind::Bin))
-                .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
-                .collect()
-        };
+        let targets = historical_targets(package);
         if targets.is_empty() {
             return Err(CliError(
                 "released Cargo package has no native Rustdoc target".into(),
             ));
         }
         for (target, rustdoc_target) in targets {
+            let mut compiled = BTreeMap::new();
+            let feature_map = &execution_metadata
+                .packages
+                .iter()
+                .find(|owner| owner.name == package.name)
+                .ok_or_else(|| CliError("profile Cargo owner disappeared".into()))?
+                .features;
             let profiles = if matches!(rustdoc_target, RustdocTarget::Library) {
                 sdk_docs::rustdoc_profiles::historical_profiles_for_package(
                     execution_metadata,
@@ -265,27 +359,35 @@ pub(super) fn execute_historical_profiles(
                     root.join("Cargo.toml")
                 };
                 let lock = manifest.with_file_name("Cargo.lock");
-                execute_profile(
-                    &manifest,
-                    execution_metadata,
-                    &spec,
-                    &available,
-                    output.join(".profile-build"),
-                    &receipt,
-                    CargoExecutionContext {
-                        cargo_path: Some(cargo),
-                        lock_selection: historical::producer_lock_selection(
-                            config.as_deref(),
-                            &lock,
-                            plan.captured_source.as_ref(),
+                let key = local_feature_configuration(feature_map, &spec);
+                if let Some(previous) = key.as_ref().and_then(|key| compiled.get(key)) {
+                    fs::copy(previous, &receipt).map_err(io_error)?;
+                } else {
+                    execute_profile(
+                        &manifest,
+                        execution_metadata,
+                        &spec,
+                        &available,
+                        output.join(".profile-build").join(
+                            crate::sha256_bytes(release.package.as_bytes())
+                                .trim_start_matches("sha256:"),
                         ),
-                    },
-                    &rustdoc_target,
-                )
-                .map_err(profile_error)?;
-                retain_profile_generated_sources(root, &receipt)?;
-                fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                    .map_err(io_error)?;
+                        &receipt,
+                        CargoExecutionContext {
+                            cargo_path: Some(cargo),
+                            lock_selection: historical::producer_lock_selection(
+                                config.as_deref(),
+                                &lock,
+                                plan.captured_source.as_ref(),
+                            ),
+                        },
+                        &rustdoc_target,
+                    )
+                    .map_err(profile_error)?;
+                    if let Some(key) = key {
+                        compiled.insert(key, receipt.clone());
+                    }
+                }
                 executed.push(ExecutedProfile {
                     target: rustdoc_target.clone(),
                     receipt,
@@ -305,42 +407,39 @@ pub(super) fn execute_default_profiles(
     source_sha256: &str,
     cargo_path: &Path,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
+    let executed = compile_default_profiles(root, output, rustdoc_dir, metadata, cargo_path)?;
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
+}
+
+fn compile_default_profiles(
+    root: &Path,
+    output: &Path,
+    rustdoc_dir: &Path,
+    metadata: &Metadata,
+    cargo_path: &Path,
+) -> Result<Vec<ExecutedProfile>, CliError> {
     let host = rustc_host()?;
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
+    // Share Cargo's validated compiler/dependency cache across current owners.
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
-    let cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", wasm_target])
-    .output()
-    .map_err(io_error)?;
-    if !cfg_output.status.success() {
-        return Err(CliError("rustc could not report browser target cfg".into()));
-    }
-    let browser_cfg = String::from_utf8_lossy(&cfg_output.stdout)
+    let (host_output, browser_output) =
+        sdk_docs::rustdoc_profiles::rustdoc_platform_cfgs().map_err(profile_error)?;
+    let browser_cfg = browser_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| CliError(format!("invalid rustc browser cfg: {error}")))?;
-
-    let host_cfg_output = Command::new(
-        cargo_path
-            .parent()
-            .ok_or_else(|| CliError("Cargo has no parent".into()))?
-            .join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
-    )
-    .args(["--print", "cfg", "--target", &host])
-    .output()
-    .map_err(io_error)?;
-    if !host_cfg_output.status.success() {
-        return Err(CliError("rustc could not report host target cfg".into()));
-    }
-    let host_cfg = String::from_utf8_lossy(&host_cfg_output.stdout)
+    let host_cfg = host_output
         .lines()
         .map(str::parse)
         .collect::<Result<Vec<_>, _>>()
@@ -416,9 +515,6 @@ pub(super) fn execute_default_profiles(
                     &rustdoc_target,
                 )
                 .map_err(profile_error)?;
-                retain_profile_generated_sources(root, &receipt)?;
-                fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                    .map_err(io_error)?;
                 executed.push(ExecutedProfile {
                     target: rustdoc_target,
                     receipt,
@@ -471,6 +567,7 @@ pub(super) fn execute_default_profiles(
                 profiles.push(profile);
             }
         }
+        let mut compiled = BTreeMap::new();
         for profile in profiles {
             let targets = BTreeSet::from([profile.target.clone()]);
             let receipt = if profile.default_features
@@ -487,19 +584,25 @@ pub(super) fn execute_default_profiles(
             if let Some(parent) = receipt.parent() {
                 fs::create_dir_all(parent).map_err(io_error)?;
             }
-            sdk_docs::rustdoc_profiles::execute_profile(
-                &manifest,
-                metadata,
-                &profile,
-                &targets,
-                &target_dir,
-                &receipt,
-                context,
-                &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
-            )
-            .map_err(profile_error)?;
-            retain_profile_generated_sources(root, &receipt)?;
-            fs::write(receipt.with_extension("source.sha256"), source_sha256).map_err(io_error)?;
+            let key = local_feature_configuration(&package.features, &profile);
+            if let Some(previous) = key.as_ref().and_then(|key| compiled.get(key)) {
+                fs::copy(previous, &receipt).map_err(io_error)?;
+            } else {
+                sdk_docs::rustdoc_profiles::execute_profile(
+                    &manifest,
+                    metadata,
+                    &profile,
+                    &targets,
+                    &target_dir,
+                    &receipt,
+                    context,
+                    &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
+                )
+                .map_err(profile_error)?;
+                if let Some(key) = key {
+                    compiled.insert(key, receipt.clone());
+                }
+            }
             executed.push(ExecutedProfile {
                 target: sdk_docs::rustdoc_profiles::RustdocTarget::Library,
                 receipt,
@@ -508,6 +611,35 @@ pub(super) fn execute_default_profiles(
         }
     }
     Ok(executed)
+}
+
+// Reuse only within one package/target batch with unchanged compiler, manifest,
+// environment and lock selection. Every local cfg feature, including `default`,
+// belongs in the key. Dependency/weak/qualified expressions stay Cargo-owned:
+// a graph containing any nonlocal edge disables this optimization entirely.
+fn local_feature_configuration(
+    features: &BTreeMap<String, Vec<String>>,
+    profile: &ProfileSpec,
+) -> Option<(String, String, BTreeSet<String>)> {
+    if features
+        .values()
+        .flatten()
+        .any(|feature| !features.contains_key(feature))
+    {
+        return None;
+    }
+    let mut pending = profile.features.iter().cloned().collect::<Vec<_>>();
+    if profile.default_features && features.contains_key("default") {
+        pending.push("default".into());
+    }
+    let mut enabled = BTreeSet::new();
+    while let Some(feature) = pending.pop() {
+        let children = features.get(&feature)?;
+        if enabled.insert(feature) {
+            pending.extend(children.iter().cloned());
+        }
+    }
+    Some((profile.package.clone(), profile.target.clone(), enabled))
 }
 
 // Feature identities stay complete in receipt metadata, while physical path
@@ -523,13 +655,7 @@ pub(super) fn retain_profile_generated_sources(
     root: &Path,
     receipt: &Path,
 ) -> Result<(), CliError> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(receipt).map_err(io_error)?)
-        .map_err(|error| {
-            CliError(format!(
-                "invalid Rustdoc JSON {}: {error}",
-                receipt.display()
-            ))
-        })?;
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);
     let retained_root = root.join("target/sdk-generation-generated-sources/retained");
@@ -582,3 +708,20 @@ pub(super) fn retain_profile_generated_sources(
     .map_err(io_error)?;
     Ok(())
 }
+
+pub(super) fn profile_generated_sources(
+    sources: &[GeneratedSource],
+    receipt: &Path,
+) -> Result<Vec<GeneratedSource>, CliError> {
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
+    let mut filenames = BTreeSet::new();
+    collect_span_filenames(&value, &mut filenames);
+    Ok(crate::source_selection::referenced(
+        sources,
+        &filenames,
+        cfg!(windows),
+    ))
+}
+
+#[cfg(test)]
+mod tests;

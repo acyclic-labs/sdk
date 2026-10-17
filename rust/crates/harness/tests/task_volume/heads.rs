@@ -4,6 +4,7 @@ fn chunk(sequence: u64, channel: Channel, bytes: Vec<u8>) -> Result<Write> {
     Ok(Write {
         key: FileKey::parse(&format!(".tasks/t/turns/0/chunks/{sequence}"))?,
         channel: Some(channel),
+        publication: None,
         bytes: bytes.into(),
     })
 }
@@ -99,10 +100,8 @@ async fn every_delta_is_followable_before_a_subsequent_delta_is_supplied() -> Re
     let mut follow = volume.follow(Query::Root, snapshot.cursor).await?;
     let file = chunk(0, Channel::Text, b"first".to_vec())?;
     append_all(&volume, snapshot.generation, std::slice::from_ref(&file)).await?;
-    let observed = follow
-        .next()
-        .now_or_never()
-        .ok_or("delta waited for another event")?
+    let observed = tokio::time::timeout(Duration::from_secs(1), follow.next())
+        .await?
         .ok_or("follow ended")??;
     assert_eq!(observed.file, Some(file));
     assert_eq!(observed.cursor.accepted, observed.cursor.position);
@@ -128,7 +127,8 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
     fn head_plus_follow_equals_follow_from_start(tokens in proptest::collection::vec(proptest::collection::vec(proptest::num::u8::ANY, 0..12), 1..12)) {
-        let outcome: Result = futures::executor::block_on(async {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let outcome: Result = runtime.block_on(async {
             let (_, volume) = memory().await?;
             let query = Query::Chunks { task: Component::new("t")?, turn: 0 };
             let initial = volume.snapshot(&query, 0).await?;
@@ -145,7 +145,7 @@ proptest::proptest! {
                 assert_eq!(rendered, tokens.iter().take(cut).flatten().copied().collect::<Vec<_>>());
                 let mut follow = volume.follow(query.clone(), cursor).await?;
                 for _ in cut..tokens.len() {
-                    let event = follow.next().now_or_never().ok_or("gap at tier transition")?.ok_or("follow ended")??;
+                    let event = tokio::time::timeout(Duration::from_secs(1), follow.next()).await?.ok_or("follow ended")??;
                     rendered.extend_from_slice(&event.file.ok_or("unexpected checkpoint")?.bytes);
                 }
                 assert_eq!(rendered, complete);

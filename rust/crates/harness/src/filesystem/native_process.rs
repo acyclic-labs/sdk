@@ -20,49 +20,27 @@ use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider}
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeSet,
-    process::{Command, Stdio},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {
         if let Some(exchange) = &self.mcp_stdio {
             drop(exchange.exchange(None)?);
         }
-        if !self.executable.is_absolute()
-            || !self.cwd.is_absolute()
-            || !self.view.options.root.is_absolute()
-            || !self.cwd.starts_with(&self.view.options.root)
-            || self
-                .cwd
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
+        if (self.mcp_stdio.is_some() && self.standard_input.is_some())
             || !self.has_valid_capture_allowances()
-            || self.environment.iter().any(|(key, value)| {
-                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
-            })
-            || self.argv.iter().any(|arg| arg.contains('\0'))
         {
             return Err(Error::Invalid(
-                "invalid or changed native process invocation".into(),
+                "invalid native process capture allowances".into(),
             ));
         }
-        #[cfg(windows)]
-        if self
-            .environment
-            .keys()
-            .map(|key| key.to_uppercase())
-            .collect::<BTreeSet<_>>()
-            .len()
-            != self.environment.len()
-        {
-            return Err(Error::Invalid(
-                "duplicate native environment key under Windows case folding".into(),
-            ));
-        }
+        invocation::validate(
+            &self.executable,
+            &self.cwd,
+            &self.view.options.root,
+            &self.environment,
+            &self.argv,
+        )?;
         Ok(())
     }
 
@@ -102,6 +80,13 @@ pub struct NativeProcessAuthority {
     pub approvals: Arc<dyn ToolApprovalVerifier>,
 }
 
+pub(crate) mod bash;
+pub(crate) mod capture;
+mod invocation;
+pub use capture::NativeProcessObserver;
+use capture::capture;
+pub(crate) use invocation::Invocation;
+
 /// Optional provider for one retained task command. Construction launches nothing.
 pub struct NativeProcessProvider<P, A, O> {
     owner: Arc<TaskJournalOwner<P>>,
@@ -112,6 +97,7 @@ pub struct NativeProcessProvider<P, A, O> {
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
     result_schema: acyclic_stream::OwnedBytes,
+    observer: Option<Arc<NativeProcessObserver>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -276,7 +262,15 @@ where
             approval,
             authority: Arc::new(authority),
             result_schema,
+            observer: None,
         })
+    }
+
+    /// Observes borrowed stdout/stderr chunks during a fresh dispatch. Reconciliation never reruns the process.
+    #[must_use]
+    pub fn with_output_observer(mut self, observer: Arc<NativeProcessObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
@@ -377,11 +371,13 @@ where
         let authority = Arc::clone(&self.authority);
         let request = self.request.clone();
         let schema = (self.plan.result_schema.clone(), self.result_schema.clone());
+        let observer = self.observer.clone();
         tokio::spawn(async move {
-            let (status, diagnostic) =
-                execute(&owner, &view, &authority, &request, &dispatch, &schema)
-                    .await
-                    .unwrap_or((EffectStatus::Indeterminate, None));
+            let (status, diagnostic) = execute(
+                &owner, &view, &authority, &request, &dispatch, &schema, observer,
+            )
+            .await
+            .unwrap_or((EffectStatus::Indeterminate, None));
             let observed = NativeObservation {
                 effect: observation(&dispatch, status),
                 diagnostic,
@@ -495,125 +491,6 @@ where
     }
 }
 
-async fn capture<P: StreamProvider + 'static>(
-    owner: &Arc<TaskJournalOwner<P>>,
-    request: &NativeProcessRequest,
-) -> Result<Option<NativeProcessResult>> {
-    owner.verify(false, &mut None).await?;
-    let check_owner = Arc::clone(owner);
-    let invocation = request.clone();
-    let runtime = tokio::runtime::Handle::current();
-    let output = tokio::task::spawn_blocking(move || {
-        let mut command = Command::new(&invocation.executable);
-        command
-            .args(&invocation.argv)
-            .current_dir(&invocation.cwd)
-            .env_clear()
-            .envs(&invocation.environment)
-            .stdin(if invocation.mcp_stdio.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let check = || {
-            runtime
-                .block_on(tokio::time::timeout(
-                    Duration::from_millis(u64::from(invocation.control_timeout_ms)),
-                    check_owner.verify(false, &mut None),
-                ))
-                .map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-                })?
-                .map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-                })
-        };
-        check()?;
-        let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
-        let mut next_check = std::time::Instant::now();
-        let poll = || {
-            if std::time::Instant::now() >= next_check {
-                check()?;
-                next_check = std::time::Instant::now()
-                    + Duration::from_millis(u64::from(invocation.cancellation_poll_ms));
-            }
-            Ok(())
-        };
-        let timeout = Duration::from_millis(u64::from(invocation.timeout_ms));
-        let maximum_output = invocation.maximum_output_bytes as usize;
-        let exchange = invocation
-            .mcp_stdio
-            .as_ref()
-            .map(|request| request.exchange(None))
-            .transpose()
-            .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
-            })?;
-        let (mut exchange, first, _hold) = match exchange {
-            Some((exchange, first, hold)) => (Some(exchange), first, hold),
-            None => (None, Vec::new(), None),
-        };
-        let input = invocation.mcp_stdio.as_ref().map(|request| {
-            acyclic_native_runtime::CaptureInput::Exchange {
-                initial: &first,
-                maximum: request.maximum_bytes as usize,
-            }
-        });
-        let output = process.wait_with_output(
-            timeout,
-            maximum_output,
-            input,
-            poll,
-            |chunk| {
-                let Some(exchange) = exchange.as_mut() else {
-                    return Ok(Default::default());
-                };
-                let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                })?;
-                Ok(acyclic_native_runtime::ProcessInput {
-                    bytes,
-                    complete: exchange.is_complete(),
-                })
-            },
-            None,
-            None,
-        );
-        Ok::<_, std::io::Error>(output)
-    })
-    .await
-    .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
-    let result = match output {
-        Ok(Ok(output)) => NativeProcessResult {
-            success: output.status.success(),
-            exit_code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-            stop: None,
-        },
-        Ok(Err(failure)) => NativeProcessResult {
-            success: false,
-            exit_code: failure.status.and_then(|status| status.code()),
-            stdout: failure.stdout,
-            stderr: failure.stderr,
-            stop: Some(NativeProcessStop {
-                kind: match failure.error.kind() {
-                    std::io::ErrorKind::TimedOut => NativeProcessStopKind::Timeout,
-                    std::io::ErrorKind::FileTooLarge => NativeProcessStopKind::OutputLimit,
-                    std::io::ErrorKind::Interrupted => NativeProcessStopKind::ControlStopped,
-                    _ => NativeProcessStopKind::CaptureFailed,
-                },
-                message: failure.error.to_string().chars().take(128).collect(),
-                cleanup_completed: failure.cleanup_completed,
-            }),
-        },
-        Err(_) => return Ok(None),
-    };
-    Ok(Some(result))
-}
-
 async fn execute<P, A, O>(
     owner: &Arc<TaskJournalOwner<P>>,
     view: &NativeVolumeView<A, O>,
@@ -621,13 +498,14 @@ async fn execute<P, A, O>(
     request: &NativeProcessRequest,
     dispatch: &EffectDispatch,
     schema: &(crate::conversation::FileRef, acyclic_stream::OwnedBytes),
+    observer: Option<Arc<NativeProcessObserver>>,
 ) -> Result<(EffectStatus, Option<crate::conversation::FileRef>)>
 where
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let Some(result) = capture(owner, request).await? else {
+    let Some(result) = capture(owner, request, observer).await? else {
         return Ok((EffectStatus::Indeterminate, None));
     };
     let bytes = crate::contract::canonical_json_bytes(&result)?;
@@ -641,7 +519,6 @@ where
         "native process result",
         &mut None,
     )?;
-    let publish = result.stop.is_none();
     let cleanup_completed = result
         .stop
         .as_ref()
@@ -663,7 +540,7 @@ where
         ));
     }
     crate::effects::validate_result_bytes(&schema.0, &schema.1, &result, &bytes, &mut None)?;
-    if publish && view.publish(owner).await.is_err() {
+    if cleanup_completed && view.publish(owner).await.is_err() {
         return Ok((EffectStatus::Indeterminate, Some(result)));
     }
     Ok(if cleanup_completed {
@@ -779,7 +656,7 @@ async fn append_receipt<P: StreamProvider>(
         .append(
             path,
             tail,
-            &key,
+            Some(&key),
             acyclic_stream::OwnedBytes::from(bytes),
             write,
             &mut None,

@@ -1,0 +1,27 @@
+{
+  "expect": {
+    "result": {
+      "kind": "confirm",
+      "request": {
+        "kind": "delete"
+      }
+    },
+    "files": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": null
+    },
+    "file_values": {
+      "session/layout.json": {
+        "confirmation": {
+          "operation": "00000000-0000-0000-0000-000000000001",
+          "task": "00000000-0000-0000-0000-000000000005",
+          "request": {
+            "kind": "delete"
+          }
+        },
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
+      }
+    }
+  },
+  "prompt": "/del"
+}

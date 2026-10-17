@@ -1,33 +1,65 @@
 use super::*;
 
 impl ToolRegistry {
-    pub(crate) fn pin_model_definitions(&mut self, definitions: &[ToolDefinition]) -> Result<()> {
-        let mut selected = BTreeMap::new();
-        for definition in definitions {
-            let tool = self
-                .get(&definition.name, Some(&definition.revision), None)?
-                .ok_or_else(|| {
-                    Error::NotFound("manifest tool revision is not registered".into())
-                })?;
-            if tool.definition != *definition {
-                return Err(Error::Conflict(
-                    "manifest tool definition differs from its executor".into(),
+    pub(crate) fn pin_model_definitions(
+        &mut self,
+        definitions: &[ToolDefinition],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        use crate::{executor::stock_boundary, wire::ErrorCode};
+        crate::executor::with_history_io(io, |work| -> Result<()> {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let mut selected =
+                crate::core::reserve_copy_vector::<(&str, &str)>(definitions.len(), &mut quota)?;
+            for definition in definitions {
+                let tool = lookup::get(&self.data.versions, &definition.name, &definition.revision)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::NotFound,
+                            "manifest tool revision is not registered",
+                        )
+                    })?;
+                if tool.definition != *definition {
+                    return Err(stock_boundary(
+                        io,
+                        ErrorCode::Conflict,
+                        "manifest tool definition differs from its executor",
+                    ));
+                }
+                selected.push((definition.name.as_str(), definition.revision.as_str()));
+            }
+            selected.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            if selected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(stock_boundary(
+                    io,
+                    ErrorCode::Conflict,
+                    "manifest repeats a tool name",
                 ));
             }
-            if selected
-                .insert(definition.name.as_str(), definition.revision.as_str())
-                .is_some()
-            {
-                return Err(Error::Conflict("manifest repeats a tool name".into()));
+            for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
+                let replacement = match selected
+                    .binary_search_by(|(candidate, _)| candidate.cmp(&name.as_str()))
+                {
+                    Ok(index) => ModelSelection::Revision(crate::executor::stock_string_copy(
+                        selected[index].1,
+                        io,
+                    )?),
+                    Err(_) => ModelSelection::Hidden,
+                };
+                #[cfg(feature = "filesystem")]
+                let old_bytes = match selection {
+                    ModelSelection::Revision(revision) => revision.capacity(),
+                    _ => 0,
+                };
+                *selection = replacement;
+                #[cfg(feature = "filesystem")]
+                if let Some(io) = io {
+                    io.release(old_bytes as u64)?;
+                }
             }
-        }
-        for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
-            *selection = match selected.get(name.as_str()) {
-                Some(revision) => ModelSelection::Revision((*revision).to_owned()),
-                None => ModelSelection::Hidden,
-            };
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Selects one revision for future model requests.

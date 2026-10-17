@@ -17,7 +17,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
         watch: WatchReply::Items(Vec::new()),
     };
     let (machines, shutdown_tx, server) = serve_operation_service(service).await?;
-    let client = machines.client;
+    let client = machines.client().await?;
     macro_rules! observe {
         ($method:ident, $request:ident) => {
             let error = client

@@ -8,7 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-acyclic-fs = { path = ".." }
+acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 libfuzzer-sys = "0.4"
 serde.workspace = true
 serde_json.workspace = true
@@ -23,6 +23,34 @@ path = "tests/model.rs"
 [[bin]]
 name = "access"
 path = "fuzz_targets/access.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_markers"
+path = "fuzz_targets/git_markers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_pending"
+path = "fuzz_targets/git_pending.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "paths"
+path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decoder_work"
+path = "fuzz_targets/decoder_work.rs"
 test = false
 doc = false
 bench = false

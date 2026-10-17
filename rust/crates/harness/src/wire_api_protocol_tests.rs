@@ -102,7 +102,7 @@ fn protocol_validation_needs_no_owned_identity() -> Result<()> {
             for _ in 0..64 {
                 let mut error = None;
                 let started = std::time::Instant::now();
-                let allocation = allocation_counter::measure(|| {
+                let allocation = acyclic_test_support::measure(|| {
                     for _ in 0..128 {
                         let result = match operation {
                             0 => validate_command_protocol(std::hint::black_box(&command)),

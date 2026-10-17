@@ -1,5 +1,7 @@
+import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { toBinary } from "@bufbuild/protobuf";
 import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
@@ -11,7 +13,7 @@ import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
-export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory }
+export interface HttpStreamProviderOptions extends CredentialOptions { readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory }
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
@@ -22,17 +24,16 @@ export class HttpStreamProvider implements StreamProvider {
   }
   readonly #sessions: StreamSessions;
   readonly #endpoint: string;
-  readonly #token: string;
+  readonly #credential: CredentialProvider;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
   readonly #observer: AcyclicObserver | undefined;
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
-    if (!validBearerToken(options.token)) throw new TypeError("token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
-    this.#token = options.token;
-    this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, options.token, options.webSocketFactory));
+    this.#credential = credentialProvider(options);
+    this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory));
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
@@ -43,11 +44,23 @@ export class HttpStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); return this.#request("append", await encodeHttpRequest("append", input)); }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); return this.#request("fork", await encodeHttpRequest("fork", input)); }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
+  async *followData(follow: SessionFollow, options: FollowOptions): AsyncIterable<SessionData> {
+    const authored = structuredClone(follow);
+    const { from, signal } = options;
+    await validateWireRequest({ kind: "follow", path: authored.path, from });
+    yield* this.#sessions.followData(authored, { from, ...(signal === undefined ? {} : { signal }) });
+  }
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     await validateWireRequest({ kind: "follow", path, from: options.from });
     yield* this.#sessions.follow(path, options);
   }
 
+  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
+    const { parent, signal, limit } = request;
+    await validateWireRequest({ kind: "children", limit,
+      ...(parent === undefined ? {} : { parent }) });
+    yield* this.#sessions.children({ limit, ...(parent === undefined ? {} : { parent }), ...(signal === undefined ? {} : { signal }) });
+  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
     if (request.parent !== undefined) validatePathValue(request.parent);
@@ -117,7 +130,7 @@ export class HttpStreamProvider implements StreamProvider {
   async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
     const payload = typeof body === "string" ? body : JSON.stringify(body);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload, ...(signal === undefined ? {} : { signal }) });
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${await this.#credential(signal)}`, "content-type": "application/json" }, body: payload, ...(signal === undefined ? {} : { signal }) });
     let text: string;
     try { text = await boundedText(response, this.#maximum, sizes); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
@@ -188,7 +201,3 @@ function directParent(path: string): string { const at = path.lastIndexOf("/"); 
 
 /** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
 export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
-/** Header-safe bearer token: non-blank, at most MAX_BEARER_TOKEN_BYTES of UTF-8, and no CR, LF, or NUL. */
-function validBearerToken(token: string): boolean {
-  return token.trim().length > 0 && new TextEncoder().encode(token).byteLength <= MAX_BEARER_TOKEN_BYTES && !/[\r\n\0]/.test(token);
-}

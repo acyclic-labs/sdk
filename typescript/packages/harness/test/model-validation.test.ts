@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {
@@ -128,10 +128,10 @@ test("declared context binding pins metadata and preserves the prior binding on 
     .context({ async build() { return [{ role: "user", content: "custom context" }]; } })
     .declaredContext(snapshot)
     .model({ provider: "mock", name: "discovery", revision: "pinned", options: {} }, {
-      ...syntheticAccounting(contracts), async *generate(request) {
+      ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
         admitted.push(request.serializedInput.slice());
         yield { kind: "completed" as const, metadata: {} };
-      }, async reconcile() { return undefined; },
+      }), async reconcile() { return undefined; },
     });
   expect(() => builder.declaredContext({ ...snapshot,
     skills: [{ ...skill, name: "Invalid" }] })).toThrow();
@@ -173,7 +173,7 @@ test("the actual task provider receives the admitted serialized input", async ()
   const prompt = "é\0🦀\r\n";
   let calls = 0;
   const runtime = await Harness.builder(contracts).model({ provider: "mock", name: "exact", revision: "pinned", options: {} }, {
-    ...syntheticAccounting(contracts), async *generate(request) {
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
       calls += 1;
       expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
         model: { provider: "mock", name: "exact", revision: "pinned", options: {} }, messages: [{ role: "user", content: prompt }],
@@ -181,7 +181,7 @@ test("the actual task provider receives the admitted serialized input", async ()
       });
       expect(request.messages).toEqual([{ role: "user", content: prompt }]);
       yield { kind: "completed" as const, metadata: {} };
-    },
+    }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.run(prompt);
@@ -222,14 +222,14 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
         const prompt = `notification ${depth}; task ${child}; identity ${child}; workspace ${child}; fresh scratch ${child} é\0🦀\r\n`;
         let calls = 0;
         const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
-          .model(root.model, { ...syntheticAccounting(contracts), async *generate(request) {
+          .model(root.model, { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) {
             calls++;
             const expected = prepareModelRequest({ model: root.model, tools,
               messages: [...parentWire.messages, { role: "user", content: prompt }] }, DEFAULT_LIMITS);
             expect(request.serializedInput).toEqual(expected);
             if (child === "primary") primary = request.serializedInput.slice();
             yield { kind: "completed" as const, metadata: {} };
-          }, async reconcile() { return undefined; } })
+          }), async reconcile() { return undefined; } })
           .tool({ ...tools[0]!, inputSchema: { type: "string" }, outputSchema: { type: "string" },
             parseInput: value => value, projection: await jsonToolProjection({ type: "string" }), parseOutput: value => value }, {
             async execute(invocation) { return { value: invocation.arguments }; }, async reconcile() { return undefined; },
@@ -249,33 +249,16 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
 });
 
 test("tool results retain their pinned string schema and enforce the exact render bound", async () => {
-  for (const length of [38, 39]) {
-    const value = "x".repeat(length);
-    let calls = 0;
-    const runtime = await Harness.builder(contracts).limits({ render_bytes: 64 })
-      .model({ provider: "mock", name: "bounded", revision: "1", options: {} }, {
-        ...syntheticAccounting(contracts), async *generate(request) {
-          calls++;
-          if (calls === 1) yield { kind: "tool_call" as const, callId: "read", name: "read", arguments: "go" };
-          else {
-            expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", content: { kind: "json", value } });
-            expect((contracts.decodeModelJson(request.serializedInput) as unknown as ModelRequestWire).messages.at(-1)?.content)
-              .toEqual({ kind: "tool_result", call_id: "read", name: "read", content: { kind: "json", value } });
-          }
-          yield { kind: "completed" as const, metadata: {} };
-        }, async reconcile() { return undefined; },
-      }).tool({ name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
-        outputSchema: { type: "string" }, parseInput: value => value, projection: jsonProjection, parseOutput: value => value,
-        handler: async () => value }).grant("tool:call:read").build();
-    if (length === 38) {
-      const result = await runtime.run("go");
-      expect(result.receipts.find(receipt => receipt.kind === "tool")).toMatchObject({ value, projection: { kind: "json", value } });
-      expect(calls).toBe(2);
-    } else {
-      await expect(runtime.run("go")).rejects.toThrow();
-      expect(calls).toBe(1);
-    }
-  }
+  const definition = { name: "read", revision: "1", description: "read", inputSchema: { type: "string" },
+    outputSchema: { type: "string" }, projection: await jsonToolProjection({ type: "string" }) };
+  const limits = { ...DEFAULT_LIMITS, render_bytes: 64 };
+  const accepted = { kind: "json" as const, value: "x".repeat(38) };
+  expect(contracts.encodeCanonicalJson(accepted).length).toBe(64);
+  expect(() => contracts.validateToolProjection(definition, accepted, limits)).not.toThrow();
+  const rejected = { kind: "json" as const, value: "x".repeat(39) };
+  expect(contracts.encodeCanonicalJson(rejected).length).toBe(65);
+  expect(() => contracts.validateToolProjection(definition, rejected, limits)).toThrow();
+  expect(() => contracts.validateToolProjection(definition, { kind: "json", value: 42 }, limits)).toThrow();
 });
 
 test("inherited dispatch captures fresh pinned local files after builder construction", async () => {
@@ -311,14 +294,14 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     };
     const context = { async build() { return prefixOnly ? []
       : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
-    const provider = { ...syntheticAccounting(contracts), async *generate(request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
+    const provider = { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
       calls++;
       expect(request.maxOutputTokens).toBeUndefined();
       expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [],
         messages: [{ role: "user", content: "parent" }, ...(prefixOnly ? []
           : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }])] }, DEFAULT_LIMITS));
       yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; } };
+    }), async reconcile() { return undefined; } };
     const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     for (const version of ["first", "later"]) {
@@ -411,7 +394,7 @@ test("synthetic accounting counts nested media and native options with wide revi
       projectionSchema: {} }],
   };
   const serializedInput = prepareModelRequest(request, DEFAULT_LIMITS);
-  const count = syntheticAccounting(contracts).countTokens({ ...request, serializedInput });
+  const count = await syntheticAccounting(contracts).countTokens({ ...request, serializedInput });
   expect(count.requestDigest).toEqual(contracts.digestCanonicalJson(contracts.decodeCanonicalJson(serializedInput)));
   expect(count.fixedTokens).toBe(serializedInput.byteLength + 512);
   expect(count.messageTokens).toEqual([512, 512 + part.file.descriptor.byte_length
@@ -437,7 +420,7 @@ test("local model dispatch rejects claimed native options before invoking a cust
   const runtime = await Harness.builder(contracts).model(
     { provider: "mock", name: "native-options", revision: "pinned", options: {} }, {
       ...syntheticAccounting(contracts),
-      async *generate() { calls += 1; yield { kind: "completed" as const, metadata: {} }; },
+      prepare: scriptedPreparation(contracts, async function* () { calls += 1; yield { kind: "completed" as const, metadata: {} }; }),
       async reconcile() { return undefined; },
     }).build();
   await expect(runtime.run({ prompt: "", content: [await nativeOptionPart()] })).rejects.toThrow(
@@ -511,17 +494,19 @@ test("model event admission rejects unknown event fields", () => {
   expect(() => contracts.admitModelEvent({ kind: "content", delta: "ok", extra: true } as never, DEFAULT_LIMITS)).toThrow();
 });
 
-test("model event admission preserves full-width BigInts in provider JSON", () => {
-  const value = 9_007_199_254_740_993n;
-  const toolCall = contracts.admitModelEvent({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1n, cursor: value },
-  }, DEFAULT_LIMITS);
-  expect(toolCall.event).toEqual({
-    kind: "tool_call", callId: "bigint-call", name: "lookup", arguments: { tokens: 1, cursor: value },
-  });
-
-  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
-  expect(completed.event).toEqual({ kind: "completed", metadata: { tokens: 1, cursor: value } });
+test("model admission enforces portable tool integers and preserves full-width completion metadata", () => {
+  const maximum = 9_007_199_254_740_991n;
+  const value = maximum + 2n;
+  const call = (cursor: bigint) => ({ kind: "tool_call" as const, callId: "bigint-call", name: "lookup",
+    arguments: { tokens: 1n, cursor } });
+  const admitted = contracts.admitModelEvent(call(maximum), DEFAULT_LIMITS);
+  expect(admitted.event).toEqual({ ...call(maximum), arguments: { tokens: 1, cursor: Number(maximum) } });
+  for (const cursor of [maximum + 1n, value]) {
+    expect(() => contracts.admitModelEvent(call(cursor), DEFAULT_LIMITS)).toThrow("inexact number");
+  }
+  const literal = { "$serde_json::private::RawValue": "null", ["__proto__"]: { literal: true } };
+  const completed = contracts.admitModelEvent({ kind: "completed", metadata: { ...literal, tokens: 1n, cursor: value } }, DEFAULT_LIMITS);
+  expect(completed.event).toEqual({ kind: "completed", metadata: { ...literal, tokens: 1, cursor: value } });
 });
 
 

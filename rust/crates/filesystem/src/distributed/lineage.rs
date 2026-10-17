@@ -273,12 +273,25 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
-        if permit != PublicationPermit::Unrestricted {
-            return Err(AuthorityStoreError::RejectedStatic(
-                "workspace fork does not support a publication reservation",
-            )
-            .into());
-        }
+        let lease = match permit {
+            PublicationPermit::Unrestricted => None,
+            PublicationPermit::Lease {
+                authority_id,
+                workspace_id,
+                lease_id,
+                expires_at_millis,
+            } if fork.lineage.is_some_and(|source| {
+                source.authority == AuthorityId::from_bytes(authority_id)
+                    && source.authority
+                        == volume_authority_id(
+                            crate::WorkspaceId::from_bytes(workspace_id).volume_id(),
+                        )
+            }) =>
+            {
+                Some((workspace_id, lease_id, expires_at_millis))
+            }
+            _ => return Ok(WorkspaceForkOutcome::CreationRejected),
+        };
         let lineage = match fork.lineage {
             Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
                 let (lineage, tail) = self
@@ -289,7 +302,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             _ => None,
         };
         let mut request = CommitRequest {
-            conditions: work.vec(14)?,
+            conditions: work.vec(15)?,
             mutations: work.vec(14)?,
             idempotency_key: work.key(
                 b"operation\0",
@@ -315,7 +328,24 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             lineage,
             work,
         )?;
-        let outcome = self.commit(request, None, work, guard.as_deref_mut()).await;
+        if let Some((workspace, lease, expires)) = lease {
+            request.conditions.push(CommitCondition::Tail {
+                path: work.lease_path(
+                    crate::WorkspaceId::from_bytes(workspace),
+                    crate::OperationLeaseId::from_bytes(lease),
+                    expires,
+                )?,
+                expected: 1,
+            });
+        }
+        let outcome = self
+            .commit(
+                request,
+                lease.map(|(_, _, expires)| expires),
+                work,
+                guard.as_deref_mut(),
+            )
+            .await;
         if !work.is_native() {
             work.release_request()?;
         }
@@ -328,6 +358,40 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             | Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::IdempotencyMismatch,
             ))) => {
+                if lease.is_some() {
+                    // A retry may observe its own complete transaction after the
+                    // lease closed. Never create either authority on this path.
+                    let mut matches = true;
+                    for (authority, proposed) in [
+                        (fork.retention, &fork.retained),
+                        (fork.destination, &fork.creation),
+                    ] {
+                        let found = self
+                            .read_records(
+                                authority,
+                                Sequence::GENESIS,
+                                ReplayLimit {
+                                    records: 1,
+                                    payload_bytes: 4 * 1024,
+                                },
+                                work,
+                            )
+                            .await;
+                        matches &= match found {
+                            Ok((records, _allocation)) => records.first().is_some_and(|record| {
+                                record.operation_id == proposed.operation_id
+                                    && record.fingerprint == proposed.fingerprint
+                            }),
+                            Err(error) if authority_missing(&error) => false,
+                            Err(error) => return Err(error.into()),
+                        };
+                    }
+                    return Ok(if matches {
+                        WorkspaceForkOutcome::Committed
+                    } else {
+                        WorkspaceForkOutcome::CreationRejected
+                    });
+                }
                 let mut child = work.operation()?;
                 let result =
                     crate::async_storage::workspace_fork(self, fork, permit, &mut child, guard)

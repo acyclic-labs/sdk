@@ -306,6 +306,7 @@ async fn exercise(
                     &Write::new(FileKey::Goal, OwnedBytes::from_static(b"publish")),
                     Vec::new(),
                     None,
+                    None,
                 )
                 .await?;
         }

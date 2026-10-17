@@ -89,6 +89,7 @@ where
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-source:begin");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             crate::executor::with_history_io(io, |work| limits.validate(work))?;
@@ -266,6 +267,7 @@ where
         }
         .await;
         PreparationIo::release_since(io, Some(before))?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-source:end");
         result
     }
 
@@ -279,6 +281,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         use crate::executor::ModelPurpose;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:begin");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             let summary = proof
@@ -347,8 +350,10 @@ where
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
-                            ModelEvent::Completed { .. } | ModelEvent::Reasoning { .. } => {}
-                            ModelEvent::ToolCall { .. } => {
+                            ModelEvent::Completed { .. }
+                            | ModelEvent::Reasoning { .. }
+                            | ModelEvent::ReasoningBlock { .. } => {}
+                            ModelEvent::ToolCall(_) => {
                                 return Err(canonical_boundary(
                                     io,
                                     crate::wire::ErrorCode::Invalid,
@@ -390,7 +395,16 @@ where
             crate::executor::with_history_io(io, |work| {
                 limits.validate_file(&summary.output, work)
             })?;
-            let bytes = self.load(&summary.output, io)?.await?;
+            let verifier = self.input_verifier.as_ref().ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "canonical summary reader is not bound",
+                )
+            })?;
+            let bytes = verifier
+                .read(&summary.output, self.maximum_payload_bytes, io)?
+                .await?;
             if let Some(io) = io {
                 io.check_cancellation()?;
             }
@@ -406,6 +420,7 @@ where
         }
         .await;
         PreparationIo::release_since(io, Some(before))?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "canonical-summary:end");
         result
     }
 }

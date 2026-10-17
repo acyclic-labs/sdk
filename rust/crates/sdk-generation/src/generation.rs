@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
+pub(super) fn generate(args: GenerateArgs, stdout: &mut dyn Write) -> Result<(), CliError> {
     let mut root = canonical(&args.root)?;
     let catalog_output = absolute(&args.output)?;
     let output = if args.historical_archives.is_some() {
@@ -11,10 +11,10 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
         catalog_output.clone()
     };
     if args.historical_archives.is_some() && args.historical_source == HistoricalSource::Git {
-        let top = Command::new("git")
+        let top = sdk_docs::command("git")
             .current_dir(&root)
             .args(["rev-parse", "--show-toplevel"])
-            .output()
+            .run_output()
             .map_err(io_error)?;
         if !top.status.success()
             || canonical(Path::new(String::from_utf8_lossy(&top.stdout).trim()))? != root
@@ -107,6 +107,7 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
                 .transpose()?;
             (metadata, plan, revision)
         };
+    let historical_plan = historical_plan.map(crate::parallel::Arc::new);
     if args.channel == Channel::Release && args.historical_archives.is_none() {
         let published = published_packages(&root)?;
         let versions = metadata
@@ -469,7 +470,7 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
                 version: package.version.to_string(),
             }],
             generated_sources: if matches!(&scope, historical::Scope::RegistryArchives { .. }) {
-                input.generated_sources.clone()
+                profile_generated_sources(&input.generated_sources, receipt)?
             } else {
                 scope_generated_sources(
                     materialize_generated_sources(&root, std::slice::from_ref(receipt))?,
@@ -495,7 +496,11 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
             build_data(&variant_input, &[])
         }
         .map_err(docs_error)?;
-        generated_source_artifacts.extend(variant_input.generated_sources.clone());
+        // Archive variants select a subset of the already retained base
+        // inventory. Other scopes may materialize new physical/logical aliases.
+        if !matches!(&scope, historical::Scope::RegistryArchives { .. }) {
+            generated_source_artifacts.extend(variant_input.generated_sources);
+        }
         merge_profile_catalog(&mut data, variant_data).map_err(docs_error)?;
     }
     let availability =
@@ -507,6 +512,7 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
         write_bundle_files(&data, &catalog_output, input.mark_latest)
     }
     .map_err(docs_error)?;
+    crate::source_selection::deduplicate(&mut generated_source_artifacts);
     for source in generated_source_artifacts {
         let bytes = fs::read(&source.physical_path).map_err(io_error)?;
         if sha256_bytes(&bytes).trim_start_matches("sha256:")
@@ -712,13 +718,13 @@ pub(super) fn generate(args: GenerateArgs) -> Result<(), CliError> {
     )?;
     // Re-read the source closure, revision, receipts and all immutable artifacts
     // after execution. Failed qualification leaves files unadmitted.
-    drift((root.clone(), output.clone(), rustdoc_dir.clone()))?;
+    drift((root.clone(), output.clone(), rustdoc_dir.clone()), stdout)?;
     if historical_plan.is_some() {
         sdk_docs::historical::write_bundle(&data, &catalog_output, true)
     } else {
         write_bundle(&data, &catalog_output, input.mark_latest)
     }
     .map_err(docs_error)?;
-    println!("generated {}", output.display());
+    writeln!(stdout, "generated {}", output.display()).map_err(io_error)?;
     Ok(())
 }

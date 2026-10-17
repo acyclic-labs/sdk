@@ -1,0 +1,20 @@
+{
+  "openai": {
+    "adapter": "responses",
+    "authentication": "api_key",
+    "base_url": "https://api.openai.com/v1",
+    "models": {
+      "gpt-6-luna": {
+        "capacity": {"context_tokens": 8192, "output_tokens": 1024},
+        "features": {"tools": true, "images": true}
+      }
+    },
+    "max_event_bytes": 4096,
+    "token_counter": {
+      "path": "responses/input_tokens",
+      "adapter": "responses",
+      "response_field": "input_tokens",
+      "framing_tokens": 0
+    }
+  }
+}

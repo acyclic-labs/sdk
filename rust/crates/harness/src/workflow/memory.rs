@@ -1,9 +1,10 @@
 use super::*;
-use std::sync::Mutex;
+use crate::sync::SyncMutex as Mutex;
 
 /// In-process workflow journal for local authoring.
 #[derive(Default)]
 pub struct MemoryWorkflowJournal {
+    // Lock order: state is the only journal lock; no nested acquisition or I/O.
     pub(super) state: Mutex<MemoryWorkflowState>,
 }
 #[derive(Default)]
@@ -78,6 +79,11 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                     .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
                 let after = usize::try_from(after)
                     .map_err(|_| Error::Invalid("workflow revision is not portable".into()))?;
+                #[cfg(acyclic_harness_loom)]
+                let after = after
+                    + usize::from(super::model_checking::fault_is(
+                        super::model_checking::Fault::SkipCursor,
+                    ));
                 let records = state
                     .records
                     .iter()
@@ -158,6 +164,14 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                 return Err(Error::Conflict(
                     "workflow command or transition identity is already bound".into(),
                 ));
+            }
+            #[cfg(acyclic_harness_loom)]
+            if super::model_checking::fault_is(super::model_checking::Fault::SplitCommit) {
+                drop(state);
+                state = self
+                    .state
+                    .lock()
+                    .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
             }
             state.records.push(record.clone());
             Ok(record)

@@ -29,6 +29,7 @@ pub(super) const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\
+    /plan       Follow private plans/ files in the live plan panel\n\
     /next       Display one bounded activity delivery\n\
     /cursor FILE Select a protobuf Resume ClientFrame for bounded archival paging\n\
     /back N     Show a retained display page (0 newest; 64 pages/256 KiB max)\n\

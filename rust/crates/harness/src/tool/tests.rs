@@ -67,7 +67,7 @@ fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
                         output_schema: json!({}),
                         projection_schema: crate::tool::json_projection_schema(json!({})),
                     },
-                    executor: files::read_file()?.executor,
+                    executor: files::read()?.executor,
                     projection: Arc::new(JsonToolProjection),
                 },
                 None,
@@ -224,7 +224,7 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
     let tool = Tool {
         hook_names: &[],
         definition,
-        executor: files::read_file()?.executor,
+        executor: files::read()?.executor,
         projection: Arc::new(JsonToolProjection),
     };
     let mut registry = ToolRegistry::default();

@@ -2,15 +2,15 @@ use super::*;
 
 pub(super) fn drift(
     (root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf),
+    stdout: &mut dyn Write,
 ) -> Result<(), CliError> {
     let mut root = canonical(&root)?;
     let output = canonical(&output)?;
     let rustdoc_dir = canonical(&rustdoc_dir)?;
     let manifest_path = output.join("generation-manifest.v1.json");
-    let manifest: GenerationManifest =
-        serde_json::from_slice(&fs::read(&manifest_path).map_err(io_error)?)
-            .map_err(|e| CliError(format!("invalid generation manifest: {e}")))?;
     let manifest_bytes = fs::read(&manifest_path).map_err(io_error)?;
+    let manifest: GenerationManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| CliError(format!("invalid generation manifest: {e}")))?;
     let expected_manifest_digest =
         fs::read_to_string(output.join("generation-manifest.v1.sha256")).map_err(io_error)?;
     if expected_manifest_digest.trim() != sha256_bytes(&manifest_bytes) {
@@ -44,6 +44,29 @@ pub(super) fn drift(
         return Err(CliError(
             "registry archive drift requires a complete registry corpus".into(),
         ));
+    }
+    let source_files =
+        historical::scope_source_file_hashes(&root, &output, &manifest.scope).map_err(CliError)?;
+    if archive_capture.is_none()
+        && !manifest.declared_source_toolchain.is_empty()
+        && fs::read_to_string(root.join("rust-toolchain.toml")).map_err(io_error)?
+            != manifest.declared_source_toolchain
+    {
+        return Err(CliError("declared source toolchain changed".into()));
+    }
+    let digest = digest_map(&source_files);
+    if source_files != manifest.source_files || digest != manifest.source_sha256 {
+        let changed = manifest
+            .source_files
+            .keys()
+            .chain(source_files.keys())
+            .find(|path| manifest.source_files.get(*path) != source_files.get(*path))
+            .cloned()
+            .unwrap_or_else(|| "<source manifest>".into());
+        return Err(CliError(format!(
+            "source digest changed since generation at {changed} (expected {}, got {})",
+            manifest.source_sha256, digest
+        )));
     }
     if let Some(corpus) = &manifest.registry_corpus {
         if archive_capture.is_none() {
@@ -93,29 +116,6 @@ pub(super) fn drift(
     }
     if manifest.channel == Channel::Release && archive_capture.is_none() && git_dirty(&root)? {
         return Err(CliError("release checkout is no longer clean".into()));
-    }
-    let source_files =
-        historical::scope_source_file_hashes(&root, &output, &manifest.scope).map_err(CliError)?;
-    if archive_capture.is_none()
-        && !manifest.declared_source_toolchain.is_empty()
-        && fs::read_to_string(root.join("rust-toolchain.toml")).map_err(io_error)?
-            != manifest.declared_source_toolchain
-    {
-        return Err(CliError("declared source toolchain changed".into()));
-    }
-    let digest = digest_map(&source_files);
-    if source_files != manifest.source_files || digest != manifest.source_sha256 {
-        let changed = manifest
-            .source_files
-            .keys()
-            .chain(source_files.keys())
-            .find(|path| manifest.source_files.get(*path) != source_files.get(*path))
-            .cloned()
-            .unwrap_or_else(|| "<source manifest>".into());
-        return Err(CliError(format!(
-            "source digest changed since generation at {changed} (expected {}, got {})",
-            manifest.source_sha256, digest
-        )));
     }
     if let historical::Scope::RegistryArchives {
         released_packages,
@@ -251,6 +251,6 @@ pub(super) fn drift(
         )
         .map_err(|error| CliError(format!("release manifest drift: {error}")))?;
     }
-    println!("drift check passed for {}", output.display());
+    writeln!(stdout, "drift check passed for {}", output.display()).map_err(io_error)?;
     Ok(())
 }

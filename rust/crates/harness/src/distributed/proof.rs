@@ -43,10 +43,6 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 }
 
 #[cfg(feature = "filesystem")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "The bounded replay authenticates declaration, admission and start against one original fence."
-)]
 pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     client: &std::sync::Arc<P>,
     owner: &Authority,
@@ -63,161 +59,49 @@ pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     }
     authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
     let mut quota = CodecQuota::new(work, 0)?;
-    let admission_key = formatted_text(
-        "task-admission:".len() + 36,
-        format_args!("task-admission:{operation}"),
-        quota.work(),
-    )?;
-    quota.adopt(admission_key.capacity() as u64)?;
-    let stream = coordinator_stream(client, quota.work())?;
-    let path_bytes = if quota
-        .work()
-        .as_deref()
-        .is_some_and(operations::original_native_decode_mode)
-    {
-        0
-    } else {
-        COORDINATOR_PATH.len() as u64
-    };
-    quota.adopt(path_bytes)?;
-    let tail = operations::tail_optional_with_work(client, stream.0.path(), quota.work())
-        .await?
-        .unwrap_or(0);
-    let mut declaration = None;
-    let mut admitted = false;
-    let mut started = false;
-    let mut last_time = None;
-    let mut next = 0;
-    while next < tail {
-        let from = next;
-        let maximum = u32::try_from(tail - from)
-            .unwrap_or(READ_PAGE_SIZE)
-            .min(READ_PAGE_SIZE);
-        let mut source = read_records(client, &stream.0, from, maximum, quota.work()).await?;
-        while let Some(record) = next_record(
-            &mut source,
-            &mut next,
-            from + u64::from(maximum),
-            &mut quota,
-        )
-        .await?
-        {
-            let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
-            if declaration.is_some()
-                || inspect_envelope(&record.value, false, quota.work())?.2
-                    == Some(admission_key.as_str())
-            {
-                let mut event_quota = CodecQuota::new(quota.work(), 0)?;
-                let (_, key, _, time, event) = decode(&record, event_quota.work())?;
-                let owned = event.logical_owned_bytes()?;
-                event_quota.adopt(owned)?;
-                let key_bytes = key.capacity() as u64;
-                event_quota.adopt(key_bytes)?;
-                if key == admission_key {
-                    if declaration.is_some() {
-                        return Err(guarded_boundary(
-                            event_quota.work(),
-                            wire::ErrorCode::Conflict,
-                            "coordinator history repeats an idempotency key",
-                        ));
-                    }
-                    let SchedulerEvent::Declared { spec } = event else {
-                        return Err(guarded_boundary(
-                            event_quota.work(),
-                            wire::ErrorCode::Conflict,
-                            "task admission does not identify a declaration",
-                        ));
-                    };
-                    if spec.operation_id != operation {
-                        return Err(guarded_boundary(
-                            event_quota.work(),
-                            wire::ErrorCode::Conflict,
-                            "historical declaration identifies another operation",
-                        ));
-                    }
-                    spec.verify_owner(owner, verifier, event_quota.work())?;
-                    declaration = Some(spec);
-                    drop(key);
-                    event_quota.relinquish(key_bytes)?;
-                    event_quota.transfer();
-                    drop(event_quota);
-                    quota.adopt(owned)?;
-                } else {
-                    if last_time.is_some_and(|previous| time <= previous) {
-                        return Err(guarded_boundary(
-                            event_quota.work(),
-                            wire::ErrorCode::Storage,
-                            "historical coordinator source identity differs",
-                        ));
-                    }
-                    last_time = Some(time);
-                    match &event {
-                        SchedulerEvent::Admitted {
-                            operation_id,
-                            reservation,
-                        } if *operation_id == operation
-                            && reservation.id == candidate.reservation_id
-                            && reservation.placement == candidate.placement =>
-                        {
-                            if admitted {
-                                return Err(guarded_boundary(
-                                    event_quota.work(),
-                                    wire::ErrorCode::Conflict,
-                                    "historical reservation has distinct admission origins",
-                                ));
-                            }
-                            admitted = true;
-                        }
-                        SchedulerEvent::Started {
-                            operation_id,
-                            fence,
-                        } if *operation_id == operation && fence == candidate => {
-                            if !admitted || started {
-                                return Err(guarded_boundary(
-                                    event_quota.work(),
-                                    wire::ErrorCode::Conflict,
-                                    "historical reservation has no unique admitted start",
-                                ));
-                            }
-                            started = true;
-                        }
-                        _ => {}
-                    }
-                    drop((key, event));
-                    drop(event_quota);
-                }
-            }
-            drop(record);
-            quota.relinquish(raw_bytes)?;
-        }
-        if next == from {
-            return Err(guarded_boundary(
-                quota.work(),
-                wire::ErrorCode::Storage,
-                "historical coordinator prefix is incomplete",
-            ));
-        }
+    let key = formatted_text(51, format_args!("task-admission:{operation}"), quota.work())?;
+    if quota.work().is_some() {
+        quota.adopt(key.capacity() as u64)?;
     }
-    let declaration = declaration.ok_or_else(|| {
-        guarded_boundary(
-            quota.work(),
-            wire::ErrorCode::NotFound,
-            "original task declaration source",
-        )
-    })?;
-    if !started {
+    let path = origins::path(operation, "declared", None, quota.work())?;
+    let (declared_revision, declared_time, declared) =
+        origins::read(client, operation, path, Some(&key), quota.work()).await?;
+    quota.adopt(declared.logical_owned_bytes()?)?;
+    let SchedulerEvent::Declared { spec } = declared else {
         return Err(guarded_boundary(
             quota.work(),
-            wire::ErrorCode::NotFound,
-            "selected original reservation start",
+            wire::ErrorCode::Storage,
+            "invalid declaration origin",
+        ));
+    };
+    spec.verify_owner(owner, verifier, quota.work())?;
+    let selector = Some((
+        candidate.reservation_id.as_str(),
+        candidate.placement.as_str(),
+    ));
+    let path = origins::path(operation, "admitted", selector, quota.work())?;
+    let (admitted_revision, admitted_time, admitted) =
+        origins::read(client, operation, path, None, quota.work()).await?;
+    quota.adopt(admitted.logical_owned_bytes()?)?;
+    let path = origins::path(operation, "started", selector, quota.work())?;
+    let (started_revision, started_time, started) =
+        origins::read(client, operation, path, None, quota.work()).await?;
+    quota.adopt(started.logical_owned_bytes()?)?;
+    if !(declared_revision < admitted_revision
+        && admitted_revision < started_revision
+        && declared_time < admitted_time
+        && admitted_time < started_time)
+    {
+        return Err(guarded_boundary(
+            quota.work(),
+            wire::ErrorCode::Conflict,
+            "reservation origins are out of order",
         ));
     }
-    let key_bytes = admission_key.capacity() as u64;
-    drop(admission_key);
-    drop(stream);
-    quota.relinquish(key_bytes + path_bytes)?;
-    let declaration = *declaration;
-    quota.relinquish(std::mem::size_of::<OperationSpec>() as u64)?;
+    let owned = spec.logical_owned_bytes()?;
+    drop((key, admitted, started));
+    let spec = *spec;
+    quota.replace(owned)?;
     quota.transfer();
-    Ok((declaration, candidate))
+    Ok((spec, candidate))
 }

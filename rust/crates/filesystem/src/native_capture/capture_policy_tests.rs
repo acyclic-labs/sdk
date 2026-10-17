@@ -1,5 +1,157 @@
 use super::*;
 
+pub(super) async fn native_checkout(
+    work: &NativeMaterializationWork,
+) -> Result<crate::facade::MemoryCheckout, Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let cancellation = work.cancellation();
+    let workspace = crate::Fs::memory()
+        .create_workspace("native-capture-property", work.budget(), cancellation)
+        .await?
+        .value;
+    Ok(workspace
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            work,
+            cancellation,
+        )
+        .await?)
+}
+
+#[tokio::test]
+async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&work).await?;
+    let file = path("/file")?;
+    let mutations = vec![
+        AuthoredMutation::CreateFile {
+            path: file.clone(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
+            metadata: FileMetadata::default(),
+        },
+        AuthoredMutation::Resize {
+            path: file.clone(),
+            logical_bytes: 256,
+        },
+        AuthoredMutation::Write {
+            path: file.clone(),
+            offset: 255,
+            bytes: acyclic_stream::OwnedBytes::from_static(b"z"),
+        },
+    ];
+    let slots = work.claim(
+        (mutations.capacity() * std::mem::size_of::<AuthoredMutation>()) as u64,
+        1,
+        WorkCounters::UNCHARGED,
+    )?;
+    drop(
+        checkout
+            .apply_borrowed_authored_transaction_with_native_work(
+                &mutations,
+                &slots,
+                &work,
+                &cancellation,
+            )
+            .await?,
+    );
+    let range = crate::ByteRange {
+        offset: 0,
+        length: 256,
+    };
+    let (lookup, lookup_custody) = checkout
+        .lookup_batch_no_follow(std::slice::from_ref(&file), &work, &cancellation)
+        .await?;
+    let record = lookup.entries[0].record.unwrap();
+    drop((lookup, lookup_custody));
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, &cancellation);
+    let (prior, allocation) = checkout
+        .plan_record_extents(record, range, 8, &mut accounting, &cancellation)
+        .await?;
+    assert!(prior.as_ref().unwrap().spans.len() > 1);
+    drop((prior, allocation));
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), [b'b'; 256])?;
+    let mut options = options(source.path(), 16)?;
+    options.maximum_extent_spans = 1;
+    let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+    let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
+    let result = capture_subtrees_with_native_work(
+        &mut checkout,
+        &[root],
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        Some(&baseline),
+        &work,
+    )
+    .await?;
+    assert!(result.value.changed_paths > 0);
+    let actual = checkout
+        .read_file_range(&file, range, &work, &cancellation)
+        .await?;
+    assert_eq!(actual.bytes.as_ref(), &[b'b'; 256]);
+    Ok(())
+}
+
+#[cfg(unix)]
+mod unchanged_properties {
+    use super::*;
+    use proptest::prelude::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    proptest! {
+        // Real capture must retain every byte and metadata change, including a
+        // content change with restored timestamps, while exact repeats write no paths.
+        #[test]
+        fn repeated_regular_capture_avoids_unchanged_writes(
+            body in prop::collection::vec(1_u8..=255, 70..96),
+            empty in any::<bool>(),
+            truncate in any::<bool>(),
+            change_body in any::<bool>(), change_mode in any::<bool>(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let source = tempfile::tempdir().unwrap();
+                let file = source.path().join("file");
+                let body = if empty { Vec::new() } else { body };
+                std::fs::write(&file, &body).unwrap();
+                std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+                let before = std::fs::metadata(&file).unwrap();
+                let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+                let cancellation = CancellationToken::new();
+                let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
+                let mut checkout = native_checkout(&work).await.unwrap();
+                let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits).unwrap();
+                let options = options(source.path(), 16).unwrap();
+                capture_subtrees_with_native_work(&mut checkout, &[root.clone()], &options, &CapturePolicy::default(), &cancellation, None, &work).await.unwrap();
+                let mut expected = body;
+                if change_body {
+                    if expected.is_empty() { expected.push(1); }
+                    else if truncate { expected.clear(); }
+                    else { expected[0] ^= 1; }
+                    std::fs::write(&file, &expected).unwrap();
+                }
+                if change_mode { std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap(); }
+                std::fs::File::open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()).set_accessed(before.accessed().unwrap())).unwrap();
+                let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
+                let before_capture = work.receipt();
+                let receipt = capture_subtrees_with_native_work(&mut checkout, &[root], &options, &CapturePolicy::default(), &cancellation, Some(&baseline), &work).await.unwrap();
+                prop_assert_eq!(receipt.value.changed_paths != 0, change_body || change_mode);
+                if empty && !change_body && !change_mode {
+                    prop_assert_eq!(receipt.work.backend_write_operations, before_capture.backend_write_operations);
+                }
+                let content = checkout.read_file_range(&path("/file").unwrap(), crate::ByteRange { offset: 0, length: expected.len() as u64 }, &work, &cancellation).await.unwrap();
+                prop_assert_eq!(content.bytes.as_ref(), expected.as_slice());
+                Ok(())
+            })?;
+        }
+    }
+}
+
 fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
     let limits = crate::model::VolumeLimits::default();
     Ok(NamespacePath::from_portable(
@@ -299,5 +451,101 @@ async fn content_hints_override_metadata_hints_in_either_order()
             .await?;
         assert_eq!(content.value.bytes.as_ref(), b"new");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rename_into_new_directory_hydrates_parents_even_with_create_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    for hints in [vec![], vec![0], vec![1], vec![0, 1]] {
+        rename_with_hints(2, hints, false).await?;
+    }
+    Ok(())
+}
+
+// Property: any subset/order/duplication of parent creation hints leaves the
+// same renamed FileId and complete ancestry, within the event/path bound.
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn rename_parent_hints_are_confluent(
+        depth in 1usize..5,
+        hints in proptest::collection::vec(0usize..4, 0..8),
+        rename_first in proptest::bool::ANY,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(rename_with_hints(depth, hints, rename_first)).unwrap();
+    }
+}
+
+async fn rename_with_hints(
+    depth: usize,
+    hints: Vec<usize>,
+    rename_first: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let parents: Vec<_> = (1..=depth)
+        .map(|length| format!("/{}", vec!["dir"; length].join("/")))
+        .collect();
+    let destination = format!("{}/moved.txt", parents.last().ok_or("parent")?);
+    std::fs::create_dir_all(
+        source
+            .path()
+            .join(parents.last().ok_or("parent")?.trim_start_matches('/')),
+    )?;
+    std::fs::write(
+        source.path().join(destination.trim_start_matches('/')),
+        b"new",
+    )?;
+    let mut checkout = checkout(&[("/old.txt", "old")]).await?;
+    let before = checkout
+        .lookup_no_follow(
+            &path("/old.txt")?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value
+        .record
+        .ok_or("original file")?;
+    let mut changes = hints
+        .into_iter()
+        .filter_map(|index| parents.get(index))
+        .map(|parent| Ok(WatchChange::Created(path(parent)?)))
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+    changes.push(WatchChange::Renamed {
+        from: path("/old.txt")?,
+        to: path(&destination)?,
+    });
+    if rename_first {
+        changes.rotate_right(1);
+    }
+    replay(
+        &mut checkout,
+        &options(source.path(), (depth + 2).max(changes.len()) as u32)?,
+        changes,
+    )
+    .await?;
+    let mut expected = vec![
+        ("/old.txt", None),
+        (destination.as_str(), Some(FileKind::Regular)),
+    ];
+    expected.extend(
+        parents
+            .iter()
+            .map(|parent| (parent.as_str(), Some(FileKind::Directory))),
+    );
+    assert_records(&mut checkout, &expected).await?;
+    let after = checkout
+        .lookup_no_follow(
+            &path(&destination)?,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value
+        .record
+        .ok_or("renamed file")?;
+    assert_eq!(after.file_id, before.file_id);
     Ok(())
 }

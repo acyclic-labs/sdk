@@ -27,8 +27,8 @@ impl Executor for CustomExecutor {
                 match event {
                     ModelEvent::Content { delta } => text.push_str(&delta),
                     ModelEvent::Completed { metadata: value } => metadata = Some(value),
-                    ModelEvent::Reasoning { .. } => {}
-                    ModelEvent::ToolCall { .. } => {
+                    ModelEvent::Reasoning { .. } | ModelEvent::ReasoningBlock { .. } => {}
+                    ModelEvent::ToolCall(_) => {
                         return Err(Error::Unsupported("this custom loop has no tools".into()));
                     }
                 }

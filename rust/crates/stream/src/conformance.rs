@@ -4,9 +4,9 @@ use crate::OwnedBytes as Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
-    AppendOutcome, AppendRequest, ChildrenPageRequest, ChildrenRequest, CommitCondition,
-    CommitConflict, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation, ForkRequest,
-    IdempotencyKey, IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, ChildrenPageRequest, CommitCondition, CommitConflict,
+    CommitMutation, CommitOutcome, CommitRequest, CommittedMutation, ForkRequest, IdempotencyKey,
+    IdempotencyOutcome, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 
 /// Canonical language-neutral Stream conformance inventory.
@@ -108,13 +108,14 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
         return Err(StreamError::Unavailable);
     }
     let children = provider
-        .children(ChildrenRequest {
+        .children_page(ChildrenPageRequest {
             parent: Some(path("conformance")?),
             limit: 8,
+            after: None,
+            hierarchy_version: None,
         })
         .await?
-        .try_collect::<Vec<_>>()
-        .await?;
+        .children;
     let mut child_paths = children
         .into_iter()
         .map(|child| child.path)

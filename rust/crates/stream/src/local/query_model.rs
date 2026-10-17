@@ -1,6 +1,6 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
-use crate::verification::{block_on, check};
+use crate::verification::{block_on, check, check_with_bound};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 // Keep executor scheduling outside the model, but execute the entire production
@@ -17,7 +17,7 @@ pub(super) async fn spawn_blocking<T>(
     Ok(work())
 }
 
-fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
+pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     let mut file = tempfile::tempfile()?;
     let header = encode_header(limits, 0)?;
@@ -53,18 +53,24 @@ fn fixture(omit_persist_wake: bool) -> Result<LocalStream> {
             commit_clock,
             journal: Arc::new(Mutex::new(journal)),
             visibility: RwLock::new(()),
+            publication: RwLock::new(()),
             synced: watch::channel(0).0,
-            changed: watch::channel(Some(0)).0,
-            omit_persist_wake,
+            failed: watch::channel(false).0,
+            revision: watch::channel(0).0,
+            omit_follow_wake,
             durable_tails: Mutex::new(Default::default()),
         }),
         work: None,
     })
 }
 
-pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait() {
-    check(|| {
-        let stream = fixture(false)?;
+pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait(
+    omit_wake: bool,
+    preemptions: Option<usize>,
+) {
+    check_with_bound(preemptions, move || {
+        let stream = fixture(omit_wake)?;
+        let keeper = std::mem::ManuallyDrop::new(stream.clone());
         let path = StreamPath::new("model")?;
         let seed = block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
@@ -98,24 +104,28 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
                 .await?;
             let record = follow.next().await.ok_or("follow ended")??;
             assert_eq!(record.value.as_slice(), b"accepted");
-            let watermarks = stream.watermarks(path).await?;
-            assert_eq!(
-                watermarks,
-                crate::StreamWatermarks {
-                    accepted: 2,
-                    durable: 0
-                }
-            );
             Ok(()) as Result
         })?;
         writer.join().map_err(|_| "writer panicked")??;
+        // Acceptance has already been observed; checking its durable boundary
+        // after join adds no competing publication or durability operation.
+        let watermarks = block_on(stream.watermarks(path))?;
+        assert_eq!(
+            watermarks,
+            crate::StreamWatermarks {
+                accepted: 2,
+                durable: 0
+            }
+        );
+        drop(std::mem::ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 
-pub(crate) fn poison_wakes_checked_followers() {
-    check(|| {
+pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
+    check(move || {
         let stream = fixture(false)?;
+        let keeper = std::mem::ManuallyDrop::new(stream.clone());
         let path = StreamPath::new("model")?;
         let seed = block_on(deferring_durability(stream.append(AppendRequest {
             path: path.clone(),
@@ -129,8 +139,12 @@ pub(crate) fn poison_wakes_checked_followers() {
         let writer = loom::thread::spawn({
             let stream = stream.clone();
             move || {
+                if omit_publication {
+                    crate::verification::set_fault(
+                        crate::verification::Fault::OmitPoisonPublication,
+                    );
+                }
                 stream.inner.poison();
-                stream.inner.published();
             }
         });
         block_on(async {
@@ -143,6 +157,7 @@ pub(crate) fn poison_wakes_checked_followers() {
             }
         });
         writer.join().map_err(|_| "writer panicked")?;
+        drop(std::mem::ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }

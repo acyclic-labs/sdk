@@ -1,5 +1,7 @@
 use super::{
-    TestResult, matchers,
+    TestResult,
+    expectations::Expectations,
+    matchers,
     scenario::{self, Scenario},
 };
 use acyclic_harness::{
@@ -100,11 +102,11 @@ fn configure(
     }
     if let Some(tokens) = case.message_tokens {
         provider = provider.with_token_counter(move |request| {
-            Ok(ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: 0,
-                message_tokens: vec![tokens; request.request().messages.len()],
-            })
+            Ok(ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                0,
+                vec![tokens; request.request().messages.len()],
+            ))
         });
     }
     let provider = Arc::new(provider);
@@ -229,7 +231,7 @@ async fn run_turn(
 }
 
 async fn check_provider(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     provider: &ScriptedModelProvider,
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
 ) -> TestResult {
@@ -302,11 +304,14 @@ async fn check_provider(
 }
 
 async fn check_events(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     journal: &dyn acyclic_harness::executor::ExecutionJournal,
     operation: OperationId,
 ) -> TestResult {
-    if expected.events.is_some() || !expected.not_events.is_empty() {
+    if expected.events.is_some()
+        || expected.model_events.is_some()
+        || !expected.not_events.is_empty()
+    {
         let mut events = Vec::new();
         let mut after = 0;
         loop {
@@ -326,6 +331,13 @@ async fn check_events(
         }
         if let Some(expected) = &expected.events {
             matchers::ordered(expected, &events, "events")?;
+        }
+        if !expected.matches_model_events(&events) {
+            return Err(format!(
+                "model events differ: expected {:?}, got {events:?}",
+                expected.model_events
+            )
+            .into());
         }
         for forbidden in &expected.not_events {
             if events
@@ -369,7 +381,7 @@ fn check_interruption<T: std::fmt::Debug>(
 }
 
 fn check_result<T: serde::Serialize + std::fmt::Debug>(
-    expected: &scenario::Expectations,
+    expected: &Expectations,
     result: acyclic_harness::Result<T>,
 ) -> TestResult<Option<T>> {
     match (&expected.error, result) {
@@ -386,7 +398,7 @@ fn check_result<T: serde::Serialize + std::fmt::Debug>(
     }
 }
 
-fn check_text(expected: &scenario::Expectations, actual: &[u8]) -> TestResult {
+fn check_text(expected: &Expectations, actual: &[u8]) -> TestResult {
     if expected.text.as_deref().map(str::as_bytes) != Some(actual) {
         return Err(format!(
             "text: expected {:?}, got {:?}",

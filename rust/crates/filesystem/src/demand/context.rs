@@ -1,9 +1,9 @@
 use super::*;
-use crate::sync::Mutex;
-use std::sync::{
-    Arc,
+use crate::sync::{
+    Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),
 // gate counters (60). Resource allowances follow the leaf, ancestors first.
@@ -36,6 +36,9 @@ impl NativeDemandReadMeter {
         self.lock().take_native_io_failure()
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
@@ -72,6 +75,13 @@ impl CaptureTransientCustody {
         self.retained.fetch_add(bytes, Ordering::AcqRel);
     }
     pub(super) fn release(&self, bytes: u64) {
+        #[cfg(all(test, acyclic_fs_loom))]
+        if model_checking::broken_release() {
+            let current = self.retained.load(Ordering::Acquire);
+            self.retained
+                .store(current.saturating_sub(bytes), Ordering::Release);
+            return;
+        }
         let _ = self
             .retained
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -79,6 +89,7 @@ impl CaptureTransientCustody {
             });
     }
 }
+
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
     error
         .downcast::<DemandError>()

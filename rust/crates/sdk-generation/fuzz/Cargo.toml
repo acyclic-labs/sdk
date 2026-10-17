@@ -1,0 +1,40 @@
+[package]
+name = "sdk-generation-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toml = "=0.9.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sdk-generation = { path = ".." }
+sdk-docs = { path = "../../sdk-docs" }
+
+[[bin]]
+name = "archive_members"
+path = "fuzz_targets/archive_members.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fixture_replay"
+path = "fuzz_targets/fixture_replay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_record"
+path = "fuzz_targets/identity_record.rs"
+test = false
+doc = false
+bench = false

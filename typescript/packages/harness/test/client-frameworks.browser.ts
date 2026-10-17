@@ -4,7 +4,7 @@ import { renderToString } from "react-dom/server";
 import { flushSync } from "react-dom";
 import { mount, unmount, tick } from "svelte";
 import Component from "./client-frameworks.svelte";
-import { ClientViews, type ClientDomain, type ClientObservation } from "@acyclic-labs/harness/client";
+import { ClientViews, type ClientDomain, type ClientObservation } from "@acyclic-labs/harness";
 import { useClientSnapshot } from "@acyclic-labs/harness/react";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

@@ -1,10 +1,14 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
+use crate::sync::SyncMutex;
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 mod codec;
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_harness_loom)))]
+mod codec_properties;
 mod history;
 mod quota;
 mod records;
@@ -29,9 +33,10 @@ pub enum PreparationIo {
     Owned {
         /// Limits for this attempt.
         budget: WorkBudget,
-        /// Spent work and live owned bytes.
+        /// Spent work and live owned bytes. This ledger is acquired alone;
+        /// callbacks must not acquire another preparation ledger or reenter it.
         work: Box<
-            Mutex<(
+            SyncMutex<(
                 WorkCounters,
                 std::result::Result<AllocationLedger, acyclic_fs::WorkError>,
             )>,
@@ -105,7 +110,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget,
-            work: Box::new(Mutex::new((
+            work: Box::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
@@ -118,7 +123,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Box::new(Mutex::new((
+            work: Box::new(SyncMutex::new((
                 WorkCounters::default(),
                 Ok(AllocationLedger::default()),
             ))),
@@ -246,6 +251,7 @@ impl PreparationIo {
                 .bytes()),
         }
     }
+    #[inline]
     fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
@@ -288,7 +294,16 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            accounting.admit(next)
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::before(crate::accounting_trace::Phase::Preflight, &next);
+            let result = accounting.admit(next);
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::after(
+                crate::accounting_trace::Phase::Preflight,
+                &next,
+                &result,
+            );
+            result
         })
     }
     pub(crate) fn spent(
@@ -323,7 +338,12 @@ impl PreparationIo {
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
             }
-            accounting.charge(next)
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
+            let result = accounting.charge(next);
+            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+            crate::accounting_trace::after(crate::accounting_trace::Phase::Charge, &next, &result);
+            result
         })
     }
     pub(crate) fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {

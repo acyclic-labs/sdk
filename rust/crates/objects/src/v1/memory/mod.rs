@@ -1,7 +1,8 @@
+use crate::sync::{Arc as StateArc, Mutex, MutexGuard};
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::BTreeMap;
 use std::ops::Bound;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,9 +58,9 @@ impl Default for MemoryOptions {
 /// Atomic reference provider with no public version history or captured listings.
 #[derive(Clone)]
 pub struct MemoryObjects {
-    state: Arc<Mutex<State>>,
+    state: StateArc<Mutex<State>>,
     options: MemoryOptions,
-    token_key: Arc<Mutex<Option<[u8; 32]>>>,
+    token_key: StateArc<Mutex<Option<[u8; 32]>, 2>>,
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     journal: Option<Arc<persistence::Journal>>,
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -67,7 +68,7 @@ pub struct MemoryObjects {
 }
 
 impl MemoryObjects {
-    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, State>, Error> {
+    fn lock_state(&self) -> Result<MutexGuard<'_, State>, Error> {
         let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
@@ -95,12 +96,12 @@ impl MemoryObjects {
         );
         (
             Self {
-                state: Arc::new(Mutex::new(state)),
+                state: StateArc::new(Mutex::new(state)),
                 options: MemoryOptions {
                     maximum_entries: usize::MAX,
                     ..MemoryOptions::default()
                 },
-                token_key: Arc::new(Mutex::new(None)),
+                token_key: StateArc::new(Mutex::new(None)),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 journal: None,
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -143,9 +144,9 @@ impl MemoryObjects {
         }
         let token_key = fresh_cursor_key(getrandom::fill)?;
         Ok(Self {
-            state: Arc::default(),
+            state: StateArc::default(),
             options,
-            token_key: Arc::new(Mutex::new(Some(token_key))),
+            token_key: StateArc::new(Mutex::new(Some(token_key))),
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             journal: None,
             #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -262,6 +263,7 @@ use publication::*;
 use read::*;
 pub(super) use state::State;
 use state::{Bucket, Receipt, SharedInfo, Stored, Upload, stored_bytes};
+use transaction::{PendingObject, Transaction};
 
 #[cfg(test)]
 mod bootstrap_tests;

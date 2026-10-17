@@ -76,7 +76,8 @@ async function validateFrames(options, prefix) {
       // Session frames hold one record; the valid prefix precedes a bad second
       // record. Read still validates its entire compressed batch atomically.
       if (mode !== "codec") assert.equal((await follow.next()).value.sequence, 0n);
-      await assert.rejects(follow.next(), error => error.code === "invalid_response");
+      // Follows now share Rust's session validator and its canonical failure.
+      await assert.rejects(follow.next(), error => error instanceof StreamError && error.code === "unavailable");
     }
   }
   const ordinary = open("ordinary");

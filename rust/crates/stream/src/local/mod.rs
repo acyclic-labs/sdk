@@ -4,14 +4,14 @@ use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
+#[cfg(all(not(acyclic_loom), feature = "test-support"))]
+use acyclic_native_runtime::testing::{spawn, spawn_blocking};
 use async_trait::async_trait;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
@@ -20,7 +20,7 @@ use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::mpsc;
-#[cfg(not(acyclic_loom))]
+#[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
 #[cfg(test)]
 use tracing::Instrument as _;
@@ -53,6 +53,12 @@ const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 #[cfg(acyclic_loom)]
+pub(crate) mod compaction_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod discovery_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod follow_model;
+#[cfg(acyclic_loom)]
 pub(crate) mod query_model;
 
 #[cfg(test)]
@@ -66,6 +72,9 @@ type JournalPersistBlocker = (
 );
 #[cfg(test)]
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+// Lock order: journal -> test hook; release the hook before a device-gate wait.
+#[cfg(test)]
+static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
 #[cfg(test)]
 mod tests;

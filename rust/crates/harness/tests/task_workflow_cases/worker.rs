@@ -436,13 +436,16 @@ pub(super) async fn worker_restart_with_options(
                     })
                 } else {
                     serde_json::to_value(ModelTaskCommand {
+                        context_manifest: acyclic_harness::context::ContextManifest::new(
+                            Default::default(), Vec::new(), &tools,
+                        )?.publish(payloads.as_ref(), OperationId::new(), "manifest.json", Limits::default()).await?,
                         input: if with_model_approval {
                             let file = payloads.stage(operation, "model-input", b"hello", None)?.await?;
                             let mut turns = vec![ScriptedTurn::Events(vec![
-                                ScriptedEvent::Event(ModelEvent::ToolCall {
-                                    call_id: "provider-call".into(), name: "test.restore".into(),
-                                    arguments: json!({"file":file,"approval":true}),
-                                }),
+                                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                                    "provider-call".into(), "test.restore".into(),
+                                    json!({"file":file,"approval":true}),
+                                ))),
                                 ScriptedEvent::Event(ModelEvent::Completed { metadata: Value::Null }),
                             ])];
                             if !declined { turns.push(ScriptedTurn::Text("partial-restored".into())); }
@@ -1025,7 +1028,7 @@ pub(super) async fn worker_restart_with_options(
             let attempt = runtime
                 .resume_task(
                     lease.clone(),
-                    &runtime.commands().with_model(&Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?, model.clone(), &ContextPipeline::default(), &acyclic_harness::context::CompactionPolicy::default(), None)?,
+                    &runtime.commands().with_model(&Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?, model.clone(), &acyclic_harness::context::CompactionPolicy::default(), None)?,
                     2, None,
                 )
                 .await;
@@ -1053,7 +1056,6 @@ pub(super) async fn worker_restart_with_options(
                     &runtime.commands().with_model(
                         &Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
-                        &ContextPipeline::default(),
                         &acyclic_harness::context::CompactionPolicy::default(),
                         None,
                     )?,

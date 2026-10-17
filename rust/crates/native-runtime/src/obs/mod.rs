@@ -52,12 +52,46 @@ impl OperationSpan {
             dispatch,
         }
     }
+    /// Captures an explicitly rooted span without retaining a filtered caller.
+    pub fn new_root(span: Span) -> Self {
+        let dispatch = span
+            .with_subscriber(|(_, dispatch)| dispatch.clone())
+            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
+        Self {
+            context: span.clone(),
+            span,
+            dispatch,
+        }
+    }
+    /// Adds a causal edge only when both spans share the same registry.
+    /// Span IDs from unrelated or unknown subscriber implementations are never
+    /// passed to another subscriber. Unknown implementations omit this edge.
+    pub fn follows_from_same_subscriber(&self, cause: &Self) {
+        let registry = self.dispatch.downcast_ref::<tracing_subscriber::Registry>();
+        let origin = cause
+            .dispatch
+            .downcast_ref::<tracing_subscriber::Registry>();
+        if let (Some(registry), Some(origin)) = (registry, origin)
+            && std::ptr::eq(registry, origin)
+        {
+            self.span.follows_from(cause.context.id());
+        }
+    }
     /// Borrows the operation's poll/drop context, including a filtered caller.
     pub fn context(&self) -> &Span {
         &self.context
     }
     /// Runs work under its originating dispatcher and context.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        // Preserve isolation when an unobserved producer is later polled under
+        // a foreign subscriber, but install no dispatcher when both ends are idle.
+        if self.dispatch.is::<tracing::subscriber::NoSubscriber>()
+            && tracing::dispatcher::get_default(|current| {
+                current.is::<tracing::subscriber::NoSubscriber>()
+            })
+        {
+            return work();
+        }
         tracing::dispatcher::with_default(&self.dispatch, || self.context.in_scope(work))
     }
     /// Retains a producer's context through polling and destruction.

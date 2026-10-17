@@ -58,7 +58,7 @@ impl NativeMaterializationWork {
         work.bind_invocation(cancellation.clone(), NativeResourceCredit::ReadBytes)?;
         Ok((self.retain_source(work)?, cancellation))
     }
-    fn bind_invocation(
+    pub(crate) fn bind_invocation(
         &mut self,
         cancellation: crate::CancellationToken,
         read_credit: NativeResourceCredit,
@@ -121,8 +121,15 @@ impl NativeMaterializationWork {
         &self,
         budget: crate::WorkBudget,
     ) -> Result<Self, NativeTreeMaterializationError> {
-        let metadata =
-            self.claim_root_metadata(std::mem::size_of::<NativeResourceAllowance>() as u64)?;
+        let bytes = const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                NativeResourceAllowance,
+            >()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("resource allowance Arc layout overflow"),
+            }
+        };
+        let metadata = self.claim_root_metadata(bytes)?;
         let resource = Arc::new_cyclic(|self_ref| NativeResourceAllowance {
             budget,
             metadata,

@@ -27,6 +27,11 @@ mod tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod accounting;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod write_probe;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use write_probe::WriteProbe;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod admissions;
 

@@ -308,6 +308,44 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending.iter().filter_map(Option::as_ref)
     }
 
+    /// Replaces a disposable file view at the query's atomic snapshot cut.
+    pub fn query_snapshot(
+        &mut self,
+        query: crate::task_volume::Query,
+        snapshot: crate::task_volume::Snapshot,
+        maximum_files: usize,
+        maximum_bytes: usize,
+    ) -> Result<()> {
+        self.views
+            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)
+    }
+
+    /// Applies one pushed file record; query payloads are disposable, not journaled.
+    pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
+        self.views.query_change(change)
+    }
+
+    /// Selects both file sources required for goal status and continuation counts.
+    pub async fn select_goal_view(
+        &mut self,
+        goal: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        request: &(impl crate::task_volume::FileQuerySource + ?Sized),
+        maximum_bytes: usize,
+    ) -> Result<crate::task_volume::ChangeStream> {
+        self.views
+            .select_goal_view(goal, request, maximum_bytes)
+            .await
+    }
+
+    /// Joins observed GOAL.md and request-head cuts without persisting file payloads.
+    pub fn bind_goal_sources(
+        &mut self,
+        goal: ([u8; 32], [u8; 32]),
+        request: ([u8; 32], [u8; 32]),
+    ) -> Result<()> {
+        self.views.bind_goal_sources(goal, request)
+    }
+
     /// State shared by every renderer.
     #[must_use]
     pub fn views(&self) -> &ClientViews {

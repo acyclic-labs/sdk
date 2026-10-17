@@ -28,24 +28,15 @@ impl LazyNode for crate::LazyShadow {
     }
 }
 
-pub(super) fn lazy_digest<T: Serialize>(
+pub(super) fn lazy_digest<T: LazyNode>(
     value: &T,
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<[u8; 32], LocalCoreStateStoreError> {
-    meter
-        .allocations(|allocations, work, budget, cancellation| {
-            crate::lazy_workspace::hash_lazy_value(
-                value,
-                &mut crate::kernel::KernelAccounting::borrowed_standalone(
-                    allocations,
-                    work,
-                    budget,
-                    cancellation,
-                ),
-            )
-            .map_err(LocalCoreStateStoreError::LazyWork)
-        })
-        .map(|(value, _allocation)| value)
+    crate::lazy_workspace::hash_lazy_value(
+        value,
+        &mut crate::kernel::KernelAccounting::native(meter, meter.cancellation()),
+    )
+    .map_err(LocalCoreStateStoreError::LazyWork)
 }
 
 pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {

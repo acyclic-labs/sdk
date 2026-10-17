@@ -11,41 +11,14 @@ import {
   HARNESS_MAX_PATH_BYTES,
 } from "./limits-contract.js";
 
-export type VolumeOwner =
-  | Readonly<{ kind: "project"; id: string }>
-  | Readonly<{ kind: "agent"; id: AgentId }>
-  | Readonly<{ kind: "session"; id: string }>;
-
-export interface ProviderRef<Family extends string = string> {
-  readonly namespace: string;
-  readonly family: Family;
-  readonly version: string;
-}
-
-interface VolumeBase<Family extends string> {
-  readonly provider: ProviderRef<Family>;
-  readonly id: string;
-}
-
-/** The volume class fixes its owner class at compile time as well as admission. */
+export type VolumeOwner = import("../generated/wasm/acyclic_harness_wasm.js").WasmVolumeOwnerWire;
+export type ProviderRef<Family extends string = string> =
+  import("../generated/wasm/acyclic_harness_wasm.js").WasmProviderRefWire & Readonly<{family: Family}>;
 export type VolumeRef<Class extends VolumeClass = VolumeClass, Family extends string = string> =
-  Class extends "project" ? VolumeBase<Family> & Readonly<{ class: Class; owner: Extract<VolumeOwner, { kind: "project" }> }>
-  : Class extends "agent_private" ? VolumeBase<Family> & Readonly<{ class: Class; owner: Extract<VolumeOwner, { kind: "agent" }> }>
-  : VolumeBase<Family> & Readonly<{ class: Class; owner: Extract<VolumeOwner, { kind: "session" }> }>;
-
-export interface FileDescriptor {
-  readonly sha256: readonly number[];
-  readonly byte_length: number;
-  readonly media_type: string;
-}
-
-export interface FileRef<Class extends VolumeClass = VolumeClass, Family extends string = string> {
-  readonly volume: VolumeRef<Class, Family>;
-  readonly path: string;
-  readonly version: string;
-  readonly descriptor: FileDescriptor;
-  readonly display_name: string;
-}
+  import("../generated/wasm/acyclic_harness_wasm.js").WasmVolumeRefWire<Class, Family>;
+export type FileDescriptor = import("../generated/wasm/acyclic_harness_wasm.js").WasmFileDescriptorWire;
+export type FileRef<Class extends VolumeClass = VolumeClass, Family extends string = string> =
+  import("../generated/wasm/acyclic_harness_wasm.js").WasmFileRefWire<Class, Family>;
 
 
 export type TaskOutcomeRecord =

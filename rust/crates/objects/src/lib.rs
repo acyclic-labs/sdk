@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 mod body;
 mod obs;
+mod sync;
 pub mod v1;
 /// Canonical logical Objects v1 public contracts and providers.
 pub use v1::*;

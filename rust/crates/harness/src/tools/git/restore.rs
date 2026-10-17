@@ -1,6 +1,10 @@
 use super::*;
 
-impl WorkspaceGitExecutor<'_> {
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     pub(super) async fn restore_paths(
         &self,
         operation_id: OperationId,
@@ -17,7 +21,7 @@ impl WorkspaceGitExecutor<'_> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let outcome = self
             .current
             .restore_paths_from(
@@ -40,7 +44,7 @@ impl WorkspaceGitExecutor<'_> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
-            .map_err(display)?;
+            .map_err(Error::from)?;
         committed(outcome)
     }
 }
