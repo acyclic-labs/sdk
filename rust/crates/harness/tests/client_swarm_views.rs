@@ -89,3 +89,16 @@ fn membership_status_checked_seed_round_trips() {
     );
     membership_codec::exercise(bytes);
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn membership_source_archive_churn_matches_fresh_snapshots(commands in proptest::collection::vec(proptest::num::u8::ANY, 0..32), reference in "[a-z][a-z0-9_-]{0,20}", message in "[a-z][a-z0-9_-]{0,20}", turn in 1u64..=u64::MAX) {
+        membership_codec::query(&commands, false);
+        membership_codec::paths(&reference, &message, turn);
+    }
+}
+#[test]
+fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
+    assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
+}

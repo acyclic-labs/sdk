@@ -7,6 +7,7 @@ mod membership;
 mod oracle;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     membership::exercise(bytes);
+    membership::query(bytes, false);
     limits::exercise(bytes, false);
     oracle::exercise(bytes, false);
 });
