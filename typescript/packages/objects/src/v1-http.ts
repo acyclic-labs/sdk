@@ -4,11 +4,14 @@ import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type, validate_objects_v1_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { DEFAULT_REQUEST_TIMEOUT_MS, MAX_TRANSFER_TIMEOUT_MS } from "../generated/timeouts.js";
 
 export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;
   readonly maximumResponseBytes?: number;
   readonly maximumRequestBytes?: number;
+  /** Whole-request deadline for PUT, multipart parts and complete GET bodies; at most 30 minutes. Metadata retains 30 seconds. */
+  readonly transferTimeoutMs?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
 }
@@ -18,6 +21,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly endpoint: URL;
   private readonly maximumResponse: number;
   private readonly maximumRequest: number;
+  private readonly transferTimeout: number;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
   constructor(options: ObjectsV1HttpOptions) {
@@ -27,6 +31,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     this.credential = credentialProvider(options);
     this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
     this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
+    this.transferTimeout = options.transferTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.transferTimeout) || this.transferTimeout < 1 || this.transferTimeout > MAX_TRANSFER_TIMEOUT_MS) throw new RangeError("transfer timeout must be positive whole milliseconds, at most 30 minutes");
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v1/objects/";
     this.endpoint = endpoint;
@@ -75,7 +81,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
     if (sizes) sizes.requestBytes = requestSize;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), streaming || route === "objects/get"
+      ? this.transferTimeout : DEFAULT_REQUEST_TIMEOUT_MS);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${await this.credential(controller.signal)}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });

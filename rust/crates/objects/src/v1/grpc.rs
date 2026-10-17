@@ -1,7 +1,8 @@
 //! Authenticated, bounded gRPC client for logical Objects v1.
 use super::response::object_info as info;
 use super::{
-    Download, Error, Object, ObjectsProvider, UploadBody, request, response, upload, wire,
+    DEFAULT_REQUEST_TIMEOUT as REQUEST_TIMEOUT, Download, Error, MAX_TRANSFER_TIMEOUT, Object,
+    ObjectsProvider, UploadBody, request, response, upload, wire,
 };
 use crate::obs;
 pub use acyclic_auth::credential::CredentialProvider;
@@ -15,8 +16,6 @@ use tonic::{
 };
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 #[cfg(test)]
 mod credential_tests;
@@ -75,10 +74,8 @@ impl GrpcObjects {
         mut self,
         timeout: std::time::Duration,
     ) -> Result<Self, ConnectError> {
-        if timeout.is_zero() || timeout > MAX_TRANSFER_TIMEOUT {
-            return Err(ConnectError::InvalidConfiguration);
-        }
-        self.transfer_timeout = timeout;
+        self.transfer_timeout =
+            super::timeouts::validate(timeout).map_err(|_| ConnectError::InvalidConfiguration)?;
         Ok(self)
     }
 

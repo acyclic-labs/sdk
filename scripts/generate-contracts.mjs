@@ -18,6 +18,7 @@ const modules = [
   "generate-filesystem-hosted-contract.mjs",
   "generate-filesystem-git-compat-contract.mjs",
   "generate-inference-defaults.mjs",
+  "generate-objects-timeouts.mjs",
   "generate-inference-terminal-metadata.mjs",
   "generate-inference-widths.mjs",
   "generate-stream-http-contract.mjs",

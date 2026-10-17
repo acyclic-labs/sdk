@@ -1,7 +1,7 @@
 //! Authenticated logical Objects HTTP gateway with bounded Protobuf JSON/NDJSON.
 use super::{
-    Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json, request, response,
-    upload, wire,
+    DEFAULT_REQUEST_TIMEOUT, Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody,
+    json, request, response, upload, wire,
 };
 use crate::obs;
 pub use acyclic_auth::credential::CredentialProvider;
@@ -39,8 +39,16 @@ pub struct HttpObjects {
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
     maximum: usize,
+    transfer_timeout: std::time::Duration,
 }
 impl HttpObjects {
+    /// Sets a positive deadline of at most 30 minutes for PUT, multipart parts and complete GET bodies.
+    /// Metadata requests retain their 30-second deadline.
+    pub fn with_transfer_timeout(mut self, timeout: std::time::Duration) -> Result<Self, Error> {
+        self.transfer_timeout = super::timeouts::validate(timeout)?;
+        Ok(self)
+    }
+
     /// Publishes a header-first streamed value. Source failure aborts the HTTP request.
     pub async fn put_stream(
         &self,
@@ -221,7 +229,7 @@ impl HttpObjects {
         let authorization = token.map(credential_header).transpose()?;
         let mut transport = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30));
+            .timeout(DEFAULT_REQUEST_TIMEOUT);
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
                 return Err(invalid());
@@ -235,6 +243,7 @@ impl HttpObjects {
             authorization,
             credential,
             maximum: maximum_response_bytes,
+            transfer_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
     }
     async fn authorization(&self) -> Result<HeaderValue, Error> {
@@ -264,6 +273,10 @@ impl HttpObjects {
         let response = self
             .transport
             .post(url)
+            .timeout(match route {
+                "objects/put" | "multipart/upload-part" | "objects/get" => self.transfer_timeout,
+                _ => DEFAULT_REQUEST_TIMEOUT,
+            })
             .header(AUTHORIZATION, self.authorization().await?)
             .header("content-type", content_type)
             .body(body)

@@ -15,6 +15,9 @@ use futures::stream;
 use prost::Message;
 use std::sync::{Arc, Mutex};
 
+#[path = "http_tests/timeouts.rs"]
+mod timeouts;
+
 #[derive(Clone)]
 struct Fixture {
     objects: MemoryObjects,

@@ -66,6 +66,22 @@ carries ErrorDetail if a semantic failure occurs after the response starts;
 it always fails the read and no subsequent frame is valid. gRPC may instead
 return the same detail in its terminal status.
 
+## Client transfer deadlines
+
+The HTTP clients default to a 30-second whole-request deadline. Native Rust
+callers can opt into longer PUT, multipart-part and GET transfers with
+`HttpObjects::with_transfer_timeout(Duration::from_secs(120))`. TypeScript
+callers use `new HttpObjectsV1({ endpoint, token, transferTimeoutMs: 120_000 })`.
+The timeout must be positive and at most 30 minutes; TypeScript accepts whole
+milliseconds. The defaults and maximum are owned by the Rust Objects crate and
+generated into the TypeScript package.
+
+This deadline covers connection, response headers and the complete response
+body. Download progress does not restart the deadline. Metadata requests retain
+30 seconds when a transfer budget is changed. Expiration fails the transfer;
+clients do not automatically retry a mutation whose outcome might be uncertain.
+Upload completion framing still prevents publication of an incomplete body.
+
 ## Errors
 
 Before opening a streaming response, errors use a bounded JSON ErrorDetail body.

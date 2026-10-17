@@ -11,6 +11,8 @@ mod memory;
 pub(crate) use memory::persistence::Publication;
 pub mod request;
 pub mod response;
+mod timeouts;
+pub use timeouts::{DEFAULT_REQUEST_TIMEOUT, MAX_TRANSFER_TIMEOUT};
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod upload;
 
