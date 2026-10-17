@@ -128,7 +128,35 @@ pub enum ToolResultContent {
     Error {
         /// Bounded model-visible cause.
         message: String,
+        /// Whether the harness recorded this failure; supplied input never is.
+        #[serde(skip)]
+        provenance: FailureProvenance,
     },
+}
+
+/// Provenance of a harness failure result. It is never serialized, so decoded input is always
+/// unrecorded: only the executor that recorded the failure, or a loader of the harness's own
+/// retained bytes, marks a result recorded. Only a recorded failure is exempt from the
+/// paired tool's result contract.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FailureProvenance {
+    recorded: bool,
+}
+
+impl FailureProvenance {
+    /// A failure the harness recorded for its paired call.
+    pub(crate) const RECORDED: Self = Self { recorded: true };
+
+    pub(crate) const fn is_recorded(self) -> bool {
+        self.recorded
+    }
+}
+
+/// Provenance never distinguishes otherwise identical results: it is not part of the value.
+impl PartialEq for FailureProvenance {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl ModelContent {
@@ -318,7 +346,7 @@ impl ToolResultContent {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
             }
         }
-        if let Self::Error { message } = self
+        if let Self::Error { message, .. } = self
             && message.len() as u64 > limits.render_bytes
         {
             return Err(invalid(work, "tool error exceeds render limit"));

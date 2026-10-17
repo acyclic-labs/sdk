@@ -461,7 +461,7 @@ impl ModelProvider for MockAdapter {
                                         }
                                     }
                                 }
-                                ToolResultContent::Error { message } => {
+                                ToolResultContent::Error { message, .. } => {
                                     parts.push(CapturedPart::Text(message.clone()));
                                 }
                             }

@@ -21,11 +21,19 @@ envelope independently. Both schemas are compiled and included in the admitted
 definition digest. Dispatch, reconciliation, durable execution, completed-prefix
 reconstruction, and retained replay enforce their respective contracts. Canonical
 results and model projections retain separate artifacts and the same call identity.
-A call the harness refuses (unknown or ungranted tool, schema-invalid arguments) or
-whose admitted execution fails definitively completes with the harness-authored
-`ToolResultContent::Error { message }` instead, outside the tool's projection
-contract: the model reads why and the turn continues. Only an effect left uncertain
-ends the turn as indeterminate.
+A call the harness refuses (unknown or ungranted tool, schema-invalid arguments, or a
+pinned policy `Deny`) or whose admitted execution fails definitively completes with
+the harness-authored `ToolResultContent::Error { message }` instead, outside the
+tool's projection contract: the model reads why and the turn continues. A recorded
+failure carries a `ToolFailureCause` (a stable `ToolErrorClass` plus at most 256
+bytes of the error text with control characters removed); the raw error stays in
+the `warn` log. Only a failure the harness recorded is exempt from the paired call's
+result contract: its `FailureProvenance` is never serialized, so supplied history
+decodes unrecorded and an error result cannot stand in for a bound call's result.
+Only the executor that recorded the failure, and loaders of the harness's own
+retained requests and parent-owned prefixes, mark it. A tool's own authority check
+(`ToolExecutor::authorize`) still stops the turn, as does a declined approval. Only
+an effect left uncertain ends the turn as indeterminate.
 Changing the projector or its schema requires new admission; no implicit schema
 alias or old-data migration is installed.
 

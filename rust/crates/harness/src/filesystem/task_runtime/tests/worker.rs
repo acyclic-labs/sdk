@@ -35,22 +35,47 @@ async fn failed_command_settles_with_its_cause_and_only_uncertain_effects_are_in
     assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
         *field == "cause" && value.contains("original command cause")
     }));
-    // Negative control: a failure that may have left its effect behind stays uncertain.
-    let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime(None).await?;
-    let lease = fixture.admit(&runtime).await?;
-    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    runtime
-        .run_task(
-            lease,
-            &FailedCommand(|| Error::Storage("response lost after effect".into())),
-            2,
-        )
-        .await?;
-    assert!(matches!(
-        runtime.task_host().outcome(task).await?,
-        Some(Outcome::Indeterminate { .. })
-    ));
+    // A wrapped cause keeps its class: a task-file read that lost its acknowledgement is as
+    // uncertain as the bare failure, and a wrapped definitive failure still settles Failed.
+    fn wrapped(error: Error) -> Error {
+        Error::from(crate::task_volume::Error::FileRead(error))
+    }
+    for (command, uncertain) in [
+        (
+            FailedCommand(|| Error::Storage("response lost after effect".into())),
+            true,
+        ),
+        (
+            FailedCommand(|| {
+                wrapped(Error::Indeterminate(crate::OperationId::from_bytes(
+                    [7; 16],
+                )))
+            }),
+            true,
+        ),
+        (
+            FailedCommand(|| wrapped(Error::Unsupported("wrapped definitive cause".into()))),
+            false,
+        ),
+    ] {
+        let fixture = Fixture::new().await?;
+        let runtime = fixture.runtime(None).await?;
+        let lease = fixture.admit(&runtime).await?;
+        let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+        let code = (command.0)().code();
+        runtime.run_task(lease, &command, 2).await?;
+        let outcome = runtime.task_host().outcome(task).await?;
+        assert_eq!(
+            matches!(outcome, Some(Outcome::Indeterminate { .. })),
+            uncertain,
+            "{code:?}: {outcome:?}"
+        );
+        assert_eq!(
+            matches!(outcome, Some(Outcome::Failed { .. })),
+            !uncertain,
+            "{code:?}: {outcome:?}"
+        );
+    }
     Ok(())
 }
 

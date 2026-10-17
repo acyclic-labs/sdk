@@ -157,7 +157,7 @@ where
                     }
                     // Only a failure that may have left its effect behind is uncertain; every
                     // other failure settles the task as failed with its cause.
-                    Err(error) if error.leaves_effect_uncertain() => {
+                    Err(error) if error.leaves_outcome_uncertain() => {
                         tracing::warn!(
                             %task,
                             operation = %command.operation_id,

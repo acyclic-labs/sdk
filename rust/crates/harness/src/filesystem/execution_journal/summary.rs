@@ -75,11 +75,21 @@ impl ExecutionSummary {
                     !self.tools.contains_key(&(*step, key))
                 }
             }
-            ExecutionEvent::ToolCompleted { step, call_id, .. }
-            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
+            ExecutionEvent::ToolCompleted { step, call_id, .. } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
                 self.tools.get(&(*step, key)) == Some(&false)
+            }
+            // The length check short-circuits first, so the scan is bounded.
+            ExecutionEvent::ToolFailed {
+                step,
+                call_id,
+                cause,
+                ..
+            } => {
+                let key = *blake3::hash(call_id.as_bytes()).as_bytes();
+                tool_key = Some(key);
+                cause.is_canonical() && self.tools.get(&(*step, key)) == Some(&false)
             }
         };
         if let Some(io) = io {
@@ -91,7 +101,7 @@ impl ExecutionSummary {
             Err(canonical_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
-                "execution observation lacks its dispatch or reuses a start",
+                "execution observation lacks its dispatch, reuses a start or carries an unbounded cause",
             ))
         }
     }

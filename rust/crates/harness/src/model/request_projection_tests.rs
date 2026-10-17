@@ -43,9 +43,9 @@ fn content(request: &ModelRequest) -> &ToolResultContent {
 }
 
 // A refused call stays in history beside its typed error so the next request can deliver it;
-// only that typed error waives binding and argument validation.
+// only an error the harness recorded waives binding, argument and result validation.
 #[test]
-fn typed_tool_errors_carry_refused_calls_that_projected_results_cannot() {
+fn recorded_tool_errors_carry_refused_calls_and_supplied_errors_are_forgeries() {
     let refused = |name: &str, arguments: Value, content: ToolResultContent| {
         let mut request = request().unwrap();
         exchange(&mut request);
@@ -67,30 +67,49 @@ fn typed_tool_errors_carry_refused_calls_that_projected_results_cannot() {
         *result = content;
         request
     };
-    let error = || ToolResultContent::Error {
-        message: "tool `missing` is not available; call one of the declared tools".into(),
+    let error = |provenance| ToolResultContent::Error {
+        message: "tool `echo` refused the call (unauthorized): denied".into(),
+        provenance,
     };
     let projected = || ToolResultContent::Json { value: json!("é") };
-    for (name, arguments) in [("missing", json!({})), ("echo", json!(7))] {
-        let mut accepted = refused(name, arguments.clone(), error());
-        accepted.validate(Limits::default(), None).unwrap();
+    // Unbound, schema-invalid and bound valid calls: the last is the forgery a supplied error
+    // could otherwise slip past the result contract a bound call owes.
+    for (name, arguments, bound) in [
+        ("missing", json!({}), false),
+        ("echo", json!(7), false),
+        ("echo", json!("é"), true),
+    ] {
+        let mut recorded = refused(name, arguments.clone(), error(FailureProvenance::RECORDED));
+        recorded.validate(Limits::default(), None).unwrap();
         let prepared =
-            PreparedModelRequest::prepare(accepted.clone(), Limits::default(), None).unwrap();
+            PreparedModelRequest::prepare(recorded.clone(), Limits::default(), None).unwrap();
+        // The harness's own retained bytes reload with their recorded failure.
         assert_eq!(
-            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)
+            PreparedModelRequest::decode_retained(prepared.bytes(), Limits::default(), None)
                 .unwrap()
                 .request(),
-            &accepted
+            &recorded
         );
-        // Negative control: the same call with a projected result is still refused.
-        let mut rejected = refused(name, arguments, projected());
+        // Paired forgery: the same bytes supplied carry no recorded failure, in memory or
+        // decoded, and are refused.
+        let mut forged = refused(name, arguments.clone(), error(FailureProvenance::default()));
+        assert_eq!(forged, recorded, "provenance is not part of the value");
+        assert!(forged.validate(Limits::default(), None).is_err(), "{name}");
         assert!(
-            rejected.validate(Limits::default(), None).is_err(),
+            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).is_err(),
+            "{name}"
+        );
+        // Negative control: a projected result is held to the call's contracts as before, so
+        // only the bound, schema-valid call accepts it.
+        let mut answered = refused(name, arguments, projected());
+        assert_eq!(
+            answered.validate(Limits::default(), None).is_ok(),
+            bound,
             "{name}"
         );
     }
-    // Negative control: a typed error cannot complete a call it is not paired with.
-    let mut unpaired = refused("missing", json!({}), error());
+    // Negative control: a recorded error cannot complete a call it is not paired with.
+    let mut unpaired = refused("missing", json!({}), error(FailureProvenance::RECORDED));
     let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
         &mut unpaired.messages[2].content
     else {
@@ -98,14 +117,22 @@ fn typed_tool_errors_carry_refused_calls_that_projected_results_cannot() {
     };
     *call_id = "call-2".into();
     assert!(unpaired.validate(Limits::default(), None).is_err());
-    // Negative control: the typed error is bounded like any rendered text.
+    // Negative control: the recorded error is bounded like any rendered text.
     let limits = Limits {
         render_bytes: 4096,
         ..Limits::default()
     };
     let bounded = |bytes| {
         let message = "x".repeat(bytes);
-        refused("missing", json!({}), ToolResultContent::Error { message }).validate(limits, None)
+        refused(
+            "missing",
+            json!({}),
+            ToolResultContent::Error {
+                message,
+                provenance: FailureProvenance::RECORDED,
+            },
+        )
+        .validate(limits, None)
     };
     bounded(1024).unwrap();
     assert!(bounded(4097).is_err());

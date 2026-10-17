@@ -54,6 +54,9 @@ mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
+mod tool_failure;
+pub(crate) use tool_failure::{RefusalText, Sanitized, ToolFailureText};
+pub use tool_failure::{TOOL_FAILURE_MESSAGE_BYTES, ToolErrorClass, ToolFailureCause};
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
 #[cfg(test)]
@@ -280,8 +283,10 @@ pub enum ExecutionEvent {
         step: u32,
         /// Stable call identity.
         call_id: String,
-        /// Bounded classification; raw provider errors never enter the journal.
+        /// Stage that failed.
         reason: ToolFailureKind,
+        /// Bounded, sanitized cause the model receives; the raw error stays in the log.
+        cause: ToolFailureCause,
     },
 }
 

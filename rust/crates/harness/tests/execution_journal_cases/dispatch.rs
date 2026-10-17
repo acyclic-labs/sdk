@@ -44,11 +44,19 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         step: 0,
         call_id: operation.to_string(),
         reason: ToolFailureKind::ExecutorRejected,
+        cause: acyclic_harness::executor::ToolFailureCause {
+            class: acyclic_harness::executor::ToolErrorClass::Failed,
+            message: "tool failed".into(),
+        },
     };
     let invalid_output = ExecutionEvent::ToolFailed {
         step: 0,
         call_id: operation.to_string(),
         reason: ToolFailureKind::InvalidOutput,
+        cause: acyclic_harness::executor::ToolFailureCause {
+            class: acyclic_harness::executor::ToolErrorClass::Failed,
+            message: "tool failed".into(),
+        },
     };
     let (first_terminal, second_terminal) = tokio::join!(
         journal_a.append_if_tail(operation, 2, "terminal-a", &rejected, None)?,

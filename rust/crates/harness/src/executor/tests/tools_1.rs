@@ -743,11 +743,14 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
 }
 
 /// The text a rejected or failed call returned to the model, if `call` received one.
-fn tool_error_text(messages: &[crate::model::ModelMessage], call: &str) -> Option<String> {
+pub(super) fn tool_error_text(
+    messages: &[crate::model::ModelMessage],
+    call: &str,
+) -> Option<String> {
     messages.iter().find_map(|message| match &message.content {
         ModelContent::Part(ModelContentPart::ToolResult {
             call_id,
-            content: crate::model::ToolResultContent::Error { message },
+            content: crate::model::ToolResultContent::Error { message, .. },
             ..
         }) if call_id == call => Some(message.clone()),
         _ => None,
@@ -1031,10 +1034,9 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
-        assert_eq!(
-            tool_error_text(&model.requests()[1].messages, "call-1").as_deref(),
-            Some(expected.message())
-        );
+        let text = tool_error_text(&model.requests()[1].messages, "call-1");
+        let prefix = format!("{} (", expected.message());
+        assert!(text.is_some_and(|text| text.starts_with(&prefix) && text.contains("): ")));
         assert_eq!(executor.execute(input, &journal).await?, output);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         assert_eq!(model.requests().len(), 2);

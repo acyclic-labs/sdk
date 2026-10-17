@@ -1,3 +1,4 @@
+use super::tool_execution::tool_failure_content;
 use super::*;
 
 impl StockExecution<'_> {
@@ -58,8 +59,9 @@ impl StockExecution<'_> {
         }
     }
 
-    /// Settles an admitted call as failed. The model receives `reason` as the call's result and
-    /// the turn continues; only the journal append itself can still fail the command.
+    /// Settles an admitted call as failed. The model receives `reason` and the bounded, sanitized
+    /// cause as the call's result and the turn continues; only the journal append itself can
+    /// still fail the command.
     pub(super) async fn reject_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
@@ -68,7 +70,7 @@ impl StockExecution<'_> {
         call_id: &str,
         reason: ToolFailureKind,
         error: Error,
-    ) -> Result<ToolFailureKind> {
+    ) -> Result<crate::model::ToolResultContent> {
         if error.is_native_failure() {
             return Err(error);
         }
@@ -96,16 +98,19 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
+        let cause = with_history_io(self.io, |work| ToolFailureCause::of(&error, work))?;
+        let content = tool_failure_content(reason, &cause, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,
             call_id: stock_string_copy(call_id, self.io)?,
             reason,
+            cause,
         };
         match journal
             .append_if_tail(operation_id, tail, &key, &event, self.io)?
             .await
         {
-            Ok(true) => Ok(reason),
+            Ok(true) => Ok(content),
             Err(error) if !error.leaves_effect_uncertain() => Err(error),
             Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
@@ -119,7 +124,7 @@ impl StockExecution<'_> {
         call: &str,
         kind: &str,
         value: &T,
-    ) -> Result<std::result::Result<FileRef, ToolFailureKind>> {
+    ) -> Result<std::result::Result<FileRef, crate::model::ToolResultContent>> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:{step}:{call}:{kind}"), work)
         })?;
