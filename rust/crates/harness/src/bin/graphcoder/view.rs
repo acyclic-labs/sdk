@@ -37,7 +37,7 @@ pub async fn run(
     let terminal_size =
         || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
-    let mut events = client::terminal_events(tty);
+    let mut events = client::terminal_events(tty)?;
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;

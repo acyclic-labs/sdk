@@ -61,6 +61,17 @@ impl RawTty {
         termios.and(flags).map_err(Into::into)
     }
 
+    /// One nonblocking read; the caller owns readiness and retry policy.
+    pub(crate) fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.file.read(bytes)
+    }
+
+    /// A descriptor sharing this terminal's open file description, used only
+    /// for reactor readiness.
+    pub(crate) fn try_clone_file(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+
     pub(crate) fn reapply(&mut self) -> io::Result<()> {
         let mut raw = self.original.clone();
         raw.make_raw();
@@ -151,7 +162,7 @@ impl ProbeIo for RawTty {
     fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
         // The lifecycle takes its state lock around this call. Never sleep
         // while holding it: a pending input read must not starve frame output.
-        self.file.read(bytes)
+        self.read(bytes)
     }
 }
 

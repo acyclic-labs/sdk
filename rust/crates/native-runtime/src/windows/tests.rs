@@ -108,3 +108,68 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
     assert_eq!((&**file).stream_position()?, 13);
     Ok(())
 }
+
+#[test]
+fn input_handles_classify_by_how_they_can_be_awaited() -> io::Result<()> {
+    use super::terminal::{InputKind, input_kind};
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND;
+    use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, CreatePipe, PIPE_TYPE_BYTE};
+    let directory = tempfile::tempdir()?;
+    // A file may sit on a slow share and a character device may be a serial
+    // port: neither is read on the runtime.
+    let disk = std::fs::File::create(directory.path().join("disk"))?;
+    assert_eq!(input_kind(&disk), InputKind::Blocking);
+    assert_eq!(
+        input_kind(&OpenOptions::new().read(true).open("NUL")?),
+        InputKind::Blocking
+    );
+    let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
+    // SAFETY: both outputs are valid for writes; the handles are owned below.
+    if unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreatePipe returned two fresh handles that nothing else owns.
+    let (read, _write) = unsafe {
+        (
+            std::fs::File::from_raw_handle(read),
+            OwnedHandle::from_raw_handle(write),
+        )
+    };
+    assert_eq!(input_kind(&read), InputKind::Blocking);
+    for (flags, kind) in [
+        (0, InputKind::Blocking),
+        (FILE_FLAG_OVERLAPPED, InputKind::Overlapped),
+    ] {
+        let name = format!(
+            r"\\.\pipe\acyclic-input-kind-{}-{flags}",
+            std::process::id()
+        );
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        // SAFETY: the name is NUL-terminated and outlives the call.
+        let server = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_OUTBOUND,
+                PIPE_TYPE_BYTE,
+                1,
+                0,
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if server == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a successful create returns one handle that nothing else owns.
+        let _server = unsafe { OwnedHandle::from_raw_handle(server) };
+        let client = OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open(&name)?;
+        assert_eq!(input_kind(&client), kind);
+    }
+    Ok(())
+}

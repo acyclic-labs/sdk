@@ -126,6 +126,7 @@ pub struct Probe {
 }
 
 impl Probe {
+    #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
     pub(crate) fn pending_escape(&self) -> bool {
         self.frame == b"\x1b"
     }

@@ -84,15 +84,6 @@ impl<W: Write + Send + 'static> Owner<W> {
         })
     }
 
-    /// Input may wait outside owner state, but must observe the same close fence.
-    pub(crate) fn check_open(&self) -> io::Result<()> {
-        if self.state.lock().map_err(|_| io::ErrorKind::Other)?.closed {
-            Err(io::ErrorKind::NotConnected.into())
-        } else {
-            Ok(())
-        }
-    }
-
     pub(crate) fn run<R: Send + 'static>(
         this: &Arc<Self>,
         deadline: Instant,
@@ -616,28 +607,5 @@ mod tests {
             );
             assert_restored(&owner);
         });
-    }
-    fn input_close_model(broken: bool) {
-        loom::model(move || {
-            let owner = Owner::new(
-                RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
-                |_| {},
-            );
-            assert!(owner.check_open().is_ok());
-            let closing = Arc::clone(&owner);
-            let worker = thread::spawn(move || Owner::close(&closing, |_| Ok(())));
-            let _ = owner.check_open(); // Either side of the concurrent close is valid.
-            worker.join().unwrap().unwrap();
-            let next_read = if broken { Ok(()) } else { owner.check_open() };
-            assert!(next_read.is_err(), "input ignored the terminal close fence");
-        });
-    }
-    #[test]
-    fn input_observes_output_close_before_its_next_bounded_read() {
-        input_close_model(false);
-    }
-    #[test]
-    fn negative_control_detects_input_without_close_fence() {
-        assert!(std::panic::catch_unwind(|| input_close_model(true)).is_err());
     }
 }

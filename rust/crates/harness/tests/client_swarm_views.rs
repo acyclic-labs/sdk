@@ -1,5 +1,7 @@
 //! The reducer is exercised through actual volume writes and platform frames.
+// SwarmClient, whose bounds this checks, is the native gRPC client.
 #[path = "../../harness-fuzz/support/swarm_limits.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod limits;
 #[path = "../../harness-fuzz/support/swarm_views.rs"]
 mod oracle;
@@ -37,17 +39,22 @@ fn negative_control_dropping_discovery_is_detected() {
     assert!(std::panic::catch_unwind(|| oracle::check_discovery(&[0, 1, 0], true)).is_err());
 }
 
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 proptest::proptest! {
     #[test]
     fn swarm_bounds_round_trip_and_reject_unknown_metadata(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..128)) {
         limits::exercise(&bytes, false);
     }
+}
+
+proptest::proptest! {
     #[test]
     fn selected_files_and_overview_are_independent_folds(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..128)) {
         oracle::exercise(&bytes, false);
     }
 }
 
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 #[test]
 fn negative_control_omitting_a_swarm_bound_is_rejected() {
     assert!(std::panic::catch_unwind(|| limits::exercise(b"", true)).is_err());

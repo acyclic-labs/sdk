@@ -58,9 +58,7 @@ fn write_all<D: NonblockingWrite>(
     let deadline = Instant::now() + Duration::from_secs(5);
     while !bytes.is_empty() {
         let count = each(device, bytes, deadline)?;
-        bytes = bytes
-            .get(count..)
-            .ok_or_else(|| io::Error::other("wrote more bytes than offered"))?;
+        bytes = &bytes[count..];
     }
     Ok(())
 }
@@ -172,7 +170,10 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
                 Ok(count) => total += count,
             }
         }
-        total
+        // Keep the emulator endpoint alive through restoration. Closing it
+        // as soon as the last byte arrives hangs up the slave concurrently
+        // with tcsetattr, which then correctly reports EIO.
+        (total, controller)
     });
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
@@ -188,12 +189,11 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
     };
     let written = write_all(&mut traced, &vec![b'x'; FRAME], write_until);
     let trace = traced.trace;
-    let restored = tty.restore();
     written?;
-    restored?;
-    let drained = drain
+    let (drained, _controller) = drain
         .join()
         .map_err(|_| io::Error::other("drain panicked"))?;
+    tty.restore()?;
     assert_eq!(drained, FRAME);
     Ok(trace)
 }
@@ -203,9 +203,9 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
 fn assert_waits_make_progress(trace: &[Op]) {
     assert!(trace.contains(&Op::Wait), "the PTY queue never filled");
     for pair in trace.windows(2) {
-        if let [Op::Wait, next] = pair {
+        if pair[0] == Op::Wait {
             assert!(
-                matches!(next, Op::Wrote(count) if *count > 0),
+                matches!(pair[1], Op::Wrote(count) if count > 0),
                 "a readiness wait returned without room: {pair:?}"
             );
         }

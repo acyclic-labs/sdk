@@ -7,6 +7,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use futures_core::Stream;
+
 use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{
     ColourDepth, Environment, ImageProtocol, KeyboardProtocol, Multiplexer, ScreenMode, Tty,
@@ -54,68 +56,74 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::park();
         }
     }
+    let (tty, mut output) = tty.split();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut events = runtime.block_on(async { tty.events() })?;
     let mut received = Vec::new();
     let mut rejected = false;
     loop {
-        let events = match tty.read_events(Instant::now() + Duration::from_millis(20)) {
+        let next = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx));
+        let event = match runtime
+            .block_on(next)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
+        {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
             {
                 assert!(!rejected);
                 rejected = true;
-                tty.write_all(b"REJECTED\n")?;
+                output.write_all(b"REJECTED\n")?;
                 continue;
             }
-            events => events?,
+            event => event?,
         };
-        for event in events {
-            if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
-                received.push(event.clone());
+        if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
+            received.push(event.clone());
+        }
+        if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc) {
+            output.write_all(b"ESC\n")?;
+        }
+        if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
+            if mode == "rejected-paste" {
+                assert!(rejected);
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
             }
-            if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc)
-            {
-                tty.write_all(b"ESC\n")?;
+            if mode == "handoff" {
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(
+                            KeyCode::Enter,
+                            KeyModifiers::SHIFT | KeyModifiers::CONTROL
+                        )),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
             }
-            if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
-                if mode == "rejected-paste" {
-                    assert!(rejected);
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                if mode == "handoff" {
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(
-                                KeyCode::Enter,
-                                KeyModifiers::SHIFT | KeyModifiers::CONTROL
-                            )),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                if mode == "escape" {
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                return Ok(());
+            if mode == "escape" {
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
             }
+            return Ok(());
         }
     }
 }

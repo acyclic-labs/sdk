@@ -29,7 +29,7 @@ use windows_sys::{
     },
 };
 
-fn create_event() -> Result<OwnedHandle, i32> {
+pub(super) fn create_event() -> Result<OwnedHandle, i32> {
     // SAFETY: unnamed manual-reset event with default security.
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {

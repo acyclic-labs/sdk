@@ -6,6 +6,10 @@ use crate::key_event::{
     MouseEvent, MouseEventKind,
 };
 
+#[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
+/// Quiet interval after which a pending lone Escape is a key, not a prefix.
+pub(crate) const ESCAPE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(30);
+
 /// Owns framing from the first startup byte through the last input byte.
 /// Replies, including late/partial multiplexer replies, never become keys.
 #[derive(Default)]
@@ -93,18 +97,20 @@ impl Decoder {
         Ok(())
     }
 
-    pub(crate) fn input_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
-        if self.probe.pending_escape() {
-            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(30))
-        } else {
-            deadline
-        }
+    #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
+    /// A lone Escape awaits `ESCAPE_TIMEOUT` before `finish_input` resolves it.
+    pub(crate) fn escape_pending(&self) -> bool {
+        self.probe.pending_escape()
     }
 
     /// Take only classified input; there is no raw startup replay API.
     pub fn take_events(&mut self) -> Vec<InputEvent> {
-        // Keep an equally sized buffer for the next feed.
-        self.events.split_off(0)
+        self.drain_events().collect()
+    }
+
+    /// Drain classified input in place, retaining the event buffer.
+    pub(crate) fn drain_events(&mut self) -> std::vec::Drain<'_, InputEvent> {
+        self.events.drain(..)
     }
 
     /// Resolve a lone legacy Escape at an input deadline. Startup detection
