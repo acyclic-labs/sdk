@@ -7,7 +7,7 @@ use super::{
     TestResult, execution,
     scenario::Scenario,
     scenario_data,
-    subagents::{self, SubagentCase},
+    subagents::{self, Refusal, SubagentCase},
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
@@ -177,13 +177,13 @@ fn case(cases: &[(PathBuf, Case)], name: &str) -> TestResult<Case> {
         .ok_or_else(|| format!("missing scenario {name}").into())
 }
 
-/// In-process Streams shaped like a cloud's Streams today (cloud-local
-/// finding 15): commits fenced on a head are unsupported, and a Session serves
-/// neither checked follows nor live children.
-struct CloudShaped(MemoryStream);
+/// In-process Streams that refuse, with the given cause, what a cloud's
+/// Streams refuse today (cloud-local finding 15): commits fenced on a head,
+/// checked follows and live children.
+struct Refusing(MemoryStream, StreamError);
 
 #[async_trait::async_trait]
-impl StreamProvider for CloudShaped {
+impl StreamProvider for Refusing {
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,
@@ -211,8 +211,16 @@ impl StreamProvider for CloudShaped {
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
         self.0.follow(path, from).await
     }
+    async fn follow_checked(
+        &self,
+        _: StreamPath,
+        _: u64,
+        _: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        Err(self.1.clone())
+    }
     async fn children(&self, _: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        Err(StreamError::Unsupported)
+        Err(self.1.clone())
     }
     async fn children_page(
         &self,
@@ -223,7 +231,7 @@ impl StreamProvider for CloudShaped {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let head = |condition: &CommitCondition| matches!(condition, CommitCondition::Head { .. });
         if request.conditions.iter().any(head) {
-            return Err(StreamError::Unsupported);
+            return Err(self.1.clone());
         }
         self.0.commit(request).await
     }
@@ -232,12 +240,26 @@ impl StreamProvider for CloudShaped {
     }
 }
 
-async fn refused_kinds<P: StreamProvider>(
+/// What a cloud's Streams refuse today, each as an unsupported capability
+/// (cloud-local finding 15). Pinned, so the live test fails once the cloud
+/// serves any of them, or refuses one for another reason.
+fn cloud_refusals() -> Vec<Refusal> {
+    subagents::KINDS
+        .into_iter()
+        .chain([subagents::LATEST])
+        .map(|kind| (kind, StreamError::Unsupported))
+        .collect()
+}
+
+/// Every refusal of `stream`, including LATEST delivery on `client`'s Session.
+async fn refusals<P: StreamProvider>(
     stream: Arc<P>,
+    client: &Client,
     root: &str,
-) -> TestResult<Vec<&'static str>> {
-    let refused = subagents::refused(stream, root).await?;
-    Ok(refused.iter().map(|(kind, _)| *kind).collect())
+) -> TestResult<Vec<Refusal>> {
+    let mut refused = subagents::refused(stream, root).await?;
+    refused.extend(subagents::latest(client, root).await?);
+    Ok(refused)
 }
 
 #[tokio::test]
@@ -299,15 +321,25 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
     if left == right {
         return Err("the trace ignores the final status".into());
     }
-    // The refusal probe: nothing on the SDK's Session, every kind on a
-    // cloud-shaped provider.
-    let probe = refused_kinds(loopback.client.clone(), "probe").await?;
+    // The refusal probe: the SDK's TLS Session serves every kind, LATEST included.
+    let probe = refusals(loopback.client.clone(), &loopback.client, "probe").await?;
     if !probe.is_empty() {
         return Err(format!("the loopback Session refused {probe:?}").into());
     }
-    let probe = refused_kinds(Arc::new(CloudShaped(MemoryStream::default())), "probe").await?;
-    if probe != subagents::KINDS {
-        return Err(format!("a cloud-shaped provider refused only {probe:?}").into());
+    // A provider refusing as the cloud does matches the pin, and one refusing
+    // the same kinds for an unrelated cause does not.
+    let pinned = cloud_refusals();
+    for (cause, matches) in [
+        (StreamError::Unsupported, true),
+        (StreamError::AccessDenied, false),
+        (StreamError::InvalidArgument, false),
+    ] {
+        let refusing = Arc::new(Refusing(MemoryStream::default(), cause.clone()));
+        let mut probe = subagents::refused(refusing, "probe").await?;
+        probe.push((subagents::LATEST, StreamError::Unsupported));
+        if (probe == pinned) != matches {
+            return Err(format!("refusing with {cause:?} probed {probe:?}").into());
+        }
     }
     Ok(())
 }
@@ -331,10 +363,9 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     acyclic_stream::conformance::verify(remote.as_ref()).await?;
     // Pinned, so this fails once the cloud serves what subagents need; the
     // subagent family then joins the comparison below.
-    let refused = subagents::refused(remote.clone(), "probe").await?;
-    let kinds: Vec<_> = refused.iter().map(|(kind, _)| *kind).collect();
-    if kinds != subagents::KINDS {
-        return Err(format!("the cloud's Streams now refuse only {refused:?}").into());
+    let refused = refusals(remote.clone(), &remote, "probe").await?;
+    if refused != cloud_refusals() {
+        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
     }
     let cases = scenarios()?;
     let executor_cases: Vec<_> = cases
@@ -344,17 +375,16 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     if executor_cases.is_empty() {
         return Err("no executor scenarios discovered".into());
     }
-    for (path, case) in &executor_cases {
-        let relative = path.strip_prefix(root()).unwrap_or(path);
-        compare(
-            relative,
-            case,
-            Arc::new(MemoryStream::default()),
-            remote.clone(),
-            "subagents",
-        )
-        .await?;
-    }
+    // Each case has its own journal identities, so the cases run concurrently.
+    futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
+        let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
+        let remote = remote.clone();
+        async move {
+            let memory = Arc::new(MemoryStream::default());
+            compare(&relative, case, memory, remote, "subagents").await
+        }
+    }))
+    .await?;
     println!(
         "local cloud: Stream conformance passed; {} executor scenarios matched; the subagent family is refused: {refused:?}",
         executor_cases.len()

@@ -8,8 +8,12 @@ use super::TestResult;
 use acyclic_harness::task_volume::{
     Change, ChangeStream, Channel, Error as VolumeError, FileKey, Query, TaskVolume, Write,
 };
-use acyclic_stream::{ChildrenRequest, MemoryStream, StreamPath, StreamProvider};
+use acyclic_stream::{
+    AppendRequest, ChildrenRequest, MemoryStream, StreamError, StreamPath, StreamProvider,
+    grpc::Client, wire,
+};
 use futures::{Stream, StreamExt as _};
+use prost::Message as _;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 
@@ -23,6 +27,11 @@ const STATUS: &str = ".tasks/t/status.json";
 
 /// What a provider must serve for harness subagents, as `refused` names it.
 pub(super) const KINDS: [&str; 3] = ["head-fenced publication", "checked follow", "children"];
+/// What a Session must serve for swarm status follows, as `latest` probes it.
+pub(super) const LATEST: &str = "latest delivery";
+
+/// A refusal: the kind refused and the provider's typed cause.
+pub(super) type Refusal = (&'static str, StreamError);
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -223,12 +232,19 @@ pub(super) async fn run_on<P: StreamProvider>(
     }))
 }
 
-/// The `KINDS` that `stream` refuses under `root`, each with its error.
+/// The `KINDS` that `stream` refuses under `root`, each with its typed cause.
+/// Any other failure, including one that is not a Streams error, fails the probe.
 pub(super) async fn refused<P: StreamProvider>(
     stream: Arc<P>,
     root: &str,
-) -> TestResult<Vec<(&'static str, String)>> {
+) -> TestResult<Vec<Refusal>> {
     let [publication, checked, live_children] = KINDS;
+    let cause = |kind: &'static str| {
+        move |error: VolumeError| match error {
+            VolumeError::Storage(cause) => Ok((kind, cause)),
+            error => Err(format!("{kind} failed outside Streams: {error}")),
+        }
+    };
     let root = StreamPath::new(root)?;
     let mut refused = Vec::new();
     let mut children = stream
@@ -243,14 +259,14 @@ pub(super) async fn refused<P: StreamProvider>(
         .map_err(at("open the probe volume"))?;
     let head = volume.head().await.map_err(at("probe head"))?;
     if let Err(error) = volume.append(head, &chunk(1, "probe")?).await {
-        refused.push((publication, error.to_string()));
+        refused.push(cause(publication)(error)?);
     }
     let cut = volume
         .cut(&Query::Root)
         .await
         .map_err(at("cut the probe volume"))?;
     if let Err(error) = volume.follow(Query::Root, cut).await {
-        refused.push((checked, error.to_string()));
+        refused.push(cause(checked)(error)?);
     }
     let discovered = match &mut children {
         Ok(children) => next(children, "children of the probe root").await?,
@@ -259,9 +275,43 @@ pub(super) async fn refused<P: StreamProvider>(
     match discovered {
         Ok(child) if name(&root, &child.path)? == "probe" => {}
         Ok(child) => return Err(format!("the probe discovered {}", child.path.as_str()).into()),
-        Err(error) => refused.push((live_children, error.to_string())),
+        Err(error) => refused.push((live_children, error)),
     }
     Ok(refused)
+}
+
+/// Follows one record of `root/latest` with LATEST delivery over `client`'s
+/// Session: `None` when it is delivered, else the refusal's typed cause.
+pub(super) async fn latest(client: &Client, root: &str) -> TestResult<Option<Refusal>> {
+    let path = StreamPath::new(&format!("{root}/latest"))?;
+    client
+        .append(AppendRequest {
+            path: path.clone(),
+            // LATEST delivers keyed values, not raw records.
+            records: vec![
+                wire::SessionLatestValue {
+                    key: b"probe".to_vec().into(),
+                    value: b"latest".to_vec().into(),
+                    attention: false,
+                }
+                .encode_to_vec()
+                .into(),
+            ],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await
+        .map_err(at("append the LATEST probe record"))?;
+    let follow = wire::SessionFollow {
+        path: path.as_str().to_owned(),
+        delivery: wire::SessionDelivery::Latest as i32,
+        preceding_commit_id: Default::default(),
+    };
+    let delivered = match client.follow_data(follow, 0).await {
+        Ok(mut data) => next(&mut data, "the LATEST follow").await?,
+        Err(error) => Err(error),
+    };
+    Ok(delivered.err().map(|cause| (LATEST, cause)))
 }
 
 /// The scenario suite runs each case on in-process Streams.
