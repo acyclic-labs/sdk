@@ -5,6 +5,7 @@
 )]
 
 use acyclic_grpc_observability::tests::Capture;
+use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
 use std::{
     future::Future,
     pin::Pin,
@@ -15,16 +16,10 @@ use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
 #[test]
 fn unobserved_future_and_stream_bypass_dispatcher_installation() {
-    unobserved_bypass(false);
+    observation_oracle().check(&Case::Idle);
 }
 
-#[test]
-#[should_panic(expected = "unobserved polling must bypass dispatcher installation")]
-fn negative_control_forces_dispatcher_installation_for_an_unobserved_producer() {
-    unobserved_bypass(true);
-}
-
-fn unobserved_bypass(broken: bool) {
+fn unobserved_bypass(broken: bool, see: &mut Observer<'_, Seen>) -> Result<(), Stop> {
     use std::cell::Cell;
     struct Producer<'a>(&'a Cell<usize>);
     impl Future for Producer<'_> {
@@ -54,31 +49,24 @@ fn unobserved_bypass(broken: bool) {
         }
         for stream in [false, true] {
             let calls = Cell::new(0);
-            let mut producer = Some(Box::pin(operation.scope(Producer(&calls))));
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // The dependency holds its dispatcher borrow through this call.
-                // Installing a dispatcher would panic, so this observes actual
-                // scoping work without a timing threshold or a test-only hook.
-                tracing::dispatcher::get_default(|_| {
-                    let producer = producer.as_mut().unwrap().as_mut();
-                    let mut context = Context::from_waker(Waker::noop());
-                    if stream {
-                        assert!(futures_core::Stream::poll_next(producer, &mut context).is_ready());
-                    } else {
-                        assert!(producer.poll(&mut context).is_ready());
-                    }
-                });
-                tracing::dispatcher::get_default(|_| drop(producer.take()));
-            }));
-            // If the control panicked during poll, retire it outside the borrow.
+            DISPATCH_INSTALLS.with(|count| count.set(0));
+            let mut producer = Box::pin(operation.scope(Producer(&calls)));
+            let mut context = Context::from_waker(Waker::noop());
+            let ready = if stream {
+                futures_core::Stream::poll_next(producer.as_mut(), &mut context).is_ready()
+            } else {
+                producer.as_mut().poll(&mut context).is_ready()
+            };
             drop(producer);
-            assert!(
-                result.is_ok(),
-                "unobserved polling must bypass dispatcher installation"
-            );
-            assert_eq!(calls.get(), 2, "poll and destruction must both execute");
+            let installs = DISPATCH_INSTALLS.with(std::cell::Cell::get);
+            see.see(Seen::Idle {
+                installs,
+                calls: calls.get(),
+                ready,
+            })?;
         }
-    });
+        Ok(())
+    })
 }
 
 fn assert_context(
@@ -336,12 +324,16 @@ fn admitted_work_keeps_observation_after_observer_drop() {
     }
 }
 
-fn root_context_case(mode: u8, broken: bool) {
+fn root_context_case(
+    mode: u8,
+    fault: Option<&Fault>,
+    see: &mut Observer<'_, Seen>,
+) -> Result<(), Stop> {
     use tracing::callsite::Callsite as _;
     let seen = Capture::default();
     let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone()));
-    let root = tracing::dispatcher::with_default(&subscriber, || {
+    let (root, expected_id) = tracing::dispatcher::with_default(&subscriber, || {
         let caller = tracing::info_span!("test.root.caller");
         caller.in_scope(|| {
             let span = match mode {
@@ -355,36 +347,37 @@ fn root_context_case(mode: u8, broken: bool) {
                 ),
                 _ => tracing::info_span!(parent: None, "test.root.enabled"),
             };
-            if broken {
-                super::OperationSpan::new(span)
-            } else {
-                super::OperationSpan::new_root(span)
-            }
+            let expected_id = span.id();
+            let root = match fault {
+                Some(Fault::RetainedCaller) => super::OperationSpan::new(span),
+                Some(Fault::DiscardedRoot) => super::OperationSpan::new_root(tracing::Span::none()),
+                _ => super::OperationSpan::new_root(span),
+            };
+            (root, expected_id)
         })
     });
-    assert_eq!(
-        seen.closed("test.root.caller"),
-        1,
-        "a root must never retain its caller"
-    );
-    assert_eq!(root.context().id(), root.id());
+    let released = seen.closed("test.root.caller");
+    let own_context = root.context().id() == expected_id && root.id() == expected_id;
     drop(root);
+    see.see(Seen::Root {
+        released,
+        own_context,
+    })
 }
 
 proptest::proptest! {
     #[test]
     fn root_context_preserves_only_its_own_span(mode in 0_u8..3) {
-        root_context_case(mode, false);
+        observation_oracle().check(&Case::Root(mode));
     }
 }
 
-#[test]
-#[should_panic(expected = "a root must never retain its caller")]
-fn negative_control_root_falls_back_to_the_filtered_caller() {
-    root_context_case(1, true);
-}
-
-fn causal_registry_case(foreign: bool, broken: bool) {
+fn causal_registry_case(
+    foreign: bool,
+    broken: bool,
+    see: &mut Observer<'_, Seen>,
+) -> Result<(), Stop> {
+    let expected = usize::from(!foreign);
     let first = Capture::default();
     let second = Capture::default();
     let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
@@ -407,21 +400,95 @@ fn causal_registry_case(foreign: bool, broken: bool) {
         .iter()
         .find(|span| span.name == "test.causal.root")
         .unwrap();
-    assert_eq!(
-        root.follows_from.len(),
-        usize::from(!foreign),
-        "foreign span IDs must never cross subscriber registries"
-    );
+    see.see(Seen::Registry {
+        actual: root.follows_from.len(),
+        expected,
+    })
 }
 
 proptest::proptest! {
     #[test]
     fn causal_links_require_identical_subscriber_registries(foreign in proptest::bool::ANY) {
-        causal_registry_case(foreign, false);
+        observation_oracle().check(&Case::Registry(foreign));
     }
 }
+
+std::thread_local! {
+    pub(super) static DISPATCH_INSTALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[derive(Debug)]
+enum Case {
+    Idle,
+    Root(u8),
+    Registry(bool),
+}
+#[derive(Debug)]
+enum Fault {
+    InstalledIdleDispatcher,
+    RetainedCaller,
+    DiscardedRoot,
+    ForeignRegistry,
+}
+#[derive(Debug)]
+enum Seen {
+    Idle {
+        installs: usize,
+        calls: usize,
+        ready: bool,
+    },
+    Root {
+        released: usize,
+        own_context: bool,
+    },
+    Registry {
+        actual: usize,
+        expected: usize,
+    },
+}
+
+fn observation_oracle() -> Oracle<Case, Fault, Seen> {
+    Oracle::declare(|input, fault, see| match input {
+        Case::Idle => unobserved_bypass(matches!(fault, Some(Fault::InstalledIdleDispatcher)), see),
+        Case::Root(mode) => root_context_case(*mode, fault, see),
+        Case::Registry(foreign) => {
+            causal_registry_case(*foreign, matches!(fault, Some(Fault::ForeignRegistry)), see)
+        }
+    })
+    .invariant("idle", |event| match event {
+        Seen::Idle {
+            installs,
+            calls,
+            ready,
+        } if *installs != 0 || *calls != 2 || !ready => Err(format!("{event:?}")),
+        _ => Ok(()),
+    })
+    .invariant("root", |event| match event {
+        Seen::Root {
+            released,
+            own_context,
+        } if *released != 1 || !own_context => Err(format!("{event:?}")),
+        _ => Ok(()),
+    })
+    .invariant("registry", |event| match event {
+        Seen::Registry { actual, expected } if actual != expected => Err(format!("{event:?}")),
+        _ => Ok(()),
+    })
+    .control("idle", Case::Idle, Fault::InstalledIdleDispatcher)
+    .control("root", Case::Root(1), Fault::RetainedCaller)
+    .control("root", Case::Root(2), Fault::DiscardedRoot)
+    .control("registry", Case::Registry(true), Fault::ForeignRegistry)
+    .build()
+}
+
 #[test]
-#[should_panic(expected = "foreign span IDs must never cross subscriber registries")]
-fn negative_control_passes_foreign_ids_to_a_session_subscriber() {
-    causal_registry_case(true, true);
+fn observation_controls_are_coupled_to_named_invariants() {
+    let oracle = observation_oracle();
+    oracle.check(&Case::Idle);
+    for mode in 0..3 {
+        oracle.check(&Case::Root(mode));
+    }
+    for foreign in [false, true] {
+        oracle.check(&Case::Registry(foreign));
+    }
 }
