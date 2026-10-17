@@ -178,15 +178,33 @@ pinned_pi() {
   )
 }
 
+harness_tests() {
+  cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
+  grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
+  ! grep -Eq 'test result: ok\. 0 passed;' "$observability/harness-tests.log"
+}
+
 case "$lane" in
   gate)
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      cargo check --locked -p acyclic-harness-fuzz --bins
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+      cargo check --locked -p acyclic-harness --features model-checking --lib
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+      cargo check --locked -p acyclic-harness --features filesystem-local,model-checking --lib
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+      harness_tests --features model-checking \
+        --test client-mailbox-model --test client_journal_model --test mcp-loom
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+      harness_tests --features model-checking \
+        --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
     node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
-    node scripts/qualify-mcp-loom.mjs --memory-accounting
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" node scripts/qualify-mcp-loom.mjs --memory-accounting
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
@@ -392,10 +410,6 @@ case "$lane" in
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness --no-default-features \
         --target wasm32-unknown-unknown --lib
-    harness_tests() {
-      cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
-      grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
-    }
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
