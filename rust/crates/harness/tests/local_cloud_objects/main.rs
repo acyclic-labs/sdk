@@ -22,6 +22,27 @@ fn memory() -> TestResult<Arc<MemoryObjects>> {
     Ok(Arc::new(MemoryObjects::new(MemoryOptions::default())?))
 }
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
+    #[test]
+    fn arbitrary_content_round_trips_and_a_changed_read_is_rejected(
+        bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 4..64),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().expect("runtime");
+        runtime.block_on(async {
+            let exact = content::Content::exact(&bytes);
+            let first = content::run(memory()?, "harness-content", &exact).await?;
+            assert_eq!(first, content::run(memory()?, "harness-content", &exact).await?);
+            let mut changed = bytes.clone();
+            changed[0] ^= 1;
+            let wrong = content::Content { staged: &bytes, expected: &changed };
+            assert!(content::run(memory()?, "harness-content", &wrong).await.is_err());
+            TestResult::Ok(())
+        }).expect("content property");
+    }
+}
+
 #[tokio::test]
 async fn harness_content_matches_its_oracle_and_detects_divergence() -> TestResult {
     let bytes = content::Content::exact(b"owner bytes");
