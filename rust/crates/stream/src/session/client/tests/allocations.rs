@@ -65,7 +65,7 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
     let client = Client::open(
-        fixture.channel.clone(),
+        fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         None,
@@ -174,7 +174,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     let fixture = Fixture::open(provider, "node").await?;
     let client = || {
         Client::open(
-            fixture.channel.clone(),
+            fixture._channel.clone(),
             Some("Bearer fixture".parse().unwrap()),
             None,
             None,

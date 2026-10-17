@@ -18,7 +18,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
     let client = Client::with_connector(
-        fixture.channel.clone(),
+        fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
@@ -89,7 +89,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         .await?;
     let fixture = Fixture::open(provider, "node").await?;
     let client = Client::with_connector(
-        fixture.channel.clone(),
+        fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),

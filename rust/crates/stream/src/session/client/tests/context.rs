@@ -282,7 +282,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         .build()?;
     runtime.block_on(async {
         let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-        let (mut pool, healthy) = pool::fixture::fixture(fixture.channel.clone());
+        let (mut pool, healthy) = pool::fixture::fixture(fixture._channel.clone());
         pool.links.remove("bad");
         let a_origin = origin(&a_dispatch, true);
         let b_origin = origin(&b_dispatch, false);
@@ -498,7 +498,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
             }
         });
         let client = Client::with_connector(
-            fixture.channel.clone(),
+            fixture._channel.clone(),
             None,
             Some(credential),
             std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),

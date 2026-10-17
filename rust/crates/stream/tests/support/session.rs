@@ -273,21 +273,13 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
 }
 pub(super) struct Fixture {
     pub(super) controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
-    pub(super) channel: TransportChannel,
+    // Retains the raw transport for consumer-specific RPC fault probes.
+    pub(super) _channel: TransportChannel,
     pub(super) tls_client: Option<grpc::Client>,
     pub(super) counts: Arc<Counts>,
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 impl Fixture {
-    pub(super) fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
-        match &self.tls_client {
-            Some(client) => Ok(client.with_credential("fixture")?),
-            None => Ok(grpc::Client::from_channel(
-                self.channel.clone(),
-                "Bearer fixture".parse()?,
-            )),
-        }
-    }
     pub(super) async fn with_options<P: StreamProvider>(
         provider: Arc<P>,
         node: &str,
@@ -362,7 +354,7 @@ impl Fixture {
         };
         Ok(Self {
             controls,
-            channel,
+            _channel: channel,
             tls_client,
             counts,
             server,
