@@ -65,7 +65,9 @@ pub(crate) fn deduplicate_reads(
                 Err(error) if error.code() == crate::wire::ErrorCode::Invalid => continue,
                 Err(error) => return Err(error),
             };
-            if input.0.range.is_some() {
+            if input.0.range.is_some_and(|range| {
+                range.start != 0 || range.end != input.0.file.descriptor().byte_length()
+            }) {
                 continue;
             }
             let source = prior
