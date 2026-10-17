@@ -107,9 +107,10 @@ async fn discover_with_creation(
         |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
         async |_| Ok(()),
     ));
+    let settled = runner.until_idle(consumer.as_mut()).await;
     assert!(
-        runner.until_idle(consumer.as_mut()).await.is_none(),
-        "discovery must remain live"
+        settled.is_none(),
+        "discovery count {count} must remain live: {settled:?}"
     );
     std::iter::from_fn(|| observed.try_recv().ok())
         .filter_map(|frame| match frame.body {
