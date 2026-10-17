@@ -87,7 +87,7 @@ proptest! {
             let output = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, true, authorization,
                 || async { Ok(HookOutput { blocked: blocking.then(|| "denied".into()),
                     additional_context: vec!["x".repeat(length)], ..Default::default() }) }).await?;
-            prop_assert_eq!(output.diagnostics[0].kind, HookErrorKind::OutputLimit);
+            prop_assert!(matches!(output.diagnostics[0].cause, crate::ProcessError::OutputLimit { .. }), "expected output limit cause");
             prop_assert_eq!(output.blocks(), blocking);
             prop_assert!(serde_json::to_vec(&output)?.len() <= 512);
             let replay = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, false, authorization,

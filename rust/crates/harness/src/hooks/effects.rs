@@ -44,8 +44,8 @@ where
     };
     // Reject an unrepresentable failure before claiming an external effect.
     // A capture/merge overflow must always have room for its bounded outcome.
+    super::budget::Budget::new(maximum_bytes)?;
     let mut failure = HookOutput::output_limit(false);
-    super::budget::encoded_size(&failure, maximum_bytes)?;
     let maximum_owned = maximum_bytes
         .checked_mul(256)
         .ok_or_else(|| Error::Invalid("hook outcome ownership bound overflow".into()))?;

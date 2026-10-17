@@ -67,15 +67,8 @@ pub enum Error {
     #[error("storage failure: {0}")]
     Storage(String),
     /// Native process creation, capture, or hook configuration IO failed.
-    #[error("process {kind}: {message}")]
-    Process {
-        /// Platform-neutral operation failure classification.
-        kind: &'static str,
-        /// Observed process exit code; absent for spawn, IO and deadline failures.
-        exit_code: Option<i32>,
-        /// Diagnostic returned by the process or IO runtime.
-        message: String,
-    },
+    #[error("process: {0}")]
+    Process(#[from] crate::ProcessError),
     /// An actual SDK buffer reservation failure, without allocating a diagnostic.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
@@ -338,18 +331,19 @@ impl Error {
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_io(error: std::io::Error) -> Self {
-        let kind = match error.kind() {
-            std::io::ErrorKind::TimedOut => "timeout",
-            std::io::ErrorKind::NotFound => "not_found",
-            std::io::ErrorKind::PermissionDenied => "permission_denied",
-            std::io::ErrorKind::FileTooLarge => "output_limit",
-            _ => "io",
-        };
-        Self::Process {
-            kind,
-            exit_code: None,
-            message: error.to_string(),
-        }
+        let message = error.to_string();
+        let exit_code = None;
+        Self::Process(match error.kind() {
+            std::io::ErrorKind::TimedOut => crate::ProcessError::Timeout { exit_code, message },
+            std::io::ErrorKind::NotFound => crate::ProcessError::NotFound { exit_code, message },
+            std::io::ErrorKind::PermissionDenied => {
+                crate::ProcessError::PermissionDenied { exit_code, message }
+            }
+            std::io::ErrorKind::FileTooLarge => {
+                crate::ProcessError::OutputLimit { exit_code, message }
+            }
+            _ => crate::ProcessError::Io { exit_code, message },
+        })
     }
 
     /// Stable wire classification from which every adapter derives its status.
@@ -389,7 +383,7 @@ impl Error {
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
-            Self::Process { .. } => ErrorCode::Invalid,
+            Self::Process(_) => ErrorCode::Invalid,
             Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }

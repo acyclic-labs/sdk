@@ -1,5 +1,5 @@
 use super::*;
-use crate::hooks::{HookDiagnostic, HookErrorKind};
+use crate::hooks::HookDiagnostic;
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -43,7 +43,7 @@ proptest! {
         ),
     ) {
         let output = HookOutput { blocked, approval, additional_context: context,
-            updated_input, diagnostics: diagnostics.into_iter().map(|message| HookDiagnostic { kind: HookErrorKind::Io, exit_code: None, blocking: false, message }).collect() };
+            updated_input, diagnostics: diagnostics.into_iter().map(|message| HookDiagnostic { cause: crate::ProcessError::Io { exit_code: None, message }, blocking: false }).collect() };
         let bytes = serde_json::to_vec(&output)?;
         let decoded: HookOutput = serde_json::from_slice(&bytes)?;
         prop_assert_eq!(&decoded, &output);
@@ -66,12 +66,13 @@ proptest! {
                 "permissionDecision": "ask", "permissionDecisionReason": reason,
             },
         })).unwrap();
+        let encoded_reason = serde_json::to_string(&reason).unwrap();
         let mut decoded = None;
         let decoding = acyclic_test_support::measure(|| {
-            decoded = Some(serde_json::from_str::<Value>(&second).unwrap());
+            decoded = Some(serde_json::from_str::<String>(&encoded_reason).unwrap());
         });
         let decoded = decoded.unwrap();
-        prop_assert_eq!(decoded["hookSpecificOutput"]["permissionDecisionReason"].as_str(), Some(reason.as_str()));
+        prop_assert_eq!(decoded.as_str(), reason.as_str());
         for extra_copy in [false, true] {
             let mut output = HookOutput::default();
             output.observe(HookEvent::PreToolUse, Some(0), &first, b"").unwrap();

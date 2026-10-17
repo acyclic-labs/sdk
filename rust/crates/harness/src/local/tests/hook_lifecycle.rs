@@ -360,7 +360,7 @@ async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -
             warning_text.contains("configured hook failed"),
             "{warning_text}"
         );
-        assert!(warning_text.contains("kind=NotFound"), "{warning_text}");
+        assert!(warning_text.contains("cause=NotFound"), "{warning_text}");
         assert_eq!(result.is_err(), block, "{result:?}");
         assert_eq!(provider.requests().len(), usize::from(!block));
         let files = harness.task_files.inner.snapshot(&Query::Root, 64).await?;
@@ -372,7 +372,10 @@ async fn start_failures_are_retained_and_only_explicit_failure_policy_blocks() -
         assert_eq!(output.blocks(), block);
         assert_eq!(output.diagnostics.len(), 1);
         assert!(
-            output.diagnostics[0].kind == crate::hooks::HookErrorKind::NotFound,
+            matches!(
+                output.diagnostics[0].cause,
+                crate::ProcessError::NotFound { .. }
+            ),
             "{output:?}"
         );
     }
@@ -430,7 +433,7 @@ async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolve
         output
             .diagnostics
             .iter()
-            .all(|failure| failure.kind == crate::hooks::HookErrorKind::OutputLimit)
+            .all(|failure| matches!(failure.cause, crate::ProcessError::OutputLimit { .. }))
     );
     let before = std::fs::read(workspace.join("hook-runs")).map_err(super::super::storage)?;
     assert_eq!(before, b"started\nstarted\n");

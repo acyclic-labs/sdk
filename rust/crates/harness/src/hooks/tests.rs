@@ -499,25 +499,24 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                         65_536,
                         |hook, _| {
                             finished.set(finished.get() + 1);
-                            let result = if command(hook) == "remaining" {
-                                Ok((
+                            let result =
+                                if command(hook) == "remaining" {
+                                    Ok((
                                     Some(0),
                                     br#"{"hookSpecificOutput":{"additionalContext":"remaining"}}"#
                                         .to_vec(),
                                     vec![],
                                 ))
-                            } else {
-                                match case {
-                                    "spawn" => Err(Error::Process {
-                                        kind: "not_found",
+                                } else {
+                                    match case {
+                                    "spawn" => Err(Error::Process(crate::ProcessError::NotFound {
                                         exit_code: None,
                                         message: "guard missing".into(),
-                                    }),
-                                    "timeout" => Err(Error::Process {
-                                        kind: "timeout",
+                                    })),
+                                    "timeout" => Err(Error::Process(crate::ProcessError::Timeout {
                                         exit_code: None,
                                         message: "guard timed out".into(),
-                                    }),
+                                    })),
                                     "exit" => Ok((Some(3), vec![], b"guard failed".to_vec())),
                                     "exit2" => Ok((Some(2), vec![], b"guard blocked".to_vec())),
                                     "signal" => Ok((None, vec![], b"guard terminated".to_vec())),
@@ -529,7 +528,7 @@ async fn failure_policy_controls_blocking_and_always_finishes_other_hooks() -> R
                                     )),
                                     _ => Ok((Some(0), vec![], vec![])),
                                 }
-                            };
+                                };
                             std::future::ready(result)
                         },
                     )
@@ -649,10 +648,7 @@ fn non_blocking_failures_return_diagnostics() -> Result<()> {
     assert_eq!(timeout.code(), crate::wire::ErrorCode::Invalid);
     assert!(matches!(
         timeout,
-        Error::Process {
-            kind: "timeout",
-            ..
-        }
+        Error::Process(crate::ProcessError::Timeout { .. })
     ));
     for event in [
         HookEvent::SessionStart,
@@ -669,9 +665,17 @@ fn non_blocking_failures_return_diagnostics() -> Result<()> {
             );
             assert!(output.blocked.is_none());
             assert_eq!(output.diagnostics.len(), 1);
-            assert_eq!(output.diagnostics[0].kind, HookErrorKind::Exit);
-            assert_eq!(output.diagnostics[0].exit_code, code);
-            assert!(output.diagnostics[0].message.contains("command failed"));
+            assert!(matches!(
+                output.diagnostics[0].cause,
+                crate::ProcessError::Exit { .. }
+            ));
+            assert_eq!(output.diagnostics[0].cause.exit_code(), code);
+            assert!(
+                output.diagnostics[0]
+                    .cause
+                    .message()
+                    .contains("command failed")
+            );
         }
     }
     let mut output = HookOutput::default();
@@ -680,7 +684,12 @@ fn non_blocking_failures_return_diagnostics() -> Result<()> {
         HookFailure::Report,
         Ok((Some(2), vec![], b"start failed".to_vec())),
     );
-    assert!(output.diagnostics[0].message.contains("start failed"));
+    assert!(
+        output.diagnostics[0]
+            .cause
+            .message()
+            .contains("start failed")
+    );
     Ok(())
 }
 
@@ -920,16 +929,14 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
             65_536,
             |hook, _| {
                 let result = match command(hook) {
-                    "timeout" => Err(Error::Process {
-                        kind: "timeout",
+                    "timeout" => Err(Error::Process(crate::ProcessError::Timeout {
                         exit_code: None,
                         message: "deadline elapsed".into(),
-                    }),
-                    "spawn" => Err(Error::Process {
-                        kind: "not_found",
+                    })),
+                    "spawn" => Err(Error::Process(crate::ProcessError::NotFound {
                         exit_code: None,
                         message: "shell missing".into(),
-                    }),
+                    })),
                     "invalid" => Ok((
                         Some(0),
                         br#"{"hookSpecificOutput":{"hookEventName":"Stop"}}"#.to_vec(),
@@ -944,9 +951,22 @@ async fn process_failures_and_invalid_outputs_are_diagnostics_and_do_not_stop_ot
     assert!(output.blocked.is_none());
     assert_eq!(output.additional_context, ["ready"]);
     assert_eq!(output.diagnostics.len(), 3);
-    assert_eq!(output.diagnostics[0].kind, HookErrorKind::Timeout);
-    assert!(output.diagnostics[1].message.contains("shell missing"));
-    assert!(output.diagnostics[2].message.contains("another event"));
+    assert!(matches!(
+        output.diagnostics[0].cause,
+        crate::ProcessError::Timeout { .. }
+    ));
+    assert!(
+        output.diagnostics[1]
+            .cause
+            .message()
+            .contains("shell missing")
+    );
+    assert!(
+        output.diagnostics[2]
+            .cause
+            .message()
+            .contains("another event")
+    );
     Ok(())
 }
 
@@ -1109,7 +1129,7 @@ exit 2
             SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))
         )
         .await,
-        Err(Error::Process { .. })
+        Err(Error::Process(_))
     ));
     Ok(())
 }

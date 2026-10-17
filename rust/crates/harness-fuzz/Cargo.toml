@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]

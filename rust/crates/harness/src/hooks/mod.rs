@@ -10,6 +10,7 @@ pub(crate) use imports::Document;
 mod budget;
 #[cfg(feature = "filesystem")]
 pub(crate) mod effects;
+mod plan;
 mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
@@ -160,10 +161,6 @@ impl Hooks {
     {
         let commands = self.commands(event, input, registry)?;
         let count = commands.clone().count();
-        let blocks = event != HookEvent::Stop
-            && commands
-                .clone()
-                .any(|hook| hook.failure == HookFailure::Block);
         let quota = capture_quota(maximum_bytes, count);
         let mut budget = budget::Budget::new(maximum_bytes)?;
         let results = futures::future::join_all(commands.map(|hook| {
@@ -173,12 +170,9 @@ impl Hooks {
         .await;
         let mut output = HookOutput::default();
         for (failure, result) in results {
-            if budget.apply(&mut output, event, failure, result).is_err() {
-                return Ok(HookOutput::output_limit(
-                    blocks || output.blocks() || output.approval.is_some(),
-                ));
-            }
+            budget.apply(&mut output, event, failure, result);
         }
+        budget.finish(&mut output);
         Ok(output)
     }
 }
@@ -192,7 +186,7 @@ fn capture_quota(maximum: u64, count: usize) -> usize {
 }
 
 mod output;
-pub use output::{HookDiagnostic, HookErrorKind, HookOutput};
+pub use output::{HookDiagnostic, HookOutput};
 
 mod native;
 pub(crate) use native::HookCheck;

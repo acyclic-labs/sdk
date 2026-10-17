@@ -183,3 +183,6 @@ pub use local::{LocalHarness, LocalHarnessConfig};
 pub use native_future::NativeFutureBundle;
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
+
+mod process_error;
+pub use process_error::ProcessError;

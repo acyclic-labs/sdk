@@ -54,7 +54,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
         let opened = LocalHarness::open(config).await;
         if required {
             assert!(
-                matches!(opened, Err(Error::Process { kind: "not_found", message, .. })
+                matches!(opened, Err(Error::Process(crate::ProcessError::NotFound { message, .. }))
                 if message == "MCP executable was not found in its configured search path")
             );
             assert!(!owner.exists());

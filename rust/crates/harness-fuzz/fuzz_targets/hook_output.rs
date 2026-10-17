@@ -1,6 +1,6 @@
 #![no_main]
 
-use acyclic_harness::{Error, Result};
+use acyclic_harness::{Error, ProcessError, Result};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
@@ -11,7 +11,11 @@ mod spec;
 use spec::{HookEvent, HookFailure};
 #[path = "../../harness/src/hooks/output.rs"]
 mod output;
-use output::HookOutput;
+use output::{HookDiagnostic, HookOutput};
+#[path = "../../harness/src/hooks/budget.rs"]
+mod budget;
+#[path = "../../harness/src/hooks/plan.rs"]
+mod plan;
 
 fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
@@ -53,9 +57,7 @@ fuzz_target!(|bytes: &[u8]| {
         );
         assert_eq!(reports.diagnostics.len(), blocks.diagnostics.len());
         for (report, block) in reports.diagnostics.iter().zip(&blocks.diagnostics) {
-            assert_eq!(report.kind, block.kind);
-            assert_eq!(report.exit_code, block.exit_code);
-            assert_eq!(report.message, block.message);
+            assert_eq!(report.cause, block.cause);
             assert_eq!(block.blocking, event != HookEvent::Stop);
         }
         if reports.diagnostics.is_empty() || event == HookEvent::Stop {
@@ -89,6 +91,25 @@ fuzz_target!(|bytes: &[u8]| {
             }
         }
     }
+    // Exercise the production ledger with arbitrary output followed by a guard.
+    // This must stay bounded and cannot abandon a deny after exhaustion.
+    let mut ledger = budget::Budget::new(4096).unwrap();
+    let mut outcome = HookOutput::default();
+    ledger.apply(
+        &mut outcome,
+        HookEvent::SessionStart,
+        HookFailure::Report,
+        Ok((Some(0), bytes.to_vec(), vec![])),
+    );
+    ledger.apply(
+        &mut outcome,
+        HookEvent::SessionStart,
+        HookFailure::Report,
+        Ok((Some(0), br#"{"continue":false}"#.to_vec(), vec![])),
+    );
+    ledger.finish(&mut outcome);
+    assert!(outcome.blocks());
+    assert!(serde_json::to_vec(&outcome).unwrap().len() <= 4096);
     if let Ok(rule) = serde_json::from_slice::<spec::HookRule>(bytes) {
         let encoded = serde_json::to_vec(&rule).unwrap();
         let decoded: spec::HookRule = serde_json::from_slice(&encoded).unwrap();

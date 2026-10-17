@@ -85,11 +85,10 @@ pub(super) async fn run_hook(
     run_blocking_io(
         move || {
             if maximum_bytes == 0 {
-                return Err(Error::Process {
-                    kind: "output_limit",
+                return Err(Error::Process(crate::ProcessError::OutputLimit {
                     exit_code: None,
                     message: "hook capture budget exhausted".into(),
-                });
+                }));
             }
             let check = || {
                 check_cancelled(&cancelled)?;
@@ -117,8 +116,8 @@ pub(super) async fn run_hook(
                 )
                 .map_err(|failure| {
                     let mut error = Error::process_io(failure.error);
-                    if let Error::Process { exit_code, .. } = &mut error {
-                        *exit_code = failure.status.and_then(|status| status.code());
+                    if let Error::Process(cause) = &mut error {
+                        cause.set_exit_code(failure.status.and_then(|status| status.code()));
                     }
                     error
                 })?;
