@@ -205,10 +205,7 @@ fn write_pair(writes: &[OwnedWrite], vectored: Option<Vectored>) -> [WriteObserv
             } else {
                 write_batch_with(&file, writes, vectored)
             });
-            let mut bytes = vec![0; FILE + 512];
-            let count = file.read_at(&mut bytes, 0).unwrap();
-            bytes.truncate(count);
-            (result, bytes)
+            (result, file_bytes(&file))
         },
     )
 }
@@ -340,11 +337,19 @@ fn faulted<T>(
     (pair, consumed)
 }
 
+/// The complete file, at exactly its reported length.
 fn file_bytes(file: &File) -> Vec<u8> {
-    let mut bytes = vec![0; FILE + 512];
-    let count = file.read_at(&mut bytes, 0).unwrap();
-    bytes.truncate(count);
+    let length = usize::try_from(file.metadata().unwrap().len()).unwrap();
+    let mut bytes = vec![0; length];
+    file.read_exact_at(&mut bytes, 0).unwrap();
     bytes
+}
+
+fn first_difference(left: &[u8], right: &[u8]) -> Option<usize> {
+    left.iter()
+        .zip(right)
+        .position(|(left, right)| left != right)
+        .or_else(|| (left.len() != right.len()).then(|| left.len().min(right.len())))
 }
 
 /// The write oracle: a faulted batch must leave exactly the baseline bytes,
@@ -378,6 +383,14 @@ fn write_oracle(
     }
     match &new {
         Err((io::ErrorKind::WriteZero, None)) if zeroed && old.is_ok() => {
+            // A partial batch can only end between the old end and the baseline end.
+            if !(FILE..=old_bytes.len()).contains(&new_bytes.len()) {
+                return Err(format!(
+                    "WriteZero left {} bytes, outside {FILE}..={}",
+                    new_bytes.len(),
+                    old_bytes.len()
+                ));
+            }
             let original: Vec<u8> = (0..FILE).map(content).collect();
             // Overlapping writes may leave an earlier request's byte in place.
             let written = |index: usize, byte: u8| {
@@ -399,15 +412,79 @@ fn write_oracle(
         }
         _ if new == old && new_bytes == old_bytes => Ok(()),
         _ => Err(format!(
-            "{new:?} vs baseline {old:?}; bytes equal: {}",
-            new_bytes == old_bytes
+            "{new:?} vs baseline {old:?}; first byte difference: {:?}",
+            first_difference(&new_bytes, &old_bytes)
         )),
     }
 }
 
-/// The read oracle: every buffer is an initialized prefix of the baseline
-/// buffer for the same request, and without an injected short transfer the
-/// whole result equals the baseline.
+/// An independent model of a faulted batch read. Requests form runs of
+/// contiguous ranges; each run issues attempts until one moves fewer bytes
+/// than it asked for or the run is complete. An attempt asks for the rest of
+/// the run when vectored, else the rest of the current request. The next
+/// queued fault decides how many of the available bytes it moves: `Pass` all,
+/// `Short(n)` at most n, `Zero` none, and `Interrupt` repeats the attempt.
+/// Returns the exact length of every request and how many faults were consumed.
+fn modelled_lengths(
+    ranges: &[(u64, usize)],
+    vectored: bool,
+    faults: &[Fault],
+    file_length: u64,
+) -> (Vec<usize>, usize) {
+    let mut queue = faults.iter().copied();
+    let mut consumed = 0;
+    let mut lengths = Vec::new();
+    let mut start = 0;
+    while start < ranges.len() {
+        let mut end = start + 1;
+        while end < ranges.len() && ranges[end].0 == ranges[end - 1].0 + ranges[end - 1].1 as u64 {
+            end += 1;
+        }
+        let run = &ranges[start..end];
+        let total: usize = run.iter().map(|range| range.1).sum();
+        let mut moved = 0;
+        while moved < total {
+            let asked = if vectored {
+                total - moved
+            } else {
+                let mut before = 0;
+                run.iter()
+                    .find_map(|range| {
+                        before += range.1;
+                        (before > moved).then(|| before - moved)
+                    })
+                    .unwrap_or(0)
+            };
+            let at = run[0].0 + moved as u64;
+            let available = usize::try_from(file_length.saturating_sub(at)).unwrap_or(usize::MAX);
+            let count = loop {
+                let fault = queue.next();
+                consumed += usize::from(fault.is_some());
+                match fault {
+                    Some(Fault::Interrupt) => {}
+                    None | Some(Fault::Pass) => break asked.min(available),
+                    Some(Fault::Short(limit)) => break asked.min(limit).min(available),
+                    Some(Fault::Zero) => break 0,
+                }
+            };
+            moved += count;
+            if count < asked {
+                break;
+            }
+        }
+        let mut left = moved;
+        for range in run {
+            let take = left.min(range.1);
+            lengths.push(take);
+            left -= take;
+        }
+        start = end;
+    }
+    (lengths, consumed)
+}
+
+/// The read oracle: each buffer has exactly the modelled length for the
+/// consumed fault schedule and holds the baseline bytes for that prefix.
 fn read_oracle(
     ranges: &[(u64, usize)],
     vectored: Option<Vectored>,
@@ -415,33 +492,31 @@ fn read_oracle(
     mutation: Mutation,
 ) -> Result<(), String> {
     let requests = reads(ranges);
-    let ([(old, _), (new, trace)], consumed) = faulted(
+    let ([(old, _), (new, _)], consumed) = faulted(
         faults,
         mutation,
         |file| outcome(baseline_read(file, &requests)),
         |file| outcome(read_batch_with(file, &requests, vectored)),
     );
-    if consumed > trace.len() {
-        return Err(format!("{consumed} faults but {} attempts", trace.len()));
+    let (old, new) = match (old, new) {
+        (Ok(old), Ok(new)) => (old, new),
+        (old, new) if old == new => return Ok(()),
+        (old, new) => return Err(format!("{new:?} vs baseline {old:?}")),
+    };
+    let (lengths, modelled) = modelled_lengths(ranges, vectored.is_some(), faults, FILE as u64);
+    if consumed != modelled {
+        return Err(format!("consumed {consumed} faults, model {modelled}"));
     }
-    let shortened = faults
-        .get(..consumed)
-        .unwrap_or_default()
-        .iter()
-        .any(|fault| matches!(fault, Fault::Zero | Fault::Short(_)));
-    match (&old, &new) {
-        (Ok(old), Ok(new)) if old.len() == new.len() => {
-            let prefixes = old.iter().zip(new).all(|(old, new)| old.starts_with(new));
-            if !prefixes {
-                return Err("a buffer is not a prefix of its request's bytes".to_owned());
-            }
-            (shortened || old == new)
-                .then_some(())
-                .ok_or_else(|| "unfaulted result differs from the baseline".to_owned())
-        }
-        _ if old == new => Ok(()),
-        _ => Err(format!("{new:?} vs baseline {old:?}")),
+    let actual: Vec<usize> = new.iter().map(Bytes::len).collect();
+    if actual != lengths {
+        return Err(format!("lengths {actual:?}, model {lengths:?}"));
     }
+    old.iter()
+        .zip(&new)
+        .zip(&lengths)
+        .all(|((old, new), &length)| old.get(..length) == Some(&new[..]))
+        .then_some(())
+        .ok_or_else(|| "a buffer differs from the baseline bytes".to_owned())
 }
 
 fn arbitrary_fault() -> impl Strategy<Value = Fault> {
@@ -457,7 +532,15 @@ fn arbitrary_fault() -> impl Strategy<Value = Fault> {
 fn arbitrary_layout() -> impl Strategy<Value = Vec<(u64, usize)>> {
     (
         0..(FILE as u64 + 64),
-        prop::collection::vec((any::<bool>(), 0..(FILE as u64), 0..300_usize), 1..12),
+        prop::collection::vec(
+            (
+                any::<bool>(),
+                0..(FILE as u64),
+                // Small exact buffers, and pooled buffers of one or two pages.
+                prop_oneof![4 => 0..300_usize, 1 => POOL_PAGE..POOL_PAGE + 4000],
+            ),
+            1..12,
+        ),
     )
         .prop_map(|(start, steps)| {
             let mut end = start;
@@ -525,7 +608,15 @@ fn fault_oracles_reject_a_wrong_segment_resume_and_a_dropped_retry() {
             write_oracle(&writes, vectored, &short, Mutation::None),
             Ok(())
         );
-        assert!(write_oracle(&writes, vectored, &short, Mutation::WrongResume).is_err());
+        // The wrong resume skips the unwritten "c" and writes "defg" from
+        // offset 2, so byte 2 is the first to differ.
+        let wrong = write_oracle(&writes, vectored, &short, Mutation::WrongResume).unwrap_err();
+        assert!(wrong.ends_with("first byte difference: Some(2)"), "{wrong}");
+        // The first attempt is never mutated.
+        assert_eq!(
+            write_oracle(&writes, vectored, &[], Mutation::WrongResume),
+            Ok(())
+        );
         let interrupt = [Fault::Interrupt];
         assert_eq!(
             write_oracle(&writes, vectored, &interrupt, Mutation::None),
@@ -541,7 +632,62 @@ fn fault_oracles_reject_a_wrong_segment_resume_and_a_dropped_retry() {
             Ok(())
         );
         assert!(read_oracle(&ranges, vectored, &interrupt, Mutation::DropRetry).is_err());
+        // A short read that forgets a transferred byte fails the exact model.
+        let short = [Fault::Short(100)];
+        assert_eq!(
+            read_oracle(&ranges, vectored, &short, Mutation::None),
+            Ok(())
+        );
+        let lost = read_oracle(&ranges, vectored, &short, Mutation::LoseByte).unwrap_err();
+        assert!(lost.starts_with("lengths"), "{lost}");
     }
+}
+
+#[test]
+fn the_read_model_matches_hand_computed_schedules() {
+    let ranges = [(0, 4096), (4096, 4096), (9000, 100), (9950, 100)];
+    // Vectored: one call for the run of two moves 5000, ending it; the
+    // single-request runs read normally, the last stopping at end of file.
+    assert_eq!(
+        modelled_lengths(&ranges, true, &[Fault::Short(5_000)], FILE as u64),
+        (vec![4096, 904, 100, 50], 1)
+    );
+    // Scalar: the first request completes, an interrupt repeats the second,
+    // which then moves nothing and ends the run.
+    assert_eq!(
+        modelled_lengths(
+            &ranges,
+            false,
+            &[Fault::Pass, Fault::Interrupt, Fault::Zero],
+            FILE as u64
+        ),
+        (vec![4096, 0, 100, 50], 3)
+    );
+}
+
+#[test]
+fn a_scalar_zero_after_progress_is_write_zero() {
+    let writes = owned_writes(&[(0, b"abc"), (3, b"defg")]);
+    let faults = [Fault::Pass, Fault::Zero];
+    let ([((old, _), _), ((new, new_bytes), trace)], consumed) = faulted(
+        &faults,
+        Mutation::None,
+        |file| (outcome(baseline_write(file, &writes)), file_bytes(file)),
+        |file| {
+            (
+                outcome(write_batch_with(file, &writes, None)),
+                file_bytes(file),
+            )
+        },
+    );
+    assert_eq!(old, Ok(()));
+    assert_eq!(new, Err((io::ErrorKind::WriteZero, None)));
+    assert_eq!(consumed, 2);
+    assert_eq!(trace, [("pwrite", 0, 3), ("pwrite", 3, 4)]);
+    let mut expected: Vec<u8> = (0..FILE).map(content).collect();
+    expected[..3].copy_from_slice(b"abc");
+    assert_eq!(new_bytes, expected);
+    assert_eq!(write_oracle(&writes, None, &faults, Mutation::None), Ok(()));
 }
 
 #[test]
@@ -653,4 +799,128 @@ fn a_short_vectored_read_ends_its_run_with_initialized_prefixes() {
     );
     assert!(old.iter().zip(&new).all(|(old, new)| old.starts_with(new)));
     assert_eq!(trace, [("preadv", 0, 12_288)]);
+}
+
+fn pages() -> io::Result<(tempfile::TempDir, File, Vec<u8>)> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("pages");
+    let bytes: Vec<u8> = (0..256 * 1024).map(content).collect();
+    File::create_new(&path)?.write_all_at(&bytes, 0)?;
+    let file = File::open(&path)?;
+    Ok((directory, file, bytes))
+}
+
+fn assert_contents(results: &[Bytes], requests: &[OwnedRead], bytes: &[u8]) {
+    for (result, read) in results.iter().zip(requests) {
+        let start = usize::try_from(read.offset).unwrap();
+        let end = (start + read.length).min(bytes.len());
+        assert_eq!(result[..], bytes[start..end]);
+    }
+}
+
+#[test]
+fn page_sized_reads_reuse_their_released_buffers() {
+    let (_directory, file, bytes) = pages().unwrap();
+    // Three contiguous 64 KiB reads and a 40 KiB read whose buffer is three pages.
+    let requests = reads(&[
+        (0, 65_536),
+        (65_536, 65_536),
+        (131_072, 65_536),
+        (200_000, 40_000),
+    ]);
+    let pooled_bytes = 3 * 65_536 + 3 * POOL_PAGE;
+    let n = requests.len() as u64;
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let shard = Shard::isolate();
+                // A small read first sets up this thread's scratch state, and
+                // one lock sets up the platform mutex behind the shard.
+                read_batch_with(&file, &reads(&[(0, 1)]), None).unwrap();
+                drop(shard.idle());
+                let mut first = None;
+                let allocation = measure(|| first = Some(read_batch_with(&file, &requests, None)));
+                let first = first.unwrap().unwrap();
+                // Buffers, their owners and the result list.
+                assert_eq!(allocation.count_total, 2 * n + 1);
+                assert!(allocation.bytes_total >= pooled_bytes as u64);
+                assert_contents(&first, &requests, &bytes);
+                let mut storage: Vec<*const u8> =
+                    first.iter().map(|bytes| bytes.as_ptr()).collect();
+                storage.sort_unstable();
+                drop(first);
+                assert_eq!(shard.idle().bytes, pooled_bytes);
+                for vectored in [vectored(Direction::Read), None] {
+                    let mut again = None;
+                    let allocation =
+                        measure(|| again = Some(read_batch_with(&file, &requests, vectored)));
+                    let again = again.unwrap().unwrap();
+                    // Only the owners and the result list: no buffer is allocated.
+                    assert_eq!(allocation.count_total, n + 1);
+                    assert!(allocation.bytes_total < POOL_PAGE as u64);
+                    let mut reused: Vec<*const u8> =
+                        again.iter().map(|bytes| bytes.as_ptr()).collect();
+                    reused.sort_unstable();
+                    assert_eq!(reused, storage);
+                    assert_contents(&again, &requests, &bytes);
+                }
+                // Negative control: with no idle buffers the same count fails.
+                {
+                    let mut idle = shard.idle();
+                    idle.classes.clear();
+                    idle.bytes = 0;
+                }
+                let mut fresh = None;
+                let allocation = measure(|| fresh = Some(read_batch_with(&file, &requests, None)));
+                assert_eq!(allocation.count_total, 2 * n + 1);
+                assert_ne!(allocation.count_total, n + 1);
+                drop(fresh);
+            })
+            .join()
+            .unwrap();
+    });
+}
+
+#[test]
+fn a_reused_buffer_exposes_only_the_bytes_of_its_new_read() {
+    let (_directory, file, bytes) = pages().unwrap();
+    let full = reads(&[(0, 65_536)]);
+    let tail = reads(&[(256 * 1024 - 100, 65_536)]);
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                Shard::isolate();
+                let first = read_batch_with(&file, &full, None).unwrap();
+                let storage = first[0].as_ptr();
+                drop(first);
+                // The same buffer comes back, filled only to end of file.
+                let short = read_batch_with(&file, &tail, None).unwrap();
+                assert_eq!(short[0].as_ptr(), storage);
+                assert_contents(&short, &tail, &bytes);
+                assert_eq!(short[0].len(), 100);
+            })
+            .join()
+            .unwrap();
+    });
+}
+
+#[test]
+fn the_pool_keeps_idle_bytes_within_its_budget() {
+    let shard = Shard::new();
+    let share = POOL_BUDGET / POOL_SHARDS;
+    let class = 1024 * 1024;
+    for _ in 0..share / class {
+        shard.put(Vec::with_capacity(class));
+    }
+    assert_eq!(shard.idle().bytes, share);
+    // Over budget: freed instead of kept.
+    shard.put(Vec::with_capacity(class));
+    assert_eq!(shard.idle().bytes, share);
+    // Taking hands back an empty buffer of exactly the class and frees budget.
+    let buffer = shard.take(class).unwrap();
+    assert!(buffer.is_empty());
+    assert_eq!(buffer.capacity(), class);
+    assert_eq!(shard.idle().bytes, share - class);
+    // A class with nothing idle is allocated fresh.
+    assert_eq!(shard.take(2 * class).unwrap().capacity(), 2 * class);
 }

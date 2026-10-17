@@ -2,7 +2,10 @@
 //!
 //! Reads fill uninitialized spare capacity, and each run of contiguous
 //! requests, up to the platform `IOV_MAX`, moves through one vectored call
-//! instead of one call per request.
+//! instead of one call per request. Read buffers of a page or more come from
+//! a bounded pool and return to it when the last `Bytes` view drops, so a
+//! steady stream of large reads lands in memory the kernel has already mapped
+//! instead of faulting fresh pages in during the copy.
 
 #![allow(
     unsafe_code,
@@ -11,12 +14,13 @@
 
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_void};
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd as _, RawFd};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Darwin's `IOV_MAX`, used when `sysconf` cannot report the limit.
 const IOV_MAX_FALLBACK: usize = 1024;
@@ -59,6 +63,171 @@ fn segment_limit() -> usize {
             .filter(|&limit| limit > 0)
             .unwrap_or(IOV_MAX_FALLBACK)
     })
+}
+
+/// Pooled buffers are sized in whole Apple silicon pages, and smaller reads
+/// keep plain exact allocations (the allocator already reuses those).
+const POOL_PAGE: usize = 16 * 1024;
+/// Idle bytes the pool may hold across all shards.
+const POOL_BUDGET: usize = 64 << 20;
+const POOL_SHARDS: usize = 8;
+
+/// Idle read buffers, grouped by capacity. Each I/O worker takes from its own
+/// shard, and a buffer returns to the shard it came from, so a worker
+/// contends only with threads releasing its earlier results.
+struct Shard {
+    idle: Mutex<Idle>,
+}
+
+struct Idle {
+    classes: Vec<(usize, Vec<Vec<u8>>)>,
+    bytes: usize,
+}
+
+static SHARDS: [Shard; POOL_SHARDS] = [const { Shard::new() }; POOL_SHARDS];
+
+thread_local! {
+    static LOCAL_SHARD: Cell<Option<&'static Shard>> = const { Cell::new(None) };
+}
+
+impl Shard {
+    const fn new() -> Self {
+        Self {
+            idle: Mutex::new(Idle {
+                classes: Vec::new(),
+                bytes: 0,
+            }),
+        }
+    }
+
+    /// The calling worker's shard, assigned round-robin on first use.
+    fn local() -> &'static Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        LOCAL_SHARD.with(|local| {
+            local.get().unwrap_or_else(|| {
+                let index = NEXT.fetch_add(1, Ordering::Relaxed) % POOL_SHARDS;
+                let shard = SHARDS.get(index).unwrap_or(&SHARDS[0]);
+                local.set(Some(shard));
+                shard
+            })
+        })
+    }
+
+    /// Gives the calling thread a shard no other thread uses.
+    #[cfg(test)]
+    fn isolate() -> &'static Self {
+        let shard: &'static Self = Box::leak(Box::new(Self::new()));
+        LOCAL_SHARD.with(|local| local.set(Some(shard)));
+        shard
+    }
+
+    fn idle(&self) -> std::sync::MutexGuard<'_, Idle> {
+        self.idle.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// An empty buffer with exactly `class` capacity, reused when one is idle.
+    fn take(&self, class: usize) -> io::Result<Vec<u8>> {
+        let reused = {
+            let mut idle = self.idle();
+            let reused = idle
+                .classes
+                .iter_mut()
+                .find(|(capacity, _)| *capacity == class)
+                .and_then(|(_, buffers)| buffers.pop());
+            if reused.is_some() {
+                idle.bytes -= class;
+            }
+            reused
+        };
+        if let Some(mut buffer) = reused {
+            buffer.clear();
+            return Ok(buffer);
+        }
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(class)?;
+        Ok(buffer)
+    }
+
+    /// Keeps `buffer` for reuse while the shard is under its budget; otherwise
+    /// it is freed after the lock is released.
+    fn put(&self, buffer: Vec<u8>) {
+        let rejected = self.idle().keep(buffer);
+        drop(rejected);
+    }
+}
+
+impl Idle {
+    /// Keeps `buffer` within the budget, or hands it back to be freed.
+    fn keep(&mut self, buffer: Vec<u8>) -> Option<Vec<u8>> {
+        let class = buffer.capacity();
+        if self.bytes + class > POOL_BUDGET / POOL_SHARDS {
+            return Some(buffer);
+        }
+        if !self.classes.iter().any(|(capacity, _)| *capacity == class) {
+            if self.classes.try_reserve(1).is_err() {
+                return Some(buffer);
+            }
+            self.classes.push((class, Vec::new()));
+        }
+        let Some((_, buffers)) = self
+            .classes
+            .iter_mut()
+            .find(|(capacity, _)| *capacity == class)
+        else {
+            return Some(buffer);
+        };
+        if buffers.try_reserve(1).is_err() {
+            return Some(buffer);
+        }
+        buffers.push(buffer);
+        self.bytes += class;
+        None
+    }
+}
+
+/// The owner behind a pooled read result: the bytes the kernel filled, and
+/// the shard its storage returns to when the last view drops.
+struct Recycled {
+    buffer: Vec<u8>,
+    shard: &'static Shard,
+}
+
+impl AsRef<[u8]> for Recycled {
+    fn as_ref(&self) -> &[u8] {
+        &self.buffer
+    }
+}
+
+impl Drop for Recycled {
+    fn drop(&mut self) {
+        self.shard.put(std::mem::take(&mut self.buffer));
+    }
+}
+
+const fn pooled(length: usize) -> bool {
+    length >= POOL_PAGE
+}
+
+/// An empty buffer for a `length`-byte read.
+fn read_buffer(length: usize) -> io::Result<Vec<u8>> {
+    if pooled(length) {
+        return Shard::local().take(length.div_ceil(POOL_PAGE) * POOL_PAGE);
+    }
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(length)?;
+    Ok(buffer)
+}
+
+/// The caller-facing view of a filled `length`-byte read buffer.
+fn read_result(buffer: Vec<u8>, length: usize) -> Bytes {
+    if pooled(length) {
+        Bytes::from_owner(Recycled {
+            buffer,
+            shard: Shard::local(),
+        })
+    } else {
+        Bytes::from(buffer)
+    }
 }
 
 /// Per-thread transfer state. Each I/O worker reserves it once, at the segment
@@ -164,7 +333,9 @@ impl<'a> Segments<'a> {
 }
 
 /// Moves `segments` at `offset`, one vectored call when available, else one
-/// positional call per segment until the first short transfer.
+/// positional call per segment until the first short transfer. A write that
+/// moves nothing for a non-empty segment is `WriteZero` even after earlier
+/// segments succeeded, so no caller can mistake it for progress.
 fn transfer(
     fd: RawFd,
     direction: Direction,
@@ -177,6 +348,9 @@ fn transfer(
         for segment in segments {
             let at = offset + moved as u64;
             let count = retry(|| attempt(fd, direction, std::slice::from_ref(segment), at, None))?;
+            if count == 0 && matches!(direction, Direction::Write) {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
             moved += count;
             if count < segment.iov_len {
                 break;
@@ -287,9 +461,7 @@ fn read_batch_with(
             let (run, next) =
                 rest.split_at(contiguous(rest, limit, |read| (read.offset, read.length)));
             for read in run {
-                let mut buffer = Vec::new();
-                buffer.try_reserve_exact(read.length)?;
-                scratch.buffers.push(buffer);
+                scratch.buffers.push(read_buffer(read.length)?);
             }
             fill(
                 file.as_raw_fd(),
@@ -298,7 +470,13 @@ fn read_batch_with(
                 Segments::new(&mut scratch.segments, limit),
                 vectored,
             )?;
-            results.extend(scratch.buffers.drain(..).map(Bytes::from));
+            results.extend(
+                scratch
+                    .buffers
+                    .drain(..)
+                    .zip(run)
+                    .map(|(buffer, read)| read_result(buffer, read.length)),
+            );
             rest = next;
         }
         Ok(results)
@@ -331,6 +509,8 @@ fn fill(
             return Ok(());
         };
         let received = segments.transfer(fd, Direction::Read, offset, vectored)?;
+        #[cfg(test)]
+        let received = faults::reported(received, segments.requested);
         let mut remaining = received;
         for (buffer, read) in buffers
             .iter_mut()

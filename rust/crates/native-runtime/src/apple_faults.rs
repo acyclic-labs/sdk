@@ -26,6 +26,8 @@ pub(super) enum Mutation {
     WrongResume,
     /// Returns `EINTR` instead of retrying it.
     DropRetry,
+    /// Forgets the last byte of a short read that did move bytes.
+    LoseByte,
 }
 
 thread_local! {
@@ -52,9 +54,19 @@ pub(super) fn mutated(mutation: Mutation) -> bool {
     MUTATION.get() == mutation
 }
 
-/// Where a write run resumes after `done` bytes moved.
+/// How many bytes a read reports after the kernel moved `received` of `requested`.
+pub(super) fn reported(received: usize, requested: usize) -> usize {
+    if mutated(Mutation::LoseByte) && received > 0 && received < requested {
+        received - 1
+    } else {
+        received
+    }
+}
+
+/// Where a write run resumes after `done` bytes moved. `WrongResume` keeps the
+/// first attempt intact and moves only later resumes to the next boundary.
 pub(super) fn resume_point(writes: &[OwnedWrite], done: usize) -> usize {
-    if !mutated(Mutation::WrongResume) {
+    if done == 0 || !mutated(Mutation::WrongResume) {
         return done;
     }
     writes
