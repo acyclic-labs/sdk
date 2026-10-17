@@ -82,13 +82,24 @@ pub(super) fn object_identity(workspace: &Path) -> Result<[u8; 16]> {
 /// cannot repeat. A filesystem without a birth time contributes the object
 /// identity alone.
 fn incarnation(workspace: &Path) -> Result<[u8; 16]> {
-    let born = fs::metadata(workspace)
+    Ok(incarnation_of(
+        object_identity(workspace)?,
+        birth_time(workspace),
+    ))
+}
+
+/// The directory's creation time, where the filesystem records one.
+pub(super) fn birth_time(workspace: &Path) -> Option<std::time::Duration> {
+    fs::metadata(workspace)
         .and_then(|metadata| metadata.created())
         .ok()
-        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok());
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+}
+
+pub(super) fn incarnation_of(object: [u8; 16], born: Option<std::time::Duration>) -> [u8; 16] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.workspace-incarnation/v1\0");
-    hash.update(&object_identity(workspace)?);
+    hash.update(&object);
     match born {
         Some(born) => {
             hash.update(&[1]);
@@ -100,7 +111,7 @@ fn incarnation(workspace: &Path) -> Result<[u8; 16]> {
     }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(identity)
+    identity
 }
 
 

@@ -570,25 +570,11 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
     let harness = LocalHarness::open(config(&first)?).await?;
     assert_eq!(harness.run("first clone").await?.text, "done");
     harness.close().await?;
-    // Delete and re-clone until the filesystem recycles the directory's
-    // device and object id, as an ordinary re-clone can.
-    let object = super::super::owner::object_identity(&workspace)?;
-    let mut recycled = false;
-    for _ in 0..4096 {
-        std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
-        std::fs::create_dir(&workspace).map_err(super::super::storage)?;
-        if super::super::owner::object_identity(&workspace)? == object {
-            recycled = true;
-            break;
-        }
-    }
-    // Linux recycles inode numbers promptly; elsewhere the new clone simply
-    // has a new object id, which the key covers too.
-    #[cfg(target_os = "linux")]
-    assert!(recycled, "the directory's object id was never recycled");
-    let _ = recycled;
-    // Negative control: the previous clone's state refuses the new clone even
-    // when its object id is the same.
+    // Delete and re-clone. A filesystem that frees the inode may hand the
+    // same device and object id to the new directory; its birth time differs.
+    std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    // The previous clone's state refuses the new clone.
     let Err(Error::Unauthorized(message)) = LocalHarness::open(config(&first)?).await else {
         panic!("the previous clone's state accepted a new checkout");
     };
@@ -599,4 +585,30 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
     assert_eq!(harness.run("second clone").await?.text, "done");
     harness.close().await?;
     Ok(())
+}
+
+/// A recycled object id is a new incarnation once its birth time differs;
+/// identities are injected, so this never depends on the filesystem reusing one.
+#[test]
+fn a_recycled_object_id_is_a_new_incarnation() {
+    use super::super::owner::incarnation_of;
+    use std::time::Duration;
+    let object = [7; 16];
+    let first = incarnation_of(object, Some(Duration::new(1_700_000_000, 5)));
+    assert_eq!(
+        first,
+        incarnation_of(object, Some(Duration::new(1_700_000_000, 5))),
+        "an unchanged checkout keeps its incarnation"
+    );
+    let recycled = incarnation_of(object, Some(Duration::new(1_700_000_000, 6)));
+    assert_ne!(
+        first, recycled,
+        "a re-clone on a recycled inode kept its state"
+    );
+    assert_ne!(
+        first,
+        incarnation_of([8; 16], Some(Duration::new(1_700_000_000, 5)))
+    );
+    // A host without birth times never collides with a timed incarnation.
+    assert_ne!(incarnation_of(object, None), first);
 }
