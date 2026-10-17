@@ -159,23 +159,41 @@ fn compare(
     failure: u8,
     variant: u8,
 ) -> Result<(), &'static str> {
-    let actual = run(name, quota, mode, recheck, failure, variant);
-    let expected = run(name, quota, mode, recheck, failure, 1);
-    if actual.0 != expected.0 {
+    let [
+        ((expected_output, expected_work, expected_heap), expected_trace),
+        ((actual_output, actual_work, actual_heap), actual_trace),
+    ] = acyclic_test_support::differential::pair(
+        || (),
+        |(), baseline| {
+            let (output, work, trace, heap) = run(
+                name,
+                quota,
+                mode,
+                recheck,
+                failure,
+                if baseline { 1 } else { variant },
+            );
+            for event in trace {
+                acyclic_test_support::differential::record(event);
+            }
+            (output, work, heap)
+        },
+    );
+    if actual_output != expected_output {
         return Err("output or exact error");
     }
-    if actual.2 != expected.2 {
+    if actual_trace != expected_trace {
         return Err("actual operation trace");
     }
-    if actual.1 != expected.1 {
+    if actual_work != expected_work {
         return Err("full receipt");
     }
-    if actual.3 != expected.3 {
+    if actual_heap != expected_heap {
         return Err("physical allocation statistics");
     }
     // The untouched baseline must never succeed where the candidate rejects.
     let old = run(name, quota, mode, recheck, failure, 2);
-    if old.0.is_ok() && actual.0 != old.0 {
+    if old.0.is_ok() && actual_output != old.0 {
         return Err("baseline admission guarantee");
     }
     Ok(())
