@@ -21,4 +21,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "jsonl_wire"
+path = "fuzz_targets/jsonl_wire.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

@@ -11,14 +11,14 @@ proptest! {
     ) {
         let operation = OperationId::from_bytes(identity);
         let request = prepare_local_prompt(operation, &text).unwrap();
-        let line = serde_json::to_string(&request).unwrap();
+        let line = crate::client::jsonl::request(&request).unwrap();
         prop_assert_eq!(parse_local_request(&line, operation).unwrap(), request.clone());
         let mut foreign = identity; foreign[0] ^= 1;
         prop_assert!(matches!(parse_local_request(&line, OperationId::from_bytes(foreign)), Err(Error::Unauthorized(_))));
         for make in [TaskFile::ExecutionClaim, TaskFile::ExecutionResult] {
             let mut forbidden = request.clone();
             forbidden.key = key(operation, make).unwrap();
-            prop_assert!(matches!(parse_local_request(&serde_json::to_string(&forbidden).unwrap(), operation), Err(Error::Unauthorized(_))));
+            prop_assert!(matches!(parse_local_request(&crate::client::jsonl::request(&forbidden).unwrap(), operation), Err(Error::Unauthorized(_))));
         }
     }
 

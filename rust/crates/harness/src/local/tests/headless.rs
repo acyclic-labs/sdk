@@ -33,7 +33,7 @@ fn final_text(output: &[u8]) -> String {
         .unwrap()
         .lines()
         .skip(1)
-        .map(|line| serde_json::from_str::<crate::task_volume::Change>(line).unwrap());
+        .map(|line| crate::client::jsonl::parse_change(line).unwrap());
     changes
         .flat_map(|change| change.file.into_iter().chain(change.files))
         .filter(|file| {
@@ -86,7 +86,7 @@ async fn jsonl_eof_drains_the_admitted_file_request() -> Result<()> {
     let (_directory, harness, provider) = local().await?;
     let operation = OperationId::new();
     let command = local_prompt(&harness, operation, "hello").await?;
-    let line = serde_json::to_string(&command).map_err(super::super::storage)?;
+    let line = crate::client::jsonl::request(&command)?;
     let (mut client, target) = connect_local(harness.clone(), operation).await?;
     let mut output = Vec::new();
     let input = futures::stream::iter([Ok(line)]);
@@ -139,9 +139,9 @@ async fn stdout_failure_keeps_the_exact_pending_outcome_and_owner() -> Result<()
         HeadlessOutcome::Completed
     );
     // The initial snapshot was already published; retry emits the pending change.
-    let change: crate::task_volume::Change =
-        serde_json::from_slice(output.split(|byte| *byte == b'\n').next().unwrap())
-            .map_err(super::super::storage)?;
+    let change = crate::client::jsonl::parse_change(
+        std::str::from_utf8(output.split(|byte| *byte == b'\n').next().unwrap()).unwrap(),
+    )?;
     assert!(matches!(
         change.file.unwrap().key,
         crate::task_volume::FileKey::Session {
@@ -224,7 +224,7 @@ async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
     assert!(head_keys.contains(&before.key));
     assert!(!head_keys.contains(&foreign.key));
     let changes: Vec<crate::task_volume::Change> = lines
-        .map(|line| serde_json::from_str(line).unwrap())
+        .map(|line| crate::client::jsonl::parse_change(line).unwrap())
         .collect();
     let keys: Vec<_> = changes
         .iter()
