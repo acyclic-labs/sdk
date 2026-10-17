@@ -205,13 +205,14 @@ impl<'a> From<&'a HeadFile> for Head<'a> {
             bytes: match segments.as_slice() {
                 [] => Cow::Borrowed(&[]),
                 [segment] => Cow::Borrowed(segment.as_slice()),
-                fragments => Cow::Owned(
-                    fragments
-                        .iter()
-                        .map(|segment| segment.as_slice())
-                        .collect::<Vec<_>>()
-                        .concat(),
-                ),
+                fragments => {
+                    let length = fragments.iter().map(|segment| segment.len()).sum();
+                    let mut bytes = Vec::with_capacity(length);
+                    for segment in fragments {
+                        bytes.extend_from_slice(segment.as_slice());
+                    }
+                    Cow::Owned(bytes)
+                }
             },
             through_sequence: *through_sequence,
         }
@@ -349,6 +350,7 @@ mod tests {
         let mut wire = None;
         let allocated = acyclic_test_support::measure(|| wire = Some(Head::from(&contiguous)));
         let wire = wire.unwrap();
+        assert_eq!(allocated.count_total, 0);
         assert_eq!(allocated.bytes_total, 0);
         assert!(
             matches!(&wire.bytes, Cow::Borrowed(bytes) if bytes.as_ptr() == contiguous.segments[0].as_ptr())
@@ -358,7 +360,8 @@ mod tests {
         let mut wire = None;
         let allocated = acyclic_test_support::measure(|| wire = Some(Head::from(&fragmented)));
         let wire = wire.unwrap();
-        assert!(allocated.bytes_total >= payload.len() as u64);
+        assert_eq!(allocated.count_total, 1);
+        assert_eq!(allocated.bytes_total, payload.len() as u64);
         assert!(matches!(&wire.bytes, Cow::Owned(bytes) if *bytes == payload));
     }
 }
