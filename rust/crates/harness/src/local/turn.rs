@@ -81,18 +81,38 @@ impl LocalHarness {
         }
         let task = crate::runtime::task_id_for_admission(operation);
         let continuation = self.continuation_selection(task).await?;
+        let mut selected = compact::checkpoints::capture_selection(
+            &self.task_files.inner,
+            parent,
+            self.limits.file_bytes,
+        )
+        .await?
+        .1
+        .is_some();
+        // A completed conversation is continued, never parented: without a
+        // compaction its whole history becomes the selected checkpoint.
+        if continuation.is_none()
+            && !selected
+            && matches!(
+                self.runtime.task_host().outcome(parent).await?,
+                Some(
+                    crate::Outcome::Succeeded(_)
+                        | crate::Outcome::Failed { .. }
+                        | crate::Outcome::Cancelled
+                )
+            )
+            && match self.runtime.task_host().observe_admission(task).await {
+                Err(Error::NotFound(_)) => true,
+                Ok(_) => false,
+                Err(error) => return Err(error),
+            }
+        {
+            self.checkpoint_history(operation, parent).await?;
+            selected = true;
+        }
         // Ordinary active children need no terminal-parent probe. Their existing
         // admission/parent check is already performed by prepare_inheritance.
-        if continuation.is_some()
-            || compact::checkpoints::capture_selection(
-                &self.task_files.inner,
-                parent,
-                self.limits.file_bytes,
-            )
-            .await?
-            .1
-            .is_some()
-        {
+        if continuation.is_some() || selected {
             let existing = match self.runtime.task_host().observe_admission(task).await {
                 Ok(record) => Some(record.parent),
                 Err(Error::NotFound(_)) => None,
