@@ -10,6 +10,10 @@ use std::{
     io::Write as _,
     path::Path,
     process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -110,6 +114,16 @@ async fn execute(
     output.stdout
 }
 
+fn catalog(directory: &Path, address: std::net::SocketAddr) -> std::path::PathBuf {
+    let catalog = directory.join("catalog.json");
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+    }})).unwrap()).unwrap();
+    catalog
+}
+
 async fn scenario(mode: Mode) {
     let instructions = matches!(mode, Mode::Instructions);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -171,12 +185,7 @@ async fn scenario(mode: Mode) {
         )
         .unwrap();
     }
-    let catalog = directory.path().join("catalog.json");
-    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
-    }})).unwrap()).unwrap();
+    let catalog = catalog(directory.path(), address);
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
@@ -241,4 +250,189 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+// A process killed during a tool effect leaves the workspace usable by the next prompt.
+const EFFECT: &str = "effect.txt";
+
+fn tool_call() -> String {
+    let call = json!({"type":"response.output_item.done","output_index":0,"item":{
+        "type":"function_call","call_id":"interrupted","name":"bash",
+        "arguments":json!({"command":format!("printf x >> {EFFECT}; exec sleep 30")}).to_string()
+    }});
+    format!(
+        "data: {call}\n\ndata: {}\n\n",
+        json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":64,"output_tokens":2}}})
+    )
+}
+
+fn graphcoder(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+    prompt: &str,
+) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
+    command
+        .current_dir(workspace)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--catalog")
+        .arg(catalog)
+        .arg("--settings-root")
+        .arg(settings)
+        .args(["--model", "graphcoder-qual/tiny", "--operation"])
+        .arg(operation.to_string())
+        .args(["-p", prompt])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+async fn run(
+    mut command: Command,
+    kill_when: Option<std::path::PathBuf>,
+) -> Result<std::process::Output, String> {
+    tokio::task::spawn_blocking(move || {
+        acyclic_native_runtime::initialize_native_io_services().unwrap();
+        acyclic_native_runtime::ProcessTree::spawn(&mut command)
+            .unwrap()
+            .wait_with_output(
+                Duration::from_secs(6),
+                65_536,
+                None,
+                || match &kill_when {
+                    Some(effect) if effect.exists() => Err(std::io::Error::other("killed")),
+                    _ => Ok(()),
+                },
+                |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+                None,
+                None,
+            )
+            .map_err(|failure| {
+                format!(
+                    "{}\nstdout: {}\nstderr: {}",
+                    failure.error,
+                    String::from_utf8_lossy(&failure.stdout),
+                    String::from_utf8_lossy(&failure.stderr)
+                )
+            })
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let generated = Arc::new(AtomicUsize::new(0));
+    let responses = Arc::clone(&generated);
+    let app = Router::new()
+        .route(
+            "/count",
+            post(|| async { Json(json!({"input_tokens":64})) }),
+        )
+        .route(
+            "/responses",
+            post(move || {
+                let first = responses.fetch_add(1, Ordering::SeqCst) == 0;
+                async move {
+                    (
+                        [("content-type", "text/event-stream")],
+                        if first { tool_call() } else { ANSWER.into() },
+                    )
+                }
+            }),
+        );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let catalog = catalog(directory.path(), address);
+    let effect = workspace.join(EFFECT);
+    let release = directory.path().join("release");
+    let first = tokio::spawn(run(
+        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "start"),
+        Some(release.clone()),
+    ));
+    while !effect.exists() {
+        if first.is_finished() {
+            panic!("first process ended before its effect: {:?}", first.await);
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // A second process never treats the first one's live turn as orphaned:
+    // the workspace stream admits one owning process at a time.
+    let contender = run(
+        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "contend"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !contender.status.success() && !contender.stderr.is_empty(),
+        "contender opened a live workspace: {}",
+        String::from_utf8_lossy(&contender.stdout)
+    );
+    assert!(!first.is_finished(), "the live turn was disturbed");
+    assert_eq!(generated.load(Ordering::SeqCst), 1);
+    std::fs::write(&release, b"").unwrap();
+    let killed = first
+        .await
+        .unwrap()
+        .expect_err("the first process must be killed during its tool effect");
+    assert!(killed.starts_with("killed"), "{killed}");
+    // The next prompt settles the killed turn instead of rejecting admission.
+    let output = run(
+        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "next"),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "exit {:?}\n{}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let answers: Vec<Value> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .flat_map(|line| {
+            let change: Change = serde_json::from_str(line).unwrap();
+            change.file.into_iter().chain(change.files)
+        })
+        .filter(|file| {
+            matches!(
+                file.key,
+                FileKey::Session {
+                    file: TaskFile::ExecutionResult(_),
+                    ..
+                }
+            )
+        })
+        .map(|file| serde_json::from_slice(&file.bytes).unwrap())
+        .collect();
+    assert_eq!(answers.len(), 1);
+    assert_eq!(answers[0]["ok"]["text"], "fixture answer");
+    // The killed effect ran once and its model call was never reissued.
+    assert_eq!(std::fs::read_to_string(&effect).unwrap(), "x");
+    assert_eq!(generated.load(Ordering::SeqCst), 2);
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }
