@@ -472,8 +472,21 @@ fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error
     );
     assert_eq!(restored.input_speed(), original.input_speed());
     assert_eq!(restored.output_speed(), original.output_speed());
-    assert_eq!(fcntl_getfl(&observer)?, original_flags);
+    assert_ne!(
+        status(original_flags | OFlags::NONBLOCK),
+        status(original_flags)
+    );
+    assert_eq!(status(fcntl_getfl(&observer)?), status(original_flags));
     Ok(())
+}
+
+/// File status flags that F_SETFL controls and RawTty restores. The full
+/// F_GETFL word also carries kernel bookkeeping no process can set or clear:
+/// Darwin adds FWASWRITTEN (0x10000) after the first write to a description.
+#[cfg(unix)]
+fn status(flags: rustix::fs::OFlags) -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    flags & (OFlags::APPEND | OFlags::NONBLOCK | OFlags::ASYNC | OFlags::SYNC)
 }
 
 #[test]

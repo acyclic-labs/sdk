@@ -237,7 +237,11 @@ mod tests {
                 .local_modes
                 .contains(LocalModes::ICANON)
         );
-        assert_eq!(fcntl_getfl(&observer)?, flags | OFlags::NONBLOCK);
+        assert_ne!(status(flags | OFlags::NONBLOCK), status(flags));
+        assert_eq!(
+            status(fcntl_getfl(&observer)?),
+            status(flags | OFlags::NONBLOCK)
+        );
         drop(new);
         let restored = tcgetattr(&observer)?;
         assert_eq!(restored.input_modes, original.input_modes);
@@ -250,7 +254,14 @@ mod tests {
         );
         assert_eq!(restored.input_speed(), original.input_speed());
         assert_eq!(restored.output_speed(), original.output_speed());
-        assert_eq!(fcntl_getfl(&observer)?, flags);
+        assert_eq!(status(fcntl_getfl(&observer)?), status(flags));
         Ok(())
+    }
+    /// File status flags that F_SETFL controls and RawTty restores. The full
+    /// F_GETFL word also carries kernel bookkeeping no process can set or clear:
+    /// Darwin adds FWASWRITTEN (0x10000) after the first write to a description.
+    fn status(flags: rustix::fs::OFlags) -> rustix::fs::OFlags {
+        use rustix::fs::OFlags;
+        flags & (OFlags::APPEND | OFlags::NONBLOCK | OFlags::ASYNC | OFlags::SYNC)
     }
 }
