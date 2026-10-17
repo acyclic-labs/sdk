@@ -12,9 +12,13 @@ pub(super) fn append<'a>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
-            let result = journal
-                .append_validated(operation, None, key, event, Some(&local))
-                .await;
+            let result = async {
+                journal
+                    .append_validated(operation, None, key, event, Some(&local))
+                    .await?;
+                journal.publish_chunk(key, event, Some(&local)).await
+            }
+            .await;
             let retained = local.owned_bytes()?;
             drop(local.into_native_custody(retained)?);
             return result.map(|_| ());
@@ -23,8 +27,8 @@ pub(super) fn append<'a>(
         traced(span, async move {
             journal
                 .append_validated(operation, None, key, event, io)
-                .await
-                .map(|_| ())
+                .await?;
+            journal.publish_chunk(key, event, io).await.map(|_| ())
         })
         .await
     })
