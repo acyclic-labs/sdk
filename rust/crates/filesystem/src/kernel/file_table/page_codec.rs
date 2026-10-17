@@ -406,7 +406,11 @@ pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDe
         usize_to_u64(bytes.len()),
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
-    let record = decode_record(&mut decoder, &mut |_| Ok::<_, CanonicalDecodeError>(()))?;
+    let record = decode_record(
+        &mut decoder,
+        &mut |_| Ok::<_, CanonicalDecodeError>(()),
+        std::convert::identity,
+    )?;
     decoder.finish()?;
     Ok(record)
 }
@@ -467,7 +471,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
             })?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                records.push(decode_record(&mut decoder, observe)?);
+                decode_record(&mut decoder, observe, |record| records.push(record))?;
                 observe(ReadAllocationStep::Item)?;
             }
             decoder.finish()?;
@@ -531,12 +535,12 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
     }
 }
 
-// Avoid materializing a full record at an out-of-line return boundary.
-#[inline(always)]
-fn decode_record<E: From<CanonicalDecodeError>>(
+// Let the page caller insert the record without returning its full aggregate.
+fn decode_record<E: From<CanonicalDecodeError>, T>(
     decoder: &mut Decoder<'_>,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
-) -> Result<FileRecord, E> {
+    finish: impl FnOnce(FileRecord) -> T,
+) -> Result<T, E> {
     let file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
     let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
     let link_count = decoder.u64(observe)?;
@@ -594,7 +598,7 @@ fn decode_record<E: From<CanonicalDecodeError>>(
         payload,
     };
     record.validate().map_err(invariant)?;
-    Ok(record)
+    Ok(finish(record))
 }
 
 /// Computes one typed file-table page identity.
