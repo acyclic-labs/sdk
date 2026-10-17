@@ -252,19 +252,25 @@ fuzz_target!(|data: &[u8]| {
             // Result metadata is untrusted; it may describe status but must
             // never copy the result's output into the transcript a second time.
             file_views::tool(&mut documents, &owner.id, "bash", "");
-            file_views::put(
-                &mut documents,
-                FileKey::parse(&format!(
-                    ".tasks/{}/turns/0/tools/call/result.json",
-                    owner.id
-                ))
-                .unwrap(),
-                data.to_vec(),
-                None,
-            );
+            let result_key = FileKey::parse(&format!(
+                ".tasks/{}/turns/0/tools/call/result.json",
+                owner.id
+            ))
+            .unwrap();
+            file_views::put(&mut documents, result_key.clone(), data.to_vec(), None);
             renderer.update(&documents, &owner);
             assert_eq!(renderer.screen().transcript.len(), 1);
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                // Raw duplicate fields may be rejected by the typed parser even
+                // though Value keeps the last one. Check its canonical form
+                // separately; the arbitrary original was already rendered above.
+                file_views::put(
+                    &mut documents,
+                    result_key,
+                    serde_json::to_vec(&value).unwrap(),
+                    None,
+                );
+                renderer.update(&documents, &owner);
                 let title = renderer.screen().transcript[0].to_string();
                 let valid = value.is_object()
                     && (value["success"].is_null() || value["success"].is_boolean())
