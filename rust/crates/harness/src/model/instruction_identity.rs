@@ -65,8 +65,7 @@ pub enum ProjectInstruction {
         source: InstructionIdentity,
     },
     /// An instruction already stored at its canonical source location.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    Direct(FileRef),
+    Direct(#[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))] FileRef),
 }
 
 impl From<FileRef> for ProjectInstruction {
