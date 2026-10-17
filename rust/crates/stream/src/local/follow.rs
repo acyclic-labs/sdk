@@ -12,52 +12,53 @@ impl LocalStream {
             outcome = Empty,
             error.kind = Empty
         ));
-        span.scope(async {
-            let failed = self.inner.failed.subscribe();
-            let prepared = self
-                .accepted(self.inner.provider.prepare_follow(&path, from, anchor))
-                .await
-                .and_then(std::convert::identity);
-            let (changed, cursor) = prepared.inspect_err(|error| {
-                span.record("terminal", "error");
-                obs::failed(&span, error.code());
-            })?;
-            let state = FollowState {
-                provider: self.clone(),
-                path,
-                cursor,
-                anchor,
-                changed,
-                failed,
-                done: false,
-                span: span.clone(),
-            };
-            Ok(span
-                .scope(stream::try_unfold(state, |mut state| async move {
-                    let result = async {
-                        loop {
-                            if let Some(record) = state
-                                .provider
-                                .accepted(state.provider.inner.provider.next_checked_record(
-                                    &state.path,
-                                    &mut state.cursor,
-                                    &mut state.anchor,
-                                ))
-                                .await??
-                            {
-                                return Ok(record);
-                            }
-                            state.wait().await?;
-                        }
-                    }
+        let (failed, changed, cursor) = span
+            .scope(async {
+                let failed = self.inner.failed.subscribe();
+                let prepared = self
+                    .accepted(self.inner.provider.prepare_follow(&path, from, anchor))
+                    .await
+                    .and_then(std::convert::identity);
+                let (changed, cursor) = prepared.inspect_err(|error| {
+                    span.record("terminal", "error");
+                    obs::failed(&span, error.code());
+                })?;
+                Ok::<_, StreamError>((failed, changed, cursor))
+            })
+            .await?;
+        let state = Box::new(FollowState {
+            provider: self.clone(),
+            path,
+            cursor,
+            anchor,
+            changed,
+            failed,
+            done: false,
+            span: span.clone(),
+        });
+        Ok(span
+            .scope(stream::try_unfold(state, |mut state| async move {
+                loop {
+                    #[cfg(acyclic_loom)]
+                    let retain_pending = state.provider.inner.retain_pending_read;
+                    let (next, record) = crate::snapshot::read(
+                        state,
+                        #[cfg(acyclic_loom)]
+                        retain_pending,
+                    )
                     .await;
-                    if let Err(error) = &result {
-                        state.failed(error);
+                    state = next;
+                    let result = match record {
+                        Ok(Some(record)) => return Ok(Some((record, state))),
+                        Ok(None) => state.wait().await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        state.failed(&error);
+                        return Err(error);
                     }
-                    Ok(Some((result?, state)))
-                }))
-                .boxed())
-        })
-        .await
+                }
+            }))
+            .boxed())
     }
 }

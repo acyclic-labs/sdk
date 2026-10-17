@@ -1,6 +1,8 @@
 include!("cases_0.rs");
 
 mod children;
+#[cfg(not(acyclic_loom))]
+mod parking;
 
 mod path_work;
 

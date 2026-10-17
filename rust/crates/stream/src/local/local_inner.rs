@@ -20,6 +20,8 @@ struct LocalInner {
     // Model-only control: omit the accepted-path wait registration.
     #[cfg(acyclic_loom)]
     omit_follow_wake: bool,
+    #[cfg(acyclic_loom)]
+    retain_pending_read: bool,
     // Lock order: publication -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
     #[cfg(feature = "test-support")]

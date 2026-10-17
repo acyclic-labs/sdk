@@ -24,6 +24,8 @@ use futures::{StreamExt as _, stream};
 use prost::Message;
 use sha2::{Digest, Sha256};
 
+#[cfg(all(acyclic_loom, feature = "local"))]
+pub(crate) mod parking_model;
 #[cfg(feature = "local")]
 mod snapshot;
 
