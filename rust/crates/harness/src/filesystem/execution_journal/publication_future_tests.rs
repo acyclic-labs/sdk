@@ -414,8 +414,17 @@ fn journal_accounting_admits_the_original_frames() {
                             })
                         },
                     );
-                    assert_eq!(before.0.2, 0, "factory retained custody after drop");
-                    assert_eq!(before.0.5, 0, "native custody survived IO drop");
+                    let held = before.0.as_ref().unwrap();
+                    assert_eq!(held.2, 0, "factory retained custody after drop");
+                    let ledger = if native {
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                    } else {
+                        0
+                    };
+                    assert_eq!(
+                        held.5, ledger,
+                        "only the original ledger may survive IO drop"
+                    );
                     assert_eq!(before, after, "method {mode}, native {native}");
                 }
             }
@@ -438,6 +447,7 @@ fn journal_accounting_admits_the_original_frames() {
                     })
                 },
             );
+            assert_eq!(before.0.as_ref().unwrap().0.is_ok(), !cancelled);
             assert_eq!(before, after, "polled load, native {native}");
         }
     }
