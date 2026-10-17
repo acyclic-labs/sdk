@@ -124,10 +124,22 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     if let Some(observation) = tool_files {
+        let dispatches = provider.dispatches();
+        let execution = dispatches
+            .first()
+            .ok_or("missing model dispatch")?
+            .operation_id;
+        if dispatches.len() != steps
+            || dispatches.iter().enumerate().any(|(step, dispatch)| {
+                dispatch.operation_id != execution || dispatch.step as usize != step
+            })
+        {
+            return Err("local model execution or step binding differs".into());
+        }
         super::local_tool_files::verify(
             &harness,
             task_id,
-            operation,
+            execution,
             observation,
             &scripted_calls,
             case.expect
