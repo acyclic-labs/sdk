@@ -5,12 +5,12 @@
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 use super::ClientInterests;
-use crate::{Error, Result};
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 use crate::task_volume::{ChangeStream, FileKey, Query, TaskVolume};
+use crate::{Error, Result};
 use acyclic_stream::StreamPath;
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),

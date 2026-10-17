@@ -20,13 +20,13 @@ mod segment;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
-pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub(crate) use follow::query_id;
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) use follow::record_changes;
+pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{
