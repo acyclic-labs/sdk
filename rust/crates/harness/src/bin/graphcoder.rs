@@ -138,7 +138,6 @@ fn input_lines()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness::Error;
     let Some((selection, headless)) = options::parse()? else {
         return Ok(());
     };
@@ -154,7 +153,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(feature = "filesystem-local"))]
             {
                 let _ = path;
-                return Err(Error::Unsupported(
+                return Err(acyclic_harness::Error::Unsupported(
                     "native session requires filesystem-local feature".into(),
                 )
                 .into());
@@ -183,7 +182,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(not(all(feature = "filesystem-local", feature = "native-execution")))]
             {
                 let _ = path;
-                return Err(Error::Unsupported(
+                return Err(acyclic_harness::Error::Unsupported(
                     "native scenario requires filesystem-local,native-execution features".into(),
                 )
                 .into());

@@ -1,3 +1,4 @@
+//! File-query projection, admission and replay invariants.
 use acyclic_fs::{
     AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET,
 };

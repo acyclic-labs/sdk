@@ -279,28 +279,14 @@ pub(super) struct Fixture {
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 impl Fixture {
-    pub(super) async fn open<P: StreamProvider>(
-        provider: Arc<P>,
-        node: &str,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::configured(provider, node, false, true).await
-    }
-    pub(super) async fn configured<P: StreamProvider>(
-        provider: Arc<P>,
-        node: &str,
-        withhold_welcome: bool,
-        confirm_checked: bool,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::with_options(
-            provider,
-            node,
-            Options {
-                withhold_welcome,
-                confirm_checked,
-                tls: false,
-            },
-        )
-        .await
+    pub(super) fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
+        match &self.tls_client {
+            Some(client) => Ok(client.with_credential("fixture")?),
+            None => Ok(grpc::Client::from_channel(
+                self.channel.clone(),
+                "Bearer fixture".parse()?,
+            )),
+        }
     }
     pub(super) async fn with_options<P: StreamProvider>(
         provider: Arc<P>,

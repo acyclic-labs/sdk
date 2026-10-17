@@ -9,16 +9,6 @@ mod fixture {
     ));
 }
 use fixture::{Counts, Fixture, Options, Traffic};
-impl Fixture {
-    fn client(&self) -> Result<acyclic_stream::grpc::Client> {
-        Ok(self
-            .tls_client
-            .as_ref()
-            .ok_or("TLS fixture required")?
-            .with_credential("fixture")?)
-    }
-}
-
 #[tokio::test]
 async fn publication_observes_share_one_streams_session_and_resume_at_the_snapshot_cut() -> Result {
     let provider = Arc::new(MemoryStream::default());
