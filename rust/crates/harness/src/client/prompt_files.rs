@@ -14,6 +14,7 @@ pub struct PromptFiles {
     draft: Option<FileValue>,
     history: Option<FileValue>,
     keymap: Option<FileValue>,
+    layout: Option<FileValue>,
     settings: Option<FileValue>,
 }
 
@@ -64,10 +65,36 @@ impl PromptFiles {
         let bindings = files.state_file(CommandFileRoot::Config, "keymap.json")?;
         let settings_file = files.state_file(CommandFileRoot::Config, "settings.json")?;
         let settings_changed = self.settings.as_ref() != settings_file;
+        let layout_file = files.state_file(CommandFileRoot::Session, "layout.json")?;
+        let layout_changed = self.layout.as_ref() != layout_file;
+        let layout = files
+            .state(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_default();
+        let search = layout["open_view"] == "find" && layout["view_input"] == "find";
+        let mode_changed = input.transcript_search() != search;
+        let query = if search {
+            layout
+                .get("search_query")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("search query must be text".into()))
+                })
+                .transpose()?
+                .unwrap_or("")
+        } else {
+            ""
+        };
         let draft_changed = self.draft.as_ref() != draft;
         let history_changed = self.history.as_ref() != entries;
         let keymap_changed = self.keymap.as_ref() != bindings;
-        if !draft_changed && !history_changed && !keymap_changed && !settings_changed {
+        if !draft_changed
+            && !history_changed
+            && !keymap_changed
+            && !layout_changed
+            && !mode_changed
+            && !settings_changed
+        {
             return Ok(());
         }
         // Decode in isolation; malformed bytes must leave all caches and input
@@ -100,8 +127,9 @@ impl PromptFiles {
             .transpose()?
             .unwrap_or(false);
         if draft_changed {
-            input.editor.set_text(decoded.editor.text(), 0);
+            input.set_chat_draft(decoded.editor.text());
         }
+        input.set_transcript_search(search.then_some(query));
         if history_changed {
             input.replace_history(history(entries)?);
         }
@@ -117,6 +145,7 @@ impl PromptFiles {
         self.keymap = bindings.cloned();
         self.draft = draft.cloned();
         self.history = entries.cloned();
+        self.layout = layout_file.cloned();
         Ok(())
     }
 
@@ -129,6 +158,22 @@ impl PromptFiles {
         files: &mut CommandSession<P>,
         input: &mut PromptInput,
     ) -> Result<()> {
+        if input.transcript_search() {
+            let mut layout = files
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or_default();
+            if layout["open_view"] == "find"
+                && layout["view_input"] == "find"
+                && layout["search_query"].as_str() != Some(input.editor.text())
+            {
+                layout["search_query"] = serde_json::json!(input.editor.text());
+                layout["search_index"] = serde_json::json!(0);
+                files
+                    .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+                    .await?;
+            }
+            return Ok(());
+        }
         let before = history(self.history.as_ref())?;
         let appended = input
             .history()

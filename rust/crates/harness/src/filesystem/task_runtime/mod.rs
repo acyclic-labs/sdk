@@ -286,7 +286,6 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TaskContext {
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     pub(crate) fn ordinary_journal_owner<P: StreamProvider + 'static>(
         &self,
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {

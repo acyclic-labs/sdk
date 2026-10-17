@@ -101,7 +101,7 @@ pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
 #[cfg(all(feature = "local", feature = "test-support"))]
-pub use local::PersistenceCut;
+pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

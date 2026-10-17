@@ -42,6 +42,10 @@ mod prompt_input;
 #[cfg(feature = "tui")]
 mod screen;
 #[cfg(feature = "tui")]
+mod transcript_search;
+#[cfg(feature = "tui")]
+pub use transcript_search::{TranscriptSearch, transcript_matches};
+#[cfg(feature = "tui")]
 mod thinking;
 #[cfg(feature = "tui")]
 pub use thinking::Thinking;

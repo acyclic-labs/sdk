@@ -206,13 +206,9 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
             return goal;
         }
     };
-    let key = FileKey::Task { task, file };
-    FileValue {
-        key,
-        channel,
-        publication: None,
-        bytes: vec![index; size].into(),
-    }
+    let mut value = FileValue::new(FileKey::Task { task, file }, vec![index; size]);
+    value.channel = channel;
+    value
 }
 fn unclassified(index: usize, size: usize) -> FileValue {
     task(TaskFile::Request(component(format!("r{index:05}"))), size)

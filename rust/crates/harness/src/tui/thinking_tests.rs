@@ -71,10 +71,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
             .map(|cell| cell.symbol())
             .collect::<String>()
     };
-    assert!(
-        !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
-            .contains("Thinking…")
-    );
+    assert!(!text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0)).contains("Thinking…"));
     files.submit("hello", &NoFiles).await.unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
     let layout = files
@@ -96,9 +93,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
     let start = first
         .content
         .windows(9)
-        .position(|cells| {
-            cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Thinking…"
-        })
+        .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Thinking…")
         .unwrap();
     assert_ne!(first.content[start].style(), later.content[start].style());
     assert_ne!(
@@ -151,10 +146,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
         .await
         .unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
-    assert!(
-        !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
-            .contains("Thinking…")
-    );
+    assert!(!text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0)).contains("Thinking…"));
 }
 
 #[test]
