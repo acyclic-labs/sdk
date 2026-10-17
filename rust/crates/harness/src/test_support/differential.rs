@@ -44,14 +44,20 @@ pub(crate) fn accounted<R>(
     maximum: u64,
     cancelled: bool,
     run: impl FnOnce(&PreparationIo) -> R,
-) -> (R, WorkCounters, u64, WorkCounters, u64, u64) {
+) -> Result<(R, WorkCounters, u64, WorkCounters, u64, u64), (String, WorkCounters)> {
     let cancellation = CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(1_000_000, maximum);
-    let work = NativeMaterializationWork::new(budget, &cancellation).unwrap();
-    let io = if native {
-        PreparationIo::from_native_work(&work)
+    let work = if native {
+        Some(
+            NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, receipt)| (cause.to_string(), *receipt))?,
+        )
     } else {
-        PreparationIo::from_budget(budget, &cancellation)
+        None
+    };
+    let io = match &work {
+        Some(work) => PreparationIo::from_native_work(work),
+        None => PreparationIo::from_budget(budget, &cancellation),
     }
     .unwrap();
     if cancelled {
@@ -60,14 +66,18 @@ pub(crate) fn accounted<R>(
     let result = run(&io);
     let receipt = io.receipt();
     let owned = io.owned_bytes().unwrap();
-    let held = work.live_allocation_bytes();
+    let held = work
+        .as_ref()
+        .map_or(0, NativeMaterializationWork::live_allocation_bytes);
     drop(io);
-    (
+    Ok((
         result,
         receipt,
         owned,
-        work.receipt(),
+        work.as_ref()
+            .map_or(WorkCounters::default(), NativeMaterializationWork::receipt),
         held,
-        work.live_allocation_bytes(),
-    )
+        work.as_ref()
+            .map_or(0, NativeMaterializationWork::live_allocation_bytes),
+    ))
 }
