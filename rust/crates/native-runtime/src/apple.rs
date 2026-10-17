@@ -756,20 +756,9 @@ fn drain(
     Ok(())
 }
 
-pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Result<()> {
-    // SAFETY: both operations act only on the live descriptor.
-    let result = unsafe {
-        match durability {
-            crate::Durability::Full => libc::fsync(file.as_raw_fd()),
-            crate::Durability::Barrier => libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC),
-        }
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
+#[path = "apple_flush.rs"]
+mod flush;
+pub(super) use flush::sync_once;
 
 #[cfg(test)]
 #[path = "apple_faults.rs"]
