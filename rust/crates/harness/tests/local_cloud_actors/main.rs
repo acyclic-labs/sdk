@@ -38,6 +38,70 @@ struct Endpoints {
     streams: Remote,
 }
 
+fn endpoints() -> TestResult<Endpoints> {
+    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("local-cloud endpoints required")?;
+    Ok(serde_json::from_slice(&std::fs::read(file)?)?)
+}
+
+fn subscriptions(
+    actor: &wire::ActorObservation,
+    expected: &[wire::SubscriptionObservation],
+) -> TestResult {
+    if actor.subscriptions != expected {
+        return Err(format!(
+            "subscriptions {:?}, expected {expected:?}",
+            actor.subscriptions
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn subscription(cursor: u64) -> wire::SubscriptionObservation {
+    wire::SubscriptionObservation {
+        subscription_id: "events".into(),
+        stream_path: EVENTS.into(),
+        state: wire::SubscriptionState::Active as i32,
+        delivered_cursor: cursor,
+        completed_cursor: cursor,
+        recoverable_cursor: cursor,
+        ..Default::default()
+    }
+}
+
+fn add_subscription(key: &str) -> wire::AddSubscriptionRequest {
+    wire::AddSubscriptionRequest {
+        actor_id: ACTOR.into(),
+        idempotency_key: key.into(),
+        subscription: Some(wire::SubscriptionSpec {
+            subscription_id: "events".into(),
+            stream_path: EVENTS.into(),
+            start: Some(wire::SubscriptionStart {
+                start: Some(wire::subscription_start::Start::CurrentHead(true)),
+            }),
+            placement_anchor: false,
+        }),
+    }
+}
+
+async fn append_events(
+    streams: &acyclic_stream::grpc::Client,
+    records: Vec<acyclic_stream::OwnedBytes>,
+) -> TestResult<acyclic_stream::AppendReceipt> {
+    match streams
+        .append(AppendRequest {
+            path: StreamPath::new(EVENTS)?,
+            records,
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?
+    {
+        AppendOutcome::Committed(receipt) => Ok(receipt),
+        other => Err(format!("events append did not commit: {other:?}").into()),
+    }
+}
+
 fn create() -> wire::CreateActorRequest {
     wire::CreateActorRequest {
         code_sha256: digest(CODE),
@@ -84,13 +148,23 @@ fn state_with_version(
     counter: i32,
     version: u8,
 ) -> TestResult {
+    state_with_events(response, counter, version, &[])
+}
+
+fn state_with_events(
+    response: &wire::InvokeActorResponse,
+    counter: i32,
+    version: u8,
+    events: &[String],
+) -> TestResult {
     let migration = if version == 2 {
         ",\"migratedFrom\":1"
     } else {
         ""
     };
+    let events = serde_json::to_string(events)?;
     let expected =
-        format!("{{\"counter\":{counter},\"version\":{version},\"events\":[]{migration}}}");
+        format!("{{\"counter\":{counter},\"version\":{version},\"events\":{events}{migration}}}");
     if response.status != 200 || response.body != expected.as_bytes() {
         return Err(format!("unexpected invocation: {response:?}, expected {expected}").into());
     }
@@ -107,7 +181,15 @@ async fn invoke_version(
     counter: i32,
     version: u8,
 ) -> TestResult {
-    let response = client
+    let response = invoke_response(client, add).await?;
+    state_with_version(&response, counter, version)
+}
+
+async fn invoke_response(
+    client: &mut grpc::Client,
+    add: Option<i32>,
+) -> TestResult<wire::InvokeActorResponse> {
+    Ok(client
         .invoke_actor(wire::InvokeActorRequest {
             actor_id: ACTOR.into(),
             method: if add.is_some() { "POST" } else { "GET" }.into(),
@@ -121,8 +203,7 @@ async fn invoke_version(
             }],
         })
         .await?
-        .into_inner();
-    state_with_version(&response, counter, version)
+        .into_inner())
 }
 
 #[test]
@@ -151,6 +232,37 @@ fn actor_observation_rejects_other_identities_and_revisions() -> TestResult {
 
 proptest::proptest! {
     #[test]
+    fn subscription_oracle_rejects_changed_identity_path_cursors_and_order(cursor in proptest::prelude::any::<u64>()) {
+        let mut expected = vec![subscription(cursor), subscription(cursor)];
+        expected[1].subscription_id = "other".into();
+        let valid = wire::ActorObservation {
+            subscriptions: expected.clone(),
+            ..Default::default()
+        };
+        assert!(subscriptions(&valid, &expected).is_ok());
+        for field in 0..10 {
+            let mut changed = valid.clone();
+            let sub = &mut changed.subscriptions[0];
+            match field {
+                0 => sub.subscription_id.push_str("-changed"),
+                1 => sub.stream_path.push_str("/changed"),
+                2 => sub.delivered_cursor = cursor.wrapping_add(1),
+                3 => sub.completed_cursor = cursor.wrapping_add(1),
+                4 => sub.recoverable_cursor = cursor.wrapping_add(1),
+                5 => sub.state = wire::SubscriptionState::Paused as i32,
+                6 => sub.placement_anchor = true,
+                7 => sub.retry_count = 1,
+                8 => sub.failure_code = "customer_exception".into(),
+                _ => sub.failed_cursor = Some(cursor),
+            }
+            assert!(subscriptions(&changed, &expected).is_err());
+        }
+        let mut reordered = valid;
+        reordered.subscriptions.swap(0, 1);
+        assert!(subscriptions(&reordered, &expected).is_err());
+    }
+
+    #[test]
     fn invocation_oracle_checks_exact_state_and_status(counter in -1000i32..1000) {
         let mut response = wire::InvokeActorResponse {
             status: 200,
@@ -178,11 +290,38 @@ proptest::proptest! {
     }
 }
 
-#[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full"]
-async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
-    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("local-cloud endpoints required")?;
-    let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
+proptest::proptest! {
+#[test]
+fn delivery_oracle_rejects_omission_duplication_and_reordering(chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..16)) {
+    let tag: String = chars.into_iter().collect();
+    let events = vec![format!("v1:1:{tag}"), format!("v1:2:{tag}")];
+    for (observed, accepted) in [
+        (events.clone(), true),
+        (vec![events[0].clone()], false),
+        (
+            vec![events[0].clone(), events[0].clone(), events[1].clone()],
+            false,
+        ),
+        (vec![events[1].clone(), events[0].clone()], false),
+    ] {
+        let response = wire::InvokeActorResponse {
+            status: 200,
+            body: format!(
+                "{{\"counter\":0,\"version\":1,\"events\":{}}}",
+                serde_json::to_string(&observed).expect("serializable event strings")
+            )
+            .into_bytes(),
+            ..Default::default()
+        };
+        assert_eq!(
+            state_with_events(&response, 0, 1, &events).is_ok(),
+            accepted
+        );
+    }
+}
+}
+
+async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
     let ca = std::fs::read(&endpoints.objects.ca_file)?;
     let objects = GrpcObjects::connect(
         &endpoints.objects.endpoint,
@@ -217,12 +356,20 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
     }
 
     let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
-    let mut actors = grpc::connect(
+    let actors = grpc::connect(
         &endpoints.actors.remote.endpoint,
         &endpoints.actors.remote.bearer,
         Some(&actor_ca),
     )
     .await?;
+    Ok(actors)
+}
+
+#[tokio::test]
+#[ignore = "needs node scripts/local-cloud.mjs --topology full"]
+async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
+    let endpoints = endpoints()?;
+    let mut actors = published_actor(&endpoints).await?;
     let created = observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
     assert_eq!(created.state, wire::ActorState::Paused as i32);
     assert!(created.subscriptions.is_empty());
@@ -282,32 +429,15 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         ca,
     )
     .await?;
-    let appended = streams
-        .append(AppendRequest {
-            path: StreamPath::new(EVENTS)?,
-            records: vec![acyclic_stream::OwnedBytes::from_static(
-                b"before-subscription",
-            )],
-            if_tail: None,
-            idempotency_key: None,
-        })
-        .await?;
-    let AppendOutcome::Committed(receipt) = appended else {
-        return Err("the pre-subscription record was not committed".into());
-    };
-    let start = receipt.end;
-    let add = wire::AddSubscriptionRequest {
-        actor_id: ACTOR.into(),
-        idempotency_key: "sdk-add".into(),
-        subscription: Some(wire::SubscriptionSpec {
-            subscription_id: "events".into(),
-            stream_path: EVENTS.into(),
-            start: Some(wire::SubscriptionStart {
-                start: Some(wire::subscription_start::Start::CurrentHead(true)),
-            }),
-            placement_anchor: false,
-        }),
-    };
+    let start = append_events(
+        &streams,
+        vec![acyclic_stream::OwnedBytes::from_static(
+            b"before-subscription",
+        )],
+    )
+    .await?
+    .end;
+    let add = add_subscription("sdk-add");
     let added = observation(
         actors
             .add_subscription(add.clone())
@@ -316,16 +446,8 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
             .actor,
         2,
     )?;
-    assert_eq!(added.subscriptions.len(), 1);
-    assert_eq!(added.subscriptions[0].subscription_id, "events");
-    assert_eq!(added.subscriptions[0].stream_path, EVENTS);
-    assert_eq!(
-        added.subscriptions[0].state,
-        wire::SubscriptionState::Active as i32
-    );
-    assert_eq!(added.subscriptions[0].delivered_cursor, start);
-    assert_eq!(added.subscriptions[0].completed_cursor, start);
-    assert_eq!(added.subscriptions[0].recoverable_cursor, start);
+    let expected_subscriptions = [subscription(start)];
+    subscriptions(&added, &expected_subscriptions)?;
     assert_eq!(
         observation(
             actors
@@ -336,22 +458,6 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
             2
         )?,
         added
-    );
-    let resumed = observation(
-        actors
-            .resume_subscription(wire::ResumeSubscriptionRequest {
-                actor_id: ACTOR.into(),
-                subscription_id: "events".into(),
-                idempotency_key: "sdk-resume".into(),
-            })
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
-    assert_eq!(
-        resumed.subscriptions[0].state,
-        wire::SubscriptionState::Active as i32
     );
     let removed = observation(
         actors
@@ -365,10 +471,12 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
             .actor,
         3,
     )?;
-    assert!(removed.subscriptions.is_empty());
+    subscriptions(&removed, &[])?;
     let mut readd = add;
     readd.idempotency_key = "sdk-readd".into();
-    observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
+    let readded = observation(actors.add_subscription(readd).await?.into_inner().actor, 4)?;
+    subscriptions(&readded, &expected_subscriptions)?;
+    let actor_ca = std::fs::read(&endpoints.actors.remote.ca_file)?;
     actors = grpc::connect(
         &endpoints.actors.remote.endpoint,
         &endpoints.actors.migration_bearer,
@@ -392,7 +500,7 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         5,
         CODE_V2,
     )?;
-    assert_eq!(updated.subscriptions.len(), 1);
+    subscriptions(&updated, &expected_subscriptions)?;
     assert_eq!(
         observation_with_code(
             actors.update_actor(update).await?.into_inner().actor,
@@ -420,7 +528,139 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         Some(wire::ErrorCode::ActorNotFound as i32)
     );
     println!(
-        "local cloud: all nine SDK Actors operations passed, exact counter state and retries checked"
+        "local cloud: supported Actor lifecycle and exact v2 migration passed; delivery and paused recovery are separate ignored Cloud request 11 checks"
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs Cloud request 11: delivery signals"]
+async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
+    let endpoints = endpoints()?;
+    let mut actors = published_actor(&endpoints).await?;
+    observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
+    invoke(&mut actors, None, 0).await?;
+    let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+        &endpoints.streams.endpoint,
+        &endpoints.streams.bearer,
+        std::fs::read(&endpoints.streams.ca_file)?,
+    )
+    .await?;
+    let start = append_events(
+        &streams,
+        vec![acyclic_stream::OwnedBytes::from_static(
+            b"before-subscription",
+        )],
+    )
+    .await?
+    .end;
+    let added = observation(
+        actors
+            .add_subscription(add_subscription("sdk-delivery-add"))
+            .await?
+            .into_inner()
+            .actor,
+        2,
+    )?;
+    subscriptions(&added, &[subscription(start)])?;
+    let receipt = append_events(
+        &streams,
+        vec![
+            acyclic_stream::OwnedBytes::from_static(b"event-a"),
+            acyclic_stream::OwnedBytes::from_static(b"event-b"),
+        ],
+    )
+    .await?;
+    assert_eq!(receipt.start, start);
+    assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
+    // Request 11 must supply the pushed completion boundary before these
+    // snapshots can be enabled. They are assertions, never readiness polling.
+    let delivered = observation(
+        actors
+            .inspect_actor(wire::InspectActorRequest {
+                actor_id: ACTOR.into(),
+            })
+            .await?
+            .into_inner()
+            .actor,
+        2,
+    )?;
+    let mut expected = subscription(receipt.end);
+    expected.recoverable_cursor = start;
+    subscriptions(&delivered, &[expected])?;
+    let events = vec![
+        format!("v1:{}:event-a", receipt.start),
+        format!("v1:{}:event-b", receipt.end - 1),
+    ];
+    state_with_events(&invoke_response(&mut actors, None).await?, 0, 1, &events)?;
+    let saved = observation(
+        actors
+            .checkpoint_actor(wire::CheckpointActorRequest {
+                actor_id: ACTOR.into(),
+                idempotency_key: "sdk-delivery-checkpoint".into(),
+            })
+            .await?
+            .into_inner()
+            .actor,
+        2,
+    )?;
+    subscriptions(&saved, &[subscription(receipt.end)])?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs Cloud request 11: retired Pause / paused recovery"]
+async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
+    // Cloud must supply a genuinely failed, paused fixture subscription;
+    // its retired Pause mutation cannot currently construct that precondition.
+    let endpoints = endpoints()?;
+    let remote = &endpoints.actors.remote;
+    let mut actors = grpc::connect(
+        &remote.endpoint,
+        &remote.bearer,
+        Some(&std::fs::read(&remote.ca_file)?),
+    )
+    .await?;
+    let before = actors
+        .inspect_actor(wire::InspectActorRequest {
+            actor_id: ACTOR.into(),
+        })
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("paused fixture actor missing")?;
+    assert_eq!(before.actor_id, ACTOR);
+    assert_eq!(before.subscriptions.len(), 1);
+    let paused = &before.subscriptions[0];
+    assert_eq!(paused.subscription_id, "events");
+    assert_eq!(paused.stream_path, EVENTS);
+    assert_eq!(paused.state, wire::SubscriptionState::Paused as i32);
+    assert_eq!(paused.failed_cursor, Some(paused.completed_cursor));
+    assert!(!paused.failure_code.is_empty());
+    let mut expected = before.subscriptions.clone();
+    expected[0].state = wire::SubscriptionState::Active as i32;
+    expected[0].failed_cursor = None;
+    expected[0].failure_code.clear();
+    expected[0].retry_count = 0;
+    let request = wire::ResumeSubscriptionRequest {
+        actor_id: ACTOR.into(),
+        subscription_id: "events".into(),
+        idempotency_key: "sdk-paused-resume".into(),
+    };
+    let resumed = actors
+        .resume_subscription(request.clone())
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("resume omitted actor")?;
+    subscriptions(&resumed, &expected)?;
+    let retried = actors
+        .resume_subscription(request)
+        .await?
+        .into_inner()
+        .actor
+        .ok_or("resume retry omitted actor")?;
+    assert_eq!(retried, resumed);
+    subscriptions(&retried, &expected)?;
     Ok(())
 }
