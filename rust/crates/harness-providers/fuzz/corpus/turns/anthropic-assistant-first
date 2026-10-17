@@ -1,0 +1,1 @@
+0[{"role":"assistant","content":[{"type":"text","text":"a"}]},{"role":"user","content":[{"type":"text","text":"q"}]},{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"f","input":{}}]}]

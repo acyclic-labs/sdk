@@ -6,6 +6,8 @@ pub(super) fn open_windows_root_name(
     access: fs::FILE_ACCESS_RIGHTS,
 ) -> io::Result<File> {
     // SAFETY: callers validate the terminated name; success transfers a fresh handle.
+    #[cfg(test)]
+    super::stat_probe::event("CreateFileW");
     let handle = unsafe {
         fs::CreateFileW(
             windows::core::PCWSTR(name.as_ptr()),
@@ -58,6 +60,8 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
         let query = |output: Option<&mut [u16]>, work: &mut W| {
             work.attempt_io(ITEM, || {
                 // SAFETY: terminated input and any initialized output remain live.
+                #[cfg(test)]
+                super::stat_probe::event("GetFullPathNameW");
                 let count = unsafe {
                     fs::GetFullPathNameW(windows::core::PCWSTR(input.as_ptr()), output, None)
                 };
@@ -124,6 +128,8 @@ pub(super) fn windows_file_information(
 ) -> io::Result<fs::BY_HANDLE_FILE_INFORMATION> {
     let mut information = fs::BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: held handle and complete output remain live for this query.
+    #[cfg(test)]
+    super::stat_probe::event("GetFileInformationByHandle");
     unsafe { fs::GetFileInformationByHandle(win::HANDLE(file.as_raw_handle()), &mut information) }
         .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
     Ok(information)

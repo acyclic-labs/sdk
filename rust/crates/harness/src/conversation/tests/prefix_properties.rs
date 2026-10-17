@@ -444,3 +444,6 @@ fn negative_control_repairs_a_duplicate_append() {
         );
     }
 }
+
+#[path = "retirement_properties.rs"]
+mod retirement;

@@ -111,14 +111,18 @@ impl HostStat {
         }
     }
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
+        self.birth_time()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
+    }
+    /// The host's birth time, or `None` when the observation does not expose it.
+    pub fn birth_time(&self) -> Option<cap_std::time::SystemTime> {
         #[cfg(unix)]
         {
             self.created
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
         }
         #[cfg(windows)]
         {
-            Ok(windows_time(self.raw.CreationTime.cast_unsigned()))
+            Some(windows_time(self.raw.CreationTime.cast_unsigned()))
         }
     }
     pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {

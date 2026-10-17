@@ -107,6 +107,8 @@ thread_local! {
 }
 
 pub(super) fn after_ranges(empty: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    crate::native_host::stat_probe::after_ranges();
     #[cfg(windows)]
     super::windows_dense_tests::after_ranges();
     PROBE.with_borrow_mut(|probe| {

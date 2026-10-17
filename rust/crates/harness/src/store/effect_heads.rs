@@ -2,7 +2,7 @@
 use super::history::canonical_bytes_with_work as encode;
 use operations::publication_path as path;
 
-use super::{checkpoints, history::HistoryIo, operations};
+use super::{checkpoints, effect_certificate, history::HistoryIo, operations};
 use crate::wire_codec::CodecQuota;
 use crate::{
     EffectId, Error, Result,
@@ -13,9 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 type Digest = [u8; 32];
-const HEADS: &str = "harness/v2/effect-heads/";
+const HEADS: &str = "harness/v3/effect-heads/";
 const MAX_NODE_BYTES: u64 = 1_024;
-const MAX_CERTIFICATE_BYTES: u64 = 4_096;
 const PUBLICATION_READ_BYTES: u64 = 4 * acyclic_stream::MAX_COMMAND_BYTES as u64;
 
 #[derive(Serialize, Deserialize)]
@@ -68,14 +67,17 @@ impl<P: StreamProvider> Tree<'_, P> {
             .ok_or_else(|| Error::Unsupported("complete effect cut is missing".into()))?;
         let mut used = 0;
         charge(&mut used, record.value.len() as u64, maximum)?;
-        let certificate: (Option<Digest>, Digest) = operations::decode_index(
-            &record.value,
-            MAX_CERTIFICATE_BYTES,
-            "tuple array",
-            |_, _| Ok(0),
-            |_| (0, 0),
-            quota.work(),
-        )?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                items: effect_certificate::LENGTH as u64,
+            })?;
+        }
+        let certificate = effect_certificate::decode(&record.value)
+            .ok_or_else(|| Error::Invalid("effect cut certificate is invalid".into()))?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.copy_bytes(32 * u64::from(certificate.0.is_some()))?;
+        }
+        let root = certificate.0.copied();
         let source = path(authority, "harness/v2/", None, quota.work())?;
         let canonical =
             operations::publication_record(self.client, source, revision - 1, &mut quota)
@@ -88,17 +90,17 @@ impl<P: StreamProvider> Tree<'_, P> {
         if canonical.commit_id != record.commit_id {
             return Err(Error::Storage("effect cut atomic anchor differs".into()));
         }
-        if certificate.1
+        if *certificate.1
             != verifier.effect_history_root_proof_with_work(
                 revision,
                 *blake3::hash(&canonical.value).as_bytes(),
-                certificate.0,
+                root,
                 quota.work(),
             )?
         {
             return Err(Error::Unauthorized("effect cut proof differs".into()));
         }
-        Ok((certificate.0, used))
+        Ok((root, used))
     }
     async fn load_node(
         &self,
@@ -389,9 +391,36 @@ fn add_head_indexes(
             quota.work(),
         )?;
         let stream = path(authority, HEADS, Some(&"cuts"), quota.work())?;
-        let encoded = encode(&(root, proof), MAX_CERTIFICATE_BYTES, quota.work());
+        let encoded = encode_certificate(root.as_ref(), &proof, quota.work());
         let encoded = encoded
             .and_then(|bytes| operations::owned_bytes_from_retained_vec(bytes, quota.work()));
         publication.add_index(stream, previous, encoded, quota.work())
     })()
+}
+
+fn encode_certificate(
+    root: Option<&Digest>,
+    proof: &Digest,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Vec<u8>> {
+    let mut quota = CodecQuota::new(work, 0)?;
+    let mut bytes = Vec::new();
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.admit_encoding(effect_certificate::LENGTH as u64)?;
+        io.admit_copy(effect_certificate::LENGTH as u64)?;
+        super::history::reserve(&mut bytes, effect_certificate::LENGTH, io)?;
+    } else {
+        bytes.reserve_exact(effect_certificate::LENGTH);
+    }
+    quota.adopt(bytes.capacity() as u64)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.encoded_bytes(effect_certificate::LENGTH as u64)?;
+        io.copy_bytes(effect_certificate::LENGTH as u64)?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 3 })?;
+    }
+    for part in effect_certificate::parts(root, proof) {
+        bytes.extend_from_slice(part);
+    }
+    quota.transfer();
+    Ok(bytes)
 }
