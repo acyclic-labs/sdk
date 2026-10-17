@@ -1,0 +1,18 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "compact",
+        "instructions": ""
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "kind": "compact",
+        "instructions": ""
+      }
+    }
+  },
+  "prompt": "/compact"
+}

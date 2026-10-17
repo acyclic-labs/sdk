@@ -1,0 +1,4 @@
+[
+  "Keep the current goal in GOAL.md in the agent private volume; use active, blocked or done frontmatter status.",
+  "Keep each Markdown plan in plans/<id>.md beside GOAL.md in the agent private volume; use ordinary file tools and - [ ], - [~], - [x] task lists."
+]

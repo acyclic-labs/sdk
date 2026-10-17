@@ -1,0 +1,4 @@
+{"driver":"local","prompt":"Use the stock file tool.","expect":{"text":"done",
+  "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed","outcome":{"Succeeded":{}}}],
+  "diffs":null,"statuses":[{"state":"pending","attention":false,"parent":null},
+    {"state":"completed","attention":true,"parent":null}]}}

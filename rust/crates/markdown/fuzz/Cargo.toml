@@ -1,0 +1,31 @@
+[package]
+name = "acyclic-markdown-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-markdown = { path = ".." }
+libfuzzer-sys = "0.4"
+unicode-width = "0.2"
+
+[[bin]]
+name = "streaming"
+path = "fuzz_targets/streaming.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "table_width"
+path = "fuzz_targets/table_width.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+resolver = "2"

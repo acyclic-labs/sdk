@@ -1,0 +1,6 @@
+{
+  "prompt": "/review auth",
+  "after_capture": {"project/.claude/commands/review.md":"changed"},
+  "expect":{"files":{"project/.claude/commands/review.md":"changed"},"result":{"kind":"prompt","text":"Project auth",
+    "mentions":[],"source":{"path":"project/.claude/commands/review.md"}}}
+}

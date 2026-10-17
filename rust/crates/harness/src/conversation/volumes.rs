@@ -1,4 +1,5 @@
 use super::*;
+pub use acyclic_fs::access::VolumeOperation;
 
 /// The three independently governed file namespaces.
 #[derive(
@@ -18,7 +19,12 @@ pub enum VolumeClass {
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
 )]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum VolumeOwner {
     /// Project workspace owner.
     Project(#[serde(deserialize_with = "deserialize_label")] String),
@@ -207,7 +213,7 @@ impl VolumeRef {
             ));
         }
         content_label(
-            "directory:read:",
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
             crate::executor::json::canonical_json_digest(
                 &(self, prefix),
                 crate::store::default_projection_read_limits().maximum_bytes,
@@ -282,25 +288,6 @@ pub(crate) fn contains_content_label(
         .is_some_and(|label| grants.contains(label))
 }
 
-/// Operations that can be granted independently on a volume.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VolumeOperation {
-    /// Resolve exact file bytes.
-    Read,
-    /// Create a new file version.
-    Write,
-}
-
-impl VolumeOperation {
-    const fn capability_prefix(self) -> &'static str {
-        match self {
-            Self::Read => "volume:read:",
-            Self::Write => "volume:write:",
-        }
-    }
-}
-
 /// Verified, exact-volume authority for a single storage operation.
 #[derive(Clone, Debug)]
 pub struct ContentGrant {
@@ -354,7 +341,7 @@ impl ContentGrant {
         }
         if contains_content_label(
             scope.capabilities(),
-            "file:read:",
+            acyclic_fs::access::FILE_READ_PREFIX,
             crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?,
         ) {
             let FileRef {
@@ -492,7 +479,7 @@ impl ContentGrant {
         if scope.agent().is_none()
             || !(contains_content_label(
                 scope.capabilities(),
-                "directory:read:",
+                acyclic_fs::access::DIRECTORY_READ_PREFIX,
                 crate::executor::json::canonical_json_digest(
                     &(volume, prefix),
                     crate::store::default_projection_read_limits().maximum_bytes,
@@ -540,7 +527,7 @@ impl ContentGrant {
         verifier.verify(scope, &mut None)?;
         if !contains_content_label(
             scope.capabilities(),
-            "file:read:",
+            acyclic_fs::access::FILE_READ_PREFIX,
             crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?,
         ) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));

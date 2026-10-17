@@ -58,16 +58,20 @@ impl NativeMaterializationWork {
         work.bind_invocation(cancellation.clone(), NativeResourceCredit::ReadBytes)?;
         Ok((self.retain_source(work)?, cancellation))
     }
-    fn bind_invocation(
+    pub(crate) fn bind_invocation(
         &mut self,
         cancellation: crate::CancellationToken,
         read_credit: NativeResourceCredit,
     ) -> Result<(), NativeTreeMaterializationError> {
-        let metadata = self.claim(
-            std::mem::size_of::<NativeInvocationView>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
+        let bytes = const {
+            match crate::arc_layout::allocation_bytes(
+                std::alloc::Layout::new::<NativeInvocationView>(),
+            ) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("invocation view Arc layout overflow"),
+            }
+        };
+        let metadata = self.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?;
         self.invocation = Some(Arc::new_cyclic(|self_ref| NativeInvocationView {
             cancellation,
             metadata,
@@ -76,30 +80,66 @@ impl NativeMaterializationWork {
         }));
         Ok(())
     }
-    pub(crate) fn authority_read_meter(
+    pub(crate) fn authority_read_allocation(
         &self,
-    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, NativeTreeMaterializationError>
-    {
+    ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let mut work = self.allocation_work();
         work.bind_invocation(
             self.cancellation().clone(),
             NativeResourceCredit::AuthorityReadBytes,
         )?;
-        Ok(work.runtime_meter())
+        Ok(NativeAllocation {
+            meter: work,
+            bytes: 0,
+        })
+    }
+    pub(crate) fn authority_read_meter_for(
+        &self,
+        original: &Self,
+    ) -> Option<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
+        let bound = self.authority_read_original()?;
+        let same_invocation = match (&bound.invocation, &original.invocation) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let same_capture = match (&bound.capture_origin, &original.capture_origin) {
+            (Some(a), Some(b)) => Weak::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        (bound.shares_allocation_context(original)
+            && bound.cancellation().same_state(original.cancellation())
+            && same_invocation
+            && same_capture)
+            .then(|| self.runtime_meter())
+    }
+    pub(crate) fn authority_read_original(&self) -> Option<&Self> {
+        self.invocation.as_ref().and_then(|view| {
+            matches!(view.read_credit, NativeResourceCredit::AuthorityReadBytes)
+                .then(|| view.metadata.work())
+        })
     }
     /// Adds a finite resource ceiling without changing the original ledger.
     pub fn native_volume_work(
         &self,
         budget: crate::WorkBudget,
     ) -> Result<Self, NativeTreeMaterializationError> {
-        let metadata =
-            self.claim_root_metadata(std::mem::size_of::<NativeResourceAllowance>() as u64)?;
+        let bytes = const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                NativeResourceAllowance,
+            >()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("resource allowance Arc layout overflow"),
+            }
+        };
+        let metadata = self.claim_root_metadata(bytes)?;
         let resource = Arc::new_cyclic(|self_ref| NativeResourceAllowance {
             budget,
             metadata,
             self_ref: self_ref.clone(),
             parent: self.resource.clone(),
-            state: std::sync::Mutex::new(NativeResourceState::default()),
+            state: crate::sync::Mutex::new(NativeResourceState::default()),
         });
         let mut work = self.allocation_work();
         work.resource = Some(resource);
@@ -156,3 +196,6 @@ impl NativeMaterializationWork {
         Ok(work)
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+pub(super) mod tests;

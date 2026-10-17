@@ -15,10 +15,66 @@ use acyclic_harness::{
     },
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentVerifier, FilesystemHost},
-    model::ModelContent,
+    model::{ModelContent, ModelEvent},
     resources::ProviderRef,
+    test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+struct CountingReader<'a> {
+    inner: &'a dyn ContentResidencyVerifier,
+    reads: AtomicUsize,
+}
+
+impl ContentResidencyVerifier for CountingReader<'_> {
+    fn read<'a>(
+        &'a self,
+        reference: &'a acyclic_harness::conversation::FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        self.inner.read(reference, maximum_bytes, io)
+    }
+
+    fn read_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&'io acyclic_harness::conversation::ContentIo>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FileRef,
+                acyclic_stream::OwnedBytes,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
+    {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.inner.read_private_path(
+            volume,
+            granted_prefix,
+            path,
+            expected_generation,
+            maximum_bytes,
+            io,
+        )
+    }
+}
+
+#[path = "context_discovery_cases/manifest.rs"]
+mod manifest;
 
 type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<
     acyclic_stream::MemoryStream,
@@ -37,7 +93,7 @@ fn first_skill(
 
 fn executor(
     snapshot: acyclic_harness::context::DiscoveredContext,
-    provider: Arc<CapturingModel>,
+    provider: Arc<ScriptedModelProvider>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
         acyclic_harness::model::Model::new(
@@ -53,42 +109,19 @@ fn executor(
     .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
 }
 
-fn assert_lazy_request(provider: &CapturingModel) -> Result<()> {
-    let requests = provider
-        .0
-        .lock()
-        .map_err(|_| Error::Storage("model lock".into()))?;
+fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
+    let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    let request = std::str::from_utf8(
+    assert_eq!(provider.remaining(), 0);
+    let request = serde_json::to_string(
         requests
             .first()
             .ok_or_else(|| Error::NotFound("model request".into()))?,
     )
-    .map_err(|e| Error::Invalid(e.to_string()))?;
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(request.contains("Inspect files"));
     assert!(!request.contains("SECRET BODY"));
     Ok(())
-}
-
-#[derive(Default)]
-struct CapturingModel(Mutex<Vec<Vec<u8>>>);
-
-impl acyclic_harness::model::ModelProvider for CapturingModel {
-    fn generate<'a>(
-        &'a self,
-        request: acyclic_harness::model::PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> futures::stream::BoxStream<'a, Result<acyclic_harness::model::ModelEvent>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.bytes().to_vec());
-        Box::pin(futures::stream::iter([Ok(
-            acyclic_harness::model::ModelEvent::Completed {
-                metadata: serde_json::Value::Null,
-            },
-        )]))
-    }
 }
 
 struct Fixture {
@@ -117,6 +150,7 @@ impl Fixture {
                     private.capability(VolumeOperation::Read, &mut None)?,
                     private.capability(VolumeOperation::Write, &mut None)?,
                     self.volume.capability(VolumeOperation::Read, &mut None)?,
+                    self.volume.directory_read_capability("", &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,
@@ -252,6 +286,74 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn production_default_policy_loads_both_instruction_names_in_ancestor_order() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let paths = [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "project/AGENTS.md",
+        "project/CLAUDE.md",
+    ];
+    for path in paths {
+        fixture.put(path, path.as_bytes(), path).await?;
+    }
+    let mut declaration = fixture.declaration();
+    declaration.policy = ContextDiscoveryPolicy::default();
+    declaration.skills.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    assert_eq!(
+        captured
+            .instructions
+            .iter()
+            .map(|file| file.path())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let original = b"---\nname: inspect\ndescription: Inspect files\n---\noriginal body";
+    fixture
+        .put("skills/inspect/SKILL.md", original, "skill")
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    fixture
+        .put("skills/inspect/SKILL.md", b"replacement", "replacement")
+        .await?;
+    let skill = first_skill(&captured)?;
+    let reader = CountingReader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+    };
+    let message = skill.invoke(&reader, 512).await?;
+    let ModelContent::Text(text) = message.content else {
+        return Err(Error::Invalid("expected skill text".into()));
+    };
+    assert_eq!(text.as_bytes(), original);
+    assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
+    assert!(skill.invoke(fixture.reader.as_ref(), 8).await.is_err());
+    assert!(skill.invoke(fixture.reader.as_ref(), 0).await.is_err());
+    for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {
+        let mut body = original.to_vec();
+        body.push(byte);
+        fixture.put("skills/inspect/SKILL.md", &body, key).await?;
+        let captured = declaration.capture(fixture.reader.as_ref()).await?;
+        assert!(
+            first_skill(&captured)?
+                .invoke(fixture.reader.as_ref(), 512)
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result<()> {
     let fixture = Fixture::new().await?;
     fixture.put("AGENTS.md", b"root rules", "root").await?;
@@ -278,7 +380,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
     assert!(
         first_skill(&captured)?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await
             .is_err()
     );
@@ -613,7 +715,11 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let (private, scope) = fixture.journal_volume().await?;
     let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
-    let provider = Arc::new(CapturingModel::default());
+    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: serde_json::Value::Null,
+        }),
+    ])]));
     let original_executor = executor(snapshot.clone(), provider.clone())?;
     let input = TurnInput {
         operation_id: OperationId::from_bytes([7; 16]),
@@ -654,7 +760,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
             .first()
             .ok_or_else(|| Error::NotFound("skill".into()))?
             .source
-            .read(fixture.reader.as_ref())
+            .read(fixture.reader.as_ref(), 32_768)
             .await?
             .1
             .as_ref(),
@@ -684,7 +790,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         None,
     )?
     .0;
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
             .reader
@@ -702,10 +808,10 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     source = first_skill(&captured)?.source.clone();
     source.path = "AGENTS.md".into();
     assert!(matches!(
-        source.read(fixture.reader.as_ref()).await,
+        source.read(fixture.reader.as_ref(), 32_768).await,
         Err(Error::Invalid(_))
     ));
     source.path = "skills/missing/SKILL.md".into();
-    assert!(source.read(fixture.reader.as_ref()).await.is_err());
+    assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     Ok(())
 }

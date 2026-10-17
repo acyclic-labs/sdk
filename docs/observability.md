@@ -193,17 +193,18 @@ Open the file in [Perfetto](https://ui.perfetto.dev).
 
 ## Benchmarks
 
-`benches/` in objects, stream, harness, filesystem and native-runtime hold
-[divan](https://docs.rs/divan) benchmarks of the local hot paths. They run on
-demand only, never in CI, and `package.exclude` keeps them out of published
-crates. `clippy --all-targets` keeps them compiling.
+`rust/crates/conformance/benches/` holds [divan](https://docs.rs/divan)
+benchmarks of the local hot paths. The private crate keeps profiling
+dependencies out of targeted product-library test builds. Benchmarks run on
+demand only, never in CI; `clippy --all-targets --all-features` keeps them compiling.
 
 ```sh
-cargo bench -p acyclic-objects --features local --bench objects
-cargo bench -p acyclic-stream --features local --bench stream
-cargo bench -p acyclic-fs --bench filesystem
-cargo bench -p acyclic-harness --bench harness
-cargo bench -p acyclic-native-runtime --bench native_runtime
+cargo bench -p acyclic-conformance --features local-runner --bench objects
+cargo bench -p acyclic-conformance --features local-runner --bench filesystem
+cargo bench -p acyclic-conformance --features local-runner --bench filesystem_alloc
+cargo bench -p acyclic-conformance --features local-runner --bench harness
+cargo bench -p acyclic-conformance --features local-runner --bench client_demand
+cargo bench -p acyclic-conformance --features local-runner --bench write_validation
 ```
 
 Pass divan options after `--`, for example `-- --sample-count 10 put_small`.

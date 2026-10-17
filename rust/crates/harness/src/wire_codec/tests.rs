@@ -70,13 +70,8 @@ fn native_event_bytes_match_cross_language_fixture() -> Result<()> {
     assert_eq!(encode_event(&authority, &event, &mut None)?, bytes);
     Ok(())
 }
-#[test]
-fn native_command_envelopes_require_exact_payload_protocol_and_retry_identity() -> Result<()> {
-    let action = Action::TransitionLifecycle {
-        to: crate::core::LifecycleState::Active,
-        reason: None,
-    };
-    let mut envelope = wire::CommandEnvelope {
+pub(super) fn command_fixture(action: &Action) -> Result<wire::CommandEnvelope> {
+    Ok(wire::CommandEnvelope {
         protocol: Some(protocol_identity()),
         authority: Some(wire::Authority {
             kind: wire::AggregateKind::Task as i32,
@@ -94,9 +89,17 @@ fn native_command_envelopes_require_exact_payload_protocol_and_retry_identity() 
             ..Default::default()
         }),
         action_type: action.tag().into(),
-        canonical_action_json: canonical_json_bytes(&action)?,
+        canonical_action_json: canonical_json_bytes(action)?,
         ..Default::default()
+    })
+}
+#[test]
+fn native_command_envelopes_require_exact_payload_protocol_and_retry_identity() -> Result<()> {
+    let action = Action::TransitionLifecycle {
+        to: crate::core::LifecycleState::Active,
+        reason: None,
     };
+    let mut envelope = command_fixture(&action)?;
     let (_, command) = decode_command_envelope(envelope.clone())?;
     assert_eq!(command.operation_id, OperationId::from_bytes([31; 16]));
     assert_eq!(command.idempotency_key, IdempotencyKey::new("native-once")?);

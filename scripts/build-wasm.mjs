@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageClosure } from "./package-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
@@ -35,10 +36,12 @@ const narrowMachinesDecoder = output => {
 };
 
 const packages = {
+  auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
   filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },
   objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
+  manifest: { cargo: ["-p", "acyclic-manifest"], artifact: "acyclic_manifest", outputPackage: "workers" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
@@ -46,8 +49,8 @@ const packages = {
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
-    cargo: ["-p", "acyclic-harness", "--features", "browser"],
-    artifact: "acyclic_harness",
+    cargo: ["-p", "acyclic-harness-providers", "--features", "browser"],
+    artifact: "acyclic_harness_providers",
     outName: "acyclic_harness_wasm",
     postprocess: stripHarnessClosureShims,
     targetDirectory: "harness-wasm",
@@ -55,7 +58,8 @@ const packages = {
 };
 
 const [packageArgument, outputArgument, cargoArgument, wasmBindgenArgument, ...unexpected] = process.argv.slice(2);
-if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument))) {
+if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packageArgument)
+  && (!/^[a-z][a-z-]*$/.test(packageArgument) || !existsSync(join(root, "typescript/packages", packageArgument, "package.json"))))) {
   throw new Error(`${usage}\nPACKAGE is one of: ${Object.keys(packages).join(", ")}`);
 }
 
@@ -90,10 +94,19 @@ if (!wasmBindgen || capture(wasmBindgen, ["--version"]) !== expectedVersion) {
 const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
 if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
+const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
+const profileDirectory = profile === "dev" ? "debug" : profile;
 
 const script = readFileSync(fileURLToPath(import.meta.url));
 
-for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
+const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
+const targets = grouped ? [packageArgument] : packageArgument
+  ? [...packageClosure(root, packageArgument === "manifest" ? "workers" : packageArgument)]
+    .map(name => name === "workers" ? "manifest" : name).filter(name => Object.hasOwn(packages, name))
+  : Object.keys(packages);
+if (!grouped) run(process.execPath, [join(root, "scripts/generate.mjs"), ...(packageArgument ? [packageArgument === "manifest" ? "workers" : packageArgument] : [])]);
+
+for (const name of targets) {
   let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
   let family, producer, source, revision;
   if (packages[name].family) {
@@ -109,7 +122,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     if (!/^[0-9a-f]{40,64}$/u.test(revision ?? "") || status !== "") throw new Error("WASM requires a clean source closure");
     source = await producer.sourceSnapshot();
   }
-  const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
+  const output = outputArgument && name === packageArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,
@@ -117,7 +130,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     "--remap-path-prefix", `${cargoHome}=/cargo/home`,
   ];
   const buildArgs = [
-    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
+    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
   let compilerInvocation, originalReceipt;
@@ -133,7 +146,7 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
       }
     }
   } finally { await rustcCapture?.close(); }
-  const module = resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
+  const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
   const bindings = resolve(target, "wasm-bindgen", name);
   const stamp = `${bindings}.sha256`;
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");

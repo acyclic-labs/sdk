@@ -1,0 +1,40 @@
+{
+  "prompt": "current request",
+  "context": [
+    {
+      "role": "system",
+      "content": "keep instructions"
+    },
+    {
+      "role": "user",
+      "content": "old request"
+    },
+    {
+      "role": "assistant",
+      "content": "old answer"
+    },
+    {
+      "role": "user",
+      "content": "older request"
+    },
+    {
+      "role": "assistant",
+      "content": "recent answer"
+    },
+    {
+      "role": "user",
+      "content": "recent request"
+    }
+  ],
+  "capacity": {
+    "context_tokens": 60,
+    "output_tokens": 10
+  },
+  "message_tokens": 10,
+  "compaction": {
+    "kind": "threshold"
+  },
+  "expect": {
+    "request_count": 0
+  }
+}

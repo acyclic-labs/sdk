@@ -1,0 +1,2 @@
+{"seed":{"skills/inspect/SKILL.md":"---\nname: inspect\ndescription: !include secret\n---\nSECRET BODY"},"expect":{
+  "error":"invalid frontmatter"}}

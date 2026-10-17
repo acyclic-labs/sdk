@@ -1,6 +1,6 @@
 use super::*;
 
-type PendingCalls<'a> = Vec<(&'a str, usize)>;
+use super::exchanges::{Group, PendingCalls, exchange_groups, track_part};
 
 impl ThresholdCompaction {
     /// Plans a bounded projection preserving complete tool exchanges.
@@ -43,23 +43,12 @@ impl ThresholdCompaction {
                 "no older source fits the compaction policy",
             ));
         }
-        let parts = context
-            .messages
-            .iter()
-            .try_fold(0_usize, |count, message| {
-                count.checked_add(message.content.parts().len())
-            })
-            .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
-        let mut pending = quota_vector::<(&str, usize)>(parts, &mut quota)?;
-        for (position, message) in context.messages.iter().take(through).enumerate() {
+        let (groups, pending) = exchange_groups(context, &mut quota)?;
+        for group in groups.iter().rev() {
             compaction_step(&mut quota)?;
-            for part in message.content.parts() {
-                compaction_step(&mut quota)?;
-                let _ = track_part(part, position, &mut pending);
+            if group.size > 0 && group.root < through && through <= group.end {
+                through = group.root;
             }
-        }
-        if let Some(first) = pending.iter().map(|(_, position)| *position).min() {
-            through = first;
         }
         if through == 0 && maximum_messages == usize::MAX {
             return Err(compaction_error(
@@ -69,7 +58,7 @@ impl ThresholdCompaction {
         }
         if through == 0 || self.mandatory_count(context, through, &mut quota)? >= maximum_messages {
             through =
-                self.complete_source(context, through, maximum_messages, &mut pending, &mut quota)?;
+                self.complete_source(context, through, maximum_messages, &groups, &mut quota)?;
         }
         let maximum = self
             .mandatory_count(context, through, &mut quota)?
@@ -78,6 +67,7 @@ impl ThresholdCompaction {
                 compaction_error(quota.work(), "compaction projection count overflows")
             })?;
         retire_vector(pending, &mut quota)?;
+        retire_vector(groups, &mut quota)?;
         if maximum > context.messages.len() || maximum > maximum_messages {
             return Err(compaction_error(
                 quota.work(),
@@ -92,35 +82,32 @@ impl ThresholdCompaction {
         covered: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<usize> {
-        let (flags, pending) = mandatory_flags(context, covered, &self.retention, quota)?;
+        let (flags, pending, groups) = mandatory_flags(context, covered, &self.retention, quota)?;
         let count = flags.iter().filter(|selected| **selected).count();
         retire_vector(pending, quota)?;
         retire_vector(flags, quota)?;
+        retire_vector(groups, quota)?;
         Ok(count)
     }
 
-    fn complete_source<'a>(
+    fn complete_source(
         &self,
-        context: &'a Context,
+        context: &Context,
         through: usize,
         maximum_messages: usize,
-        pending: &mut PendingCalls<'a>,
+        groups: &[Group],
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<usize> {
-        pending.clear();
         let mut cuts = quota_vector::<usize>(context.messages.len().saturating_sub(1), quota)?;
-        for (position, message) in context
-            .messages
+        let mut end = 0;
+        for (position, group) in groups
             .iter()
             .take(context.messages.len().saturating_sub(1))
             .enumerate()
         {
             compaction_step(quota)?;
-            for part in message.content.parts() {
-                compaction_step(quota)?;
-                let _ = track_part(part, position, pending);
-            }
-            if pending.is_empty() && position + 1 >= through {
+            end = end.max(groups[group.root].end);
+            if end <= position && position + 1 >= through {
                 cuts.push(position + 1);
             }
         }
@@ -157,16 +144,8 @@ pub(in crate::context) fn mandatory_flags<'a>(
     covered: usize,
     retention: &super::CompactionRetention,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<(Vec<bool>, PendingCalls<'a>)> {
-    let parts = context
-        .messages
-        .iter()
-        .try_fold(0_usize, |count, message| {
-            count.checked_add(message.content.parts().len())
-        })
-        .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
-    let mut pending = quota_vector::<(&str, usize)>(parts, quota)?;
-    let mut edges = quota_vector::<(usize, usize)>(parts, quota)?;
+) -> Result<(Vec<bool>, PendingCalls<'a>, Vec<Group>)> {
+    let (groups, mut pending) = exchange_groups(context, quota)?;
     let mut selected = quota_vector::<bool>(context.messages.len(), quota)?;
     for (position, message) in context.messages.iter().enumerate() {
         compaction_step(quota)?;
@@ -177,40 +156,54 @@ pub(in crate::context) fn mandatory_flags<'a>(
                 || retention.roles.contains(&message.role)
                 || (retention.native_media && message.content.contains_native_media()),
         );
-        for part in message.content.parts() {
-            compaction_step(quota)?;
-            if let Some(call) = track_part(part, position, &mut pending) {
-                edges.push((call, position));
-            }
-        }
     }
-    loop {
-        let mut changed = false;
-        for &(call, response) in &edges {
-            compaction_step(quota)?;
-            let call_selected = *selected
-                .get(call)
-                .ok_or_else(|| compaction_error(quota.work(), "tool exchange index is invalid"))?;
-            let response_selected = *selected
-                .get(response)
-                .ok_or_else(|| compaction_error(quota.work(), "tool exchange index is invalid"))?;
-            if call_selected || response_selected {
-                changed |= !call_selected || !response_selected;
-                *selected.get_mut(call).ok_or_else(|| {
-                    compaction_error(quota.work(), "tool exchange index is invalid")
-                })? = true;
-                *selected.get_mut(response).ok_or_else(|| {
-                    compaction_error(quota.work(), "tool exchange index is invalid")
-                })? = true;
-            }
-        }
-        if !changed {
-            break;
-        }
+    // Components are flattened. First select every selected member's root,
+    // then select its other members without retaining unrelated interior text.
+    for (position, group) in groups.iter().enumerate() {
+        compaction_step(quota)?;
+        let keep = selected[position];
+        selected[group.root] |= keep;
     }
-    retire_vector(edges, quota)?;
+    for (position, group) in groups.iter().enumerate() {
+        compaction_step(quota)?;
+        let keep = selected[group.root];
+        selected[position] |= keep;
+    }
     pending.clear();
-    Ok((selected, pending))
+    Ok((selected, pending, groups))
+}
+
+pub(crate) fn mandatory_messages(
+    context: &Context,
+    covered: usize,
+    retention: &super::CompactionRetention,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<Vec<crate::model::ModelMessage>> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let mut messages = Vec::new();
+    let made = (|| {
+        let (selected, pending, groups) = mandatory_flags(context, covered, retention, &mut quota)?;
+        messages = quota_vector(selected.iter().filter(|keep| **keep).count(), &mut quota)?;
+        for (message, keep) in context.messages.iter().zip(&selected) {
+            compaction_step(&mut quota)?;
+            if *keep {
+                messages.push(super::copying::clone_message(
+                    message.role,
+                    &message.content,
+                    &mut quota,
+                )?);
+            }
+        }
+        retire_vector(pending, &mut quota)?;
+        retire_vector(groups, &mut quota)?;
+        retire_vector(selected, &mut quota)
+    })();
+    if let Err(error) = made {
+        drop(messages);
+        return Err(error);
+    }
+    quota.transfer();
+    Ok(messages)
 }
 
 pub(crate) fn compact_context(
@@ -230,7 +223,7 @@ pub(crate) fn compact_context(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut result = Context::default();
     let made = (|| {
-        let (mut selected, mut pending) = mandatory_flags(
+        let (mut selected, mut pending, groups) = mandatory_flags(
             context,
             summary.source_messages as usize,
             retention,
@@ -243,14 +236,19 @@ pub(crate) fn compact_context(
                 "mandatory context exceeds compaction message budget",
             ));
         }
-        for selected in selected.iter_mut().rev() {
-            if count + 1 == maximum {
-                break;
+        for group in groups.iter().rev() {
+            compaction_step(&mut quota)?;
+            let root = group.root;
+            let size = groups[root].size;
+            if !selected[root] && size < maximum - count {
+                selected[root] = true;
+                count += size;
             }
-            if !*selected {
-                *selected = true;
-                count += 1;
-            }
+        }
+        for (position, group) in groups.iter().enumerate() {
+            compaction_step(&mut quota)?;
+            let keep = selected[group.root];
+            selected[position] |= keep;
         }
         result.messages = quota_vector::<ModelMessage>(count + 1, &mut quota)?;
         let file = if quota.work().is_some() {
@@ -298,6 +296,7 @@ pub(crate) fn compact_context(
             ));
         }
         retire_vector(pending, &mut quota)?;
+        retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
         let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
         result.metadata = metadata;
@@ -340,26 +339,4 @@ pub(super) fn compaction_error(
     }
     let _ = work;
     Error::Invalid(reason.into())
-}
-
-fn track_part<'a>(
-    part: &'a ModelContentPart,
-    position: usize,
-    pending: &mut PendingCalls<'a>,
-) -> Option<usize> {
-    match part {
-        ModelContentPart::ToolCall { call_id, .. } => {
-            if let Some(prior) = pending.iter_mut().find(|(id, _)| *id == call_id) {
-                prior.1 = position;
-            } else {
-                pending.push((call_id, position));
-            }
-            None
-        }
-        ModelContentPart::ToolResult { call_id, .. } => pending
-            .iter()
-            .position(|(id, _)| *id == call_id)
-            .map(|index| pending.swap_remove(index).1),
-        _ => None,
-    }
 }

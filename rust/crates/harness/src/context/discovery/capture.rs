@@ -13,14 +13,14 @@ pub struct DiscoveredContext {
     pub skills: Vec<SkillMetadata>,
 }
 
-pub(super) struct DiscoveryWork {
-    pub(super) entries: u32,
-    pub(super) directories: u32,
-    pub(super) limits: ContextDiscoveryLimits,
+pub(crate) struct DiscoveryWork {
+    pub(crate) entries: u32,
+    pub(crate) directories: u32,
+    pub(crate) limits: ContextDiscoveryLimits,
 }
 
 impl DiscoveryWork {
-    pub(super) async fn list(
+    pub(crate) async fn list(
         &mut self,
         reader: &dyn ContentResidencyVerifier,
         root: &ContextRoot,
@@ -91,7 +91,7 @@ impl DiscoveryWork {
     }
 }
 
-pub(super) fn child(directory: &str, name: &str) -> String {
+pub(crate) fn child(directory: &str, name: &str) -> String {
     if directory.is_empty() {
         name.into()
     } else {
@@ -108,39 +108,19 @@ impl DiscoveredContext {
         for file in &self.instructions {
             file.validate(work)?;
         }
-        let name_slots = if work.is_some() {
-            self.skills
-                .len()
-                .checked_mul(std::mem::size_of::<&String>())
-                .and_then(|bytes| u64::try_from(bytes).ok())
-                .ok_or_else(|| {
-                    discovery_error(
-                        work,
-                        ErrorCode::Invalid,
-                        "discovered context count overflows",
-                    )
-                })?
-        } else {
-            0
-        };
-        if let Some(io) = work.as_deref_mut() {
-            io.admit_owned(name_slots)?;
-            io.retain_owned(name_slots)?;
-        }
-        let mut names = std::collections::BTreeSet::new();
         for skill in &self.skills {
             skill.validate(work)?;
-            if !names.insert(&skill.name) {
-                return Err(discovery_error(
-                    work,
-                    ErrorCode::Conflict,
-                    "discovered skill names are repeated",
-                ));
-            }
         }
-        drop(names);
-        if let Some(io) = work.as_deref_mut() {
-            io.release_owned(name_slots)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut names = crate::core::reserve_copy_vector::<&str>(self.skills.len(), &mut quota)?;
+        names.extend(self.skills.iter().map(|skill| skill.name.as_str()));
+        names.sort_unstable();
+        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(discovery_error(
+                quota.work(),
+                ErrorCode::Conflict,
+                "discovered skill names are repeated",
+            ));
         }
         Ok(())
     }

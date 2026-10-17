@@ -9,9 +9,8 @@ test("Linux joins Harness packaging and generated checks before conformance, inc
   const start = source.indexOf("    background harness-package bash");
   const end = source.indexOf("    background harness-conformance bun", start);
   assert.ok(start > source.indexOf("    bun run test", source.indexOf("  linux)")));
-  const restore = source.match(/^    git restore --worktree -- \\\n      typescript\/packages\/filesystem\/generated\/wasm \\\n      typescript\/packages\/stream\/generated\/wasm\n/m) ?? assert.fail("missing tracked WASM restore");
-  assert.ok(start >= (restore.index ?? assert.fail("missing restore position")) + restore[0].length,
-    "Harness packaging must start after the complete tracked WASM restore");
+  assert.doesNotMatch(source, /git restore --worktree --[\s\S]*?generated\/wasm/,
+    "packaging must retain the bindings built from the qualified source");
   assert.ok(end > start);
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"))
@@ -35,7 +34,7 @@ bash() {
   return ${harnessStatus}
 }
 bun() {
-  [[ "$#" == 2 && "$1" == run && "$2" == check:generated ]]
+  [[ "$#" == 2 && "$1" == run && "$2" == check:baselines ]]
   while [[ ! -f "$SDK_TEMP_DIR/harness-started" ]]; do sleep 0.01; done
   [[ ! -f "$SDK_TEMP_DIR/harness-done" ]]
   echo generated-complete

@@ -1,0 +1,16 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "kind": "toggle_pause"
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "kind": "toggle_pause"
+      }
+    }
+  },
+  "prompt": "/pause"
+}

@@ -78,6 +78,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &mut |_| Ok::<_, FsError>(()),
         )
         .map_err(WorkspaceError::engine)?;
+        self.stage_merge_metadata_value(metadata).await
+    }
+
+    pub(crate) async fn stage_merge_metadata_value(
+        &self,
+        metadata: FileMetadata,
+    ) -> Result<ObjectId, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let encoded = crate::kernel::codec::encode_owned(&mut accounting, |observe, error| {
@@ -165,7 +172,7 @@ pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) async fn stage_metadata_with_accounting(
+    pub(crate) async fn stage_metadata_with_accounting(
         &self,
         metadata: FileMetadata,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,

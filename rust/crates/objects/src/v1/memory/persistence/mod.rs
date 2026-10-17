@@ -42,7 +42,7 @@ struct Tail {
 }
 pub(super) struct Journal {
     root: Arc<crate::physical::LocalRoot>,
-    tail: Mutex<Tail>,
+    tail: Mutex<Tail, 3>,
     limits: LocalObjectsLimits,
     header: Header,
     poisoned: AtomicBool,

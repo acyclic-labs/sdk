@@ -1,0 +1,5 @@
+{
+  "prompt": "/read-home @a.txt",
+  "expect":{"mention_files":["before"],"result":{"kind":"prompt","text":"Read @a.txt","source":{"path":
+    "home/.claude/commands/read-home.md"},"mentions":[{"start":5,"end":11,"file":{"path":"project/a.txt"}}]}}
+}

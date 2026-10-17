@@ -17,10 +17,7 @@ use crate::{
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
-    tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
-    },
+    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 #[cfg(test)]
 use crate::{
@@ -46,6 +43,7 @@ type MemoryJournal =
 async fn new_memory_content(
     agent: AgentId,
     maximum_file_bytes: u64,
+    filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
 ) -> Result<(
     Arc<MemoryHost>,
     VolumeRef,
@@ -57,7 +55,7 @@ async fn new_memory_content(
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host: Arc<MemoryHost> = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         Uuid::new_v4().to_string(),
@@ -101,39 +99,22 @@ use listing::LocalListFilesTool;
 use publisher::MemoryContentPublisher;
 
 impl MemoryHarnessStorage {
-    /// Assembles portable defaults with an optional explicitly bound recursive provider.
-    pub fn default_tools(
-        &self,
-        limits: Limits,
-        source: Option<
-            Arc<
-                super::ConfiguredRecursiveToolSource<
-                    MemoryStream,
-                    MemoryAuthorityBackend,
-                    MemoryObjectBackend,
-                >,
-            >,
-        >,
-    ) -> Result<ToolRegistry> {
+    /// Builds an optional directory listing tool for explicit custom registration.
+    pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
         }
-        let mut tools = super::recursive_default_tools(source, limits.file_bytes)?;
-        tools.register((self.list_files_tool(limits), None), &mut None, None)?;
-        Ok(tools)
-    }
-
-    fn list_files_tool(&self, limits: Limits) -> Tool {
         let implementation = Arc::new(LocalListFilesTool {
             verifier: self.content_verifier.clone(),
             volume: self.volume.clone(),
             maximum_bytes: limits.render_bytes,
             observed: tokio::sync::Mutex::new(BTreeMap::new()),
         });
-        Tool {
+        Ok(Tool {
+            hook_names: &[],
             definition: ToolDefinition {
                 name: "acyclic.list_files".into(),
                 revision: "2".into(),
@@ -175,12 +156,28 @@ impl MemoryHarnessStorage {
             },
             executor: implementation.clone(),
             projection: implementation,
-        }
+        })
     }
 
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
     pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        let (host, volume, memory_store) = new_memory_content(agent, maximum_file_bytes).await?;
+        Self::from_providers(
+            agent,
+            maximum_file_bytes,
+            Fs::memory(),
+            Arc::new(MemoryStream::default()),
+        )
+        .await
+    }
+
+    async fn from_providers(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
+        stream: Arc<MemoryStream>,
+    ) -> Result<Self> {
+        let (host, volume, memory_store) =
+            new_memory_content(agent, maximum_file_bytes, filesystem).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
@@ -204,7 +201,6 @@ impl MemoryHarnessStorage {
             &mut None,
         )?;
         let verifier = issuer.verifier(&mut None)?;
-        let stream = Arc::new(MemoryStream::default());
         let input = FilesystemContentVerifier::new(
             Arc::clone(&host),
             &verifier,
@@ -305,6 +301,20 @@ impl MemoryHarnessStorage {
             })
             .grant(self.read_capability.clone())
             .grant(self.write_capability.clone())
+    }
+
+    /// Borrows the authenticated reader for context and client adapters.
+    #[must_use]
+    pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
+        self.content_verifier.as_ref()
+    }
+
+    /// Queries the same private files written by the ordinary tools.
+    pub fn file_query(
+        &self,
+        budget: acyclic_fs::WorkBudget,
+    ) -> Result<super::FilesystemFileQuery<MemoryStream, MemoryObjectBackend>> {
+        self.content_verifier.file_query(&self.volume, budget)
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.

@@ -1,4 +1,5 @@
 use super::*;
+mod reconnect;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
@@ -114,7 +115,7 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     }));
     let follow = Arc::new(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -154,59 +155,23 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
 }
 
 #[tokio::test]
-async fn unavailable_follow_item_is_retried_without_exposing_a_throwable_error() {
-    let record = acyclic_stream::Record {
-        sequence: 0,
-        value: vec![1_u8, 2].into(),
-        commit_id: acyclic_stream::CommitId::default(),
-        committed_at_micros: 0,
-    };
-    let records: acyclic_stream::RecordStream =
-        futures::stream::iter([Err(StreamError::Unavailable), Ok(record)]).boxed();
+async fn terminal_unavailable_is_reported_before_end() {
+    let records = futures::stream::once(async { Err(StreamError::Unavailable) }).boxed();
     let follow = NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
     };
-
-    let result = follow
-        .next_result()
-        .await
-        .expect("retryable follow read failed");
-    assert!(result.value.is_some());
-    assert!(result.error.is_none());
-    let end = follow.next_result().await.expect("follow end failed");
-    assert!(end.value.is_none());
-    assert!(end.error.is_none());
-}
-
-#[tokio::test]
-async fn repeated_unavailable_follow_items_are_cancellable() {
-    let records: acyclic_stream::RecordStream =
-        futures::stream::repeat(Err(StreamError::Unavailable)).boxed();
-    let follow = Arc::new(NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
-            token: CancellationToken::new(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    });
-    let pending = tokio::spawn({
-        let follow = Arc::clone(&follow);
-        async move { follow.next_result().await }
-    });
-    tokio::time::sleep(Duration::from_millis(1)).await;
-    follow.state.token.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(1), pending)
-        .await
-        .expect("retryable follow read did not cancel")
-        .expect("retryable follow task panicked")
-        .expect("retryable follow read rejected");
+    let result = follow.next_result().await.expect("follow read rejected");
     assert!(result.value.is_none());
-    assert!(result.error.is_none());
-    follow.close().await;
+    assert_eq!(
+        result.error.expect("terminal error swallowed").code,
+        "unavailable"
+    );
+    let end = follow.next_result().await.expect("follow end rejected");
+    assert!(end.value.is_none() && end.error.is_none());
 }
 
 #[tokio::test]
@@ -240,7 +205,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
         Poll::Ready(record.take().map(Ok))
     }));
-    *follow.state.records.lock().await = Some(records);
+    *follow.state.records.lock().await = Some(record_frames(records));
 
     let first = follow.next_result().await.expect("first read failed");
     assert!(first.value.is_none());
@@ -257,8 +222,14 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
 }
 
 struct TcpDropProbe {
-    started: Arc<AtomicBool>,
-    dropped: Arc<AtomicBool>,
+    started: Arc<tokio::sync::Notify>,
+    dropped: Arc<tokio::sync::Notify>,
+}
+struct TcpDropped(Arc<tokio::sync::Notify>);
+impl Drop for TcpDropped {
+    fn drop(&mut self) {
+        self.0.notify_one();
+    }
 }
 
 #[async_trait]
@@ -301,9 +272,9 @@ impl StreamProvider for TcpDropProbe {
         _path: StreamPath,
         _from: u64,
     ) -> std::result::Result<RecordStream, StreamError> {
-        self.started.store(true, Ordering::SeqCst);
+        self.started.notify_one();
         let dropped = Arc::clone(&self.dropped);
-        let sentinel = DropSentinel(dropped);
+        let sentinel = TcpDropped(dropped);
         Ok(futures::stream::poll_fn(move |_| {
             let _sentinel = &sentinel;
             Poll::Pending
@@ -315,7 +286,17 @@ impl StreamProvider for TcpDropProbe {
         &self,
         _request: ChildrenRequest,
     ) -> std::result::Result<ChildStream, StreamError> {
-        Err(StreamError::Unsupported)
+        let sentinel = TcpDropped(Arc::clone(&self.dropped));
+        Ok(futures::stream::once(async {
+            Ok(acyclic_stream::Child {
+                path: StreamPath::new("agents/new")?,
+            })
+        })
+        .chain(futures::stream::poll_fn(move |_| {
+            let _sentinel = &sentinel;
+            Poll::Pending
+        }))
+        .boxed())
     }
 
     async fn children_page(
@@ -354,27 +335,36 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let started = Arc::new(AtomicBool::new(false));
-        let dropped = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(TcpDropProbe {
             started: Arc::clone(&started),
             dropped: Arc::clone(&dropped),
         });
-        let service =
-            acyclic_stream::wire::stream_service_server::StreamServiceServer::with_interceptor(
-                acyclic_stream::grpc::Service::new(provider),
-                |request: Request<()>| {
-                    if request
-                        .metadata()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok())
-                        != Some("Bearer exact-token")
-                    {
-                        return Err(Status::unauthenticated("missing exact bearer credential"));
-                    }
-                    Ok(request)
-                },
+        let authorize = |request: Request<()>| {
+            if request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                != Some("Bearer exact-token")
+            {
+                return Err(Status::unauthenticated("missing exact bearer credential"));
+            }
+            Ok(request)
+        };
+        let sessions =
+            wire::stream_session_service_server::StreamSessionServiceServer::with_interceptor(
+                acyclic_stream::session::Service::new(
+                    Arc::clone(&provider),
+                    "native".into(),
+                    acyclic_stream::session::Limits::default(),
+                ),
+                authorize,
             );
+        let service = wire::stream_service_server::StreamServiceServer::with_interceptor(
+            acyclic_stream::grpc::Service::new(provider),
+            authorize,
+        );
         let incoming = futures::stream::unfold(listener, |listener| async move {
             listener
                 .accept()
@@ -389,6 +379,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
                         .identity(Identity::from_pem(certificate_pem, private_key_pem)),
                 )?
                 .add_service(service)
+                .add_service(sessions)
                 .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
@@ -412,21 +403,20 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             path: "accounts/events".to_owned(),
             from: 0,
         };
-        let opened = client
-            .open_follow_result(Buffer::from(request.encode_to_vec()), None)
-            .await?;
-        assert!(opened.error.is_none(), "open returned an error envelope");
-        let follow = Arc::new(opened.follow.expect("open result omitted follow"));
+        let follow = Arc::new(
+            open_follow(
+                &client.provider,
+                Buffer::from(request.encode_to_vec()),
+                None,
+            )
+            .await
+            .map_err(|error| error.message)?,
+        );
         let pending = tokio::spawn({
             let follow = Arc::clone(&follow);
             async move { follow.next_result().await }
         });
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !started.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await?;
+        tokio::time::timeout(Duration::from_secs(1), started.notified()).await?;
 
         follow.close().await;
         let closed = tokio::time::timeout(Duration::from_secs(1), pending)
@@ -438,13 +428,34 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         assert!(closed_again.value.is_none());
         assert!(closed_again.error.is_none());
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !dropped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
+        tokio::time::timeout(Duration::from_secs(1), dropped.notified())
+            .await
+            .map_err(|_| "server follow stream was not dropped after close")?;
+
+        let children = open_children(
+            &client.provider,
+            Buffer::from(
+                wire::ChildrenRequest {
+                    parent: Some("agents".into()),
+                    limit: 1,
+                }
+                .encode_to_vec(),
+            ),
+            None,
+        )
         .await
-        .map_err(|_| "server follow stream was not dropped after close")?;
+        .map_err(|error| error.message)?;
+        let value = children.next_result().await?;
+        assert!(value.error.is_none());
+        let value = value.value.ok_or("child response missing")?;
+        let value = wire::ChildrenResponse::decode(value.as_ref())?;
+        assert_eq!(value.child.ok_or("child missing")?.path, "agents/new");
+        children.close().await;
+        tokio::time::timeout(Duration::from_secs(1), dropped.notified()).await?;
+
+        drop(children);
+        drop(follow);
+        drop(client);
 
         let _ = shutdown_tx.send(());
         server.await??;

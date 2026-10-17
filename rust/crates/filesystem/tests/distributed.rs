@@ -330,15 +330,14 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
         hex::encode(authority_id.into_bytes())
     ))?;
     let children = provider
-        .children(ChildrenRequest {
+        .children_page(acyclic_stream::ChildrenPageRequest {
             parent: Some(authority_path),
             limit: 16,
+            after: None,
+            hierarchy_version: None,
         })
         .await?
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+        .children;
     assert!(
         children
             .iter()

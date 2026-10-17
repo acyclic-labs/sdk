@@ -1,12 +1,12 @@
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type, validate_objects_v1_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
-import { MAX_BEARER_TOKEN_BYTES, ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
+import { ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
-export interface ObjectsV1HttpOptions {
+export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;
-  readonly token: string;
   readonly maximumResponseBytes?: number;
   readonly maximumRequestBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
@@ -14,16 +14,17 @@ export interface ObjectsV1HttpOptions {
 }
 /** Browser-compatible HTTP binding with bounded wire responses and decoded reads. */
 export class HttpObjectsV1 extends ObjectsV1Provider {
+  private readonly credential: CredentialProvider;
   private readonly endpoint: URL;
   private readonly maximumResponse: number;
   private readonly maximumRequest: number;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
-  constructor(private readonly options: ObjectsV1HttpOptions) {
+  constructor(options: ObjectsV1HttpOptions) {
     super();
     const endpoint = new URL(options.endpoint);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
-    if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
+    this.credential = credentialProvider(options);
     this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
     this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
@@ -77,7 +78,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const timeout = setTimeout(() => controller.abort(), 30000);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${this.options.token}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
+      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${await this.credential(controller.signal)}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
       if (response.status === 304) throw new ObjectsV1Error(wire.ErrorCode.NOT_MODIFIED);
       if (route === "objects/get" && response.status === 200) {
         if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);

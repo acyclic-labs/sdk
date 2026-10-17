@@ -30,6 +30,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: definition.clone(),
                 executor: counted.clone(),
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -50,6 +51,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: invalid_output.clone(),
                 executor: counted.clone(),
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -70,6 +72,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: invalid_projection.clone(),
                 executor: counted,
                 projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
@@ -90,6 +93,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     registry.register(
         (
             Tool {
+                hook_names: &[],
                 definition: large_definition.clone(),
                 executor: Arc::new(CountingNoopTool {
                     executions: large_executions.clone(),
@@ -242,6 +246,80 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     }
+    // The bare invocation fits exactly, but its saved metadata wrapper does not.
+    // Reject before claiming/executing so a completed call can always be replayed.
+    let wrapped_operation = OperationId::new();
+    let mut wrapped_invocation = acyclic_harness::tool::ToolInvocation {
+        operation_id: wrapped_operation,
+        call_id: "wrapped-boundary".into(),
+        name: definition.name.clone(),
+        arguments: json!({"data":""}),
+    };
+    let bare_bytes = serde_json::to_vec(&wrapped_invocation)
+        .expect("fixture serialization")
+        .len();
+    wrapped_invocation.arguments["data"] =
+        json!("x".repeat(limits.file_bytes as usize - bare_bytes));
+    assert_eq!(
+        serde_json::to_vec(&wrapped_invocation)
+            .expect("fixture serialization")
+            .len() as u64,
+        limits.file_bytes
+    );
+    let rejected = runner
+        .run(
+            first_task,
+            &definition,
+            &wrapped_invocation,
+            &ToolContext::new(
+                first_context.clone(),
+                wrapped_operation,
+                "wrapped-boundary",
+                None,
+            )?,
+            None,
+            false,
+        )?
+        .await;
+    assert!(matches!(rejected, Err(Error::Invalid(_))));
+    assert!(
+        journal
+            .replay(wrapped_operation, 0, 64, None)?
+            .await?
+            .is_empty()
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
+    let deep_operation = OperationId::new();
+    let mut deep = json!(0);
+    for _ in 0..126 {
+        deep = json!([deep]);
+    }
+    let deep_invocation = acyclic_harness::tool::ToolInvocation {
+        operation_id: deep_operation,
+        call_id: "deep-record".into(),
+        name: definition.name.clone(),
+        arguments: json!({"nested":deep}),
+    };
+    let rejected = runner
+        .run(
+            first_task,
+            &definition,
+            &deep_invocation,
+            &ToolContext::new(first_context.clone(), deep_operation, "deep-record", None)?,
+            None,
+            false,
+        )?
+        .await;
+    assert!(matches!(rejected, Err(Error::Invalid(_))));
+    assert!(
+        journal
+            .replay(deep_operation, 0, 64, None)?
+            .await?
+            .is_empty()
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     let fresh_operation = OperationId::new();
     let bounded =
         DurableToolRunner::new(&registry, journal.clone(), None)?.with_limits(Limits {

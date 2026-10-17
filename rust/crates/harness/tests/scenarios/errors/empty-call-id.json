@@ -1,0 +1,5 @@
+{
+  "prompt":"Reject an empty call ID.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"","name":"read","arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"tool call identity is invalid","not_events":[{"kind":"tool_started"}]}
+}

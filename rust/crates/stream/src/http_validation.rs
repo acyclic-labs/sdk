@@ -140,6 +140,13 @@ fn validate_conflict(value: &Value) -> Result {
             "exists" => Ok(()),
             _ => Err("invalid conflict state"),
         }
+    } else if let Some(expected) = item.get("expectedCommitId") {
+        id(expected)?;
+        id(field(item, "actualCommitId")?)?;
+        if expected == field(item, "actualCommitId")? {
+            return Err("head conflict identities match");
+        }
+        Ok(())
     } else {
         u64_string(field(item, "expectedTail")?)?;
         if let Some(actual) = item.get("actualTail") {

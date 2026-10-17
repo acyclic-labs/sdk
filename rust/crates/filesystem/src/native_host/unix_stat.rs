@@ -99,7 +99,10 @@ pub(super) fn stat_at<W: NativeHostWork>(
                 flags,
                 rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
             ) {
-                Ok(stat) => return Ok(HostStat::from_statx(stat)),
+                Ok(stat) => {
+                    let handle = file_handle_at(fd, name, flags);
+                    return Ok(HostStat::from_statx(stat).with_handle(handle));
+                }
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
                 Err(error) => return Err(io::Error::from(error).into()),
@@ -107,6 +110,57 @@ pub(super) fn stat_at<W: NativeHostWork>(
         }
     }
     Ok(HostStat::from_stat(fstat(fd, name, work)?)?)
+}
+
+/// [`HostStat::handle`] of what `name` names relative to `fd`, resolved as
+/// the stat that precedes it resolved it. The two queries are separate, so
+/// a name replaced between them pairs one object's facts with another's
+/// handle: an identity no object has, which the next query of the name
+/// corrects. The query is metered as part of its stat.
+#[cfg(target_os = "linux")]
+fn file_handle_at(fd: i32, name: &std::ffi::CStr, flags: rustix::fs::AtFlags) -> Option<[u8; 32]> {
+    /// `struct file_handle` with room for `MAX_HANDLE_SZ` bytes.
+    #[repr(C)]
+    struct FileHandle {
+        handle_bytes: libc::c_uint,
+        handle_type: libc::c_int,
+        f_handle: [u8; 128],
+    }
+
+    let flags = if flags.contains(rustix::fs::AtFlags::EMPTY_PATH) {
+        libc::AT_EMPTY_PATH
+    } else {
+        0
+    };
+    let mut handle = FileHandle {
+        handle_bytes: 128,
+        handle_type: 0,
+        f_handle: [0; 128],
+    };
+    let mut mount_id: libc::c_int = 0;
+    // SAFETY: every pointer refers to a live, writable local of the layout
+    // the kernel expects, `handle_bytes` is the capacity of `f_handle`, and
+    // `name` is NUL-terminated; the call is synchronous.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_name_to_handle_at,
+            fd,
+            name.as_ptr(),
+            std::ptr::from_mut(&mut handle),
+            std::ptr::from_mut(&mut mount_id),
+            flags,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    let bytes = handle
+        .f_handle
+        .get(..usize::try_from(handle.handle_bytes).ok()?)?;
+    let mut digest = blake3::Hasher::new();
+    digest.update(&handle.handle_type.to_le_bytes());
+    digest.update(bytes);
+    Some(*digest.finalize().as_bytes())
 }
 
 #[cfg(unix)]

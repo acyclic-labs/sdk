@@ -1,0 +1,3 @@
+{"driver":"executor","prompt":"x","max_steps":1,"turns":["y"],"replay":true,"seed":{"guard.txt":"unchanged"},"expect":{"text":"y",
+  "request_count":1,"result":{"steps":1},"events":[{"kind":"model_started"},{"kind":"model","event":{"kind":"content"}},{"kind":
+  "model","event":{"kind":"completed"}}],"files":{"guard.txt":"unchanged"}}}

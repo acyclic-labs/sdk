@@ -1,25 +1,13 @@
+import { packageFixture } from "../../../../shared/tests/package-fixture.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 import { packageTemplates, pins, producerSources } from "../../src/generate.mjs";
 import { expectedModules } from "../../src/package.mjs";
 import { loadAuthority, sha256 } from "../../../../shared/authority.mjs";
 
 const sourceDirectory = join(dirname(fileURLToPath(import.meta.url)), "../../src");
-export function tar(entries) {
-  const blocks = [];
-  for (const { name, bytes, type = "0" } of entries) {
-    const header = Buffer.alloc(512);
-    header.write(name, 0, 100); header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
-    header.write(bytes.length.toString(8).padStart(11, "0") + "\0", 124); header.write("00000000000\0", 136);
-    header.fill(32, 148, 156); header.write(type, 156); header.write("ustar\0", 257); header.write("00", 263);
-    header.write(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148);
-    blocks.push(header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512));
-  }
-  return Buffer.concat([...blocks, Buffer.alloc(1024)]);
-}
 
 export function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "erlang-package-test-"));
@@ -49,10 +37,5 @@ export function fixture(t) {
     otp_version: runtime.otp_version, runtime_inventory_sha256: runtime.inventory_sha256,
     template_sha256: Object.fromEntries([...templates].map(([name, bytes]) => [name, sha256(bytes)])),
     outputs: [...payload.keys()].sort(), output_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])) };
-  const args = { authority, receipt: join(root, "receipt.json"), package: join(root, "package.tar.gz") };
-  const saveReceipt = () => writeFileSync(args.receipt, JSON.stringify(receipt));
-  const entries = () => [...payload].map(([name, bytes]) => ({ name, bytes }));
-  const saveArchive = (members = entries()) => { const bytes = gzipSync(tar(members)); writeFileSync(args.package, bytes); args.sha256 = sha256(bytes); };
-  saveReceipt(); saveArchive();
-  return { args, receipt, payload, saveReceipt, saveArchive, entries };
+  return packageFixture(root, authority, receipt, payload);
 }

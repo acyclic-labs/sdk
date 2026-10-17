@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./typescript/packages/auth" },
     { "path": "./typescript/packages/actors" },
     { "path": "./typescript/packages/workers" },
     { "path": "./typescript/packages/harness" },

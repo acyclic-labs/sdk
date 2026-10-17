@@ -16,38 +16,8 @@ pub(crate) struct DecodedPageShape {
     pub(crate) items: usize,
     pub(crate) nested_bytes: u64,
 }
-
-/// Admission, actual reserve failures, and completion points of canonical owned-buffer readers.
-pub enum ReadAllocationStep {
-    /// Admit owned capacity before reservation.
-    Allocate {
-        /// Requested bytes.
-        bytes: u64,
-        /// Allocation operations.
-        operations: u64,
-    },
-    /// Preserve the actual failed reserve cause.
-    ReserveFailed(std::collections::TryReserveError),
-    /// Reconcile owned physical capacity.
-    Capacity {
-        /// Requested bytes.
-        admitted_bytes: u64,
-        /// Physical bytes.
-        actual_bytes: u64,
-    },
-    /// Admit a byte copy.
-    BeforeCopy(u64),
-    /// Record a completed byte copy.
-    Copied(u64),
-    /// Admit hashing.
-    BeforeHash(u64),
-    /// Record completed hashing.
-    Hashed(u64),
-    /// Admit one decoded item.
-    BeforeItem,
-    /// Record one completed decoded item.
-    Item,
-}
+mod read_step;
+pub use read_step::ReadAllocationStep;
 
 /// Allocation and collection bounds for one canonical object decode.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -146,133 +116,8 @@ pub enum EncodeWorkStep {
     Allocation(EncodeAllocationStep),
 }
 
-pub(crate) struct EncodeAccounting<'a, 'root> {
-    accounting: &'a mut super::allocation::KernelAccounting<'root>,
-    owned_bytes: u64,
-    allocation: Option<super::allocation::KernelOwnedAllocation>,
-}
-
-impl<'a, 'root> EncodeAccounting<'a, 'root> {
-    pub(crate) fn new(accounting: &'a mut super::allocation::KernelAccounting<'root>) -> Self {
-        Self {
-            accounting,
-            owned_bytes: 0,
-            allocation: None,
-        }
-    }
-
-    pub(crate) fn observe(&mut self, step: &EncodeWorkStep) -> Result<(), crate::FsError> {
-        match step {
-            EncodeWorkStep::Check => self.accounting.check(),
-            EncodeWorkStep::Admit(delta) => self.accounting.admit(*delta),
-            EncodeWorkStep::Completed(delta) => self.accounting.record_completed(*delta),
-            EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
-                let requested = usize_to_u64(*capacity);
-                let next_owned = self
-                    .owned_bytes
-                    .checked_add(requested)
-                    .ok_or(crate::WorkError::Overflow)?;
-                let mut allocation = self
-                    .accounting
-                    .claim_owned(requested, u64::from(*capacity != 0))?;
-                self.owned_bytes = next_owned;
-                if let Some(owned) = self.allocation.as_mut() {
-                    owned.absorb(&mut allocation)?;
-                } else {
-                    self.allocation = Some(allocation);
-                }
-                Ok(())
-            }
-            EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes,
-            }) => {
-                self.owned_bytes = self
-                    .owned_bytes
-                    .checked_sub(*admitted_bytes)
-                    .and_then(|other| other.checked_add(*actual_bytes))
-                    .ok_or(crate::WorkError::Overflow)?;
-                let allocation = self.allocation.as_mut().ok_or(crate::WorkError::Overflow)?;
-                self.accounting
-                    .reconcile_owned(allocation, *admitted_bytes, *actual_bytes)
-            }
-            EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
-                self.accounting.admit(crate::WorkCounters {
-                    bytes_encoded: *bytes,
-                    ..crate::WorkCounters::default()
-                })
-            }
-            EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
-                self.accounting.record_completed(crate::WorkCounters {
-                    bytes_encoded: *bytes,
-                    ..crate::WorkCounters::default()
-                })
-            }
-        }
-    }
-
-    pub(crate) fn finish(
-        mut self,
-        result: Result<Vec<u8>, crate::FsError>,
-    ) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-        match result {
-            Ok(bytes) => {
-                if let Err(error) = self.accounting.check() {
-                    drop(bytes);
-                    self.retire()?;
-                    return Err(error);
-                }
-                let Some(allocation) = self.allocation.take() else {
-                    drop(bytes);
-                    return Err(crate::WorkError::Overflow.into());
-                };
-                self.owned_bytes = 0;
-                Ok((bytes, allocation))
-            }
-            Err(error) => {
-                self.retire()?;
-                Err(error)
-            }
-        }
-    }
-
-    fn retire(&mut self) -> Result<(), crate::FsError> {
-        let Some(allocation) = self.allocation.take() else {
-            return Ok(());
-        };
-        let bytes = std::mem::take(&mut self.owned_bytes);
-        match allocation {
-            super::allocation::KernelOwnedAllocation::Standalone => match self.accounting {
-                super::allocation::KernelAccounting::Standalone { allocations, .. } => {
-                    allocations.release(bytes)
-                }
-                super::allocation::KernelAccounting::BorrowedStandalone { allocations, .. } => {
-                    allocations.release(bytes)
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                super::allocation::KernelAccounting::NativeOriginal { .. } => {
-                    return Err(crate::WorkError::Overflow.into());
-                }
-            }
-            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed)),
-            #[cfg(not(target_arch = "wasm32"))]
-            super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                drop(allocation);
-                Ok(())
-            }
-        }
-    }
-}
-
-impl Drop for EncodeAccounting<'_, '_> {
-    fn drop(&mut self) {
-        let retired = self.retire();
-        debug_assert!(
-            retired.is_ok(),
-            "canonical encoder funding must retire its exact live capacity"
-        );
-    }
-}
+mod accounting;
+pub(crate) use accounting::EncodeAccounting;
 
 pub(crate) struct Encoder {
     bytes: Vec<u8>,

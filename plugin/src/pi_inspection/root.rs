@@ -1,17 +1,13 @@
 //! Original Root metadata and the SDK publication authority that owns it.
 use super::*;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 pub(crate) struct PiWritebackRoot {
     pub(crate) task: TaskId,
     pub(crate) volume: VolumeRef,
     pub(crate) workspace: acyclic_fs::WorkspaceId,
     pub(crate) identity: acyclic_fs::NativeRootIdentity,
-    pub(crate) path: PathBuf,
-    pub(crate) operation_directory: PathBuf,
+    pub(crate) publication: acyclic_harness::filesystem::CheckoutPublication,
     provider: Arc<crate::pi_root_provider::PiRootProvider>,
     allocation: crate::pi_root_allocation::PiRootAllocation,
     key: String,
@@ -98,9 +94,9 @@ impl PiWritebackRoot {
             ));
         }
         let key = work.display(key)?;
-        let root_path = work.path(path, None)?;
-        let operation_directory = crate::util::root_materialization_directory_with_native_work(
+        let publication = acyclic_harness::filesystem::CheckoutPublication::new(
             path,
+            identity,
             acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
             work,
         )?;
@@ -108,8 +104,6 @@ impl PiWritebackRoot {
         custody.absorb(&mut io_custody)?;
         for mut incoming in [
             key.1,
-            root_path.1,
-            operation_directory.1,
             work.claim(
                 std::mem::size_of::<Self>() as u64,
                 1,
@@ -123,8 +117,7 @@ impl PiWritebackRoot {
             volume,
             workspace: original.workspace_id,
             identity,
-            path: root_path.0,
-            operation_directory: operation_directory.0,
+            publication,
             provider,
             allocation,
             key: key.0,

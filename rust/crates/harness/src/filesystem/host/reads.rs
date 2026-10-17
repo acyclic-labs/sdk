@@ -1,4 +1,5 @@
 use super::*;
+mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -230,6 +231,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let (file, bytes, _) = self
+            .read_private_path_indexed(volume, grant, path, expected_generation, maximum_bytes, io)
+            .await?;
+        Ok((file, bytes))
+    }
+
+    pub(crate) async fn read_private_path_indexed(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         self.require_private_directory(volume, grant, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
@@ -242,62 +262,101 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "file or volume label is invalid",
             ));
         }
-        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-        let observation = self.resolve(&workspace, None).await?;
-        let generation = expected_generation.unwrap_or(&observation.generation);
-        self.retain_generation(&workspace, generation).await?;
-        let bytes = self
-            .read(
-                &workspace,
-                Some(generation),
-                &format!("/{path}"),
-                maximum_bytes,
-                None,
-            )
-            .await?;
-        let metadata = self
-            .read(
-                &workspace,
-                Some(generation),
-                &content_metadata_path_io(path, true, None)?,
-                u64::MAX,
-                None,
-            )
-            .await;
-        let (descriptor, display_name) = match metadata {
-            Ok(metadata) => {
-                let staged: FileRef = crate::contract::json_from_slice(&metadata)
-                    .map_err(|_| Error::Storage("private file metadata is corrupt".into()))?;
-                if staged.volume() != volume
-                    || staged.path() != path
-                    || staged.version() != "pending"
-                {
-                    return Err(Error::Storage(
-                        "private file metadata does not match the file".into(),
-                    ));
-                }
-                staged.descriptor().verify(&bytes, &mut None)?;
-                (
-                    staged.descriptor().clone(),
-                    staged.display_name().to_owned(),
-                )
-            }
-            Err(Error::NotFound(_)) => (
-                FileDescriptor::from_bytes(&bytes, "application/octet-stream", &mut None)?,
-                name.to_owned(),
-            ),
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
+        let _workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
+        let generation = match expected_generation {
+            Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+        };
+        fork_preparer_io::retain(&generation, Some(io)).await?;
+        let requested = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
+        let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        let bytes = read_generation(&generation, &requested, maximum_bytes, Some(io)).await?;
+        let metadata_path = content_metadata_path_io(path, true, Some(io))?;
+        let _metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
+        let metadata = read_generation(
+            &generation,
+            &metadata_path,
+            io.remaining()?.source_bytes_read,
+            Some(io),
+        )
+        .await;
+        let staged: Option<FileRef> = match metadata {
+            Ok(metadata) => Some(io.decode_json(&metadata)?),
+            Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
-        let reference = FileRef::new(
-            volume.clone(),
-            path.to_owned(),
-            hex::encode(generation.as_resource().key()),
-            descriptor,
-            display_name,
-            &mut None,
-        )?;
-        grant.require_file_read(&reference, io)?;
-        Ok((reference, bytes))
+        let _staged_hold = staged
+            .as_ref()
+            .map(|file| io.guard_owned(file.logical_owned_bytes()?))
+            .transpose()?;
+        let (descriptor, display_name) = if let Some(staged) = &staged {
+            if staged.volume() != volume || staged.path() != path {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "private file metadata does not match the file",
+                ));
+            }
+            crate::executor::with_history_io(Some(io), |work| {
+                staged.descriptor().verify(&bytes, work)
+            })?;
+            (
+                FileDescriptor::new(
+                    *staged.descriptor().sha256(),
+                    staged.descriptor().byte_length(),
+                    stock_string_copy(staged.descriptor().media_type(), Some(io))?,
+                )?,
+                stock_string_copy(staged.display_name(), Some(io))?,
+            )
+        } else {
+            (
+                crate::executor::with_history_io(Some(io), |work| {
+                    FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
+                })?,
+                stock_string_copy(name, Some(io))?,
+            )
+        };
+        let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
+        let reference = crate::executor::with_history_io(Some(io), |work| {
+            FileRef::new(
+                volume.copy(work)?,
+                stock_string_copy(path, Some(io))?,
+                version,
+                descriptor,
+                display_name,
+                work,
+            )
+        })?;
+        grant.require_file_read(&reference, Some(io))?;
+        if staged.is_some() {
+            // Upload metadata carries the publication operation, not a sentinel.
+            // Reuse range authentication to bind it to the original atomic write.
+            self.read_pinned_range(
+                &reference,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                Some(io),
+            )
+            .await?;
+        }
+        let publication = staged
+            .as_ref()
+            .map(|file| file_publication(file, Some(io)))
+            .transpose()?;
+        Ok((reference, bytes, publication))
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -445,3 +504,18 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
 }
 
 use crate::executor::stock_boundary;
+
+pub(crate) fn file_publication(
+    reference: &FileRef,
+    io: Option<&PreparationIo>,
+) -> Result<crate::OperationId> {
+    if let Some(io) = io {
+        io.charge(WorkCounters {
+            items_examined: reference.version().len() as u64,
+            ..Default::default()
+        })?;
+    }
+    uuid::Uuid::parse_str(reference.version())
+        .map(|id| crate::OperationId::from_bytes(*id.as_bytes()))
+        .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
+}

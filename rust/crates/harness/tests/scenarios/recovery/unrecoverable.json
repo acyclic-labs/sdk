@@ -1,0 +1,4 @@
+{"prompt":"An uncertain request must not be generated again.","turns":[[{"type":"event","kind":"content",
+  "delta":"partial"},{"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content",
+  "delta":"partial"}],"continuation":null}],"expect":{"error":"operation outcome is indeterminate",
+  "not_events":[{"kind":"model","event":{"kind":"completed"}}]}}

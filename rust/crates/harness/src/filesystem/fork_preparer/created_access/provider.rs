@@ -45,6 +45,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<CreatedResourceReceipt> {
         let allocation =
             authenticate(&self.host, self.issuer.audience(), request, proof, Some(io)).await?;
+        // Verify immutable input bodies once when issuing the reader. Rechecking
+        // its protected allocation identity must not reload those bodies on each read.
+        if allocation.authority.is_some() {
+            for file in &request.input_files {
+                let bytes = self
+                    .host
+                    .read_pinned_io(file, request.maximum_bytes, Some(io))
+                    .await?;
+                let held = io.guard_bytes(&bytes)?;
+                drop(bytes);
+                drop(held);
+            }
+        }
         crate::core::resource_creation_clone_reservation(
             request,
             proof,
@@ -69,10 +82,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .strip_prefix("harness-")
             .ok_or_else(|| io.invalid("content namespace has no harness prefix"))?;
         let read = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("volume:read:{suffix}"), work)
+            crate::executor::preparation_format(
+                format_args!(
+                    "{}{suffix}",
+                    acyclic_fs::access::VolumeOperation::Read.capability_prefix()
+                ),
+                work,
+            )
         })?;
         let write = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("volume:write:{suffix}"), work)
+            crate::executor::preparation_format(
+                format_args!(
+                    "{}{suffix}",
+                    acyclic_fs::access::VolumeOperation::Write.capability_prefix()
+                ),
+                work,
+            )
         })?;
         let id = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(

@@ -127,6 +127,16 @@ impl McpCatalog {
 
     /// Validates the complete catalog before mutation.
     pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
+        self.validate_checked(maximum_tools, maximum_bytes, &|| Ok(()))
+    }
+
+    fn validate_checked(
+        &self,
+        maximum_tools: u32,
+        maximum_bytes: u32,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        check()?;
         crate::registry::validate_component_label(&self.server, "MCP server")?;
         crate::registry::validate_component_label(&self.revision, "MCP revision")?;
         if self.server.contains('.') {
@@ -142,12 +152,14 @@ impl McpCatalog {
         }
         crate::executor::json::json_byte_length(self, u64::from(maximum_bytes), &mut None)?;
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
+        check()?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
+            check()?;
             if !names.insert(&tool.name) {
                 return Err(Error::Conflict("duplicate MCP tool name".into()));
             }
-            self.definition(tool)?.validate(&mut None)?;
+            self.definition(tool)?.validate_checked(&mut None, check)?;
             if tool.input_schema.get("type").and_then(Value::as_str) != Some("object") {
                 return Err(Error::Invalid("MCP input schema must be an object".into()));
             }
@@ -158,6 +170,7 @@ impl McpCatalog {
                     ));
                 }
                 crate::executor::compile_json_schema(schema, "MCP output", &mut None)?;
+                check()?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -252,7 +265,27 @@ impl McpCatalog {
         maximum_tools: u32,
         maximum_bytes: u32,
     ) -> Result<()> {
-        self.validate(maximum_tools, maximum_bytes)?;
+        self.install_checked(
+            registry,
+            previous,
+            transport,
+            projection,
+            (maximum_tools, maximum_bytes),
+            &|| Ok(()),
+        )
+    }
+
+    pub(super) fn install_checked(
+        &self,
+        registry: &mut ToolRegistry,
+        previous: Option<&Self>,
+        transport: &Arc<dyn McpToolTransport>,
+        projection: &Arc<dyn ToolProjection>,
+        bounds: (u32, u32),
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        self.validate_checked(bounds.0, bounds.1, check)?;
+        check()?;
         self.validate_transport_binding(transport.as_ref())?;
         if previous.is_some_and(|old| old.server != self.server) {
             return Err(Error::Conflict(
@@ -290,11 +323,13 @@ impl McpCatalog {
             }
         }
         for remote in &self.tools {
+            check()?;
             let definition = self.definition(remote)?;
             let name = definition.name.clone();
-            next.register(
+            next.register_checked(
                 (
                     Tool {
+                        hook_names: &[],
                         definition,
                         executor: Arc::new(RemoteTool {
                             server: self.server.clone(),
@@ -308,6 +343,7 @@ impl McpCatalog {
                 ),
                 &mut None,
                 None,
+                check,
             )?;
             if self.selected(&remote.name) {
                 next.select_model_version(&name, &self.revision)?;
@@ -315,6 +351,7 @@ impl McpCatalog {
                 next.remove_from_model(&name)?;
             }
         }
+        check()?;
         *registry = next;
         Ok(())
     }

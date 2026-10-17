@@ -4,9 +4,12 @@ import {mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
+import YAML from './vendor/yaml.cjs';
 
 const workflow=readFileSync('.github/workflows/static.yml','utf8');
-const command=workflow.match(/^        run: (cargo .+)$/m)?.[1];
+const commands=YAML.parse(workflow).jobs.static.steps.filter(step=>step.run).map(step=>step.run);
+assert.equal(commands.length,1);
+const [command]=commands;
 assert.equal(command,'cargo update --workspace --locked');
 const args=command.split(' ').slice(1);
 const env={...process.env,RUSTUP_TOOLCHAIN:'stable'};

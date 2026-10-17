@@ -11,12 +11,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
 use futures::StreamExt;
-use napi::bindgen_prelude::{Buffer, Error, Result, Status};
+use napi::Env;
+use napi::bindgen_prelude::{Buffer, Error, Promise, PromiseRaw, Result, Status};
+use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 use prost::Message;
 use serde::Serialize;
@@ -24,7 +25,6 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const UNAVAILABLE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
@@ -285,9 +285,11 @@ where
     })
 }
 
+type FollowFrames = futures::stream::BoxStream<'static, std::result::Result<Vec<u8>, StreamError>>;
 #[derive(Clone)]
 struct FollowState {
-    records: Arc<Mutex<Option<acyclic_stream::RecordStream>>>,
+    // Lock order: cursor -> provider cursor; cancellation never acquires this lock.
+    records: Arc<Mutex<Option<FollowFrames>>>,
     token: CancellationToken,
     closed: Arc<AtomicBool>,
 }
@@ -335,10 +337,10 @@ pub struct NativeStreamFollow {
 
 #[napi]
 impl NativeStreamFollow {
-    /// Returns the next canonical `ReadResponse`, or an empty result at end/close.
+    /// Returns the next canonical response for this cursor, or an empty result at end/close.
     ///
-    /// Transient `Unavailable` items remain owned by the Rust cursor and are
-    /// retried here. Terminal stream errors are returned in the result envelope.
+    /// Session recovery belongs to the provider. Every terminal error, including
+    /// `Unavailable`, is returned in the result envelope.
     #[napi]
     pub async fn next_result(&self) -> Result<NativeStreamNextResult> {
         if self.state.closed.load(Ordering::Acquire) {
@@ -352,77 +354,39 @@ impl NativeStreamFollow {
         let Some(stream) = records.as_mut() else {
             return Ok(NativeStreamNextResult::end());
         };
-        loop {
-            let next = run_with_cancellation(
-                async { Ok(stream.next().await) },
-                Some(self.state.token.clone()),
-            )
-            .await;
-            match next {
-                Ok(Some(Ok(record))) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    let response =
-                        wire_codec::read_response_wire(vec![wire_codec::record_wire(record)]);
-                    return Ok(NativeStreamNextResult::value(
-                        encode(&response, "follow").map_err(|error| napi_error(&error))?,
-                    ));
-                }
-                Ok(Some(Err(StreamError::Unavailable))) => {
-                    // RecordStream retains its cursor after an unavailable
-                    // item so the next poll can reopen or retry the active
-                    // endpoint. Keep that recovery in Rust: exposing the
-                    // transient error to JavaScript would make the iterator
-                    // throw and close the otherwise retryable cursor.
-                    if self.state.closed.load(Ordering::Acquire) || self.state.token.is_cancelled()
-                    {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    // Keep a persistently unavailable endpoint from turning a
-                    // retryable cursor into a tight loop. This matches the
-                    // retry delay used by the canonical gRPC record cursor.
-                    if let Err(error) = run_with_cancellation(
-                        async {
-                            tokio::time::sleep(UNAVAILABLE_RETRY_DELAY).await;
-                            Ok::<(), NativeStreamErrorMetadata>(())
-                        },
-                        Some(self.state.token.clone()),
-                    )
-                    .await
-                    {
-                        if self.state.closed.load(Ordering::Acquire)
-                            || self.state.token.is_cancelled()
-                        {
-                            records.take();
-                            return Ok(NativeStreamNextResult::end());
-                        }
-                        return Ok(NativeStreamNextResult::failure(error));
-                    }
-                }
-                Ok(Some(Err(error))) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    return Ok(NativeStreamNextResult::failure(stream_error(&error)));
-                }
-                Ok(None) => {
+        let next = run_with_cancellation(
+            async { Ok(stream.next().await) },
+            Some(self.state.token.clone()),
+        )
+        .await;
+        match next {
+            Ok(Some(Ok(bytes))) => {
+                if self.state.closed.load(Ordering::Acquire) {
                     records.take();
                     return Ok(NativeStreamNextResult::end());
                 }
-                Err(error) => {
-                    if self.state.closed.load(Ordering::Acquire) {
-                        records.take();
-                        return Ok(NativeStreamNextResult::end());
-                    }
-                    if self.state.token.is_cancelled() {
-                        records.take();
-                    }
-                    return Ok(NativeStreamNextResult::failure(error));
+                Ok(NativeStreamNextResult::value(Buffer::from(bytes)))
+            }
+            Ok(Some(Err(error))) => {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
                 }
+                Ok(NativeStreamNextResult::failure(stream_error(&error)))
+            }
+            Ok(None) => {
+                records.take();
+                Ok(NativeStreamNextResult::end())
+            }
+            Err(error) => {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
+                }
+                if self.state.token.is_cancelled() {
+                    records.take();
+                }
+                Ok(NativeStreamNextResult::failure(error))
             }
         }
     }
@@ -482,6 +446,64 @@ async fn connect_native(
 
 #[napi]
 impl NativeStreamClient {
+    /// Resolves JavaScript credentials inside each Rust retry and reconnect.
+    #[napi(js_name = "withCredentialProvider")]
+    pub fn with_credential_provider(
+        &self,
+        callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>,
+    ) -> Self {
+        Self::from_client(
+            self.provider
+                .with_credential_provider(credentials::provider(callback)),
+        )
+    }
+
+    /// Establishes TLS without calling the provider until a physical RPC starts.
+    #[napi(js_name = "connectWithCredentialResult")]
+    pub async fn connect_with_credential_result(
+        endpoint: String,
+        callback: ThreadsafeFunction<(), Promise<String>, (), Status, false, true>,
+        ca_certificate_pem: Option<Buffer>,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamConnectResult> {
+        let credential = credentials::provider(callback);
+        let certificate = ca_certificate_pem.map(|bytes| bytes.to_vec());
+        let result = run_with_cancellation(
+            async move {
+                grpc::Client::connect_eager_with_credential(
+                    &endpoint,
+                    credential,
+                    certificate.as_deref(),
+                )
+                .await
+                .map_err(|error| connect_error(&error))
+            },
+            cancellation_state(cancellation),
+        )
+        .await;
+        Ok(match result {
+            Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
+            Err(error) => NativeStreamConnectResult::failure(error),
+        })
+    }
+
+    /// Uses a request-local credential while retaining the existing TLS channel.
+    #[napi(js_name = "withCredential")]
+    pub fn with_credential(&self, token: String) -> Result<Self> {
+        self.provider
+            .with_credential(&token)
+            .map(Self::from_client)
+            .map_err(|error| napi_error(&connect_error(&error)))
+    }
+
+    /// Abandons pending handshakes before cancelling their credential work.
+    #[napi]
+    pub fn abandon_session_attempts(&self) -> Result<()> {
+        self.provider
+            .abandon_session_attempts()
+            .map_err(|error| napi_error(&stream_error(&error)))
+    }
+
     /// Connects using the canonical Rust native gRPC transport.
     #[napi(factory)]
     pub async fn connect(
@@ -626,17 +648,50 @@ impl NativeStreamClient {
 
     /// Opens a Rust-owned follow cursor from an encoded request.
     #[napi(js_name = "openFollowResult")]
-    pub async fn open_follow_result(
+    pub fn open_follow_result<'env>(
         &self,
+        env: &'env Env,
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamFollowResult> {
-        Ok(
-            match open_follow(&self.provider, request, cancellation).await {
-                Ok(follow) => NativeStreamFollowResult::success(follow),
-                Err(error) => NativeStreamFollowResult::failure(error),
-            },
-        )
+    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
+        let client = Arc::clone(&self.provider);
+        let cancellation = cancellation.map(|value| NativeStreamCancellation {
+            token: value.token.clone(),
+        });
+        let work = async move {
+            Ok(
+                match open_follow(&client, request, cancellation.as_ref()).await {
+                    Ok(follow) => NativeStreamFollowResult::success(follow),
+                    Err(error) => NativeStreamFollowResult::failure(error),
+                },
+            )
+        };
+        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
+        env.spawn_future(work)
+    }
+
+    /// Opens live child discovery using the client's shared Streams session.
+    #[napi(js_name = "openChildrenResult")]
+    pub fn open_children_result<'env>(
+        &self,
+        env: &'env Env,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
+        let client = Arc::clone(&self.provider);
+        let cancellation = cancellation.map(|value| NativeStreamCancellation {
+            token: value.token.clone(),
+        });
+        let work = async move {
+            Ok(
+                match open_children(&client, request, cancellation.as_ref()).await {
+                    Ok(follow) => NativeStreamFollowResult::success(follow),
+                    Err(error) => NativeStreamFollowResult::failure(error),
+                },
+            )
+        };
+        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
+        env.spawn_future(work)
     }
 
     /// Executes a canonical children-page request.
@@ -685,6 +740,8 @@ impl NativeStreamClient {
     }
 }
 
+mod credentials;
+mod eager;
 mod operations;
 use operations::*;
 

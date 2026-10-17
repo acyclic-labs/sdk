@@ -1,21 +1,18 @@
 //! Real local Stream/Filesystem persistence through the same canonical loop.
 use super::*;
 use crate::contract::capability;
+use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 use crate::{
     AgentId, Capabilities,
     bundle::{HarnessBuilder, HarnessBundle},
-    context::{
-        Context, ContextPipeline, ContextPlacement, ModelContextCapacity, ModelTokenCount,
-        SourceStage,
-    },
+    context::{Context, ContextPipeline, ContextPlacement, ModelTokenCount, SourceStage},
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::Model,
     resources::ProviderRef,
     runtime::ContentBindings,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 type LocalJournal = FilesystemExecutionJournal<
     acyclic_stream::LocalStream,
@@ -23,46 +20,18 @@ type LocalJournal = FilesystemExecutionJournal<
     acyclic_fs::LocalObjectBackend,
 >;
 
-#[derive(Default)]
-struct CountedModel(AtomicUsize);
-impl ModelProvider for CountedModel {
-    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Ok(ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 512,
-            message_tokens: vec![512; request.request().messages.len()],
-        })
-    }
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(request.request_digest(), dispatch.request_digest);
-        assert!(request.request().messages.len() <= 8);
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
-                delta: "durable summary or answer".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: serde_json::Value::Null,
-            }),
-        ]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: crate::model::ModelDispatch,
-        _observed: &'a [crate::model::ModelEvent],
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Err(Error::Unsupported("all fixture attempts settle".into())) })
-    }
+fn counted_model(turns: usize) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(std::iter::repeat_n(
+        ScriptedTurn::Text("durable summary or answer".into()),
+        turns,
+    ))
+    .with_token_counter(|request| {
+        Ok(ModelTokenCount::from_upper_bounds(
+            request.request_digest(),
+            512,
+            vec![512; request.request().messages.len()],
+        ))
+    })
 }
 
 struct Binding {
@@ -73,7 +42,7 @@ struct Binding {
 async fn open(
     root: &std::path::Path,
     agent: AgentId,
-    model: Arc<CountedModel>,
+    model: Arc<ScriptedModelProvider>,
     initialize: bool,
 ) -> Result<Binding> {
     let limits = Limits {
@@ -240,7 +209,7 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
     const TURNS: u16 = WARMUP + 10 * N;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let agent = AgentId::new();
-    let model = Arc::new(CountedModel::default());
+    let model = Arc::new(counted_model(usize::from(TURNS) * 2));
     let mut binding = open(directory.path(), agent, model.clone(), true).await?;
     let initial_operation = OperationId::new();
     let input = binding
@@ -319,7 +288,10 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
             "{counter} grows faster than the workload: {small:?} -> {large:?}"
         );
     }
-    let requests = model.0.load(Ordering::SeqCst);
+    let captured = model.requests();
+    assert!(captured.iter().all(|request| request.messages.len() <= 8));
+    assert!(model.reconciliations().is_empty());
+    let requests = captured.len();
     assert!(
         requests > usize::from(TURNS),
         "count pressure must admit summaries"
@@ -332,7 +304,7 @@ async fn durable_turn_growth_reopens_and_replays_original_identity() -> Result<(
         .await?;
     assert_eq!(output, expected);
     assert_eq!(
-        model.0.load(Ordering::SeqCst),
+        model.requests().len(),
         requests,
         "replay must not dispatch again"
     );

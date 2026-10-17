@@ -33,6 +33,17 @@ impl UnaryResponseLimits {
             text_body_bytes: text,
         })
     }
+    /// Aggregate body budget applies only to unary responses. Streaming responses
+    /// retain the independent protobuf message, trailer and metadata bounds.
+    pub const fn body_bytes(self, streaming: bool, text: bool) -> Option<usize> {
+        if streaming {
+            None
+        } else if text {
+            Some(self.text_body_bytes)
+        } else {
+            Some(self.binary_body_bytes)
+        }
+    }
     /// Maximum decoded protobuf message bytes.
     pub const fn message_bytes(self) -> usize {
         self.message_bytes
@@ -86,5 +97,38 @@ mod tests {
             usize::MAX / 4 * 4
         );
         assert_eq!(UnaryResponseLimits::new(maximum + 1), None);
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn streaming_preserves_each_bound_without_a_unary_aggregate(payload in 0_usize..(1<<20), text in any::<bool>()) {
+            let limits = UnaryResponseLimits::new(payload).unwrap();
+            prop_assert_eq!(limits.body_bytes(true, text), None);
+            prop_assert_eq!(limits.body_bytes(false, text), Some((payload + TRAILER_BYTES + 10) * if text { 4 } else { 1 }));
+            prop_assert_eq!(limits.message_bytes(), payload);
+            prop_assert_eq!(limits.trailer_bytes(), TRAILER_BYTES);
+            prop_assert_eq!(limits.header_list_bytes(), HEADER_LIST_BYTES);
+        }
+    }
+    #[test]
+    fn negative_control_unary_budget_rejects_an_otherwise_valid_stream() {
+        let limits = UnaryResponseLimits::new(8).unwrap();
+        let body = limits.binary_body_bytes() + 1;
+        assert!(
+            limits
+                .body_bytes(true, false)
+                .is_none_or(|maximum| body <= maximum)
+        );
+        assert!(
+            !limits
+                .body_bytes(false, false)
+                .is_none_or(|maximum| body <= maximum)
+        );
     }
 }

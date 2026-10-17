@@ -37,7 +37,12 @@ enum Task {
 
 type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
 
-async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
+async fn diff_with_accounting<
+    S: AsyncObjectStore,
+    F: Format,
+    const PREFIX: bool,
+    const RESET: bool,
+>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
@@ -144,7 +149,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                         right.retire(accounting)?;
                         aligned?;
                     } else {
-                        let pushed = push_page::<F>(
+                        let pushed = push_page::<F, PREFIX, RESET>(
                             left,
                             true,
                             &mut tasks,
@@ -158,7 +163,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                             right.retire(accounting)?;
                             return Err(error);
                         }
-                        push_page::<F>(
+                        push_page::<F, PREFIX, RESET>(
                             right,
                             false,
                             &mut tasks,
@@ -182,7 +187,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                     )
                     .await?;
                     let bytes = page.logical_bytes;
-                    push_page::<F>(
+                    push_page::<F, PREFIX, RESET>(
                         Owned::new(page, guard, bytes),
                         before,
                         &mut tasks,
@@ -198,23 +203,7 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                 break;
             }
         }
-        let mut index = 0;
-        while index < values.value.len() {
-            let change = values
-                .value
-                .get(index)
-                .ok_or(FsError::DiffAllocationFailed)?;
-            if change.before == change.after {
-                remove_change::<F>(&mut values, index, accounting)?;
-            } else {
-                index += 1;
-            }
-        }
-        while values.value.len() > maximum {
-            truncated = true;
-            let index = values.value.len() - 1;
-            remove_change::<F>(&mut values, index, accounting)?;
-        }
+        truncated |= retain_changes::<F>(&mut values, maximum, accounting)?;
         Ok(truncated)
     }
     .await;
@@ -337,7 +326,7 @@ fn internal_children<F: Format>(
     clippy::too_many_arguments,
     reason = "one page updates the guarded frontier and bounded sorted changes"
 )]
-fn push_page<F: Format>(
+fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
     mut page: Owned<OwnedPage<F>>,
     before: bool,
     tasks: &mut Owned<Vec<Task>>,
@@ -362,6 +351,16 @@ fn push_page<F: Format>(
             }
             return Ok(());
         }
+        // One decoded leaf has strictly increasing keys. Keep its preceding
+        // insertion position, but reset for every page: another side/leaf may
+        // start before it. No changes are removed while this cursor is live.
+        // The false variant deliberately carries an end-of-previous-leaf
+        // cursor into the next page, for the traversal reset negative control.
+        let mut cursor = if RESET {
+            None
+        } else {
+            Some(values.value.len())
+        };
         match &mut page.value.page {
             PageLease::Owned(Page::Leaf(entries)) => {
                 // Move owned leaf payloads; split their original guard instead
@@ -374,13 +373,14 @@ fn push_page<F: Format>(
                     let bytes = F::value_owned_bytes(&value);
                     let guard = split_allocation(&mut page.allocation, bytes)?;
                     page.bytes = page.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
-                    insert_value::<F>(
+                    insert_value::<F, PREFIX>(
                         values,
                         Owned::new(value, guard, bytes),
                         before,
                         maximum,
                         limits,
                         accounting,
+                        &mut cursor,
                     )?;
                 }
             }
@@ -399,13 +399,14 @@ fn push_page<F: Format>(
                             0,
                         )?;
                         let bytes = F::value_owned_bytes(&value);
-                        insert_value::<F>(
+                        insert_value::<F, PREFIX>(
                             values,
                             Owned::new(value, guard, bytes),
                             before,
                             maximum,
                             limits,
                             accounting,
+                            &mut cursor,
                         )?;
                     }
                 }
@@ -418,19 +419,32 @@ fn push_page<F: Format>(
     result
 }
 
-fn insert_value<F: Format>(
+fn insert_value<F: Format, const PREFIX: bool>(
     values: &mut Changes<F>,
     value: Owned<F::Value>,
     before: bool,
     maximum: usize,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
+    cursor: &mut Option<usize>,
 ) -> Result<(), FsError> {
     let prepared = (|| {
-        let position =
-            super::search::binary_search_with_accounting(&values.value, accounting, |entry| {
-                entry.key.cmp(F::key(&value.value))
-            })?;
+        let compare = |entry: &ValueChange<F::Key, F::Value>| {
+            #[cfg(all(test, feature = "memory"))]
+            tests::ordered::record_comparison();
+            entry.key.cmp(F::key(&value.value))
+        };
+        let position = match if PREFIX { *cursor } else { None } {
+            None => {
+                super::search::binary_search_with_accounting(&values.value, accounting, compare)?
+            }
+            Some(start) => super::search::binary_search_from_with_accounting(
+                &values.value,
+                start,
+                accounting,
+                compare,
+            )?,
+        };
         if let Err(index) = position {
             values
                 .ensure_for_push(maximum.saturating_add(1), accounting)
@@ -489,24 +503,51 @@ fn insert_value<F: Format>(
     values.allocation.absorb(&mut allocation)?;
     values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
     *destination = Some(value);
+    *cursor = Some(index + 1);
     Ok(())
 }
 
-fn remove_change<F: Format>(
+fn retain_changes<F: Format>(
     values: &mut Changes<F>,
-    index: usize,
+    maximum: usize,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<(), FsError> {
-    let change = values.value.remove(index);
-    let bytes = F::key_owned_bytes(&change.key)
-        .checked_add(change.before.as_ref().map_or(0, F::value_owned_bytes))
-        .ok_or(WorkError::Overflow)?
-        .checked_add(change.after.as_ref().map_or(0, F::value_owned_bytes))
-        .ok_or(WorkError::Overflow)?;
+) -> Result<bool, FsError> {
+    let mut retained = 0;
+    let mut bytes = 0u64;
+    let mut truncated = false;
+    for change in &values.value {
+        if change.before != change.after {
+            if retained < maximum {
+                retained += 1;
+                continue;
+            }
+            truncated = true;
+        }
+        bytes = bytes
+            .checked_add(F::key_owned_bytes(&change.key))
+            .and_then(|bytes| {
+                bytes.checked_add(change.before.as_ref().map_or(0, F::value_owned_bytes))
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(change.after.as_ref().map_or(0, F::value_owned_bytes))
+            })
+            .ok_or(WorkError::Overflow)?;
+    }
+    let remaining_bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+    retained = 0;
+    values.value.retain(|change| {
+        if change.before == change.after || retained == maximum {
+            false
+        } else {
+            retained += 1;
+            true
+        }
+    });
+    // Removed payloads are dropped before their custody is released.
     let allocation = split_allocation(&mut values.allocation, bytes)?;
-    values.bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
-    drop(change);
-    retire_allocation(allocation, bytes, accounting)
+    values.bytes = remaining_bytes;
+    retire_allocation(allocation, bytes, accounting)?;
+    Ok(truncated)
 }
 
 fn allocation_error(error: FsError) -> FsError {
@@ -525,7 +566,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, FileTableFormat>(
+    diff_with_accounting::<S, FileTableFormat, true, true>(
         store,
         before,
         after,
@@ -546,7 +587,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, TreeFormat>(
+    diff_with_accounting::<S, TreeFormat, true, true>(
         store,
         before,
         after,

@@ -1,5 +1,25 @@
 use super::*;
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn reported_control_paths_are_exact_destination_fences(name in "[a-z]{1,16}") {
+        let parent = std::env::current_dir().unwrap();
+        let destination = parent.join(name);
+        let reported = super::super::native_mount_control_paths(&destination).unwrap();
+        let actual = MountDestinationGuard::paths_for_canonical(&destination).unwrap();
+        let restored: PathBuf = serde_json::from_slice(&serde_json::to_vec(&destination).unwrap()).unwrap();
+        proptest::prop_assert_eq!(super::super::native_mount_control_paths(&restored).unwrap(), reported.clone());
+        proptest::prop_assert_eq!(&reported[0], &actual.0);
+        proptest::prop_assert_eq!(&reported[1], &actual.1);
+        proptest::prop_assert_ne!(&reported[0], &reported[1]);
+        for path in reported {
+            proptest::prop_assert_eq!(path.parent(), Some(parent.as_path()));
+            proptest::prop_assert_ne!(path, destination.clone());
+        }
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {
@@ -269,9 +289,9 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
     let cancellation = crate::CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(
         crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
-    )));
+    ));
     let meter = NativeMaterializationWork::from_meter(Arc::clone(&original));
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;

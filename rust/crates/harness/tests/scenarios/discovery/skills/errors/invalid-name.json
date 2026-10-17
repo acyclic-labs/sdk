@@ -1,0 +1,2 @@
+{"seed":{"skills/inspect/SKILL.md":"---\nname: Upper\ndescription: Inspect files\n---\nSECRET BODY"},"expect":{"error"
+  :"skill metadata is invalid"}}

@@ -268,7 +268,7 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+        let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
             ensure_current_host_node(self.source_root, &host_path, &metadata, self.meter)?;
             capture_reserve(&mut self.mutations, 1, self.meter)?;
             self.mutations.push(AuthoredMutation::SetMetadata {
@@ -276,6 +276,7 @@ impl CaptureBatch<'_> {
                 metadata: canonical_metadata,
             });
             capture_drop_host_path(host_path, self.meter)?;
+            true
         } else if host_kind == FileKind::Regular {
             self.regular(
                 checkout,
@@ -283,9 +284,12 @@ impl CaptureBatch<'_> {
                 host_path,
                 &metadata,
                 canonical_metadata,
-                exists_with_kind,
+                (
+                    current.filter(|_| exists_with_kind),
+                    !linked_regular && prior_metadata == Some(canonical_metadata),
+                ),
             )
-            .await?;
+            .await?
         } else {
             self.special(
                 path,
@@ -295,8 +299,11 @@ impl CaptureBatch<'_> {
                 canonical_metadata,
                 exists_with_kind,
             )?;
+            true
         };
-        self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
+        if changed {
+            self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
+        }
         if let Some(linked_path) = linked_path {
             capture_reserve(&mut self.host_links, 1, self.meter)?;
             self.host_links
@@ -375,13 +382,13 @@ impl CaptureBatch<'_> {
 
     async fn regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
-        checkout: &Checkout<A, O>,
+        checkout: &mut Checkout<A, O>,
         path: NamespacePath,
         host_path: CaptureHostPath,
         metadata: &HostStat,
         canonical_metadata: FileMetadata,
-        exists_with_kind: bool,
-    ) -> Result<(), CaptureError> {
+        existing: (Option<FileRecord>, bool),
+    ) -> Result<bool, CaptureError> {
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let staged = stage_regular_body(
             checkout,
@@ -398,12 +405,81 @@ impl CaptureBatch<'_> {
         let ranges = staged;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
+        let unchanged = if logical_bytes == 0
+            && ranges.is_empty()
+            && existing.1
+            && existing.0.is_some_and(|record| record.link_count == 1)
+            && existing.0.is_some_and(|record| match record.payload {
+                crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
+                _ => false,
+            }) {
+            true
+        } else if let (Some(record), true, [(range, content)]) =
+            (existing.0, existing.1, ranges.as_slice())
+            && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
+            && range.offset == 0
+            && range.length == logical_bytes
+            && content.logical_bytes() == logical_bytes
+        {
+            let cancellation = self.meter.cancellation();
+            let mut accounting = crate::kernel::KernelAccounting::native(self.meter, cancellation);
+            let planned = checkout
+                .plan_record_extents(
+                    record,
+                    crate::ByteRange {
+                        offset: 0,
+                        length: logical_bytes,
+                    },
+                    self.maximum_extent_spans,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await;
+            let planned = match planned {
+                Ok(value) => Some(value),
+                Err(crate::FsError::FileRead(crate::kernel::FileRangeReadError::Extent(
+                    crate::kernel::ExtentReadError::TooManySpans,
+                ))) => None,
+                Err(error) => return Err(error.into()),
+            };
+            let expected = crate::kernel::ExtentSlice {
+                offset: 0,
+                length: logical_bytes,
+                source_end: logical_bytes,
+                kind: crate::kernel::ExtentKind::Content {
+                    object: content.root(),
+                    object_offset: 0,
+                },
+            };
+            let unchanged = planned.as_ref().is_some_and(|(plan, _)| {
+                plan.as_ref()
+                    .is_some_and(|plan| plan.spans.as_slice() == std::slice::from_ref(&expected))
+            });
+            drop(planned);
+            unchanged
+        } else {
+            false
+        };
+        #[cfg(test)]
+        let unchanged = self
+            .baseline
+            .and_then(|baseline| baseline.reuse_override)
+            .unwrap_or(unchanged);
+        if unchanged {
+            drop(ranges);
+            self.meter
+                .clone()
+                .release(ranges_bytes)
+                .map_err(capture_demand_error)?;
+            capture_drop_path(path, self.meter)?;
+            return Ok(false);
+        }
         let count = ranges
             .len()
             .checked_add(2 + usize::from(logical_bytes != 0))
             .ok_or(CaptureError::from(WorkError::Overflow))?;
         capture_reserve(&mut self.mutations, count, self.meter)?;
-        if exists_with_kind {
+        if existing.0.is_some() {
             self.mutations.push(AuthoredMutation::Resize {
                 path: clone_capture_path(&path, self.meter)?,
                 logical_bytes: 0,
@@ -436,7 +512,7 @@ impl CaptureBatch<'_> {
             path,
             metadata: canonical_metadata,
         });
-        Ok(())
+        Ok(true)
     }
 
     fn special(

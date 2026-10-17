@@ -1,10 +1,10 @@
 use super::*;
+pub(crate) const COMPILED_PROTOCOL: (&str, &str) =
+    (EVENT_WIRE_VERSION, env!("HARNESS_DESCRIPTOR_DIGEST"));
 pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
-        version: EVENT_WIRE_VERSION.into(),
-        descriptor_digest: blake3::hash(crate::FILE_DESCRIPTOR_SET)
-            .to_hex()
-            .to_string(),
+        version: COMPILED_PROTOCOL.0.into(),
+        descriptor_digest: COMPILED_PROTOCOL.1.into(),
     }
 }
 pub(crate) fn validate_protocol(

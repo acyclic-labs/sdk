@@ -13,8 +13,12 @@
 *.bin binary
 *.wasm binary
 *.node binary
+rust/crates/auth/fuzz/corpus/** binary
 
 # Preserve byte-exact patch context.
 patches/*.patch -whitespace
 # ts-rs emits spaces before line breaks in its generated declarations.
 typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
+
+# Fuzz corpus entries are byte-exact inputs, including intentional trailing spaces.
+rust/crates/harness-fuzz/corpus/** binary

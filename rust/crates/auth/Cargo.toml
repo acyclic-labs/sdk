@@ -1,0 +1,39 @@
+[package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
+name = "acyclic-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared capability chain contract and verification"
+
+
+[dependencies]
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
+prost.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+ts-rs = "=12.0.1"
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+futures.workspace = true
+syn = { version = "3", features = ["full"] }
+proptest.workspace = true
+prost-reflect.workspace = true
+tempfile = "3.27.0"
+prost-types.workspace = true
+protoc-bin-vendored = "=3.3.0"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "verify"
+harness = false
+
+[build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

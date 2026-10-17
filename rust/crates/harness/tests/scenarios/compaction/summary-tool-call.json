@@ -1,0 +1,5 @@
+{"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],
+  "native_media":true}}},"turns":[[{"type":"event","kind":"tool_call","call_id":"summary-call","name":"read",
+  "arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"summary requested a tool operation","request_count":1,"reconciliation_count":0,
+  "not_events":[{"kind":"model_started","purpose":"response"}]}}

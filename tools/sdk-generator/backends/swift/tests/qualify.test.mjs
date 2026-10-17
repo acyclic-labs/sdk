@@ -1,3 +1,4 @@
+import { canonicalRPCs } from "../../../shared/tests/proto-rpcs.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -47,7 +48,7 @@ function installedFixture(t) {
     if (basename(exe) === "Consumer") {
       if (state.payloadDrift) write(join(args.output,"sdk/LICENSE"),"changed payload");
       return { status: 0, stdout: state.missingMarker ? "PASS only\n" :
-        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 19 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
+        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 20 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
     }
     assert.equal(basename(exe), "swiftc");
     const name = basename(argv.at(-1));
@@ -61,7 +62,7 @@ function installedFixture(t) {
 
 test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", t => {
   const f = installedFixture(t), result = qualify(f.args, f);
-  assert.equal(result.native_in_process_rpc_methods, 19);
+  assert.equal(result.native_in_process_rpc_methods, 20);
   assert.equal(Object.keys(result.dependencies).length, 4);
   assert.equal(result.negative_type_controls.length, 2);
   assert.equal(result.network_transport_qualified, false); assert.equal(result.rust_backed_rpc_qualified, false);
@@ -129,6 +130,16 @@ test("receipt coverage matches the probe's checked and invoked method inventory"
   assert.ok(inventory);
   const count = Number(inventory[1]);
   const calls = [...probe.matchAll(/\bapi\d+\.(\w+)\(request:/g)].map(([, method]) => method);
+  assert.equal(count, canonicalRPCs().length);
+  const expected = canonicalRPCs().map(({ name }) => name[0].toLowerCase() + name.slice(1)).sort();
+  assert.deepEqual([...calls].sort(), expected);
+  assert.deepEqual([...probe.matchAll(/func (\w+)\(request:/g)].map(([, name]) => name).sort(), expected);
+  assert.deepEqual([...probe.matchAll(/try schema.check\("([^"]+)"/g)].map(([, path]) => path).sort(), canonicalRPCs().map(method => method.path).sort());
+  for (const [service, prefix] of [["Actors", "acyclic.actors.v1.ActorsService/"], ["Stream", "acyclic.stream.v1.StreamService/"]]) {
+    const line = probe.split("\n").find(line => line.includes(`Acyclic_${service}_V1_${service}Service.Method.descriptors.map`)) ?? assert.fail(`missing ${service} descriptor inventory`);
+    const paths = [...line.matchAll(/"(acyclic\.[^"]+)"/g)].map(([, path]) => path).sort();
+    assert.deepEqual(paths, canonicalRPCs().map(method => method.path).filter(path => path.startsWith(prefix)).sort());
+  }
   assert.equal(calls.length, count);
   assert.equal(new Set(calls).size, count);
   const f = installedFixture(t);

@@ -1,16 +1,14 @@
-use super::super::text_files::{ReadResult, SearchResult};
+use super::super::text_files::SearchResult;
 use super::*;
 use schema::ProjectionMode;
 
-/// Replaceable model projection for the four canonical file result shapes.
+/// Replaceable model projection for the canonical file result shapes.
 #[derive(Clone, Copy)]
 pub enum FileProjection {
     /// Exact UTF-8 read result.
     Read(ProjectionMode),
     /// Published immutable reference.
     Publication(ProjectionMode),
-    /// Explicit UTF-8 interval and omissions.
-    Range(ProjectionMode),
     /// Literal matches and omissions.
     Search(ProjectionMode),
 }
@@ -44,9 +42,37 @@ impl ToolProjection for FileProjection {
                 let io = owned_io.as_ref();
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let io: Option<&crate::executor::PreparationIo> = None;
-                crate::executor::with_history_io(io, |history| {
-                    input.0.file.descriptor().verify(text.0.as_bytes(), history)
-                })?;
+                if let Some(range) = input.0.range {
+                    if range.end.checked_sub(range.start) != Some(text.0.len() as u64)
+                        || range.end > input.0.file.descriptor().byte_length()
+                    {
+                        return Err(crate::executor::with_history_io(io, |history| {
+                            crate::store::guarded_boundary(
+                                history,
+                                crate::wire::ErrorCode::Invalid,
+                                "read result does not match its requested interval",
+                            )
+                        }));
+                    }
+                } else {
+                    crate::executor::with_history_io(io, |history| {
+                        input.0.file.descriptor().verify(text.0.as_bytes(), history)
+                    })?;
+                }
+                if let Some(range) = input.0.range {
+                    return schema::summary_reference(
+                        &input.0.file,
+                        400,
+                        format_args!(
+                            "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
+                            range.start,
+                            range.end,
+                            range.start,
+                            input.0.file.descriptor().byte_length() - range.end,
+                        ),
+                        work,
+                    );
+                }
                 schema::summary_reference(
                     &input.0.file,
                     160,
@@ -67,24 +93,6 @@ impl ToolProjection for FileProjection {
                         work,
                     ),
                 }
-            }
-            Self::Range(mode) => {
-                let value = decode::<ReadResult>(&result.value, work)?;
-                if mode == ProjectionMode::Full {
-                    return schema::project_json(&value.0, work);
-                }
-                schema::summary_reference(
-                    &value.0.file,
-                    400,
-                    format_args!(
-                        "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                        value.0.selection.range.start,
-                        value.0.selection.range.end,
-                        value.0.selection.omitted_before,
-                        value.0.selection.omitted_after,
-                    ),
-                    work,
-                )
             }
             Self::Search(mode) => {
                 let value = decode::<SearchResult>(&result.value, work)?;

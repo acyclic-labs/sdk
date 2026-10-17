@@ -34,9 +34,23 @@ fn task_requirements_check_bound_grants_and_extensions() -> Result<()> {
 
 #[tokio::test]
 async fn live_model_checks_file_authority_and_rejects_durable_direct_calls() -> Result<()> {
-    let root_provider = Arc::new(CompletedModel {
-        requests: std::sync::Mutex::new(Vec::new()),
-    });
+    let root_provider = Arc::new(
+        crate::test_support::ScriptedModelProvider::new([
+            crate::test_support::ScriptedTurn::Events(vec![
+                crate::test_support::ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]),
+        ])
+        .with_token_counter(|request| {
+            Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
+                vec![0; request.request().messages.len()],
+            ))
+        }),
+    );
     let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
     let harness = crate::runtime::Bindings {
         scope: scope.clone(),
@@ -82,14 +96,7 @@ async fn live_model_checks_file_authority_and_rejects_durable_direct_calls() -> 
             .await,
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(
-        root_provider
-            .requests
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len(),
-        1
-    );
+    assert_eq!(root_provider.requests().len(), 1);
     let mut durable = context;
     durable.durable_task = Some(TaskId::new());
     assert!(matches!(

@@ -1,11 +1,55 @@
 use super::*;
 
+pub(super) struct PendingObject {
+    pub(super) bucket: SharedInfo<String>,
+    pub(super) key: SharedInfo<String>,
+    pub(super) value: Option<Stored>,
+}
+
+pub(super) struct Transaction {
+    pub(super) state: State,
+    pub(super) object: Option<PendingObject>,
+    pub(super) receipt: Option<(SharedInfo<String>, Receipt)>,
+}
+impl std::ops::Deref for Transaction {
+    type Target = State;
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for Transaction {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+}
+impl Transaction {
+    fn apply(self, state: &mut State) {
+        // Drop the old snapshot before touching the object tree, so unique
+        // branches stay unique. All fallible checks and durable I/O are done.
+        *state = self.state;
+        if let Some(change) = self.object {
+            let bucket = state
+                .buckets
+                .get_mut(change.bucket.as_str())
+                .expect("staged object bucket was validated before commit");
+            if let Some(value) = change.value {
+                bucket.objects.insert(change.key, value);
+            } else {
+                bucket.objects.remove(change.key.as_str());
+            }
+        }
+        if let Some((key, receipt)) = self.receipt {
+            state.receipts.insert(key, receipt);
+        }
+    }
+}
+
 impl MemoryObjects {
     pub(super) fn mutate<R: Message + Default + 'static>(
         &self,
         digest: [u8; 32],
         identity: &Option<wire::MutationIdentity>,
-        action: impl FnOnce(&mut State) -> Result<R, Error>,
+        action: impl FnOnce(&mut Transaction) -> Result<R, Error>,
     ) -> Result<R, Error> {
         let mut guard = self.lock_state()?;
         self.mutate_locked(&mut guard, digest, identity, action)
@@ -16,7 +60,7 @@ impl MemoryObjects {
         guard: &mut State,
         digest: [u8; 32],
         identity: &Option<wire::MutationIdentity>,
-        action: impl FnOnce(&mut State) -> Result<R, Error>,
+        action: impl FnOnce(&mut Transaction) -> Result<R, Error>,
     ) -> Result<R, Error> {
         self.mutate_locked_engine(
             guard,
@@ -45,10 +89,16 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next)?;
+                        journal.validate_bodies(next, next.object.as_ref())?;
                     } else {
                         journal
-                            .commit(before, next, None)
+                            .commit(
+                                before,
+                                &mut next.state,
+                                next.object.as_mut(),
+                                next.receipt.as_ref(),
+                                None,
+                            )
                             .map_err(persistence::service_error)?;
                     }
                 }
@@ -64,9 +114,9 @@ impl MemoryObjects {
         guard: &mut State,
         request: ([u8; 32], &Option<wire::MutationIdentity>),
         replay: impl FnOnce(&Receipt) -> Result<R, E>,
-        action: impl FnOnce(&mut State) -> Result<R, E>,
+        action: impl FnOnce(&mut Transaction) -> Result<R, E>,
         receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
-        commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
+        commit: impl FnOnce(&State, &mut Transaction) -> Result<(), E>,
     ) -> Result<R, E> {
         let (digest, identity) = request;
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -81,15 +131,19 @@ impl MemoryObjects {
             }
             return replay(receipt);
         }
-        let mut next = guard.clone();
+        let mut next = Transaction {
+            state: guard.clone(),
+            object: None,
+            receipt: None,
+        };
         let response = action(&mut next)?;
         if let Some(identity) = identity {
-            let (key, receipt) = receipt(&response, identity)?;
-            next.receipts.insert(key, receipt);
+            next.receipt = Some(receipt(&response, identity)?);
         }
-        let count = next.buckets.len()
+        let mut count = next.buckets.len()
             + next.uploads.len()
             + next.receipts.len()
+            + usize::from(next.receipt.is_some())
             + next
                 .buckets
                 .values()
@@ -100,12 +154,32 @@ impl MemoryObjects {
                 .values()
                 .map(|upload| upload.parts.len())
                 .sum::<usize>();
-        let bytes = stored_bytes(guard, &mut next).ok_or(Error::from(QuotaExceeded))?;
+        let mut bytes = stored_bytes(guard, &mut next.state).ok_or(Error::from(QuotaExceeded))?;
+        if let Some(change) = &next.object {
+            let bucket = next
+                .buckets
+                .get(change.bucket.as_str())
+                .ok_or(Error::from(NotFound))?;
+            let old = bucket.objects.get(change.key.as_str());
+            count = count - usize::from(old.is_some()) + usize::from(change.value.is_some());
+            let old_bytes = old.map_or(0, |value| value.body.len());
+            let new_bytes = change.value.as_ref().map_or(0, |value| value.body.len());
+            bytes = bytes
+                .checked_sub(old_bytes)
+                .and_then(|n| n.checked_add(new_bytes))
+                .ok_or(Error::from(QuotaExceeded))?;
+            next.state.object_bytes = next
+                .state
+                .object_bytes
+                .checked_sub(old_bytes)
+                .and_then(|n| n.checked_add(new_bytes))
+                .ok_or(Error::from(QuotaExceeded))?;
+        }
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(Error::from(QuotaExceeded).into());
         }
         commit(guard, &mut next)?;
-        *guard = next;
+        next.apply(guard);
         Ok(response)
     }
 
@@ -135,7 +209,7 @@ impl MemoryObjects {
                     .ok_or(Error::from(Unavailable))
                     .and_then(|journal| {
                         journal
-                            .commit(state, &mut next, None)
+                            .commit(state, &mut next, None, None, None)
                             .map_err(persistence::service_error)
                     }) {
                     Ok(()) => *state = next,
@@ -257,9 +331,15 @@ impl MemoryObjects {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 if let Some(journal) = &self.journal {
                     if self.defer_local {
-                        journal.validate_bodies(next)?;
+                        journal.validate_bodies(next, next.object.as_ref())?;
                     } else {
-                        journal.commit(before, next, Some(Arc::clone(meter)))?;
+                        journal.commit(
+                            before,
+                            &mut next.state,
+                            next.object.as_mut(),
+                            next.receipt.as_ref(),
+                            Some(Arc::clone(meter)),
+                        )?;
                     }
                 }
                 #[cfg(not(all(feature = "local", not(target_arch = "wasm32"))))]
@@ -310,3 +390,9 @@ pub(super) fn put_group_sizes(
         Some(count)
     })
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(all(test, objects_loom))]
+mod model;

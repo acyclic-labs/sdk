@@ -63,6 +63,11 @@ runs:
       with:
         components: ${{ inputs.lane == 'policy' && 'clippy,rustfmt' || '' }}
 
+    - name: Install pinned Rustdoc toolchain
+      if: inputs.lane == 'docs' || inputs.lane == 'generation'
+      shell: bash
+      run: rustup toolchain install nightly-2026-07-01 --profile minimal --target wasm32-unknown-unknown --no-self-update
+
     # Every tool is installed under a versioned path or verified by its version
     # before use, so the first saved tools cache stays a safe starting point.
     # Bump the version when a pinned tool changes to refresh it.

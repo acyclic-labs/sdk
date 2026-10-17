@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf changed > a.md; printf nested","cwd":"plans"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"content":{"value":{"stdout":"nested"}}}}}}

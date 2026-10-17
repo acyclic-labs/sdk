@@ -48,6 +48,8 @@ pub(crate) struct MemoryStore {
     files: HashMap<String, StoredFile>,
     blobs: HashMap<(u64, [u8; 32]), StoredBlob>,
     paths: BTreeMap<String, PathHistory>,
+    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+    directory_index: directory::DirectoryIndex,
 }
 
 impl MemoryStore {
@@ -75,6 +77,8 @@ impl MemoryStore {
             files: HashMap::new(),
             blobs: HashMap::new(),
             paths: BTreeMap::new(),
+            #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+            directory_index: directory::DirectoryIndex::default(),
         })
     }
 

@@ -1,0 +1,80 @@
+[package]
+name = "acyclic-harness-tui-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+acyclic-harness-tui = { path = "..", features = ["tui"] }
+unicode-segmentation = "1.12"
+
+[[bin]]
+name = "edit_sequences"
+path = "fuzz_targets/edit_sequences.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "input_events"
+path = "fuzz_targets/input_events.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "completion_events"
+path = "fuzz_targets/completion_events.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "terminal_decoder"
+path = "fuzz_targets/terminal_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "terminal_stream"
+path = "fuzz_targets/terminal_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "terminal_negotiation"
+path = "fuzz_targets/terminal_negotiation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_settings"
+path = "fuzz_targets/config_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_keymap"
+path = "fuzz_targets/config_keymap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_theme"
+path = "fuzz_targets/config_theme.rs"
+test = false
+doc = false
+bench = false

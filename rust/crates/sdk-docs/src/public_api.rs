@@ -9,7 +9,9 @@ use crate::Error;
 use public_api::tokens::Token;
 use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
-use std::path::Path;
+use std::{io::Write, path::Path};
+
+pub(crate) mod decode;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublicItemSignature {
@@ -20,9 +22,11 @@ pub struct PublicItemSignature {
     pub path: Vec<String>,
 }
 
-pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>, Error> {
-    let value: Value = serde_json::from_slice(raw)?;
-    let krate: Crate = serde_json::from_value(value.clone())?;
+pub fn extract(
+    json_path: &Path,
+    raw: &std::rc::Rc<[u8]>,
+    krate: &Crate,
+) -> Result<Vec<PublicItemSignature>, Error> {
     if krate.format_version != FORMAT_VERSION {
         return Err(Error::Invalid(format!(
             "{} uses unsupported rustdoc format {}; expected {}",
@@ -37,13 +41,27 @@ pub fn extract(json_path: &Path, raw: &[u8]) -> Result<Vec<PublicItemSignature>,
             json_path.display()
         )));
     }
-    let adapted = adapt(value, &krate)?;
-    let mut temp = tempfile::NamedTempFile::new()?;
-    serde_json::to_writer(temp.as_file_mut(), &adapted)?;
-    let api = public_api::Builder::from_rustdoc_json(temp.path())
-        .include_function_parameter_names(true)
-        .build()
-        .map_err(|error| Error::Invalid(format!("public-api: {error}")))?;
+    crate::render_cache::extract(raw, || extract_uncached(json_path, raw, krate))
+}
+
+fn extract_uncached(
+    json_path: &Path,
+    raw: &std::rc::Rc<[u8]>,
+    krate: &Crate,
+) -> Result<Vec<PublicItemSignature>, Error> {
+    let value = (*crate::render_cache::json(raw)?).clone();
+    let adapted = adapt(value, krate)?;
+    let api = crate::render_cache::with_adapter(|temp| {
+        {
+            let mut writer = std::io::BufWriter::new(temp.as_file_mut());
+            serde_json::to_writer(&mut writer, &adapted)?;
+            writer.flush()?;
+        }
+        public_api::Builder::from_rustdoc_json(temp.path())
+            .include_function_parameter_names(true)
+            .build()
+            .map_err(|error| Error::Invalid(format!("public-api: {error}")))
+    })?;
     api.items()
         .map(|item| {
             let item_id = Id(item.id().0);

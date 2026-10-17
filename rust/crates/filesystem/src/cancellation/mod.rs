@@ -1,18 +1,24 @@
 //! Runtime-independent cooperative cancellation for native and browser work.
 
+use crate::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 use thiserror::Error;
 
 #[derive(Default)]
 struct CancellationState {
     cancelled: AtomicBool,
+    // List head precedes every waiter-links lock. Linked-token commit gates
+    // acquire distinct ancestor heads in ascending address order.
     waiters: Mutex<Weak<CancellationWaiter>>,
     parent: Option<CancellationToken>,
+    // Acquired alone; parent registration is destroyed after releasing it.
     parent_waiter: Mutex<Option<Cancelled<'static>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_allocation: Option<crate::NativeAllocation>,
@@ -20,10 +26,12 @@ struct CancellationState {
 
 #[derive(Default)]
 struct CancellationWaiter {
+    // Acquired without the head or links; no locks span waker clone/drop/calls.
     waker: Mutex<Option<Waker>>,
     // State lock protects list edits; the waiting future owns the node.
     links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
     #[cfg(not(target_arch = "wasm32"))]
+    // Head may precede cleanup; links and waker guards never span cleanup.
     cleanup: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     #[cfg(not(target_arch = "wasm32"))]

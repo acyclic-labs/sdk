@@ -2,6 +2,32 @@ use super::*;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "request_projection_tests.rs"]
+mod projection_reuse;
+
+#[test]
+fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata() -> Result<()> {
+    let call = ToolCall::new("call".into(), "echo".into(), json!({"value":1}));
+    assert!(call.metadata.is_null());
+    let event = ModelEvent::ToolCall(call.clone());
+    let bytes = crate::contract::canonical_json_bytes(&event)?;
+    let value: Value = serde_json::from_slice(&bytes).expect("fixture event JSON");
+    assert_eq!(
+        value,
+        json!({"kind":"tool_call","call_id":"call","name":"echo","arguments":{"value":1}})
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelEvent>(value.clone()).expect("legacy event"),
+        event
+    );
+    assert_eq!(
+        serde_json::from_value::<ModelContentPart>(value).expect("legacy content"),
+        ModelContentPart::ToolCall(call)
+    );
+    Ok(())
+}
+
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
         model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
@@ -25,11 +51,11 @@ fn exchange(request: &mut ModelRequest) {
     request.messages.extend([
         ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Part(ModelContentPart::ToolCall {
-                call_id: "call-1".into(),
-                name: "echo".into(),
-                arguments: json!("é"),
-            }),
+            content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                "call-1".into(),
+                "echo".into(),
+                json!("é"),
+            ))),
         },
         ModelMessage {
             role: ModelRole::Tool,
@@ -446,8 +472,10 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
         |request| request.max_output_tokens = Some(0),
         |request| request.model.revision.clear(),
         |request| {
-            let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
-                &mut request.messages[1].content
+            let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall {
+                arguments,
+                ..
+            })) = &mut request.messages[1].content
             else {
                 unreachable!()
             };
@@ -461,6 +489,41 @@ fn malformed_exchanges_and_bounds_fail_closed() -> Result<()> {
     let mut oversized = request()?;
     oversized.model.options = json!({"large":"x".repeat(64 * 1024 * 1024 + 1)});
     assert!(PreparedModelRequest::prepare(oversized, Limits::default(), None).is_ok());
+    Ok(())
+}
+
+#[test]
+fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Result<()> {
+    let mut input = request()?;
+    exchange(&mut input);
+    let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) =
+        &mut input.messages[1].content
+    else {
+        unreachable!()
+    };
+    *metadata = json!({"signature":"signed", "nested":[{"provider":"opaque"}]});
+    let original = PreparedModelRequest::prepare(input.clone(), Limits::default(), None)?;
+    let decoded = PreparedModelRequest::decode(original.bytes(), Limits::default(), None)?;
+    assert_eq!(decoded.request(), &input);
+    assert!(
+        PreparedModelRequest::prepare(
+            input.clone(),
+            Limits {
+                render_bytes: 16,
+                ..Limits::default()
+            },
+            None
+        )
+        .is_err()
+    );
+    let ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall { metadata, .. })) =
+        &mut input.messages[1].content
+    else {
+        unreachable!()
+    };
+    *metadata = json!({"signature":"different"});
+    let changed = PreparedModelRequest::prepare(input, Limits::default(), None)?;
+    assert_ne!(original.request_digest(), changed.request_digest());
     Ok(())
 }
 
@@ -480,5 +543,46 @@ fn short_request_cannot_hide_excess_string_capacity() -> Result<()> {
             spare == 0,
         );
     }
+    Ok(())
+}
+
+proptest::proptest! {
+    #[test]
+    fn pinned_history_requires_the_exact_advertised_revision(revision in "[a-z0-9-]{1,24}", text in ".{0,48}") {
+        let mut input = request()?;
+        input.tools[0].revision = revision.clone();
+        exchange(&mut input);
+        let selector = format!("echo@{revision}");
+        let ModelContent::Part(ModelContentPart::ToolCall(call)) = &mut input.messages[1].content else { unreachable!() };
+        call.name = selector.clone();
+        call.arguments = json!(text);
+        let ModelContent::Part(ModelContentPart::ToolResult {name, content, ..}) = &mut input.messages[2].content else { unreachable!() };
+        *name = selector;
+        *content = ToolResultContent::Json {value:json!(text)};
+        let prepared = PreparedModelRequest::prepare(input.clone(), Limits::default(), None)?;
+        let decoded = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
+        proptest::prop_assert_eq!(decoded.request(), &input);
+        let mut wrong_revision = input.clone();
+        wrong_revision.tools[0].revision.push('x');
+        proptest::prop_assert!(PreparedModelRequest::prepare(wrong_revision, Limits::default(), None).is_err());
+        let mut hidden = input.clone(); hidden.tools.clear();
+        proptest::prop_assert!(PreparedModelRequest::prepare(hidden, Limits::default(), None).is_err());
+        let ModelContent::Part(ModelContentPart::ToolResult {name, ..}) = &mut input.messages[2].content else { unreachable!() };
+        *name = "echo".into();
+        proptest::prop_assert!(PreparedModelRequest::prepare(input, Limits::default(), None).is_err());
+    }
+}
+
+#[test]
+fn pinned_request_fuzz_seed_is_a_valid_exact_exchange() -> Result<()> {
+    let request: ModelRequest = serde_json::from_slice(include_bytes!(
+        "../../../harness-fuzz/corpus/model_request/pinned"
+    ))
+    .expect("model request seed");
+    let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+    assert_eq!(
+        PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?.request(),
+        &request
+    );
     Ok(())
 }

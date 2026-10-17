@@ -292,6 +292,8 @@ fn document(
 #[derive(Default)]
 pub(super) struct Lexical {
     pub(super) items: u64,
+    pub(super) containers: u64,
+    pub(super) arrays: usize,
     pub(super) depth: u32,
     pub(super) string: bool,
     escape: bool,
@@ -304,7 +306,7 @@ impl Lexical {
         bounds: JsonBounds,
         code: Option<crate::wire::ErrorCode>,
         charge: &Charge<'_>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if self.string {
             if self.escape {
                 self.escape = false;
@@ -313,7 +315,7 @@ impl Lexical {
             } else if byte == b'"' {
                 self.string = false;
             }
-            return Ok(());
+            return Ok(false);
         }
         let depth = self.depth;
         let item = match byte {
@@ -323,6 +325,8 @@ impl Lexical {
                 true
             }
             b'[' | b'{' => {
+                self.containers += 1;
+                self.arrays += usize::from(byte == b'[');
                 self.depth += 1;
                 self.atom = false;
                 true
@@ -331,7 +335,7 @@ impl Lexical {
                 self.depth = self
                     .depth
                     .checked_sub(1)
-                    .ok_or_else(|| boundary("invalid JSON nesting", code))?;
+                    .ok_or_else(|| input_error(JsonInputError::Nesting, code))?;
                 self.atom = false;
                 false
             }
@@ -346,13 +350,16 @@ impl Lexical {
             }
         };
         if item {
-            if depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
+            if self.items >= bounds.maximum_items {
                 return Err(boundary("JSON exceeds declared structural bound", code));
+            }
+            if depth > bounds.maximum_depth {
+                return Err(input_error(JsonInputError::Depth, code));
             }
             charge.borrow_mut()(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             self.items += 1;
         }
-        Ok(())
+        Ok(item)
     }
 }
 
@@ -369,12 +376,14 @@ pub(super) fn source(
     }
     let charge = RefCell::new(charge);
     let mut lexical = Lexical::default();
+    charge.borrow_mut()(JsonCodecCharge::Read {
+        bytes: bytes.len() as u64,
+    })?;
     for byte in bytes {
-        charge.borrow_mut()(JsonCodecCharge::Read { bytes: 1 })?;
         lexical.byte(*byte, bounds, code, &charge)?;
     }
     if lexical.string || lexical.depth != 0 {
-        return Err(boundary("incomplete JSON document", code));
+        return Err(input_error(JsonInputError::Incomplete, code));
     }
     let counts = document(
         bytes,
@@ -388,6 +397,7 @@ pub(super) fn source(
     finish(
         bytes.len() as u64,
         lexical.items,
+        lexical.containers,
         counts,
         bounds,
         Origin::Slice,
@@ -397,6 +407,7 @@ pub(super) fn source(
 fn finish(
     bytes: u64,
     items: u64,
+    containers: u64,
     counts: Counts,
     bounds: JsonBounds,
     origin: Origin,
@@ -409,11 +420,12 @@ fn finish(
         return Err(boundary("JSON item limit exceeded", code));
     }
     if counts.depth > bounds.maximum_depth.min(256) {
-        return Err(boundary("JSON nesting limit exceeded", code));
+        return Err(input_error(JsonInputError::Depth, code));
     }
     Ok(JsonValueShape {
         input_bytes: bytes,
         lexical_items: items,
+        containers,
         virtual_items: counts.nodes,
         raw_bytes: counts.bytes,
         raw_frames: counts.frames,

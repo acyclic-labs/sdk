@@ -1,5 +1,5 @@
 import { projectModelFile, type FileProjectionOptions, type ModelAttempt, type ModelContentPart,
-  type ModelEvent, type ModelProvider, type ModelRequest } from "@acyclic-labs/harness";
+  type ModelEvent, type ModelProvider, type ModelRequest, type ModelTokenCount } from "@acyclic-labs/harness";
 
 export type PiEvent =
   | { readonly type: "text_delta"; readonly text: string }
@@ -13,7 +13,7 @@ export interface PiBridge<Request, Event> {
   /** Exact selected-model capacity; required when accounting is requested. */
   readonly contextCapacity?: ModelProvider["contextCapacity"];
   /** Request-bound additive token bounds, without projection or dispatch. */
-  readonly countTokens?: ModelProvider["countTokens"];
+  readonly countTokens?: (request: ModelRequest & {readonly serializedInput: Uint8Array}) => Promise<ModelTokenCount>;
   readonly project: (request: ModelRequest) => Request | Promise<Request>;
   readonly run: (request: Request, options: { readonly signal?: AbortSignal }) => AsyncIterable<Event>;
   readonly event?: (event: Event) => PiEvent;
@@ -31,19 +31,23 @@ export function piProvider<Request, Event>(bridge: PiBridge<Request, Event>): Mo
       }
       return bridge.contextCapacity(model);
     },
-    countTokens(request) {
-      if (bridge.countTokens === undefined) {
-        throw new TypeError("Pi provider requires explicit token accounting");
-      }
-      return bridge.countTokens(request);
-    },
-    async *generate(request) {
+    async prepare(request) {
       request.signal?.throwIfAborted();
       const projected = await bridge.project(request);
-      for await (const source of bridge.run(projected, request.signal ? { signal: request.signal } : {})) {
-        request.signal?.throwIfAborted();
-        yield projectPiEvent(projectEvent(source));
-      }
+      return {
+        [Symbol.dispose]() {},
+        async countTokens() {
+          if (bridge.countTokens === undefined) throw new TypeError("Pi provider requires explicit token accounting");
+          return bridge.countTokens(request);
+        },
+        async *generate() {
+          request.signal?.throwIfAborted();
+          for await (const source of bridge.run(projected, request.signal ? { signal: request.signal } : {})) {
+            request.signal?.throwIfAborted();
+            yield projectPiEvent(projectEvent(source));
+          }
+        },
+      };
     },
     async reconcile(attempt) {
       const events = await bridge.reconcile(attempt);

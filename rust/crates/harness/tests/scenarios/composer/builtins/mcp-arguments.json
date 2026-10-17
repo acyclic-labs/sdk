@@ -1,0 +1,4 @@
+{
+  "prompt": "/mcp extra",
+  "expect": {"error":"accepts no arguments"}
+}

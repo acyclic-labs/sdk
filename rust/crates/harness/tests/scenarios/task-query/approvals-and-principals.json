@@ -1,0 +1,4 @@
+{"folder":".tasks/t/approvals","writes":[{"path":".tasks/t/approvals/r/request.json","text":"binding"},{"path":
+  ".tasks/t/approvals/r/decisions/human.json","text":"allow"}],"expect":{"files":{".tasks/t/approvals/r/request.json":
+  "binding",".tasks/t/approvals/r/decisions/human.json":"allow"},"changes":[{"path":".tasks/t/approvals/r/request.json",
+  "text":"binding"},{"path":".tasks/t/approvals/r/decisions/human.json","text":"allow"}]}}

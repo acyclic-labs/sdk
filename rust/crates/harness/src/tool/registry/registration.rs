@@ -7,8 +7,8 @@ impl ToolRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let custody = work.claim(
-            std::mem::size_of::<Self>() as u64,
-            0,
+            REGISTRY_BYTES as u64,
+            1,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         Ok((Self::default(), custody))
@@ -21,6 +21,17 @@ impl ToolRegistry {
         custody: &mut crate::NativeCustody,
         work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        self.register_checked(tool, custody, work, &|| Ok(()))
+    }
+
+    pub(crate) fn register_checked(
+        &mut self,
+        tool: (Tool, crate::NativeCustody),
+        custody: &mut crate::NativeCustody,
+        work: crate::NativeWork<'_>,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        check()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut tool = tool;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -37,13 +48,16 @@ impl ToolRegistry {
             let io = owned_io.as_ref();
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let io: Option<&crate::executor::PreparationIo> = None;
-            crate::executor::with_history_io(io, |work| tool.definition.validate(work))?;
+            crate::executor::with_history_io(io, |work| {
+                tool.definition.validate_checked(work, check)
+            })?;
+            check()?;
             self.admit_version_slot(io)?;
             let key = (
                 crate::executor::stock_string_copy(&tool.definition.name, io)?,
                 crate::executor::stock_string_copy(&tool.definition.revision, io)?,
             );
-            if self.versions.contains_key(&key) {
+            if self.data.versions.contains_key(&key) {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if work.is_some() {
                     return Err(Error::NativeBoundary {
@@ -56,8 +70,8 @@ impl ToolRegistry {
                     key.0, key.1
                 )));
             }
-            let previous = self.versions.keys().any(|(logical, _)| logical == &key.0);
-            let selection = if previous && self.selected.contains_key(&key.0) {
+            let previous = self.data.selected.contains_key(&key.0);
+            let selection = if previous {
                 None
             } else {
                 #[cfg(feature = "filesystem")]
@@ -93,14 +107,15 @@ impl ToolRegistry {
             } else {
                 0
             };
+            let data = Arc::make_mut(&mut self.data);
             if let Some((name, selection)) = selection {
-                self.selected.insert(name, selection);
-            } else if let Some(selection) = self.selected.get_mut(&key.0)
+                data.selected.insert(name, selection);
+            } else if let Some(selection) = data.selected.get_mut(&key.0)
                 && *selection != ModelSelection::Hidden
             {
                 *selection = ModelSelection::Ambiguous;
             }
-            self.versions.insert(key, tool);
+            data.versions.insert(key, Arc::new(tool));
             published = true;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
@@ -120,7 +135,7 @@ impl ToolRegistry {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admit_registration(
-        &self,
+        &mut self,
         tool: &mut (Tool, crate::NativeCustody),
         custody: &mut crate::NativeCustody,
         work: crate::NativeWork<'_>,
@@ -129,6 +144,12 @@ impl ToolRegistry {
         let (original, definition_bytes, original_quota) = if let Some(work) = work {
             use crate::filesystem::UploadRecord as _;
             work.remaining()?;
+            if Arc::get_mut(&mut self.data).is_none() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "shared native registry mutation requires a funded registry copy",
+                });
+            }
             let original = self.native_owned_bytes()?;
             let definition_bytes = (std::mem::size_of::<ToolDefinition>() as u64)
                 .checked_add(tool.0.definition.logical_owned_bytes()?)
@@ -186,9 +207,7 @@ impl ToolRegistry {
             None => 0,
         };
         let extra = [
-            (std::mem::size_of::<(String, String)>()
-                + std::mem::size_of::<Arc<dyn ToolExecutor>>()
-                + std::mem::size_of::<Arc<dyn ToolProjection>>()) as u64,
+            VERSION_SLOT_BYTES as u64,
             key.0.capacity() as u64,
             key.1.capacity() as u64,
             selection_bytes,
@@ -197,7 +216,7 @@ impl ToolRegistry {
         .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
         .ok_or(OWNERSHIP_OVERFLOW)?;
         let released = if previous && selection.is_none() {
-            match self.selected.get(&key.0) {
+            match self.data.selected.get(&key.0) {
                 Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,
                 _ => 0,
             }
@@ -215,13 +234,9 @@ impl ToolRegistry {
     fn admit_version_slot(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            io.retain_owned(
-                (std::mem::size_of::<(String, String)>()
-                    + std::mem::size_of::<Arc<dyn ToolExecutor>>()
-                    + std::mem::size_of::<Arc<dyn ToolProjection>>()) as u64,
-            )?;
+            io.retain_owned(VERSION_SLOT_BYTES as u64)?;
             let counters = acyclic_fs::WorkCounters {
-                items_examined: self.versions.len() as u64,
+                items_examined: self.data.versions.len() as u64,
                 ..Default::default()
             };
             io.preflight(counters)?;

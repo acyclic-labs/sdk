@@ -1,0 +1,3 @@
+{"max_output_tokens":10,"turns":[[{"type":"event","kind":"content","delta":"partial-"},{"type":"error",
+  "error":"offline"}]],"expect":{"error":"operation outcome is indeterminate","reconciliation_count":1},
+  "recoveries":[{"observed":[{"kind":"content","delta":"partial-"}],"continuation":[]}],"resume":["offline"]}

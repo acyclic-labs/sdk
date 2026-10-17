@@ -12,6 +12,21 @@ pub enum NameEncoding {
 }
 
 impl NameEncoding {
+    pub(crate) const fn native_for_profile(profile: FilesystemProfile) -> Self {
+        match profile {
+            FilesystemProfile::Portable | FilesystemProfile::Browser => Self::Utf8,
+            FilesystemProfile::Posix => Self::PosixBytes,
+            FilesystemProfile::Windows => Self::WindowsUtf16Le,
+        }
+    }
+
+    pub(crate) fn unicode_case_fold_key(self, text: &str) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Utf8 => super::case_fold::key(text),
+            Self::PosixBytes | Self::WindowsUtf16Le => std::borrow::Cow::Borrowed(text),
+        }
+    }
+
     pub(crate) const fn tag(self) -> u8 {
         match self {
             Self::Utf8 => 1,
@@ -111,10 +126,7 @@ impl LogicalName {
         cancellation.check()?;
         let maximum_bytes = u32::try_from(self.bytes.len())
             .map_err(|_| NamespacePathError::Name(TreePageError::NameTooLarge))?;
-        owned.admit(WorkCounters {
-            bytes_copied: self.bytes.len() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        owned.observe(ReadAllocationStep::CheckCopy(self.bytes.len() as u64))?;
         let result = self.try_clone(maximum_bytes, &mut |step| owned.observe(step));
         finish_owned(owned, result)
     }
@@ -312,7 +324,10 @@ impl LogicalName {
                 let Ok(value) = std::str::from_utf8(&self.bytes) else {
                     return self.bytes.clone();
                 };
-                value.to_lowercase().into_bytes()
+                self.encoding
+                    .unicode_case_fold_key(value)
+                    .into_owned()
+                    .into_bytes()
             }
             NameEncoding::PosixBytes | NameEncoding::WindowsUtf16Le => self.bytes.clone(),
         }

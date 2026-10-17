@@ -1,0 +1,6 @@
+{"turns":[[{"type":"event","kind":"content","delta":"!"},{"type":"event","kind":"content","delta":"[alt"}
+  ,{"type":"event","kind":"content","delta":"]("},{"type":"event","kind":"content","delta":"image.png"}
+  ,{"type":"event","kind":"content","delta":")"},{"type":"event","kind":"completed","metadata":null}
+  ]],"expect":{"text":"![alt](image.png)","model_events":[{"kind":"content","delta":"!"},{"kind":"content",
+  "delta":"[alt"},{"kind":"content","delta":"]("},{"kind":"content","delta":"image.png"},{"kind":"content",
+  "delta":")"},{"kind":"completed","metadata":null}]}}

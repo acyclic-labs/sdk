@@ -44,7 +44,7 @@ pub(super) fn read_condition(
 }
 
 pub(super) fn publish(
-    state: &mut State,
+    state: &mut Transaction,
     bucket: &str,
     key: &str,
     metadata: Option<wire::ObjectMetadata>,
@@ -71,7 +71,7 @@ pub(super) fn publish(
 }
 
 pub(super) fn publish_engine<R, E: From<Error>>(
-    state: &mut State,
+    state: &mut Transaction,
     bucket: &str,
     key: &str,
     condition: &Option<wire::Preconditions>,
@@ -79,21 +79,19 @@ pub(super) fn publish_engine<R, E: From<Error>>(
     info: impl FnOnce(&mut State, u64) -> Result<(SharedInfo, R), E>,
     copy_key: impl FnOnce(&str) -> Result<SharedInfo<String>, E>,
 ) -> Result<R, E> {
-    let current = state
+    let (name, bucket) = state
         .buckets
-        .get(bucket)
-        .ok_or(Error::from(NotFound))?
-        .objects
-        .get(key);
-    check_condition(condition, current)?;
+        .get_key_value(bucket)
+        .ok_or(Error::from(NotFound))?;
+    check_condition(condition, bucket.objects.get(key))?;
+    let name = name.clone();
     let key = copy_key(key)?;
     let (info, response) = info(state, body.len() as u64)?;
-    state
-        .buckets
-        .get_mut(bucket)
-        .ok_or(Error::from(NotFound))?
-        .objects
-        .insert(key, Stored { info, body });
+    state.object = Some(PendingObject {
+        bucket: name,
+        key,
+        value: Some(Stored { info, body }),
+    });
     Ok(response)
 }
 

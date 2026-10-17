@@ -1,0 +1,4 @@
+{
+  "prompt": "/goal",
+  "expect": {"result":{"kind":"select","query":"goal"}}
+}

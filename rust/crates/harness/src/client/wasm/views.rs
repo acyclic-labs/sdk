@@ -1,7 +1,7 @@
 use super::*;
 
 #[wasm_bindgen]
-impl WasmClientViews {
+impl WasmHypothesisClient {
     /// Select only one demanded record and explicitly supplied overlays.
     pub fn view(
         &self,

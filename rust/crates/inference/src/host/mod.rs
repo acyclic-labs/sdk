@@ -1,3 +1,4 @@
+pub use acyclic_auth::credential::CredentialProvider;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::Request;
@@ -54,6 +55,9 @@ pub enum Error {
     /// Invalid configuration, request identity or response shape.
     #[error("invalid customer contract: {0}")]
     Invalid(&'static str),
+    /// The current callback failed; no fixed credential is substituted.
+    #[error("Inference credential renewal failed")]
+    Credential(#[from] acyclic_auth::credential::CredentialError),
     /// Channel setup failed before an RPC was sent.
     #[error("customer transport setup failed: {0}")]
     Transport(#[from] tonic::transport::Error),
@@ -68,6 +72,7 @@ impl Error {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Invalid(_) => "invalid",
+            Self::Credential(_) => "credential",
             Self::Transport(_) => "transport",
             Self::Observation(_) => "observation",
         }
@@ -76,7 +81,8 @@ impl Error {
 
 struct Connection {
     channel: Channel,
-    authorization: Zeroizing<String>,
+    authorization: Option<Zeroizing<String>>,
+    credential: Option<CredentialProvider>,
     client_instance: [u8; 16],
 }
 
@@ -86,12 +92,30 @@ pub struct Inference(Arc<Connection>);
 
 impl Inference {
     /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
+    pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
+        Self::connect_inner(endpoint, Some(api_key), None, ca_pem).await
+    }
+
+    /// Establish TLS without resolving a credential until a request is ready.
+    pub async fn connect_with_credential(
+        endpoint: &str,
+        credential: CredentialProvider,
+        ca_pem: &[u8],
+    ) -> Result<Self, Error> {
+        Self::connect_inner(endpoint, None, Some(credential), ca_pem).await
+    }
+
     #[tracing::instrument(
         name = "acyclic.inference.connect",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
     )]
-    pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
+    async fn connect_inner(
+        endpoint: &str,
+        api_key: Option<&str>,
+        credential: Option<CredentialProvider>,
+        ca_pem: &[u8],
+    ) -> Result<Self, Error> {
         obs::finish(
             async {
                 let endpoint = Endpoint::new(endpoint.to_owned())?;
@@ -101,7 +125,7 @@ impl Inference {
                 if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
                     return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
                 }
-                let authorization = authorization(api_key)?;
+                let authorization = api_key.map(authorization).transpose()?;
                 let channel = endpoint
                     .connect_timeout(Duration::from_secs(10))
                     .timeout(Duration::from_secs(60))
@@ -117,6 +141,7 @@ impl Inference {
                 Ok(Self(Arc::new(Connection {
                     channel,
                     authorization,
+                    credential,
                     client_instance: *uuid::Uuid::now_v7().as_bytes(),
                 })))
             }
@@ -149,7 +174,7 @@ impl Inference {
                 bounded(request)?;
                 let receipt = self
                     .rpc()
-                    .create(self.request(request.clone())?)
+                    .create(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 validate_receipt(&receipt)?;
@@ -174,9 +199,12 @@ impl Inference {
                 nonzero(&revision)?;
                 let view = self
                     .rpc()
-                    .inspect(self.request(wire::InspectContextRequest {
-                        revision: revision.to_vec(),
-                    })?)
+                    .inspect(
+                        self.request(wire::InspectContextRequest {
+                            revision: revision.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_context_view(&view, revision)?;
@@ -202,7 +230,7 @@ impl Inference {
                 fixed::<32>(&request.source)?;
                 let receipt = self
                     .rpc()
-                    .mutate(self.request(request.clone())?)
+                    .mutate(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 validate_receipt(&receipt)?;
@@ -328,7 +356,7 @@ impl Inference {
                 validate_evaluation_spec(spec)?;
                 let view = self
                     .evaluations()
-                    .create(self.request(request.clone())?)
+                    .create(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 validate_evaluation_admission(&view, expected, spec)?;
@@ -353,9 +381,12 @@ impl Inference {
                 nonzero(&evaluation_id)?;
                 let view = self
                     .evaluations()
-                    .inspect(self.request(wire::InspectEvaluationRequest {
-                        evaluation_id: evaluation_id.to_vec(),
-                    })?)
+                    .inspect(
+                        self.request(wire::InspectEvaluationRequest {
+                            evaluation_id: evaluation_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_evaluation_view(&view, evaluation_id)?;
@@ -376,7 +407,7 @@ impl Inference {
             async {
                 let response = self
                     .discovery()
-                    .list(self.request(wire::ListModelsRequest {})?)
+                    .list(self.request(wire::ListModelsRequest {}).await?)
                     .await?
                     .into_inner();
                 if response.models.is_empty() || response.models.len() > 4_096 {
@@ -440,7 +471,7 @@ impl Inference {
                 )?;
                 let response = self
                     .runs()
-                    .generate(self.request(request.clone())?)
+                    .generate(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
@@ -463,9 +494,12 @@ impl Inference {
             async {
                 let view = self
                     .runs()
-                    .inspect(self.request(wire::InspectRunRequest {
-                        run_id: run_id.to_vec(),
-                    })?)
+                    .inspect(
+                        self.request(wire::InspectRunRequest {
+                            run_id: run_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_run_view(&view, run_id)?;
@@ -499,10 +533,13 @@ impl Inference {
                 }
                 let stream = self
                     .runs()
-                    .watch(self.request(wire::WatchRunRequest {
-                        run_id: run_id.to_vec(),
-                        from_sequence,
-                    })?)
+                    .watch(
+                        self.request(wire::WatchRunRequest {
+                            run_id: run_id.to_vec(),
+                            from_sequence,
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 Ok(RunEvents {
@@ -525,9 +562,12 @@ impl Inference {
             async {
                 let view = self
                     .runs()
-                    .cancel(self.request(wire::InspectRunRequest {
-                        run_id: run_id.to_vec(),
-                    })?)
+                    .cancel(
+                        self.request(wire::InspectRunRequest {
+                            run_id: run_id.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_run_view(&view, run_id)?;
@@ -551,7 +591,7 @@ impl Inference {
                     .map_err(|error| Error::Invalid(error.message()))?;
                 let view = self
                     .warm()
-                    .retain(self.request(request.clone())?)
+                    .retain(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 contract::validate_retain_response(&view, request)
@@ -574,9 +614,12 @@ impl Inference {
                 nonzero(&commitment)?;
                 let view = self
                     .warm()
-                    .inspect(self.request(wire::InspectWarmRequest {
-                        commitment: commitment.to_vec(),
-                    })?)
+                    .inspect(
+                        self.request(wire::InspectWarmRequest {
+                            commitment: commitment.to_vec(),
+                        })
+                        .await?,
+                    )
                     .await?
                     .into_inner();
                 validate_warm_view(&view, None, Some(commitment))?;
@@ -603,7 +646,7 @@ impl Inference {
                     .map_err(|error| Error::Invalid(error.message()))?;
                 let view = self
                     .warm()
-                    .renew(self.request(request.clone())?)
+                    .renew(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 contract::validate_renew_response(&view, request)
@@ -630,7 +673,7 @@ impl Inference {
                 let commitment = fixed::<32>(&request.commitment)?;
                 let view = self
                     .warm()
-                    .release(self.request(request.clone())?)
+                    .release(self.request(request.clone()).await?)
                     .await?
                     .into_inner();
                 validate_warm_view(&view, None, Some(commitment))?;
@@ -645,13 +688,21 @@ impl Inference {
         )
     }
 
-    fn request<T>(&self, value: T) -> Result<Request<T>, Error> {
-        let mut request = Request::new(value);
-        // Tonic owns unavoidable transport metadata copies. Retained credential
-        // storage is zeroizing and is never cloned into another long-lived field.
-        let mut authorization = MetadataValue::<Ascii>::try_from(self.0.authorization.as_str())
+    async fn request<T>(&self, value: T) -> Result<Request<T>, Error> {
+        let renewed = if let Some(provider) = &self.0.credential {
+            let token = provider.resolve().await?;
+            Some(authorization(&token)?)
+        } else {
+            None
+        };
+        let value_header = renewed
+            .as_ref()
+            .or(self.0.authorization.as_ref())
+            .ok_or(Error::Invalid("missing API key"))?;
+        let mut authorization = MetadataValue::<Ascii>::try_from(value_header.as_str())
             .map_err(|_| Error::Invalid("invalid API key"))?;
         authorization.set_sensitive(true);
+        let mut request = Request::new(value);
         request
             .metadata_mut()
             .insert("authorization", authorization);
@@ -660,140 +711,10 @@ impl Inference {
     }
 }
 
-fn authorization(api_key: &str) -> Result<Zeroizing<String>, Error> {
-    if api_key.is_empty() || api_key.len() > 8_192 {
-        return Err(Error::Invalid("invalid API key"));
-    }
-    let value = Zeroizing::new(format!("Bearer {api_key}"));
-    MetadataValue::<Ascii>::try_from(value.as_str())
-        .map_err(|_| Error::Invalid("invalid API key"))?;
-    Ok(value)
-}
-
-fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
-    if *value == [0; N] {
-        return Err(Error::Invalid("zero identity"));
-    }
-    Ok(())
-}
-
-fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
-    let bytes = value
-        .try_into()
-        .map_err(|_| Error::Invalid("identity length differs"))?;
-    nonzero(&bytes)?;
-    Ok(bytes)
-}
-
-fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {
-    if message.encoded_len() > MAXIMUM_MESSAGE_BYTES {
-        return Err(Error::Invalid("message exceeds transport ceiling"));
-    }
-    Ok(())
-}
-
-/// Explicit customer warm-retention policy. Distribution and capacity remain
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Retention {
-    latency_profile: [u8; 32],
-    expires_at_ms: u64,
-    idle_kv: Option<([u8; 32], u64)>,
-}
-
-impl Retention {
-    /// Request an admitted warm promise through an exact published latency profile.
-    #[must_use]
-    pub const fn warm_until(latency_profile: [u8; 32], expires_at_ms: u64) -> Self {
-        Self {
-            latency_profile,
-            expires_at_ms,
-            idle_kv: None,
-        }
-    }
-
-    /// Paid KV pin with a positive idle timeout; no capacity or latency guarantee.
-    #[must_use]
-    pub const fn idle_kv(profile: [u8; 32], idle_timeout_ms: u64) -> Self {
-        Self {
-            latency_profile: [0; 32],
-            expires_at_ms: 0,
-            idle_kv: Some((profile, idle_timeout_ms)),
-        }
-    }
-}
-
-/// Validating event-stream observation. Dropping it never cancels the Run.
-pub struct RunEvents {
-    stream: Option<tonic::Streaming<wire::RunEvent>>,
-    state: contract::WatchRunState,
-}
-
-impl RunEvents {
-    /// Read and validate the next ordered event.
-    pub async fn next(&mut self) -> Result<Option<wire::RunEvent>, Error> {
-        let Some(stream) = self.stream.as_mut() else {
-            return Ok(None);
-        };
-        let Some(event) = stream.message().await? else {
-            self.state.finish().map_err(Error::Invalid)?;
-            return Ok(None);
-        };
-        contract::watch_run_event(&mut self.state, &event).map_err(contract_error)?;
-        Ok(Some(event))
-    }
-}
-
-fn contract_error(error: contract::Error) -> Error {
-    Error::Invalid(error.message())
-}
-
-fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
-    contract::validate_evaluation_spec(spec).map_err(contract_error)
-}
-
-fn validate_evaluation_admission(
-    view: &wire::EvaluationView,
-    expected: [u8; 16],
-    spec: &wire::EvaluationSpec,
-) -> Result<(), Error> {
-    contract::validate_evaluation_admission(view, expected, spec).map_err(contract_error)
-}
-
-fn validate_evaluation_view(view: &wire::EvaluationView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_evaluation_view(view, expected).map_err(contract_error)
-}
-
-fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_run_view(view, expected).map_err(contract_error)
-}
-
-fn validate_context_view(view: &wire::ContextView, expected: [u8; 32]) -> Result<(), Error> {
-    contract::validate_context_view(view, expected).map_err(contract_error)
-}
-
-fn validate_warm_view(
-    view: &wire::WarmView,
-    expected_context: Option<[u8; 32]>,
-    expected_commitment: Option<[u8; 32]>,
-) -> Result<(), Error> {
-    contract::validate_warm_view(view, expected_context, expected_commitment)
-        .map_err(contract_error)
-}
-
-fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
-    contract::validate_receipt(receipt).map_err(contract_error)
-}
-
-/// Allocates a fresh item identity before its exact text bytes are dispatched.
-pub fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
-    wire::Item {
-        id: uuid::Uuid::now_v7().as_bytes().to_vec(),
-        kind: kind as i32,
-        payload: text.into_bytes(),
-        link: Vec::new(),
-        continuation_profile: Vec::new(),
-    }
-}
+include!("values.rs");
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod credential_tests;

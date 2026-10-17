@@ -46,15 +46,35 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
     /// Atomically observes both ends of the retained replay window.
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
+    /// Observes accepted visibility and a confirmed durable prefix. Implementations
+    /// with independent persistence report its watermark without awaiting a flush.
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        Ok(StreamWatermarks {
+            accepted: self.tail(path).await?,
+            durable: 0,
+        })
+    }
     /// Atomic append or tail conflict.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
-    /// Opens a bounded finite read.
+    /// Opens a bounded finite read pinned to one immutable history snapshot.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
     /// Replays and then remains live without a handoff gap.
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError>;
-    /// Lists one fixed-snapshot direct-child page.
+    /// Atomically checks the record at `from - 1` and subscribes after it. A missing
+    /// or changed anchor fails immediately; it must never wait for a future record.
+    /// History replacement during delivery must fail instead of joining histories.
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        let _ = (path, from, preceding);
+        Err(StreamError::Unsupported)
+    }
+    /// Replays direct children and pushes each newly created child once, without a handoff gap.
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError>;
     /// Traverses arbitrarily large direct-child sets without silently
     async fn children_page(

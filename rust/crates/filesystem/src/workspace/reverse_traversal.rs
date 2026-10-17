@@ -111,7 +111,7 @@ fn reverse_sort(
     Ok(())
 }
 
-pub(super) async fn namespace_records_to_file_root_with_accounting<
+pub(crate) async fn namespace_records_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(
@@ -385,14 +385,14 @@ pub(super) async fn namespace_records_to_file_root_with_accounting<
     Ok(matches)
 }
 
-pub(super) struct NamespaceRecordSearch {
-    pub(super) records: NamespaceRecords,
-    pub(super) complete: bool,
+pub(crate) struct NamespaceRecordSearch {
+    pub(crate) records: NamespaceRecords,
+    pub(crate) complete: bool,
 }
 
 pub(super) type NamespaceRecords = Vec<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>;
 
-pub(super) fn namespace_records_bytes(records: &NamespaceRecords) -> u64 {
+pub(crate) fn namespace_records_bytes(records: &NamespaceRecords) -> u64 {
     workspace_vec_bytes(records)
         + records
             .iter()

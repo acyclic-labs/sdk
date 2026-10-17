@@ -101,7 +101,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         key: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let (child, _) = self.fork_snapshot(destination, cut, key, ctx).await?;
+        let (child, _) = self
+            .fork_snapshot(
+                destination,
+                cut,
+                key,
+                crate::PublicationPermit::Unrestricted,
+                ctx,
+            )
+            .await?;
         child
             .exactify("/", crate::PublicationPermit::Unrestricted, ctx)
             .await

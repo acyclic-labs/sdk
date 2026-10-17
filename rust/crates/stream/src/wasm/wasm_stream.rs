@@ -1,16 +1,27 @@
 /// Browser ABI over canonical Rust memory or durable providers.
 #[wasm_bindgen]
 pub struct WasmStream {
-    provider: Box<dyn StreamProvider>,
+    provider: std::sync::Arc<dyn StreamProvider>,
+    connections: Option<crate::session::Connections>,
+    session: Option<crate::session::Client>,
 }
 
 #[wasm_bindgen]
 impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
+    /// Creates an in-process provider.
     pub fn new() -> Self {
+        let provider: std::sync::Arc<dyn StreamProvider> =
+            std::sync::Arc::new(MemoryStream::default());
+        let session = crate::session::Client::in_process(
+            provider.clone(),
+            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        );
         Self {
-            provider: Box::new(MemoryStream::default()),
+            connections: None,
+            session: Some(session),
+            provider,
         }
     }
 
@@ -26,12 +37,61 @@ impl WasmStream {
             journal_bytes: maximum_journal_bytes,
             ..Default::default()
         };
+        let provider: std::sync::Arc<dyn StreamProvider> = std::sync::Arc::new(
+            crate::BrowserStream::open(&name, limits)
+                .await
+                .map_err(js_error)?,
+        );
+        let session = crate::session::Client::in_process(
+            provider.clone(),
+            std::sync::Arc::new(crate::session::runtime::PlatformExecutor),
+        );
         Ok(Self {
-            provider: Box::new(
-                crate::BrowserStream::open(&name, limits)
-                    .await
-                    .map_err(js_error)?,
-            ),
+            connections: None,
+            session: Some(session),
+            provider,
+        })
+    }
+
+    /// Connects canonical platform RPCs and shared push follows. Credentials stay live.
+    #[wasm_bindgen(js_name = connect)]
+    pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
+        let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
+        Ok(Self {
+            connections: Some(remote.connections()),
+            session: Some(remote.session()),
+            provider: std::sync::Arc::new(remote),
+        })
+    }
+
+    /// Pushes the next successful handshake, including reconnects without further records.
+    #[wasm_bindgen(js_name = nextConnection)]
+    pub async fn next_connection(&self, after: u64) -> Result<u64, JsValue> {
+        self.connections
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?
+            .changed(after)
+            .await
+            .map_err(js_error)
+    }
+
+    /// Opens a canonical SessionSubscription, yielding encoded SessionFrame data
+    /// and watermarks. Rust owns IDs, ALL/LATEST cursors, anchors and bounded credit.
+    #[wasm_bindgen(js_name = openData)]
+    pub async fn open_data(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        check_command_size(input)?;
+        let subscription = decode::<wire::SessionSubscription>(input)?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| js_error(StreamError::Unsupported))?;
+        let frames = session.subscribe(subscription).await.map_err(js_error)?;
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(
+                frames
+                    .map(|frame| frame.map(|frame| frame.encode_to_vec()))
+                    .boxed_local(),
+            )),
         })
     }
 
@@ -56,8 +116,20 @@ impl WasmStream {
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
-                let tail = self.provider.tail(path).await.map_err(js_error)?;
-                wire::TailResponse { tail }.encode_to_vec()
+                if request.accepted {
+                    let marks = self.provider.watermarks(path).await.map_err(js_error)?;
+                    wire::TailResponse {
+                        tail: marks.accepted,
+                        durable: Some(marks.durable),
+                    }
+                    .encode_to_vec()
+                } else {
+                    wire::TailResponse {
+                        tail: self.provider.tail(path).await.map_err(js_error)?,
+                        durable: None,
+                    }
+                    .encode_to_vec()
+                }
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;
@@ -123,11 +195,19 @@ impl WasmStream {
         check_command_size(input)?;
         let request = decode::<wire::ChildrenRequest>(input)?;
         let request = wire_codec::children_from_wire(request).map_err(js_error)?;
-        let children = self.provider.children(request).await.map_err(js_error)?;
+        let children = self
+            .provider
+            .children_page(crate::ChildrenPageRequest {
+                parent: request.parent,
+                limit: request.limit,
+                after: None,
+                hierarchy_version: None,
+            })
+            .await
+            .map_err(js_error)?
+            .children;
         let mut output = Vec::new();
-        futures::pin_mut!(children);
-        while let Some(child) = children.next().await {
-            let child = child.map_err(js_error)?;
+        for child in children {
             output.push(
                 wire::ChildrenResponse {
                     child: Some(wire::Child {
@@ -147,12 +227,59 @@ impl WasmStream {
         let request = decode::<wire::FollowRequest>(input)?;
         let (path, from) = wire_codec::follow_from_wire(request).map_err(js_error)?;
         let stream = self.provider.follow(path, from).await.map_err(js_error)?;
-        let (cancel, _) = tokio::sync::watch::channel(false);
         Ok(WasmFollow {
-            state: Rc::new(FollowState {
-                stream: Mutex::new(Some(stream)),
-                cancel,
-            }),
+            state: Rc::new(FollowState::new(
+                stream
+                    .map(|record| {
+                        record.map(|record| {
+                            wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                                .encode_to_vec()
+                        })
+                    })
+                    .boxed_local(),
+            )),
         })
+    }
+    /// Opens live child discovery; each next yields one canonical ChildrenResponse.
+    #[wasm_bindgen]
+    pub async fn open_children(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        check_command_size(input)?;
+        let request = wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(input)?)
+            .map_err(js_error)?;
+        let children = self.provider.children(request).await.map_err(js_error)?;
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(
+                children
+                    .map(|child| {
+                        child.map(|child| {
+                            wire::ChildrenResponse {
+                                child: Some(wire::Child {
+                                    path: child.path.to_string(),
+                                }),
+                            }
+                            .encode_to_vec()
+                        })
+                    })
+                    .boxed_local(),
+            )),
+        })
+    }
+}
+
+impl WasmStream {
+    /// Physical connection generations used by Rust client recovery drivers.
+    #[must_use]
+    pub fn connections(&self) -> Option<crate::session::Connections> {
+        self.connections.clone()
+    }
+    /// Shares the platform pool, including standalone durability updates.
+    #[must_use]
+    pub fn session_client(&self) -> Option<crate::session::Client> {
+        self.session.clone()
+    }
+    /// Shares the exact provider with higher-level Rust WASM clients.
+    #[must_use]
+    pub fn provider(&self) -> std::sync::Arc<dyn StreamProvider> {
+        self.provider.clone()
     }
 }

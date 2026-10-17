@@ -8,6 +8,8 @@ pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 pub(crate) struct NativeViewBaseline {
     pub(super) root_identity: NativeRootIdentity,
     pub(super) read_only: bool,
+    #[cfg(test)]
+    pub(super) reuse_override: Option<bool>,
 }
 
 impl NativeViewBaseline {
@@ -17,6 +19,8 @@ impl NativeViewBaseline {
         Self {
             root_identity,
             read_only,
+            #[cfg(test)]
+            reuse_override: None,
         }
     }
     pub(super) fn restore_canonical_stamps(
@@ -94,6 +98,12 @@ impl CapturePolicy {
         Ok(Self {
             excluded_prefixes: prefixes,
         })
+    }
+
+    /// Borrows the canonical exclusions for native watcher registration.
+    #[must_use]
+    pub fn excluded_prefixes(&self) -> &[NamespacePath] {
+        &self.excluded_prefixes
     }
 
     /// Returns whether a path is excluded by an exact prefix.

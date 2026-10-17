@@ -31,9 +31,9 @@ test("packaged conformance copies cover the complete vector inventory", () => {
 });
 
 test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
-  const source = readFileSync("scripts/check-generated.mjs", "utf8");
-  const start = source.indexOf("  for (const [source, packaged] of packagedSourceCopies) {");
-  const end = source.indexOf("  const harnessSuite", start);
+  const source = readFileSync("scripts/check-baselines.mjs", "utf8");
+  const start = source.indexOf("for (const [source, packaged] of packagedSourceCopies) {");
+  const end = source.indexOf("const harnessSuite", start);
   assert.ok(start >= 0 && end > start, "the maintained copy guard must remain identifiable");
   const guard = source.slice(start, end);
   const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
@@ -76,7 +76,7 @@ test("release generator staging runs every registered backend without affected-f
     const root = `tools/sdk-generator/backends/${name}/tests`;
     return readdirSync(root).filter(file => file.endsWith(".test.mjs")).sort().map(file => `${root}/${file}`);
   });
-  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", ...expected]);
+  assert.deepEqual(invocation, ["--test", "--test-concurrency=1", "tools/sdk-generator/shared/tests/authority.test.mjs", ...expected]);
 });
 
 test("registered backend targets match the maintained transport contracts", () => {
@@ -114,7 +114,7 @@ test("release lanes cover the Rust workspace, docs crate, and TypeScript workspa
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
   const testCommand = linux.search(/^ +bun run test$/m);
-  const generatedCommand = linux.search(/^ +bun run check:generated \|\| generated_status=\$\?$/m);
+  const generatedCommand = linux.search(/^ +bun run check:baselines \|\| generated_status=\$\?$/m);
   assert.ok(testCommand >= 0, "Linux package lane must run tests");
   assert.ok(generatedCommand > testCommand, "Linux package generated check must follow tests");
 });
@@ -264,6 +264,9 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual(parallel.calls.map(call => JSON.stringify(call.args)).sort(), serial.calls.map(call => JSON.stringify(call.args)).sort());
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
+  assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
+    "clippy", "-p", "acyclic-harness", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
+  ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);
   assert.equal(failed.exitCode, 7);
@@ -356,6 +359,8 @@ exec 3<&0
 fixture='${fixture}'
 export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
+installed_graphcoder() { :; }
+pinned_pi() { :; }
 native_binding() { [[ "$CARGO_BUILD_JOBS" == 2 ]]; touch "$fixture/napi.done"; return ${napi}; }
 nextest() { printf 'fixture-workspace-started\\n'; [[ "$CARGO_BUILD_JOBS" == 8 ]]; return ${workspace}; }
 cargo() {
@@ -571,7 +576,7 @@ mutated='${earlyExit ? 1 : 0}'
 parent_pid="$BASHPID"
 on_exit() {
   if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
-  for child in fs mcp client; do
+  for child in fs compaction mcp client; do
     if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
   done
   touch "$fixture/all-launched" "$fixture/release-cleanup"
@@ -580,6 +585,7 @@ trap on_exit EXIT
 bun() {
   case "$*" in
     *"@acyclic-labs/fs"*) id=fs ;;
+    *"browser-compaction.html"*) id=compaction ;;
     *"test:browser:mcp"*) id=mcp ;;
     *"test:client:browser"*) id=client ;;
     *) return 98 ;;
@@ -601,9 +607,9 @@ printf 'joined\\n'
       assert.equal(result.status, failure === "none" ? 0 : 1, result.stderr);
       const events = result.stdout.trim().split("\n");
       assert.deepEqual(events.filter(event => event.startsWith("started:")).sort(),
-        ["started:client", "started:fs", "started:mcp"]);
+        ["started:client", "started:compaction", "started:fs", "started:mcp"]);
       assert.deepEqual(events.filter(event => event.startsWith("completed:")).sort(),
-        ["completed:client", "completed:fs", "completed:mcp"]);
+        ["completed:client", "completed:compaction", "completed:fs", "completed:mcp"]);
       assert.equal(events.includes("joined"), failure === "none");
       if (earlyExit) {
         assert.match(result.stdout, /unfinished-at-exit:/, "mutation must expose unfinished cleanup");
@@ -614,7 +620,7 @@ printf 'joined\\n'
         });
         assert.equal(summary.status, 0, summary.stderr);
         assert.ok(summary.stdout.includes("### Parallel browser checks"));
-        for (const browser of [{ id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
+        for (const browser of [{ id: "compaction", command: "bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html" }, { id: "fs", command: "bun run --filter @acyclic-labs/fs test:browser" },
           { id: "mcp", command: "bun run --filter @acyclic-labs/harness test:browser:mcp" },
           { id: "client", command: "bun run --filter @acyclic-labs/harness test:client:browser" }]) {
           const row = summary.stdout.split("\n").find(line => line.includes(browser.command)) ?? assert.fail("missing browser timing");
@@ -627,4 +633,44 @@ printf 'joined\\n'
     assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("host qualification initializes runner-local tools before both Bun installers", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/agent-host-qualification.yml", "utf8"));
+  const job = workflow.jobs.qualify;
+  assert.equal(job.env.TOOLS_DIR, undefined);
+  assert.doesNotMatch(JSON.stringify(job.env), /\$\{\{\s*runner\./);
+  const setup = job.steps.find(step => step.name === "Configure local tools and compiler cache")
+    ?? assert.fail("missing host tool setup");
+  const installers = job.steps.filter(step => /^Install pinned Bun on (Unix|Windows)$/.test(step.name));
+  assert.equal(installers.length, 2);
+  for (const installer of installers) assert.ok(job.steps.indexOf(setup) < job.steps.indexOf(installer));
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/host-tools-");
+  const runnerTemp = resolve(root, "runner temp").replaceAll("\\", "/");
+  const githubEnv = resolve(root, "job env").replaceAll("\\", "/");
+  const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "/bin/bash";
+  try {
+    const result = spawnSync(bash, ["-e", "-c", setup.run], {
+      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv }, encoding: "utf8", timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(githubEnv, "utf8").trim().split(/\r?\n/), [
+      `TOOLS_DIR=${runnerTemp}/tools`, `SCCACHE_DIR=${runnerTemp}/sccache`,
+    ]);
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("docs and generation provision nightly targets after stable", () => {
+  const steps = YAML.parse(readFileSync(".github/actions/qualification-lane/action.yml", "utf8")).runs.steps;
+  const stable = steps.findIndex(step => step.uses === "./.github/actions/rust-toolchain");
+  const nightly = steps.findIndex(step => step.name === "Install pinned Rustdoc toolchain");
+  assert.ok(stable >= 0 && nightly > stable);
+  assert.equal(steps[nightly].if, "inputs.lane == 'docs' || inputs.lane == 'generation'");
+  assert.equal(steps[nightly].run, "rustup toolchain install nightly-2026-07-01 --profile minimal --target wasm32-unknown-unknown --no-self-update");
+  for (const name of ["docs", "generation"]) assert.equal(lanes.find(lane => lane.lane === name).runner, "blacksmith-2vcpu-ubuntu-2404");
 });

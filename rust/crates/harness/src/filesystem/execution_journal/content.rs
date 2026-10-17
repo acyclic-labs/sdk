@@ -23,6 +23,56 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(crate) async fn staged_ref_with_io(
+        &self,
+        operation: OperationId,
+        key: &str,
+        io: Option<&PreparationIo>,
+    ) -> Result<FileRef> {
+        let (_identity_hold, key, path) = {
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let (key, path) = self.stage_identity_with_io(operation, key, io)?;
+            let hold = io
+                .map(|io| io.guard_owned(io.owned_since(before)?))
+                .transpose()?;
+            (hold, key, path)
+        };
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_volume(
+                &self.verifier,
+                &self.scope,
+                &self.volume,
+                VolumeOperation::Read,
+                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
+                    .transpose()?
+                    .unwrap_or(u64::MAX),
+                work,
+            )
+        })?;
+        let (file, bytes) = self
+            .host
+            .content_for_operation_record_io(
+                &self.volume,
+                &key,
+                Some(&path),
+                self.maximum_payload_bytes,
+                Some(InternalContentClass::Execution),
+                io,
+            )
+            .await?
+            .ok_or_else(|| {
+                canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "original staged payload was not published",
+                )
+            })?;
+        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        drop(bytes);
+        drop(hold);
+        Ok(file)
+    }
+
     pub(super) fn stage_identity_with_io(
         &self,
         operation_id: OperationId,
@@ -304,7 +354,11 @@ where
                 }
                 let mut work = io.history_io();
                 self.verifier.verify(&self.scope, &mut Some(&mut work))?;
-                if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
+                if !io.contains_capability(
+                    self.scope.capabilities(),
+                    reference,
+                    acyclic_fs::access::FILE_READ_PREFIX,
+                )? {
                     return Err(canonical_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Unauthorized,
@@ -353,11 +407,12 @@ where
         Ok(())
     }
 
-    pub(super) async fn verify_model_content_with_io(
+    pub(super) async fn verify_model_content_with_io<const RELEASE: bool>(
         &self,
         content: &ModelContent,
         io: Option<&PreparationIo>,
         context: Option<&crate::runtime::TaskContext>,
+        summary_files: &[&FileRef],
     ) -> Result<()> {
         let mut count = 0_usize;
         for _ in content.file_refs() {
@@ -395,7 +450,13 @@ where
         let mut references = Vec::with_capacity(count);
         for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
-                owner.validate_input_file(file, io)?;
+                if binding.is_none() && summary_files.contains(&file) {
+                    crate::executor::with_history_io(io, |work| {
+                        owner.input_limits().validate_file(file, work)
+                    })?;
+                } else {
+                    owner.validate_input_file(file, io)?;
+                }
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(stock_boundary(
@@ -453,7 +514,19 @@ where
                 }
             }
             if !configuration {
-                self.verify_input_file_with_io(file, io).await?;
+                if summary_files.contains(file) {
+                    let _bytes_hold;
+                    let bytes = self.load_content(file, io).await?;
+                    // Only the accounting test instantiates the omitted-release control.
+                    _bytes_hold = if RELEASE {
+                        io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten()
+                    } else {
+                        None
+                    };
+                    drop(bytes);
+                } else {
+                    self.verify_input_file_with_io(file, io).await?;
+                }
             }
         }
         drop(references);

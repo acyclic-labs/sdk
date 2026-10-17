@@ -1,0 +1,4 @@
+{"protocol":"osc9","maximum_tasks":4,"maximum_pending":16,"maximum_text_bytes":256,"records":[{"task":"task-1",
+ "sequence":1,"event":"task_failed","detail":"Ready"}],"expect":{"applied":[true],"presented":1,
+ "view":{"pending":[],"latest":{"task-1":{"task":"task-1","sequence":1,"event":"task_failed","detail":"Ready"}}},
+ "output":"\u001b]9;Task failed: task-1: Ready\u0007"}}

@@ -48,7 +48,12 @@ impl<'a> AuthorityWork<'a> {
         if let Some(mut allocation) = allocation {
             match &mut self.request_allocation {
                 Some(request) => {
-                    if let Err(error) = request.absorb(&mut allocation) {
+                    if request.bytes() == 0
+                        && request.work().authority_read_original().is_some()
+                        && !request.work().shares_allocation_context(allocation.work())
+                    {
+                        *request = allocation;
+                    } else if let Err(error) = request.absorb(&mut allocation) {
                         drop(value);
                         return Err(error.into());
                     }
@@ -61,12 +66,33 @@ impl<'a> AuthorityWork<'a> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn native_meter(
-        &self,
+        &mut self,
     ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
-        self.original
-            .expect("native SDK funding")
-            .authority_read_meter()
-            .map_err(Into::into)
+        let original = self.original.expect("native SDK funding");
+        if let Some(allocation) = &self.request_allocation
+            && let Some(meter) = allocation.work().authority_read_meter_for(original)
+        {
+            original.admit(WorkCounters::UNCHARGED)?;
+            return Ok(meter);
+        }
+        if self
+            .request_allocation
+            .as_ref()
+            .is_some_and(|a| a.bytes() == 0)
+        {
+            drop(self.request_allocation.take());
+        }
+        let mut allocation = original.authority_read_allocation()?;
+        let meter = allocation.work().runtime_meter();
+        if let Some(request) = &mut self.request_allocation {
+            // Public rebinding must retain the old request's paid capacity.
+            if !request.work().shares_allocation_context(original) {
+                return Ok(meter);
+            }
+            allocation.absorb(request)?;
+        }
+        self.request_allocation = Some(allocation);
+        Ok(meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -180,7 +206,28 @@ impl<'a> AuthorityWork<'a> {
             .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
         let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        // Every SDK authority suffix fits here. Keep the full Stream bound
+        // available in a separate frame for longer provider-internal suffixes.
+        if length <= 128 {
+            self.path_buffer::<128>(authority, suffix, generation, length, writes)
+        } else {
+            self.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
+                authority, suffix, generation, length, writes,
+            )
+        }
+    }
+
+    #[inline(never)]
+    fn path_buffer<const N: usize>(
+        &mut self,
+        authority: AuthorityId,
+        suffix: &str,
+        generation: Option<GenerationId>,
+        length: usize,
+        writes: WorkCounters,
+    ) -> Result<StreamPath, AuthorityStoreError> {
+        const PREFIX: &[u8] = b"fs/authorities/";
+        let mut text = [0_u8; N];
         text.get_mut(..PREFIX.len())
             .ok_or(crate::WorkError::Overflow)?
             .copy_from_slice(PREFIX);
@@ -231,7 +278,7 @@ impl<'a> AuthorityWork<'a> {
         lease: crate::OperationLeaseId,
         expiry: u64,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-        let mut text = [0_u8; acyclic_stream::MAX_PATH_BYTES];
+        let mut text = [0_u8; crate::operation_window::lease_path::MAX_ENCODED_BYTES];
         let length = crate::operation_window::lease_path::encode(
             workspace,
             lease,
@@ -445,3 +492,10 @@ pub(super) fn codec_work(encoded: u64, copied: u64, hashed: u64) -> WorkCounters
         ..WorkCounters::UNCHARGED
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_path_tests.rs"]
+mod path_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "native_tests.rs"]
+mod tests;

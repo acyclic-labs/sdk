@@ -10,29 +10,50 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
     use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
     let source = windows_checkout_source().await?;
-    let seed = windows_path("seed.txt");
-    source.create_file(&seed, FileMetadata::default(), None, &work)?;
-    source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
+    let parent = windows_path("nested");
+    source.create_directory(&parent, FileMetadata::default(), &work)?;
+    let paths = [
+        (windows_path("seed.txt"), "seed.txt"),
+        (parent.child(windows_name("seed.txt")), "nested/seed.txt"),
+    ];
+    for (path, _) in &paths {
+        source.create_file(path, FileMetadata::default(), None, &work)?;
+        source.write_range(path, 0, Bytes::from_static(b"seed"))?;
+    }
     let (_root, destination, mut session) = mount_source(&source)?;
-    let projected = destination.join("seed.txt");
-    assert_eq!(std::fs::read(&projected)?, b"seed");
+    let mut writers = Vec::new();
+    for (path, relative) in &paths {
+        assert_eq!(source.read_range(path, 0, 4)?.as_ref(), b"seed");
+        let projected = destination.join(relative);
+        assert_eq!(std::fs::read(&projected)?, b"seed");
+        writers.push(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+                .open(&projected)?,
+        );
+    }
+    assert!(
+        session.stop()?,
+        "the live provider must retire with held writers"
+    );
 
-    let mut late = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
-        .open(&projected)?;
-    session
-        .stop()
-        .expect_err("an open non-delete-sharing handle must fence cleanup");
-
-    late.rewind()?;
-    late.write_all(b"late")?;
-    late.flush()?;
-    drop(late);
-
-    assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
-    session.stop()?;
+    let stopped_table = source.shared_checkout().lock().await.root().file_table;
+    for mut late in writers {
+        late.rewind()?;
+        late.write_all(b"late")?;
+        late.flush()?;
+    }
+    for (_, relative) in &paths {
+        assert_eq!(std::fs::read(destination.join(relative))?, b"late");
+    }
+    assert_eq!(
+        source.shared_checkout().lock().await.root().file_table,
+        stopped_table,
+        "late writes must leave the authenticated source records unchanged"
+    );
+    assert!(!session.stop()?, "retirement must be idempotent");
     Ok(())
 }
 

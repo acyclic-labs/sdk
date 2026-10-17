@@ -1,0 +1,3 @@
+{"writes":[{"path":"plans/z.md","text":"- [ ] Last\n","files":{"plans/z.md":"- [ ] Last\n"},"panel":["plans/z.md"
+  ,"[ ] Last"]},{"path":"plans/a.md","text":"- [x] First\n","files":{"plans/a.md":"- [x] First\n","plans/z.md":
+  "- [ ] Last\n"},"panel":["plans/a.md","[x] First","plans/z.md","[ ] Last"]}]}

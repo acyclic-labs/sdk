@@ -282,9 +282,19 @@ pub(super) fn fuse_replace_prefix(
     destination: &MountPath,
     work: &NativeMaterializationWork,
 ) -> Result<Option<FuseOwned<MountPath>>, NativeMountError> {
-    let Some(suffix) = value.components().strip_prefix(source.components()) else {
+    if !has_prefix(value, source) {
         return Ok(None);
-    };
+    }
+    fuse_rebase_path(value, source.components().len(), destination, work).map(Some)
+}
+
+pub(super) fn fuse_rebase_path(
+    value: &MountPath,
+    depth: usize,
+    destination: &MountPath,
+    work: &NativeMaterializationWork,
+) -> Result<FuseOwned<MountPath>, NativeMountError> {
+    let suffix = value.components().get(depth..).ok_or(libc::ESTALE)?;
     fuse_path(
         destination
             .components()
@@ -298,5 +308,4 @@ pub(super) fn fuse_replace_prefix(
             .chain(suffix.iter().map(Vec::as_slice)),
         work,
     )
-    .map(Some)
 }

@@ -1,5 +1,3 @@
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use super::content_write::bound_content_writer;
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
@@ -238,6 +236,7 @@ pub struct ToolContext {
     pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
+    pub(crate) model_step: u32,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -252,6 +251,7 @@ impl Clone for ToolContext {
             task: self.task.clone(),
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
+            model_step: self.model_step,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -328,6 +328,7 @@ impl ToolContext {
             task,
             operation_id,
             call_id,
+            model_step: 0,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -419,26 +420,13 @@ impl ToolContext {
     /// Checks effective WRITE through the original bound destination.
     pub fn authorize_content_publication_with_native_work(
         &self,
+        path: &str,
         source: Option<&FileRef>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if let Some(source) = source {
-            task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
-        }
-        let writer = bound_content_writer(
-            task.content_binding(source.map(FileRef::volume)),
-            self.effective_scope(),
-            Some(&io),
-        )?;
-        if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "source differs from the owner-bound destination",
-            });
-        }
-        Ok(())
+        task.authorize_content_publication(path, source, self.effective_scope(), Some(&io))
     }
 }
 
@@ -586,5 +574,16 @@ impl ToolContext {
             io,
         )
         .await
+    }
+    /// Reads one authenticated interval under this tool call's effective scope.
+    pub async fn read_file_range(
+        &self,
+        file: &FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        self.task()
+            .read_bound_range(file, range, self.effective_scope(), io)
+            .await
     }
 }

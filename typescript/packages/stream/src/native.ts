@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -7,6 +8,8 @@ import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
 import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
+import { checkedChild } from "./child.js";
+import { nativeCredentials } from "./native-credentials.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
@@ -90,29 +93,57 @@ export async function nativeStreamAvailable(): Promise<boolean> {
 
 /** Thin provider over the Rust-owned Stream N-API bridge. */
 export class NativeStreamProvider implements StreamProvider {
-  private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative) {}
+  private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative, private readonly credential?: ReturnType<typeof nativeCredentials>) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string | undefined, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, credential?: CredentialProvider): Promise<NativeStreamProvider> {
+    const certificate = caCertificate === undefined ? undefined : Buffer.from(caCertificate);
+    let abandon = (): void => {};
+    const resolve = credential === undefined ? undefined : nativeCredentials(credentialProvider({ credential }), () => abandon());
+    if (resolve === undefined) validateCredential(token);
     const module = await loadNativeModule();
-    const result = caCertificate === undefined
-      ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
-      : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
+    let result: GeneratedNative.NativeStreamConnectResult;
+    if (resolve !== undefined) {
+      const binding = module.NativeStreamClient as typeof GeneratedNative.NativeStreamClient & {
+        connectWithCredentialResult(endpoint: string, callback: () => Promise<string>, ca?: Buffer, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<GeneratedNative.NativeStreamConnectResult>;
+      };
+      if (typeof binding.connectWithCredentialResult !== "function") throw new StreamError("configuration", "Stream native companion does not support credential providers");
+      const release = resolve.retain();
+      try { result = await binding.connectWithCredentialResult(endpoint, () => resolve.resolve(), certificate, cancellation); }
+      finally { release(); }
+    } else {
+      validateCredential(token);
+      result = certificate === undefined
+        ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
+        : await module.NativeStreamClient.connectWithCaResult(endpoint, token, certificate, cancellation);
+    }
     if (result.error !== undefined) throw nativeError(result.error, "connect");
     if (result.client === undefined) throw new StreamError("transport", "Stream native companion returned no client");
-    return new NativeStreamProvider(result.client, module);
+    const client = result.client;
+    if (resolve !== undefined) {
+      if (typeof client.abandonSessionAttempts !== "function") throw new StreamError("configuration", "Stream native companion does not support credential cancellation");
+      abandon = () => client.abandonSessionAttempts();
+    }
+    return new NativeStreamProvider(result.client, module, resolve);
+  }
+
+  private async request<T>(operation: (client: GeneratedNative.NativeStreamClient) => Promise<T>): Promise<T> {
+    const release = this.credential?.retain();
+    try { return await operation(this.client); }
+    finally { release?.(); }
   }
 
   get transport(): string { return this.client.transport(); }
 
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
-    const value = await this.operation("inspect_idempotency", this.client.inspectIdempotencyResult(Buffer.from(wireInspectIdempotencyRequest(key))));
+    const bytes = Buffer.from(wireInspectIdempotencyRequest(key));
+    const value = await this.operation("inspect_idempotency", this.request(client => client.inspectIdempotencyResult(bytes)));
     return this.project("inspect_idempotency", value) as IdempotencyObservation | undefined;
   }
 
   async tail(path: string): Promise<Sequence> {
     const request = { kind: "tail" as const, path };
     await validateWireRequest(request);
-    const value = await this.operation("tail", this.client.tailResult(Buffer.from(wireRequest(request))));
+    const value = await this.operation("tail", this.request(client => client.tailResult(Buffer.from(wireRequest(request)))));
     try { return fromBinary(wire.TailResponseSchema, value).tail; }
     catch (error) { throw invalidResponse("tail", error); }
   }
@@ -121,21 +152,21 @@ export class NativeStreamProvider implements StreamProvider {
     const records = values.map(value => value.slice());
     const authored = options === undefined ? undefined : structuredClone(options);
     await validateAppend(path, records, authored);
-    const value = await this.operation("append", this.client.appendResult(Buffer.from(wireAppendRequest(path, records, authored))));
+    const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(wireAppendRequest(path, records, authored)))));
     return this.project("append", value) as AppendResult;
   }
 
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
     await validateWireRequest(request);
-    const value = await this.operation("fork", this.client.forkResult(Buffer.from(wireRequest(request))));
+    const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(wireRequest(request)))));
     return this.project("fork", value) as ForkReceipt;
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    const result = await this.sequence("read", this.client.readResult(Buffer.from(wireRequest(request))));
+    const result = await this.sequence("read", this.request(client => client.readResult(Buffer.from(wireRequest(request)))));
     let next = request.from;
     let count = 0;
     for (const value of result) {
@@ -157,7 +188,8 @@ export class NativeStreamProvider implements StreamProvider {
     if (options.signal?.aborted) return;
     const cancellation = new this.module.NativeStreamCancellation();
     let follow: GeneratedNative.NativeStreamFollow | undefined;
-    const abort = () => { cancellation.cancel(); if (follow !== undefined) void follow.close(); };
+    let release: (() => void) | undefined;
+    const abort = () => { release?.(); cancellation.cancel(); if (follow !== undefined) void follow.close(); };
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) {
       cancellation.cancel();
@@ -168,6 +200,7 @@ export class NativeStreamProvider implements StreamProvider {
     try {
       let opened: GeneratedNative.NativeStreamFollowResult;
       try {
+        release = this.credential?.retain(options.signal);
         opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
       } catch (error) {
         if (options.signal?.aborted) return;
@@ -200,11 +233,46 @@ export class NativeStreamProvider implements StreamProvider {
         }
       }
     } finally {
+      release?.();
       options.signal?.removeEventListener("abort", abort);
       if (follow !== undefined) await follow.close();
     }
   }
 
+  async *children(request: import("./types.js").ChildrenRequest): AsyncIterable<import("./types.js").StreamChild> {
+    const { parent, signal, limit } = request;
+    const input = { kind: "children" as const, limit,
+      ...(parent === undefined ? {} : { parent }) };
+    await validateWireRequest(input);
+    if (signal?.aborted) return;
+    const cancellation = new this.module.NativeStreamCancellation();
+    let follow: GeneratedNative.NativeStreamFollow | undefined;
+    let release: (() => void) | undefined;
+    const abort = (): void => { release?.(); cancellation.cancel(); if (follow !== undefined) void follow.close(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      release = this.credential?.retain(signal);
+      const opened = await this.client.openChildrenResult(Buffer.from(wireRequest(input)), cancellation);
+      if (signal?.aborted) { follow = opened.follow; return; }
+      if (opened.error !== undefined) throw nativeError(opened.error, "children");
+      if (opened.follow === undefined) throw new StreamError("invalid_response", "native discovery omitted its cursor");
+      follow = opened.follow;
+      while (!signal?.aborted) {
+        const result = await follow.nextResult();
+        if (signal?.aborted) return;
+        if (result.error !== undefined) throw nativeError(result.error, "children");
+        if (result.value === undefined) return;
+        yield checkedChild(fromBinary(wire.ChildrenResponseSchema, result.value).child, parent);
+      }
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+    } finally {
+      release?.();
+      signal?.removeEventListener("abort", abort);
+      if (follow !== undefined) await follow.close();
+    }
+  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,
       ...(request.parent === undefined ? {} : { parent: request.parent }),
@@ -212,17 +280,19 @@ export class NativeStreamProvider implements StreamProvider {
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
     };
     await validateWireRequest(authored);
-    const value = await this.operation("children_page", this.client.childrenPageResult(Buffer.from(wireRequest(authored))));
+    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(wireRequest(authored)))));
     return this.project("children_page", value) as ChildrenPage;
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
-    const value = await this.operation("commit", this.client.commitResult(Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)))));
+    const bytes = Buffer.from(await normalizeWireCommitBytes(structuredClone(request), structuredClone(options)));
+    const value = await this.operation("commit", this.request(client => client.commitResult(bytes)));
     return this.project("commit", value) as CommitResult;
   }
 
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
-    const value = await this.operation("read_commit", this.client.readCommitResult(Buffer.from(wireReadCommitRequest(id))));
+    const bytes = Buffer.from(wireReadCommitRequest(id));
+    const value = await this.operation("read_commit", this.request(client => client.readCommitResult(bytes)));
     return this.project("read_commit", value) as CommittedEnvelope;
   }
 

@@ -64,6 +64,9 @@ printf '%s\n' "$*" >>"$FAKE_SHA256_LOG"
 if [[ "$*" != '--check --status' ]]; then
   # Signature fixtures use a stub archive, not downloaded tool bytes.
   printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$1"
+else
+  # The real check consumes stdin; exiting early races the checksum producer.
+  cat >/dev/null
 fi
 EOF
 
@@ -77,6 +80,14 @@ cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
+if [[ "$1" == rustc ]]; then
+  model=mcp-loom
+  [[ " $* " != *' --test timer_loom '* ]] || model=timer_loom
+  [[ " $* " != *' --test guest_loom '* ]] || model=guest_loom
+  [[ " $* " != *' --test native_binding_model '* ]] || model=native_binding_model
+  [[ " $* " != *' --test memory-accounting-model '* ]] || model=memory-accounting-model
+  printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
+fi
 EOF
 
 chmod +x "$work/bin"/*
@@ -169,15 +180,28 @@ printf '%s
 ' 'cargo-nextest 0.9.146 (fake)'
 EOF
 chmod +x "$gate/bin/cargo-nextest"
+cat >"$gate/bin/mcp_loom" <<'EOF'
+#!/usr/bin/env bash
+printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n'
+EOF
+chmod +x "$gate/bin/mcp_loom"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
+    FAKE_CARGO_LOG="$gate/cargo.log" FAKE_MCP_LOOM_BINARY="$gate/bin/mcp_loom" PATH="$gate/bin:$work/bin:$PATH" \
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 1 ]]
-[[ "${cargo_calls[0]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${#cargo_calls[@]}" -eq 7 ]]
+[[ "${cargo_calls[0]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features --features model-checking' ]]
+timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
+[[ "${cargo_calls[1]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
+[[ "${cargo_calls[2]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[3]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
+memory_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"))')"
+[[ "${cargo_calls[4]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
+[[ "${cargo_calls[5]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[6]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
 
 for lane in docs generation; do
   : >"$gate/cargo.log"

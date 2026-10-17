@@ -89,12 +89,22 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             &mut AuthorityWork<'_>,
         ) -> Result<T, AuthorityStoreError>,
     ) -> Result<T, AuthorityStoreError> {
+        let record = self.record_at(authority, suffix, from, work).await?;
+        decode(&record.0, work)
+    }
+
+    async fn record_at(
+        &self,
+        authority: AuthorityId,
+        suffix: &str,
+        from: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(acyclic_stream::Record, ProviderAllocation), AuthorityStoreError> {
         let path = work.path(authority, suffix, None)?;
         let bytes = path.as_str().len() as u64;
         let result = self.record(path, from, work).await;
         work.release(bytes)?;
-        let record = result?;
-        decode(&record.0, work)
+        result
     }
 
     pub(super) async fn fork_snapshot(
@@ -102,10 +112,26 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
+        self.fork_snapshot_payload::<false>(authority, work)
+            .await
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    pub(super) async fn fork_snapshot_payload<const RETAIN: bool>(
+        &self,
+        authority: AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<
+        (
+            AuthoritySnapshot,
+            Option<(acyclic_stream::Record, ProviderAllocation, usize)>,
+        ),
+        AuthorityStoreError,
+    > {
         let baseline = work.allocations.live_bytes();
         let result = async {
             self.authority_require_live(authority, work).await?;
-            self.snapshot(authority, work).await
+            self.snapshot_payload::<RETAIN>(authority, work).await
         }
         .await;
         if result.is_err() && !work.is_native() {
@@ -124,6 +150,22 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
+        self.snapshot_payload::<false>(authority, work)
+            .await
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    async fn snapshot_payload<const RETAIN: bool>(
+        &self,
+        authority: AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<
+        (
+            AuthoritySnapshot,
+            Option<(acyclic_stream::Record, ProviderAllocation, usize)>,
+        ),
+        AuthorityStoreError,
+    > {
         let record_tail = self.tail_of(authority, "/records", work).await?;
         let epoch_tail = self.tail_of(authority, "/epochs", work).await?;
         if record_tail == 0 || epoch_tail == 0 {
@@ -140,34 +182,43 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 |record, work| work.decode_epoch(&record.value, EPOCH_DOMAIN),
             )
             .await?;
-        let head = self
-            .read_at(
-                authority,
-                "/records",
-                record_tail - 1,
-                work,
-                |record, work| {
-                    if record_tail == 1 {
-                        work.decode_epoch(&record.value, GENESIS_DOMAIN)?;
-                        return Ok(Head::genesis(epoch));
-                    }
-                    let durable = work.decode_durable(&record.value)?;
-                    if work.durable_digest(authority, &durable)? != durable.digest
-                        || durable.sequence.get().checked_add(1) != Some(record_tail)
-                    {
-                        return Err(AuthorityStoreError::CorruptStatic(
-                            "Stream authority record or sequence mismatch",
-                        ));
-                    }
-                    Ok(Head {
-                        epoch,
-                        sequence: durable.sequence,
-                        digest: durable.digest,
-                    })
-                },
-            )
+        #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+        let epoch = super::head_payload_loom_tests::observed_epoch(epoch);
+        let record = self
+            .record_at(authority, "/records", record_tail - 1, work)
             .await?;
-        Ok(AuthoritySnapshot { head, epoch_tail })
+        if record_tail == 1 {
+            work.decode_epoch(&record.0.value, GENESIS_DOMAIN)?;
+            return Ok((
+                AuthoritySnapshot {
+                    head: Head::genesis(epoch),
+                    epoch_tail,
+                },
+                None,
+            ));
+        }
+        let durable = work.decode_durable(&record.0.value)?;
+        if work.durable_digest(authority, &durable)? != durable.digest
+            || durable.sequence.get().checked_add(1) != Some(record_tail)
+        {
+            return Err(AuthorityStoreError::CorruptStatic(
+                "Stream authority record or sequence mismatch",
+            ));
+        }
+        let head = Head {
+            epoch,
+            sequence: durable.sequence,
+            digest: durable.digest,
+        };
+        let latest = if RETAIN {
+            // Keep provider custody until the bounded payload copy is admitted.
+            // Decoding authenticates a complete suffix; its offset needs no copy.
+            let offset = record.0.value.len() - durable.payload.len();
+            Some((record.0, record.1, offset))
+        } else {
+            None
+        };
+        Ok((AuthoritySnapshot { head, epoch_tail }, latest))
     }
 
     pub(super) async fn authority_require_live(

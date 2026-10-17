@@ -1,0 +1,8 @@
+{
+  "driver":"local", "prompt":"Update plans/a.md using the write tool.",
+  "expect":{"text":"done",
+    "frames":[{"kind":"declared"},{"kind":"admitted"},{"kind":"completed"}],
+    "wire":[{"file":null,"files":[{"key":{"Plan":"a"},"channel":null}],"removed":[]}],
+    "statuses":[{"state":"pending","attention":false,"parent":null},
+      {"state":"completed","attention":true,"parent":null}]}
+}

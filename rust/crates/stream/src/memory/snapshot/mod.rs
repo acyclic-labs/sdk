@@ -30,6 +30,12 @@ impl MemoryStream {
         {
             return Err(StreamError::Capacity);
         }
+        #[cfg(acyclic_loom)]
+        if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
+            let previous = std::mem::replace(&mut *self.state.write().await, decoded);
+            std::mem::forget(previous);
+            return Ok(());
+        }
         *self.state.write().await = decoded;
         Ok(())
     }
@@ -249,7 +255,10 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         let (key, digest, result, envelope) = match observation {
             Some(observation) => {
                 let key = observation.idempotency_key;
-                if state.replay(key.as_bytes()).is_some()
+                if state
+                    .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
+                    .ok()?
+                    .is_some()
                     || replay_commit_id(envelope.as_ref(), &observation.outcome)?
                         != envelope.as_ref().map(|envelope| envelope.commit_id)
                 {
@@ -269,7 +278,15 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 None,
             ),
         };
-        retain(state, envelope, key, digest, result, Default::default());
+        retain(
+            state,
+            &mut || {},
+            envelope,
+            key,
+            digest,
+            result,
+            Default::default(),
+        );
     }
     Some(())
 }

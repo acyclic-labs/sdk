@@ -5,10 +5,26 @@ pub(super) fn validate_completion_result<E: std::error::Error + 'static>(
     pending: &GitPendingTransition,
     result: &GitFilesystemResult,
 ) -> Result<(), GitCompatError<E>> {
-    let workspace_id = state
-        .current()
-        .map_err(|_| GitCompatError::InvalidState)?
-        .workspace_id;
+    let workspace_id = match &pending.mutation {
+        GitPendingMutation::Switch { branch } => {
+            let destination = state
+                .branches
+                .get(branch)
+                .ok_or(GitCompatError::InvalidState)?;
+            if !matches!(pending.action, GitFilesystemAction::SwitchWorkspace { workspace_id }
+                if workspace_id == destination.workspace_id)
+            {
+                return Err(GitCompatError::InvalidState);
+            }
+            destination.workspace_id
+        }
+        _ => {
+            state
+                .current()
+                .map_err(|_| GitCompatError::InvalidState)?
+                .workspace_id
+        }
+    };
     match result {
         GitFilesystemResult::Captured { tree, proof, .. } => {
             let GitPendingMutation::CaptureCommit {

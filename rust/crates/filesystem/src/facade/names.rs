@@ -27,7 +27,7 @@ pub(super) fn name_fold_key(
     let cancellation = name_cancellation(accounting);
     if name.encoding() == NameEncoding::Utf8 {
         let text = std::str::from_utf8(name.as_bytes()).map_err(|_| FsError::NonNormalizedName)?;
-        return types::lowercase_unicode(text, accounting, cancellation);
+        return types::case_fold_unicode(text, accounting, cancellation);
     }
     let delta = WorkCounters {
         bytes_copied: name.as_bytes().len() as u64,
@@ -53,6 +53,32 @@ pub(super) fn name_fold_equal(
     let right_bytes = right.0.capacity() as u64;
     retire_name_owned(right, right_bytes, accounting)?;
     Ok(equal)
+}
+
+pub(super) fn folded_binding_match<'a>(
+    target: &LogicalName,
+    folded_target: &[u8],
+    include_exact: bool,
+    allowed: &[FileId],
+    entries: impl Iterator<Item = &'a crate::kernel::TreeEntry>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<&'a LogicalName>, FsError> {
+    let mut found = None;
+    for entry in entries {
+        let folded = name_fold_key(&entry.name, accounting)?;
+        let collision = (include_exact || entry.name != *target)
+            && !allowed.contains(&entry.file_id)
+            && folded.0 == folded_target;
+        let bytes = folded.0.capacity() as u64;
+        retire_name_owned(folded, bytes, accounting)?;
+        if collision {
+            if found.is_some() {
+                return Err(FsError::NameCollision);
+            }
+            found = Some(&entry.name);
+        }
+    }
+    Ok(found)
 }
 
 pub(super) fn retire_name_owned<T>(
@@ -268,6 +294,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                         accounting,
                         cancellation,
                         allowed,
+                        false,
                     )
                     .await?
                     .is_some()
@@ -454,6 +481,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     accounting,
                     cancellation,
                     &[],
+                    true,
                 )
                 .await?
             else {
@@ -507,6 +535,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &'a mut KernelAccounting<'accounting>,
         cancellation: &'a CancellationToken,
         allowed_file_ids: &'a [FileId],
+        unique: bool,
     ) -> impl std::future::Future<
         Output = Result<Option<(LogicalName, KernelOwnedAllocation)>, FsError>,
     > + ProviderTask
@@ -514,22 +543,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         async move {
             let mut frame_custody = None;
             let (future, frame_bytes) = crate::heap_future::in_heap_admitted(
-                &mut *accounting,
-                |context, bytes| {
+                (
+                    &mut *self,
+                    parent_components,
+                    target,
+                    allowed_file_ids,
+                    &mut *accounting,
+                ),
+                |(_, _, _, _, context), bytes| {
                     frame_custody = Some(context.claim_owned(bytes, u64::from(bytes != 0))?);
                     Ok::<(), FsError>(())
                 },
-                |accounting| async move {
+                |(this, parent_components, target, allowed_file_ids, accounting)| async move {
                     let allocation = accounting.claim_owned(0, 0)?;
                     let mut parent = (
-                        NamespacePath::new(Vec::new(), self.volume.config.limits)
+                        NamespacePath::new(Vec::new(), this.volume.config.limits)
                             .map_err(name_path_error)?,
                         allocation,
                     );
                     for name in parent_components {
                         let next = parent.0.child_with_accounting(
                             name,
-                            self.volume.config.limits,
+                            this.volume.config.limits,
                             accounting,
                             cancellation,
                         )?;
@@ -538,11 +573,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     }
                     let folded_target = name_fold_key(target, accounting)?;
                     let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
-                    let found = loop {
+                    let mut found = None;
+                    loop {
                         accounting.check()?;
-                        let page = self
-                            .list_directory_with_accounting(
+                        this.synchronize_live_with_accounting(accounting, cancellation)
+                            .await?;
+                        let (lookup, _allocation) = this
+                            .lookup_no_follow_at_current_with_accounting(
                                 &parent.0,
+                                accounting,
+                                cancellation,
+                                false,
+                            )
+                            .await?;
+                        let page = this
+                            .list_directory_record_with_accounting(
+                                lookup.record.ok_or(FsError::NotFound)?,
                                 after
                                     .as_ref()
                                     .map(|owned| &owned.0)
@@ -552,20 +598,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                                 cancellation,
                             )
                             .await?;
-                        let mut found = None;
-                        for entry in &page.0.entries {
-                            let folded_entry = name_fold_key(&entry.name, accounting)?;
-                            let collision = entry.name != *target
-                                && !allowed_file_ids.contains(&entry.file_id)
-                                && folded_entry.0 == folded_target.0;
-                            let bytes = folded_entry.0.capacity() as u64;
-                            retire_name_owned(folded_entry, bytes, accounting)?;
-                            if collision {
-                                found = Some(
-                                    entry.name.clone_with_accounting(accounting, cancellation)?,
-                                );
-                                break;
+                        if let Some(name) = folded_binding_match(
+                            target,
+                            &folded_target.0,
+                            unique,
+                            allowed_file_ids,
+                            page.0.entries.iter(),
+                            accounting,
+                        )? {
+                            if found.is_some() {
+                                return Err(FsError::NameCollision);
                             }
+                            found = Some(name.clone_with_accounting(accounting, cancellation)?);
                         }
                         let has_more = page.0.has_more;
                         if let Some(old) = after.take() {
@@ -576,7 +620,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             .0
                             .entries
                             .last()
-                            .filter(|_| has_more && found.is_none())
+                            .filter(|_| has_more && (unique || found.is_none()))
                         {
                             Some(entry) => {
                                 Some(entry.name.clone_with_accounting(accounting, cancellation)?)
@@ -593,10 +637,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             },
                         )?;
                         retire_name_owned(page, bytes, accounting)?;
-                        if found.is_some() || !has_more {
-                            break found;
+                        if (!unique && found.is_some()) || !has_more {
+                            break;
                         }
-                    };
+                    }
                     let bytes = parent.0.retained_bytes();
                     retire_name_owned(parent, bytes, accounting)?;
                     let bytes = folded_target.0.capacity() as u64;
@@ -604,7 +648,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     Ok(found)
                 },
             )?;
-            let mut future: acyclic_stream::BoxProviderFuture<'_, _> = future;
+            let mut future = future;
             let result = future.as_mut().await;
             drop(future);
             let mut frame_custody =
@@ -612,5 +656,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             accounting.release_owned(&mut frame_custody, frame_bytes)?;
             result
         }
+    }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    pub(crate) async fn directory_binding_with_accounting(
+        &self,
+        id: FileId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<String>, FsError> {
+        let before = readonly_standalone_live(accounting);
+        let result = async {
+            let (search, allocation) =
+                crate::workspace::namespace_records_to_file_root_with_accounting(
+                    &self.volume,
+                    &self.root,
+                    self.generation_root,
+                    &[id],
+                    // Bindings can outnumber file records through hard links.
+                    // The original work budget bounds this cold traversal.
+                    u32::MAX,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let bytes = crate::workspace::namespace_records_bytes(&search.records);
+            let search = Owned::new(search, allocation, bytes);
+            let result = (|| {
+                let [(found, records)] = search.value.records.as_slice() else {
+                    return Err(FsError::FileIdentityCollision);
+                };
+                let [(path, record)] = records.as_slice() else {
+                    return Err(FsError::FileIdentityCollision);
+                };
+                if !search.value.complete || *found != id || record.kind != FileKind::Directory {
+                    return Err(FsError::FileIdentityCollision);
+                }
+                let (path, allocation) =
+                    path.unicode_text_with_accounting(accounting, cancellation)?;
+                let bytes = path.capacity() as u64;
+                Ok(Owned::new(path, allocation, bytes))
+            })();
+            search.retire(accounting)?;
+            result
+        }
+        .await;
+        let retained = result.as_ref().map_or(0, |path| path.bytes);
+        readonly_cleanup_standalone(accounting, before, retained)?;
+        result
     }
 }

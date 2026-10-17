@@ -1,0 +1,2 @@
+{"max_output_tokens":10,"turns":[[{"type":"event","kind":"content","delta":"partial"}]],
+  "expect":{"error":"operation outcome is indeterminate"}}

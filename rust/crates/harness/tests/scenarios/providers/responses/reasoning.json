@@ -1,0 +1,43 @@
+{
+  "responses":[
+    [
+      "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\ndata: {\"typ",
+      "e\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":",
+      "\"reason\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"think\"}]}}\n\ndata: {\"type\":",
+      "\"response.output_text.delta\",\"delta\":\"hé\"}\n\ndata: {\"type\":\"response.output_text.del",
+      "ta\",\"delta\":\"🦀\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",",
+      "\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"reasoning","delta":"think"},
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {
+          "kind":"reasoning_block",
+          "block":{
+            "kind":"summary",
+            "text":"think",
+            "origin":{
+              "provider":"responses","model":"model",
+              "credential_scope":[
+                213,160,119,210,182,234,2,142,208,154,224,185,22,97,214,169,150,211,200,147,117,164,48,205,
+                180,229,103,161,8,81,237,176
+              ]
+            },
+            "continuity":[
+              123,34,116,121,112,101,34,58,34,114,101,97,115,111,110,105,110,103,34,44,34,105,100,34,
+              58,34,114,101,97,115,111,110,34,44,34,115,117,109,109,97,114,121,34,58,91,123,34,116,
+              121,112,101,34,58,34,115,117,109,109,97,114,121,95,116,101,120,116,34,44,34,116,101,120,
+              116,34,58,34,116,104,105,110,107,34,125,93,125
+            ],
+            "outcome":"preserved-readable"
+          }
+        },
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ]
+  }
+}

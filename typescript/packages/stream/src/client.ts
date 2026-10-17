@@ -7,7 +7,7 @@ import type {
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
   StreamProvider,
 } from "./types.js";
-import { StreamError, compareStreamPaths } from "./types.js";
+import { StreamError, commitId, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
 
 export interface Codec<Value> {
@@ -100,15 +100,18 @@ export class StreamClient {
     }
     return page;
   }
-  /** Traverses all direct children, failing rather than silently skipping a concurrent hierarchy change. */
-  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS): AsyncIterable<{ readonly path: string }> {
-    let request: ChildrenPageRequest = { ...(parent === undefined ? {} : { parent }), limit };
-    for (;;) {
-      const page = await this.childrenPage(request);
-      for (const child of page.children) yield child;
-      if (page.nextAfter === undefined) return;
-      request = { ...(parent === undefined ? {} : { parent }), limit,
-        after: page.nextAfter, hierarchyVersion: page.hierarchyVersion };
+  /** Replays direct children and follows newly created children without a handoff gap. */
+  async *children(parent?: string, limit = StreamLimit.MAX_ITEMS, signal?: AbortSignal): AsyncIterable<{ readonly path: string }> {
+    if (parent !== undefined) validatePathValue(parent);
+    positiveInteger(limit, "limit");
+    if (limit > StreamLimit.MAX_ITEMS) throw new StreamError("limit_exceeded", "child replay limit exceeds the contract maximum");
+    if (this.provider.children === undefined) throw new StreamError("unsupported", "provider does not support live child discovery");
+    const seen = new Set<string>();
+    for await (const child of this.provider.children({ ...(parent === undefined ? {} : { parent }), limit,
+      ...(signal === undefined ? {} : { signal }) })) {
+      validatePathValue(child.path);
+      if (directParent(child.path) !== (parent ?? "")) throw new StreamError("invalid_response", "provider returned a non-direct child");
+      if (!seen.has(child.path)) { seen.add(child.path); yield child; }
     }
   }
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
@@ -116,7 +119,7 @@ export class StreamClient {
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
-        return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail) };
+        return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail), ...(condition.ifCommitId === undefined ? {} : { ifCommitId: commitId(condition.ifCommitId) }) };
       }
       validatePathValue(condition.path);
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
@@ -143,9 +146,12 @@ export class StreamClient {
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
   static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
+    const callback = environment?.credential;
     return new StreamClient(new DefaultStreamProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
-      token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
+      ...(callback === undefined
+        ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
+        : { credential: callback }),
       ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
     }));
   }

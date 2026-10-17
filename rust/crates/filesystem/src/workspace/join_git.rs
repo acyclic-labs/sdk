@@ -1,0 +1,228 @@
+//! Git resolves content independently of native metadata.
+use super::*;
+use crate::facade::FsWork as _;
+use crate::kernel::{FileRecord, MergeConflictResolution, MergeConflictSide};
+
+fn metadata(base: FileMetadata, mut ours: FileMetadata, theirs: FileMetadata) -> FileMetadata {
+    let executable = |mode| matches!(mode, MetadataField::Value(mode) if mode & 0o100 != 0);
+    if executable(ours.posix_mode) == executable(base.posix_mode)
+        && executable(ours.posix_mode) != executable(theirs.posix_mode)
+    {
+        let mode = match ours.posix_mode {
+            MetadataField::Value(mode) => Some(mode),
+            MetadataField::Unavailable => match theirs.posix_mode {
+                MetadataField::Value(mode) => Some(mode),
+                MetadataField::Unavailable => None,
+            },
+        };
+        if let Some(mode) = mode {
+            ours.posix_mode = MetadataField::Value(
+                (mode & !0o111)
+                    | if executable(theirs.posix_mode) {
+                        0o111
+                    } else {
+                        0
+                    },
+            );
+        }
+    }
+    ours
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
+    pub(super) async fn git_delete_binding(
+        &self,
+        conflict: &crate::ConflictView,
+        resolution: &MergeConflictResolution,
+        resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
+    ) -> Result<(), DrivenJoinError> {
+        if !self.git_metadata
+            || !matches!(conflict.kind, ConflictKind::Record)
+            || (matches!(conflict.ours, ConflictValue::Absent)
+                == matches!(conflict.theirs, ConflictValue::Absent))
+        {
+            return Ok(());
+        }
+        let Some(path) = &conflict.path else {
+            return Ok(());
+        };
+        let view = if matches!(conflict.ours, ConflictValue::Absent) {
+            &self.source_head
+        } else {
+            &self.target_head
+        };
+        let config = self.target_head.workspace.volume.config;
+        let namespace = customer_path(path, config)?;
+        let (_, name) = namespace
+            .split_last()
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let (parent, _) = path
+            .rsplit_once('/')
+            .ok_or(WorkspaceError::InvalidMergeResolution)?;
+        let parent = view
+            .stat(
+                if parent.is_empty() { "/" } else { parent },
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let binding = match resolution {
+            MergeConflictResolution::Select(side) => MergeConflictResolution::Select(*side),
+            MergeConflictResolution::File(Some(_)) => {
+                MergeConflictResolution::Select(if matches!(conflict.ours, ConflictValue::Absent) {
+                    MergeConflictSide::Theirs
+                } else {
+                    MergeConflictSide::Ours
+                })
+            }
+            MergeConflictResolution::File(None) => MergeConflictResolution::Binding(None),
+            _ => return Ok(()),
+        };
+        resolutions
+            .entry(MergeConflict::Binding {
+                directory_id: parent.file_id,
+                name: name.clone(),
+            })
+            .or_insert(binding);
+        Ok(())
+    }
+
+    pub(super) async fn git_resolution(
+        &self,
+        key: &ConflictKey,
+        resolution: MergeConflictResolution,
+    ) -> Result<MergeConflictResolution, DrivenJoinError> {
+        if !self.git_metadata {
+            return Ok(resolution);
+        }
+        let Some(file_id) = conflict_file_id(key) else {
+            return Ok(resolution);
+        };
+        let volume = &self.target_head.workspace.volume;
+        let fs = &volume.fs;
+        let mut records = [None; 3];
+        for (slot, generation) in
+            records
+                .iter_mut()
+                .zip([self.base.id, self.target_head.id, self.source_head.id])
+        {
+            let Some(record) = fs
+                .workspace_conflict_record(volume, generation, file_id)
+                .await?
+            else {
+                return Ok(resolution);
+            };
+            *slot = Some(record);
+        }
+        let [Some(base), Some(ours), Some(theirs)] = records else {
+            unreachable!()
+        };
+        let records = [base, ours, theirs];
+        let mut record: FileRecord = match resolution {
+            MergeConflictResolution::File(Some(record)) => record,
+            MergeConflictResolution::Select(side) => {
+                records[match side {
+                    MergeConflictSide::Base => 0,
+                    MergeConflictSide::Ours => 1,
+                    MergeConflictSide::Theirs => 2,
+                }]
+            }
+            other => return Ok(other),
+        };
+        if record.kind != FileKind::Regular {
+            return Ok(MergeConflictResolution::File(Some(record)));
+        }
+        let cancellation = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        if records
+            .iter()
+            .all(|original| original.metadata == record.metadata)
+        {
+            return Ok(MergeConflictResolution::File(Some(record)));
+        }
+        let mut values = [FileMetadata::default(); 3];
+        for (slot, original) in values.iter_mut().zip(&records) {
+            *slot = crate::facade::read_record_metadata_to_file_root_with_accounting(
+                volume,
+                *original,
+                &mut work,
+                &cancellation,
+            )
+            .await
+            .map_err(WorkspaceError::from)?;
+        }
+        let merged = metadata(values[0], values[1], values[2]);
+        record.metadata = if merged == values[1] {
+            records[1].metadata
+        } else {
+            fs.stage_merge_metadata_value(merged).await?
+        };
+        Ok(MergeConflictResolution::File(Some(record)))
+    }
+}
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+        #[test]
+        fn git_delete_modify_keeps_the_selected_binding(ours_deleted in any::<bool>(), text in "[a-z]{1,24}") {
+            futures::executor::block_on(async {
+                let text = format!("modified:{text}");
+                let fs = crate::Fs::memory();
+                let stop = CancellationToken::new();
+                let main = fs.create_workspace("main", WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                main.write_text("/note", "base").await.unwrap();
+                let generation = main.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let child = main.fork::<_, _, WorkspaceError>("child", crate::ForkOptions::from_generation(generation, IdempotencyKey::new()),
+                    crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &stop, ()).await.unwrap().value;
+                if ours_deleted { main.remove("/note").await.unwrap(); child.write_text("/note", &text).await.unwrap(); }
+                else { child.remove("/note").await.unwrap(); main.write_text("/note", &text).await.unwrap(); }
+                child.write_text("/clean", "source").await.unwrap();
+                let plan = child.join_into(&main).git_metadata().plan(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let options = ApplyOptions { if_target: plan.target_head(), idempotency_key: IdempotencyKey::new() };
+                let JoinOutcome::Conflicted { conflicts, truncated } = plan.apply(options, BTreeMap::new(), crate::PublicationPermit::Unrestricted).await.unwrap()
+                    else { return Err(TestCaseError::fail("expected delete/modify conflict")); };
+                let typed = plan.describe_conflicts(conflicts, truncated).await.unwrap();
+                let resolutions = typed.conflicts.iter().map(|conflict| (conflict.key.clone(),
+                    MergeResolution::Select(if matches!(conflict.ours, ConflictValue::Absent) { ConflictSide::Theirs } else { ConflictSide::Ours }))).collect();
+                let candidate = UnpublishedMergeCandidate { plan: typed, resolutions };
+                let outcome = plan.apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted).await.unwrap();
+                prop_assert!(matches!(outcome, JoinOutcome::Applied(_) | JoinOutcome::NoChanges(_)));
+                let head = main.head(WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                let bytes = head.read("/note", 64, WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                prop_assert_eq!(bytes.as_ref(), text.as_bytes());
+                let clean = head.read("/clean", 64, WorkBudget::UNBOUNDED, &stop).await.unwrap().value;
+                prop_assert_eq!(clean.as_ref(), b"source");
+                prop_assert_eq!(head.stat("/note", WorkBudget::UNBOUNDED, &stop).await.unwrap().value.link_count, 1);
+                Ok(())
+            })?;
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Timestamps are always ours; the executable bit follows the only side
+        // changing it, independently of all other mode and native metadata bits.
+        #[test]
+        fn git_metadata_ignores_native_times_and_merges_executable_bits(
+            modes in any::<[u32; 3]>(), times in any::<[i64; 3]>(),
+        ) {
+            let value = |i: usize| FileMetadata { posix_mode: MetadataField::Value(modes[i]),
+                modified_ns: MetadataField::Value(times[i]), changed_ns: MetadataField::Value(times[i]),
+                ..FileMetadata::default() };
+            let merged = metadata(value(0), value(1), value(2));
+            prop_assert_eq!(merged.modified_ns, value(1).modified_ns);
+            prop_assert_eq!(merged.changed_ns, value(1).changed_ns);
+            let expected = if (modes[0] ^ modes[1]) & 0o100 != 0 { modes[1] } else { modes[2] } & 0o100;
+            let MetadataField::Value(mode) = merged.posix_mode else { unreachable!() };
+            prop_assert_eq!(mode & 0o100, expected);
+            prop_assert_eq!(mode & !0o111, modes[1] & !0o111);
+        }
+    }
+}

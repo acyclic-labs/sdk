@@ -1,0 +1,4 @@
+{"writes":[{"path":".tasks/t/requests/r.json","text":"run"},{"path":".tasks/t/status.json","text":"forged"},{"path":
+  ".tasks/t/requests/r.json","text":"different"}],"expect":{"files":{".tasks/t/requests/r.json":"run",
+  ".tasks/t/status.json":"forged"},"changes":[{"path":".tasks/t/requests/r.json","text":"run"},{"path":
+  ".tasks/t/status.json","text":"forged"}],"errors":["immutable"]}}

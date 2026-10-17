@@ -1,0 +1,3 @@
+{"prompt":"/x","seed":{".claude/commands/x.md":"---\ndescription: example\n---\nbody"},"discovery_limits":{"entries":
+  4096,"directories":256,"header_bytes":2,"instruction_bytes":65536},"expect":{"error":
+  "command header exceeds prefix bound","files":{".claude/commands/x.md":"---\ndescription: example\n---\nbody"}}}

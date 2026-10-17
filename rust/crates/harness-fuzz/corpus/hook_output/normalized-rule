@@ -1,0 +1,1 @@
+{"on":"PreToolUse","matcher":"Bash","hooks":[{"run":{"kind":"executable","executable":"${CLAUDE_PROJECT_DIR}/guard","argv":["a b"]},"timeout_ms":1000,"failure":"block"}]}

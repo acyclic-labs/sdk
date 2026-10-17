@@ -1,0 +1,3 @@
+{"prompt":"Continue after EOF without completion.","turns":[[{"type":"event","kind":"content","delta":"one"}]],
+  "recoveries":[{"observed":[{"kind":"content","delta":"one"}],"continuation":[{"kind":"content","delta":"two"},
+  {"kind":"completed","metadata":null}]}],"resume":["operation outcome is indeterminate"],"expect":{"text":"onetwo"}}

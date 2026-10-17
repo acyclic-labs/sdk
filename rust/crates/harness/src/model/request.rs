@@ -17,7 +17,7 @@ pub struct ModelRequest {
     pub max_output_tokens: Option<u32>,
 }
 impl ModelRequest {
-    pub(super) fn validate(&self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+    pub(super) fn validate(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
         with_history_io(io, |work| limits.validate(work))?;
         charge_items(io, 1)?;
         charge_items(
@@ -45,7 +45,7 @@ impl ModelRequest {
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
             let bytes = (self.tools.len() as u64)
-                .checked_mul(size_of::<(&String, &crate::tool::ToolDefinition)>() as u64)
+                .checked_mul(size_of::<(&str, &crate::tool::ToolDefinition)>() as u64)
                 .and_then(|tools| {
                     calls
                         .checked_mul(size_of::<(&String, &String)>() as u64)
@@ -60,19 +60,25 @@ impl ModelRequest {
         for tool in &self.tools {
             charge_items(io, 1)?;
             with_history_io(io, |work| tool.validate(work))?;
-            if tools.insert(&tool.name, tool).is_some() {
+            if tools.insert(tool.name.as_str(), tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
         }
         let mut pending = BTreeMap::new();
-        for message in &self.messages {
+        for message in &mut self.messages {
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
-            for part in message.content.parts() {
+            let empty = message.content.parts().is_empty();
+            let parts = match &mut message.content {
+                ModelContent::Text(_) => &mut [][..],
+                ModelContent::Part(part) => std::slice::from_mut(part),
+                ModelContent::Parts(parts) => parts.as_mut_slice(),
+            };
+            for part in parts {
                 charge_items(io, 1)?;
                 Self::validate_part(message.role, part, &tools, &mut pending, io)?;
             }
-            if message.role == ModelRole::Tool && message.content.parts().is_empty() {
+            if message.role == ModelRole::Tool && empty {
                 return Err(Error::Invalid("tool role requires a paired result".into()));
             }
             if !pending.is_empty() && matches!(message.role, ModelRole::System | ModelRole::User) {
@@ -86,7 +92,7 @@ impl ModelRequest {
     }
     fn validate_tool_result(
         tool: &crate::tool::ToolDefinition,
-        content: &ToolResultContent,
+        content: &mut ToolResultContent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match io {
@@ -106,40 +112,63 @@ impl ModelRequest {
                 })?;
             }
             _ => {
-                let envelope = serde_json::to_value(content)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                crate::executor::validate_json_schema_value(
-                    &tool.projection_schema,
-                    &envelope,
-                    "model tool result",
-                    &mut None,
-                )?;
+                let validate = |envelope: &Value| {
+                    crate::executor::validate_json_schema_value(
+                        &tool.projection_schema,
+                        envelope,
+                        "model tool result",
+                        &mut None,
+                    )
+                };
+                if let ToolResultContent::Json { value } = content {
+                    let mut envelope = serde_json::json!({"kind":"json", "value":null});
+                    envelope["value"] = std::mem::take(value);
+                    let result = validate(&envelope);
+                    *value = envelope["value"].take();
+                    result?;
+                } else {
+                    let envelope = serde_json::to_value(content)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    validate(&envelope)?;
+                }
             }
         }
         Ok(())
     }
+    fn bound_tool<'a>(
+        name: &str,
+        tools: &BTreeMap<&str, &'a crate::tool::ToolDefinition>,
+    ) -> Option<&'a crate::tool::ToolDefinition> {
+        match name.rsplit_once('@') {
+            Some((name, revision)) => tools
+                .get(name)
+                .copied()
+                .filter(|tool| tool.revision == revision),
+            None => tools.get(name).copied(),
+        }
+    }
     fn validate_part<'a>(
         role: ModelRole,
-        part: &'a ModelContentPart,
-        tools: &BTreeMap<&String, &crate::tool::ToolDefinition>,
+        part: &'a mut ModelContentPart,
+        tools: &BTreeMap<&str, &crate::tool::ToolDefinition>,
         pending: &mut BTreeMap<&'a String, &'a String>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
-            ModelContentPart::ToolCall {
+            ModelContentPart::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => {
+                ..
+            }) => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
-                if role != ModelRole::Assistant || pending.contains_key(call_id) {
+                if role != ModelRole::Assistant || pending.contains_key(&*call_id) {
                     return Err(Error::Invalid(
                         "model tool call role or identity is invalid".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::bound_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
                 crate::executor::with_history_io(io, |work| {
                     crate::executor::validate_json_schema_value(
@@ -158,13 +187,12 @@ impl ModelRequest {
             } => {
                 charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                 crate::tool::ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
-                if role != ModelRole::Tool || pending.remove(call_id) != Some(name) {
+                if role != ModelRole::Tool || pending.remove(&*call_id) != Some(&*name) {
                     return Err(Error::Invalid(
                         "model tool result has no matching call".into(),
                     ));
                 }
-                let tool = tools
-                    .get(name)
+                let tool = Self::bound_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool result is unbound".into()))?;
                 Self::validate_tool_result(tool, content, io)?;
             }
@@ -218,6 +246,7 @@ impl PreparedModelRequest {
             if io.original_native_work().is_some() {
                 return Self::encode_admitted(request, limits, Some(io));
             }
+            let mut request = request;
             let request_hold;
             let bytes_hold;
             // Bound JSON depth before the recursive capacity inventory.
@@ -240,7 +269,7 @@ impl PreparedModelRequest {
         Self::encode_admitted(request, limits, io)
     }
     pub(super) fn encode_admitted(
-        request: ModelRequest,
+        mut request: ModelRequest,
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -276,6 +305,9 @@ impl PreparedModelRequest {
     pub fn request(&self) -> &ModelRequest {
         &self.request
     }
+    pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
+        self.request.messages
+    }
     /// Exact canonical provider-neutral bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
@@ -303,6 +335,7 @@ impl PreparedModelRequest {
             io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
         }
         let mut message_tokens = Vec::new();
+        let mut fixed_bytes = self.bytes.len();
         for message in &self.request.messages {
             charge_items(io, 1)?;
             #[cfg(feature = "filesystem")]
@@ -318,6 +351,9 @@ impl PreparedModelRequest {
                     .map_err(|error| Error::Invalid(error.to_string()))?
                     .into(),
             };
+            fixed_bytes = fixed_bytes
+                .checked_sub(bytes.len())
+                .ok_or_else(|| Error::Invalid("message framing exceeds prepared request".into()))?;
             let mut tokens = bytes.len() as u64;
             for file in message.content.file_refs() {
                 charge_items(io, 1)?;
@@ -329,13 +365,13 @@ impl PreparedModelRequest {
                 .map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))?;
             crate::executor::stock_vec_push(&mut message_tokens, tokens, io)?;
         }
-        let fixed_tokens = u32::try_from(self.bytes.len())
+        let fixed_tokens = u32::try_from(fixed_bytes)
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        let count = crate::context::ModelTokenCount {
-            request_digest: self.request_digest,
+        let count = crate::context::ModelTokenCount::from_upper_bounds(
+            self.request_digest,
             fixed_tokens,
             message_tokens,
-        };
+        );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = observer
             .map(|io| {
@@ -350,3 +386,7 @@ impl PreparedModelRequest {
         Ok((count, custody))
     }
 }
+
+#[cfg(test)]
+#[path = "request_tokens_tests.rs"]
+mod tokens_tests;

@@ -15,11 +15,6 @@ impl FileTool {
         let io = owned_io.as_ref();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io: Option<&crate::executor::PreparationIo> = None;
-        let error = |code, reason| {
-            crate::executor::with_history_io(io, |history| {
-                crate::store::guarded_boundary(history, code, reason)
-            })
-        };
         crate::executor::with_history_io(io, |history| {
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), history)
         })?;
@@ -55,15 +50,6 @@ impl FileTool {
             }
             Ok(())
         })?;
-        if let Self::Read = self {
-            let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-            if maximum == 0 || maximum == u64::MAX || file.descriptor().byte_length() > maximum {
-                return Err(error(
-                    crate::wire::ErrorCode::Invalid,
-                    "file exceeds text rendering bound",
-                ));
-            }
-        }
         Ok((Some(file), custody))
     }
 
@@ -94,6 +80,27 @@ impl FileTool {
             })
         };
         let (file, custody) = match *self {
+            Self::Read => {
+                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+                let length = match input.0.range {
+                    Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
+                        range.end.checked_sub(range.start)
+                    }
+                    Some(_) => None,
+                    None => Some(input.0.file.descriptor().byte_length()),
+                };
+                if maximum == 0
+                    || maximum == u64::MAX
+                    || length.is_none_or(|length| length > maximum)
+                {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "file selection exceeds text rendering bound",
+                    ));
+                }
+                (input.0.file, input.1)
+            }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
@@ -104,35 +111,6 @@ impl FileTool {
                     ));
                 }
                 return Ok((None, input.1));
-            }
-            Self::ReadRange {
-                options,
-                maximum_result_bytes,
-            } => {
-                let input =
-                    decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
-                let length = input
-                    .0
-                    .range
-                    .end
-                    .checked_sub(input.0.range.start)
-                    .ok_or_else(|| {
-                        error(crate::wire::ErrorCode::Invalid, "read range is reversed")
-                    })?;
-                options.validate()?;
-                if input.0.file.descriptor().byte_length() > options.maximum_input_bytes
-                    || input.0.range.end > input.0.file.descriptor().byte_length()
-                    || length
-                        > options
-                            .maximum_text_bytes
-                            .min(maximum_result_bytes.min(scope.limits().file_bytes))
-                {
-                    return Err(error(
-                        crate::wire::ErrorCode::Invalid,
-                        "read exceeds its admitted byte bounds",
-                    ));
-                }
-                (input.0.file, input.1)
             }
             Self::Search {
                 options,

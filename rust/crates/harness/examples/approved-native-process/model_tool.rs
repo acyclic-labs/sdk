@@ -52,9 +52,11 @@ impl<P: StreamProvider> Transport<P> {
         Ok(())
     }
 
-    async fn result(&self, status: EffectStatus) -> Result<Value> {
+    async fn result(&self, status: EffectStatus) -> Result<rmcp::model::CallToolResult> {
         if let EffectStatus::Failed { message } = status {
-            return Ok(json!({"content":[{"type":"text","text":message}], "isError":true}));
+            return Ok(rmcp::model::CallToolResult::error(vec![
+                rmcp::model::ContentBlock::text(message),
+            ]));
         }
         let EffectStatus::Succeeded { result } = status else {
             return Err(Error::Indeterminate(self.descriptor()?.operation));
@@ -67,7 +69,8 @@ impl<P: StreamProvider> Transport<P> {
                 .await?,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
-        self.approved.request.mcp_response(&output)
+        serde_json::from_value(self.approved.request.mcp_response(&output)?)
+            .map_err(|error| Error::Invalid(error.to_string()))
     }
 }
 
@@ -78,7 +81,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::CallToolResult>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
@@ -109,7 +112,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<rmcp::model::CallToolResult>>> {
         Box::pin(async move {
             let context = context
                 .ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;

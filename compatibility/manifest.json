@@ -3,48 +3,54 @@
   "status": "candidate",
   "umbrellaVersion": "0.2.0",
   "families": {
+    "auth": {
+      "version": "0.2.0",
+      "crateVersion": "0.2.0",
+      "schemaDigest": "sha256:277d48a5ec6eba72aacd29d2fcf5eb5b5e39cef05e07f5bac0096268a614cb0c",
+      "descriptorDigest": "sha256:f19406210bab4918de3993b30746667ed81dfdd13aea06243b840d75ef08099a"
+    },
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:ae7b6bf87e8be61996eba12f6a40de69d3d151b7c68f3b155ec26a25a21e3c6d",
-      "descriptorDigest": "sha256:657a72cdea8a52a3fcb4ca545d6ff988f20b1d57293d5c33d6ed0f76b779e897"
+      "schemaDigest": "sha256:2d08418e98a1cc083950928ab1fadd8d6455b57bda2efadeddf66ea6e52f3409",
+      "descriptorDigest": "sha256:4b9708af0c21d480f8f3fffd1a2ff4f4c08eeeaa60e0245819e53c034fb6844b"
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:c8acf71df64ceebc4b7047bda105223a4ac83428feb59ebf146c67b093bffa4b",
-      "conformanceDigest": "sha256:3b9ffcc21007714337ab0fb32417941e49f5f9bef7d55e5f4418cae005a443df"
+      "schemaDigest": "sha256:b47ed268aa31466389cf99c4c6f5ab500af26ccf8c48fcfc97b66ee5f0f1a8bf",
+      "conformanceDigest": "sha256:e02cdd62046c791722e001615b9227f7353ca5255070b0c9c4a57d300a719958"
     },
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:554b4e49c6ec148cf8b40a5ebd2b548a55737841330c6b69ca955796218c5b72",
-      "descriptorDigest": "sha256:779b818863f1ef03c9ab90f6205aeb44b23abf5637952bcc644ddad754f45531",
+      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
+      "descriptorDigest": "sha256:96d0fc8440409110480698ca5eb2b0d3b3e7de314b4dbbf5e26dcf9f12433b02",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:fd4e2130dc08e04ad6f011ef320e2cad3511970098288bebbbfbf078463c5a30",
-      "descriptorDigest": "sha256:5c1635cab734b6644710e4f43827996a14e30675d78cfe81a2c78e2b6d4a97fb",
+      "schemaDigest": "sha256:57d33f775add8d93c2b78563c8659149e9bd1062050396079d4cf5c390a3e098",
+      "descriptorDigest": "sha256:d51aad9f262b7e06ff86f84a378595a42a9f64c5b8f7de9966ffd3260fdcf0c7",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:42650b25814300126e48eb26c1f47339472562f36df909b2bbc4d353fb629658",
-      "descriptorDigest": "sha256:94b85fcba18448a11377684584f41885004ac747b62f593130812629357e236a",
+      "schemaDigest": "sha256:9f505b11b68cb908bba38e78ab40dd7e4a8f1dcd9dd910501372617227c44792",
+      "descriptorDigest": "sha256:33b13d0d38e6ac6d03fa615cace8baaa7f6a0ed6df1d4a73ccb96df00f362d47",
       "conformanceDigest": "sha256:c5b54fd1254c19c966ab3765962ca9e633a786abf91cf6af2cca5bb0183e5fb6"
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:bc6a3665b68619b40bd5d89f983054388e2006a043d2cc586b2a27407b9e07e0",
-      "descriptorDigest": "sha256:e814bd997ce08b35543f460e88a61de754a7881506974886e7988bbde0c3a597",
+      "schemaDigest": "sha256:4204fa198e96e690eb12547b757edd317159b43897eb4172ad7f0355f4791077",
+      "descriptorDigest": "sha256:b865f611cbdea3795ffb209c17928218a22b18b979b7e1c607a434b5e1297904",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:cba2f8caede087bb696dec024e559df6355e817e9b9a6e4933c7140b19e96841",
-      "descriptorDigest": "sha256:21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
+      "schemaDigest": "sha256:e3cfe892678ae33b6df0c93b6aab4acb575f6dc6b28dc960d5462e33e7a59a32",
+      "descriptorDigest": "sha256:ee4335a6a1e639716d918df5f609709c438b080493ea1211d118b4d199b8578a",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }

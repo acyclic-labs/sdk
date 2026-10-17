@@ -220,6 +220,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                     tracked_paths,
                 },
                 GitPendingMutation::Join {
+                    conflicts: None,
                     source_head: source.head,
                     source_branch: branch,
                     rebase: false,
@@ -245,6 +246,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                     tracked_paths,
                 },
                 GitPendingMutation::Join {
+                    conflicts: None,
                     source_head: source.head,
                     source_branch: branch,
                     rebase: true,

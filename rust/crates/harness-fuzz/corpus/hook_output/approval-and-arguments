@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Review it","updatedInput":{"nested":[true,null,{"escaped":"a\\b\n"}]}}}

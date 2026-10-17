@@ -317,6 +317,7 @@ where
                 )?,
                 adapter.clone(),
                 ContextPipeline::default(),
+                ToolRegistry::default(),
                 None,
             )
             .await?

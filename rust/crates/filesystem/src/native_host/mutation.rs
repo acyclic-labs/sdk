@@ -180,7 +180,7 @@ impl HostRoot {
                 work,
             )?;
             with_parent_leaf(&self.directory, destination, work, |parent, leaf, work| {
-                set_windows_name(&file, parent, leaf, false, nt::FileLinkInformation, work)
+                set_windows_name(&file, parent, leaf, 0, nt::FileLinkInformation, work)
             })
         })
     }
@@ -398,7 +398,7 @@ pub(crate) fn rename_held<W: NativeHostWork>(
             &file,
             to,
             to_name,
-            mode == acyclic_native_runtime::RenameMode::Replace,
+            u32::from(mode == acyclic_native_runtime::RenameMode::Replace),
             nt::FileRenameInformation,
             work,
         )

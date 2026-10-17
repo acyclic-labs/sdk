@@ -46,7 +46,7 @@ jobs:
           import { execFileSync } from 'node:child_process';
           import { readdirSync } from 'node:fs';
           import { languageGeneratorBackends } from './scripts/plan-qualification.mjs';
-          const paths = [];
+          const paths = ['tools/sdk-generator/shared/tests/authority.test.mjs'];
           for (const backend of languageGeneratorBackends.filter(name => name !== 'go')) {
             const root = `tools/sdk-generator/backends/${backend}/tests`;
             const tests = readdirSync(root).filter(name => name.endsWith('.test.mjs')).sort();

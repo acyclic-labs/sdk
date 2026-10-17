@@ -63,17 +63,13 @@ pub enum ModelContentPart {
         /// Resolution policy.
         policy: FileProjectionPolicy,
     },
-    /// Assistant tool request.
-    ToolCall {
-        /// Stable call identity.
-        #[serde(alias = "callId")]
-        call_id: String,
-        /// Registered tool name.
-        name: String,
-        /// Schema-defined arguments.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
-        arguments: Value,
+    /// Canonical reasoning in its original assistant-turn position.
+    Reasoning {
+        /// Exact canonical continuity and readable content.
+        block: ReasoningBlock,
     },
+    /// Assistant tool request.
+    ToolCall(ToolCall),
     /// Paired tool result.
     ToolResult {
         /// Matching call identity.
@@ -119,6 +115,7 @@ pub enum ToolResultContent {
     Json {
         /// Schema-defined JSON value.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+        #[serde(deserialize_with = "crate::deserialize_json_value")]
         value: Value,
     },
     /// Ordered nonrecursive data.
@@ -158,7 +155,7 @@ impl ModelContent {
         }
         for part in self.parts() {
             history_step(work, 1)?;
-            if let ModelContentPart::ToolCall { name, .. }
+            if let ModelContentPart::ToolCall(crate::model::ToolCall { name, .. })
             | ModelContentPart::ToolResult { name, .. } = part
             {
                 history_step(work, name.len() as u64)?;
@@ -173,8 +170,18 @@ impl ModelContent {
                 ModelContentPart::File { file, policy } => {
                     policy.validate_file(file, limits, work)?;
                 }
-                ModelContentPart::ToolCall { arguments, .. } => {
+                ModelContentPart::ToolCall(crate::model::ToolCall {
+                    arguments,
+                    metadata,
+                    ..
+                }) => {
                     value_bound(arguments, limits.render_bytes, work)?;
+                    if !metadata.is_null() {
+                        value_bound(metadata, limits.render_bytes, work)?;
+                    }
+                }
+                ModelContentPart::Reasoning { block } => {
+                    block.validate_limits(limits, work)?;
                 }
                 ModelContentPart::ToolResult { content, .. } => {
                     content.validate_limits(limits, work)?;

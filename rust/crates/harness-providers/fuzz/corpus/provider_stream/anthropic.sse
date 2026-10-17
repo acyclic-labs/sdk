@@ -1,0 +1,11 @@
+0data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"think","signature":"signed"}}
+
+data: {"type":"content_block_stop","index":0}
+
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"echo","input":{}}}
+
+data: {"type":"content_block_stop","index":1}
+
+data: {"type":"message_stop"}
+
+: end

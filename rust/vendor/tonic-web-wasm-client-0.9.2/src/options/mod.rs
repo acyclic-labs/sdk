@@ -44,6 +44,8 @@ pub struct FetchOptions {
 
     /// Checked unary payload, trailer, metadata and encoded-body limits.
     pub response_limits: Option<UnaryResponseLimits>,
+    /// Multiple independently bounded messages; do not impose a unary total-body budget.
+    pub streaming_response: bool,
 }
 
 impl FetchOptions {
@@ -103,6 +105,12 @@ impl FetchOptions {
     /// Apply one checked response policy to the reader and frame parser.
     pub fn response_limits(mut self, limits: UnaryResponseLimits) -> Self {
         self.response_limits = Some(limits);
+        self
+    }
+
+    /// Uses per-message, trailer and metadata bounds for a streaming RPC response.
+    pub fn streaming_response(mut self) -> Self {
+        self.streaming_response = true;
         self
     }
 

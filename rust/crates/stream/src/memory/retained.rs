@@ -1,6 +1,9 @@
 /// One indefinitely retained snapshot entry.
 struct Retained {
     replay: Option<Bytes>,
+    replay_left: Option<usize>,
+    replay_right: Option<usize>,
+    replay_height: u8,
     digest: [u8; 32],
     result: IdempotencyOutcome,
     envelope: Option<CommittedEnvelope>,

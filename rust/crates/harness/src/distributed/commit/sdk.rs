@@ -11,7 +11,7 @@ pub(crate) fn native_call_result<T>(
     })
 }
 
-pub(super) async fn inspect_idempotency<P: StreamProvider>(
+pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider>(
     client: &Arc<P>,
     key: StreamIdempotencyKey,
     operation: OperationId,

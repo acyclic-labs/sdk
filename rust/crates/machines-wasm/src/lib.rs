@@ -150,12 +150,6 @@ pub fn validate_transport_options(
             "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
         )
     })?;
-    let maximum_response_bytes = maximum_response_bytes.as_f64().ok_or_else(|| {
-        js_error(
-            "invalid-maximum",
-            "maximumResponseBytes must be a positive safe integer",
-        )
-    })?;
     if token.chars().all(is_js_whitespace)
         || token.len() > MAX_BEARER_TOKEN_BYTES
         || token
@@ -167,7 +161,18 @@ pub fn validate_transport_options(
             "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
         ));
     }
-    if !public::is_safe_integer(maximum_response_bytes) || maximum_response_bytes <= 0.0 {
+    validate_maximum_response_bytes(maximum_response_bytes)
+}
+
+/// Validates the response bound without requiring a credential before renewal.
+#[wasm_bindgen(js_name = validateMaximumResponseBytes)]
+pub fn validate_maximum_response_bytes(
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
+) -> Result<(), JsValue> {
+    let maximum = maximum_response_bytes.as_f64().ok_or_else(|| {
+        js_error("invalid-maximum", "maximumResponseBytes must be a positive safe integer")
+    })?;
+    if !public::is_safe_integer(maximum) || maximum <= 0.0 {
         return Err(js_error(
             "invalid-maximum",
             "maximumResponseBytes must be a positive safe integer",

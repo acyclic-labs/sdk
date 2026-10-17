@@ -1,0 +1,42 @@
+{
+  "complete": "",
+  "expect": {
+    "completions": [
+      "delegate",
+      "fetch",
+      "search",
+      "shell",
+      "attention",
+      "clearall",
+      "compact",
+      "delete",
+      "details",
+      "diff",
+      "export",
+      "feedback",
+      "find",
+      "goal",
+      "mcp",
+      "mode",
+      "model",
+      "new",
+      "pause",
+      "plan",
+      "quit",
+      "reasoning",
+      "resume",
+      "resumeall",
+      "shortcuts",
+      "stop",
+      "stopall",
+      "terminal",
+      "theme",
+      "tree"
+    ],
+    "result": {
+      "kind": "select",
+      "query": "plan"
+    }
+  },
+  "prompt": "/plan"
+}

@@ -4,6 +4,8 @@ use crate::{
     core::AggregateKind,
     resources::ProviderRef,
 };
+#[cfg(not(target_arch = "wasm32"))]
+mod lease_history;
 mod lifecycle;
 mod model_ordering;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -12,6 +14,7 @@ mod orchestration;
 #[cfg(not(target_arch = "wasm32"))]
 mod property;
 mod session;
+mod settlement_orders;
 fn id(value: u8) -> OperationId {
     OperationId::from_bytes([value; 16])
 }

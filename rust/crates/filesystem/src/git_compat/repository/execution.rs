@@ -1,5 +1,15 @@
 use super::*;
 
+fn inspected_join(pending: &GitPendingTransition) -> bool {
+    matches!(
+        &pending.mutation,
+        GitPendingMutation::Join {
+            conflicts: Some(_),
+            ..
+        }
+    )
+}
+
 impl<S: GitCompatStore> GitCompatRepository<S> {
     /// Executes a typed command and completes its filesystem transition.
     pub async fn run<E: GitFilesystemExecutor>(
@@ -50,16 +60,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         now_seconds: i64,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let command = parse_argv(argv, default_author, now_seconds)?;
+        let command = parse_git_argv(argv, default_author, now_seconds)?;
         self.run(command, workspace_tree, executor).await
     }
 
     /// Replays the durable pending transition with its original operation identity.
+    /// Inspected joins require explicit merge continuation or abort.
     pub async fn resume<E: GitFilesystemExecutor>(
         &self,
         executor: &E,
     ) -> Result<Option<GitCommandOutput>, GitCompatRunError<S::Error, E::Error>> {
         match self.pending_transition().await? {
+            Some(pending) if inspected_join(&pending) => Ok(None),
             Some(pending) => self
                 .finish(pending.id, &pending.action, executor)
                 .await
@@ -106,22 +118,17 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         let pending = self.pending_join("continue").await?;
-        let GitFilesystemAction::Join { tracked_paths, .. } = pending.action else {
-            return Err(GitCompatError::InvalidState.into());
-        };
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
-        self.complete_transition_result(
-            pending.id,
-            &GitFilesystemResult::Applied {
-                tree: Some(workspace_tree),
-                tracked_paths: Some(tracked_paths),
-            },
-        )
-        .await
-        .map_err(Into::into)
+        let result = executor
+            .validate_merge_resolution(pending.id.operation_id(), &pending.action, workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        self.complete_transition_result(pending.id, &result)
+            .await
+            .map_err(Into::into)
     }
 
     async fn abort_join<E: GitFilesystemExecutor>(
@@ -183,7 +190,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         default_author: &str,
         now_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        let command = parse_argv(argv, default_author, now_seconds)?;
+        let command = parse_git_argv(argv, default_author, now_seconds)?;
         self.execute(command, workspace_tree).await
     }
 
@@ -194,11 +201,26 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            if let Some(pending) = &state.pending {
+            if let Some(pending) = state
+                .pending
+                .as_ref()
+                .filter(|pending| !inspected_join(pending))
+            {
                 return Err(GitCompatError::TransitionPending(pending.id));
             }
             let before = state.clone();
             let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
+            if let Some(pending) = &before.pending {
+                if state != before
+                    || matches!(
+                        &output,
+                        GitCommandOutput::Action(_) | GitCommandOutput::Prepared { .. }
+                    )
+                {
+                    return Err(GitCompatError::TransitionPending(pending.id));
+                }
+                return Ok(output);
+            }
             let output = match output {
                 GitCommandOutput::Action(action) => {
                     prepare_transition(&mut state, action, GitPendingMutation::NoOp)

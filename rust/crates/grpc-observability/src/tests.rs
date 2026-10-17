@@ -23,6 +23,8 @@ pub struct CapturedSpan {
     pub parent_id: Option<u64>,
     /// Historical index of the original parent.
     pub parent: Option<usize>,
+    /// Historical indices of causal links, without retaining span references.
+    pub follows_from: Vec<usize>,
     /// Every declared field, including fields never recorded.
     pub declared_fields: Vec<&'static str>,
     /// Latest recorded values, with strings unquoted.
@@ -103,6 +105,14 @@ where
         let index = evidence.spans.len();
         evidence.spans.push(captured);
         evidence.live.insert(id.into_u64(), index);
+    }
+    fn on_follows_from(&self, id: &tracing::Id, follows: &tracing::Id, _: Context<'_, S>) {
+        // Capture locks are never nested and never held while calling tracing.
+        let mut evidence = self.0.lock().unwrap();
+        let target = evidence.live[&id.into_u64()];
+        if let Some(source) = evidence.live.get(&follows.into_u64()).copied() {
+            evidence.spans[target].follows_from.push(source);
+        }
     }
     fn on_record(&self, id: &tracing::Id, record: &tracing::span::Record<'_>, _: Context<'_, S>) {
         let mut evidence = self.0.lock().unwrap();

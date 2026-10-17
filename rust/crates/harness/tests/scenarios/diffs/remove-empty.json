@@ -1,0 +1,10 @@
+{
+  "seed":{"plans/a.md":""}, "prompt":"Remove plans/a.md using bash.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"change","name":"bash",
+    "arguments":{"command":"rm -- plans/a.md"}}, {"type":"event","kind":"completed","metadata":null}],"done"],
+  "expect":{"files":{"plans/a.md":null}, "wire":[{"file":null,"files":[],"removed":[{"Plan":"a"}]}],
+    "results":{"change":{"name":"bash","content":{"kind":"json",
+      "value":{"success":true,"exit_code":0,"stdout":"","stderr":"","stop":null}}}},
+    "diffs":{"plans/a.md":{"kind":"removed","binary":false,"added":0,"removed":0,
+      "hunks":[],"patch":"--- original\n+++ modified\n"}}}
+}

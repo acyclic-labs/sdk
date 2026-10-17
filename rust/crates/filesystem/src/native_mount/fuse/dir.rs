@@ -119,18 +119,33 @@ impl DirectoryStreams {
         &mut self,
         source: &MountPath,
         destination: &MountPath,
+        parent_inode: u64,
+        nodes: &HashMap<u64, InodeEntry>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         for (key, (stream, _)) in &self.waiting {
             work.charge(Items.delta(1))?;
-            if let Some(path) = fuse_replace_prefix(&stream.path, source, destination, work)? {
+            let Some(binding) = nodes.get(&key.0).and_then(|entry| entry.bindings.first()) else {
+                continue;
+            };
+            if has_prefix(&binding.path, source) {
+                let path =
+                    fuse_rebase_path(&stream.path, source.components().len(), destination, work)?;
                 fuse_reserve(&mut replacements, 1, work)?;
-                replacements.push((*key, path));
+                replacements.push((
+                    *key,
+                    path,
+                    (*binding.path == *source).then_some(parent_inode),
+                ));
             }
         }
-        for (key, path) in replacements.drain(..) {
-            self.waiting.get_mut(&key).ok_or(libc::EIO)?.0.path = path;
+        for (key, path, parent_inode) in replacements.drain(..) {
+            let stream = &mut self.waiting.get_mut(&key).ok_or(libc::EIO)?.0;
+            stream.path = path;
+            if let Some(parent_inode) = parent_inode {
+                stream.parent_inode = parent_inode;
+            }
         }
         Ok(())
     }
@@ -162,8 +177,13 @@ impl ProjectionState {
         if !source.view_is_stable_with_meter(work)? {
             return Err(libc::ESTALE.into());
         }
-        let path = fuse_clone_path(self.path(inode)?, work)?;
-        let parent_inode = fuse_parent(&path, work)?
+        let binding = self
+            .by_inode
+            .get(&inode)
+            .and_then(|entry| entry.bindings.first())
+            .ok_or(libc::ESTALE)?;
+        let path = fuse_clone_path(binding.native_path(), work)?;
+        let parent_inode = fuse_parent(&binding.path, work)?
             .and_then(|parent| self.inode_by_path.get(&*parent).copied())
             .unwrap_or(ROOT_INODE);
         Ok(DirectoryStream {
@@ -193,6 +213,8 @@ impl ProjectionState {
     ) -> (Result<(), NativeMountError>, bool) {
         let mut listed = false;
         let mut unlisted_reference = None;
+        self.listing_replies = self.listing_replies.wrapping_add(1);
+        let reply = self.listing_replies;
         let result = (|| -> Result<(), NativeMountError> {
             let counts_lookups =
                 matches!(listing.as_ref().ok_or(libc::EIO)?, DirectoryReply::Plus(_));
@@ -246,7 +268,7 @@ impl ProjectionState {
                             stamp,
                             work,
                         )? && source.unchanged_since_with_meter(
-                            child.key(),
+                            &child.spelled,
                             Some(entry.node.file_id),
                             stamp,
                             work,
@@ -280,6 +302,23 @@ impl ProjectionState {
                 )?;
                 if counts_lookups {
                     unlisted_reference = Some(child_inode);
+                    // The kernel applies a reply's entries under the one
+                    // attribute version its request was sent at, so of two
+                    // entries for one inode it keeps the first's attributes
+                    // and drops the second's: a file listed under a staged
+                    // name and again under the name it was renamed to would
+                    // keep the staged size. Its second entry starts the next
+                    // reply instead.
+                    if self
+                        .by_inode
+                        .get(&child_inode)
+                        .is_some_and(|entry| entry.listed_in_reply == reply)
+                    {
+                        if let Some(inode) = unlisted_reference.take() {
+                            self.release_lookup_reference(inode, 1);
+                        }
+                        return Ok(());
+                    }
                 }
                 let attr = self.attr(child_inode, &lookup)?;
                 let handed = self
@@ -288,8 +327,9 @@ impl ProjectionState {
                     .map(|entry| entry.kernel_content);
                 let superseding = self.superseded_attributes.len();
                 let ttl = if counts_lookups {
-                    self.admit_entry(source, child_inode, &child, current, work)?
+                    self.admit_entry(source, child_inode, child, current, work)?
                 } else {
+                    self.retain_spelling(child_inode, child)?;
                     Duration::ZERO
                 };
                 work.admit(Copy.delta(entry.name.len() as u64))?;
@@ -311,6 +351,9 @@ impl ProjectionState {
                     return Ok(());
                 }
                 work.record_admitted(Copy.delta(entry.name.len() as u64))?;
+                if counts_lookups && let Some(handed) = self.by_inode.get_mut(&child_inode) {
+                    handed.listed_in_reply = reply;
+                }
                 unlisted_reference = None;
                 listed = true;
                 stream.emitted = next;
@@ -452,16 +495,13 @@ impl FuseProjection {
         work: &crate::NativeMaterializationWork,
     ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError>
     {
-        let source = self.core.source.as_ref();
         let mut listed = fuse_vec(entries.len(), work)?;
         for entry in entries {
             work.charge(Items.delta(1))?;
             if entry.node.link_count <= 1 {
                 continue;
             }
-            let name =
-                ChildName::new(source, fuse_child_path(directory, &entry.name, work)?, work)?;
-            listed.push((fuse_clone_path(name.key(), work)?, entry.node));
+            listed.push((fuse_child_path(directory, &entry.name, work)?, entry.node));
         }
         let mut confirmed = HashMap::new();
         for (path, node) in listed.iter() {

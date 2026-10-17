@@ -162,7 +162,7 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
         .expect("pending transition")
         .expect("durable pending transition");
     let executor = TestExecutor::returning(GitFilesystemResult::Applied {
-        tree: Some(tree(1)),
+        tree: Some(GitTreeRef::exact(child, generation(1))),
         tracked_paths: None,
     });
     assert!(
@@ -245,6 +245,19 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
             .pending_transition()
             .await
             .expect("merge remains pending after add")
+            .is_some()
+    );
+    assert!(matches!(
+        continued
+            .run(GitCommand::MergeContinue, tree(3), &TestExecutor::failing())
+            .await,
+        Err(GitCompatRunError::Executor(_))
+    ));
+    assert!(
+        continued
+            .pending_transition()
+            .await
+            .expect("pending after rejected resolution")
             .is_some()
     );
     assert!(matches!(

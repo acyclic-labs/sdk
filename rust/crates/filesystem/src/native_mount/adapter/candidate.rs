@@ -1,9 +1,15 @@
-pub(super) struct CheckoutCandidate<A, O> {
+pub(super) struct CheckoutCandidate<'a, A, O> {
     pub(super) base: Checkout<A, O>,
     pub(super) checkout: Checkout<A, O>,
     pub(super) operation: Option<OperationId>,
     pub(super) epoch: u64,
     pub(super) stamp: ViewStamp,
+    _publication: tokio::sync::RwLockReadGuard<'a, ()>,
+    // Unlock before retiring the registry lease.
+    _file_mutation: Option<(
+        tokio::sync::OwnedMutexGuard<crate::NativeAllocation>,
+        FileMutationLease<'a>,
+    )>,
 }
 
 #[derive(Clone, Copy)]

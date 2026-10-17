@@ -268,14 +268,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::json::canonical_json_digest(file, u64::MAX, work)
+                    crate::executor::json::canonical_json_digest(
+                        file,
+                        crate::store::default_projection_read_limits().maximum_bytes,
+                        work,
+                    )
                 })?;
                 fork_verify_insert(&mut observed, digest, Ord::cmp, io)?;
             }
             for file in summary.payloads.iter().chain(&summary.references) {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::json::canonical_json_digest(file, u64::MAX, work)
+                    crate::executor::json::canonical_json_digest(
+                        file,
+                        crate::store::default_projection_read_limits().maximum_bytes,
+                        work,
+                    )
                 })?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, io)?;
             }

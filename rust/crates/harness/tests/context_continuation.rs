@@ -11,39 +11,47 @@ use acyclic_harness::conversation::{
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
 use acyclic_harness::filesystem::MemoryHarnessStorage;
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent,
-    ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+    ModelRequest, ModelRole, PreparedModelRequest,
 };
+use acyclic_harness::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 use acyclic_harness::tool::{ToolDefinition, ToolRegistry};
 use acyclic_harness::{AgentId, Error, OperationId, Result};
-use acyclic_stream::{
-    BoxProviderFuture, MAX_RECORD_BYTES, ReadRequest, StreamPath, StreamProvider,
-};
+use acyclic_stream::{MAX_RECORD_BYTES, ReadRequest, StreamPath, StreamProvider};
 use bytes::Bytes;
 use futures::StreamExt as _;
-use std::sync::{Arc, Mutex, atomic::Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+#[path = "support/stream/mod.rs"]
+mod stream_fixture;
 
 use crate::stream_fixture as stream_fault;
 use stream_fault::LostSessionAck;
 
 struct StoredContent(Arc<MemoryHarnessStorage>);
 
-#[derive(Default)]
-struct SummaryModel {
-    requests: Mutex<Vec<PreparedModelRequest>>,
-    counts: std::sync::atomic::AtomicUsize,
-}
-
-impl ModelProvider for SummaryModel {
-    fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
-        Ok(ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        self.counts.fetch_add(1, Ordering::SeqCst);
+fn summary_model(turns: usize) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>) {
+    let counts = Arc::new(AtomicUsize::new(0));
+    let counter = counts.clone();
+    let provider = ScriptedModelProvider::new((0..turns).map(|_| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "retained summary".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    }))
+    .with_context_capacity(ModelContextCapacity {
+        context_tokens: 131_072,
+        output_tokens: 4_096,
+    })
+    .with_token_counter(move |request| {
+        counter.fetch_add(1, Ordering::SeqCst);
         let message_tokens = request
             .request()
             .messages
@@ -64,40 +72,13 @@ impl ModelProvider for SummaryModel {
                     .map_err(|_| Error::Invalid("synthetic count exceeds u32".into()))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 512,
+        Ok(ModelTokenCount::from_upper_bounds(
+            request.request_digest(),
+            512,
             message_tokens,
-        })
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        dispatch: ModelDispatch,
-    ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request);
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
-                delta: "retained summary".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: serde_json::json!({}),
-            }),
-        ]))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-        _observed: &'a [acyclic_harness::model::ModelEvent],
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Err(Error::Unsupported("no uncertain fixture attempt".into())) })
-    }
+        ))
+    });
+    (Arc::new(provider), counts)
 }
 
 impl ContentResidencyVerifier for StoredContent {
@@ -236,7 +217,7 @@ async fn fixture() -> Result<Fixture> {
             "1".into(),
             serde_json::json!({}),
         )?,
-        Arc::new(SummaryModel::default()),
+        summary_model(1).0,
         ContextPipeline::default(),
         ToolRegistry::default(),
     )
@@ -309,16 +290,12 @@ impl acyclic_harness::context::ContextStage for InputDependentStage {
     }
 }
 
-fn assert_fresh_stage_requests(provider: &SummaryModel, limits: Limits) -> usize {
-    let requests = provider
-        .requests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+fn assert_fresh_stage_requests(provider: &ScriptedModelProvider, limits: Limits) -> usize {
+    let requests = provider.requests();
     let responses = requests
         .iter()
         .filter(|request| {
             request
-                .request()
                 .messages
                 .iter()
                 .any(|message| message.role == ModelRole::System)
@@ -327,7 +304,6 @@ fn assert_fresh_stage_requests(provider: &SummaryModel, limits: Limits) -> usize
     assert_eq!(responses.len(), 10);
     for (turn, request) in responses.iter().enumerate() {
         let systems = request
-            .request()
             .messages
             .iter()
             .filter(|message| message.role == ModelRole::System)
@@ -337,7 +313,7 @@ fn assert_fresh_stage_requests(provider: &SummaryModel, limits: Limits) -> usize
         assert!(
             matches!(systems.first().map(|message| &message.content), Some(ModelContent::Text(text)) if text.starts_with(expected))
         );
-        assert!(request.request().messages.len() <= limits.context_messages);
+        assert!(request.messages.len() <= limits.context_messages);
     }
     assert!(requests.len() > responses.len());
     requests.len()

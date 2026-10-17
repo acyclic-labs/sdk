@@ -1,9 +1,6 @@
 use super::*;
 use parking_lot::Mutex;
-use std::sync::{
-    Weak,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Default)]
 pub(crate) struct ProofDataCustody {
@@ -21,28 +18,76 @@ struct ProofDataWorkReport {
     live_future_bytes: u64,
     live_cache_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
-    native_original: Option<Weak<crate::demand::NativeDemandReadMeter>>,
+    native_accounting: Option<Arc<crate::demand::NativeProofAccounting>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_control_born: u128,
+    native_registered: bool,
     #[cfg(not(target_arch = "wasm32"))]
-    native_control_retired: u128,
+    native_claimed: bool,
+    // Last: keep the ledger alive until the last payload retirement is published.
+    #[cfg(not(target_arch = "wasm32"))]
+    native_original: Option<Arc<crate::demand::NativeDemandReadMeter>>,
 }
 
 impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn bind_native_original(
+    pub(crate) fn accepts_native_original(
         &self,
         original: &Arc<crate::demand::NativeDemandReadMeter>,
     ) -> bool {
-        let mut completed = self.completed_data_work.lock();
-        if let Some(bound) = completed.native_original.as_ref() {
-            bound.as_ptr() == Arc::as_ptr(original)
-        } else {
-            completed.native_original = Some(Arc::downgrade(original));
-            true
-        }
+        self.completed_data_work
+            .lock()
+            .native_original
+            .as_ref()
+            .is_none_or(|bound| Arc::ptr_eq(bound, original))
     }
-
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn bind_native_original(
+        &self,
+        original: &Arc<crate::demand::NativeDemandReadMeter>,
+        accounting: &Arc<crate::demand::NativeProofAccounting>,
+    ) -> bool {
+        let mut completed = self.completed_data_work.lock();
+        if let Some(bound) = &completed.native_original {
+            return Arc::ptr_eq(bound, original)
+                && completed
+                    .native_accounting
+                    .as_ref()
+                    .is_some_and(|bound| Arc::ptr_eq(bound, accounting));
+        }
+        accounting.retain_non_native(self.retained_payload_bytes());
+        completed.native_accounting = Some(accounting.clone());
+        completed.native_original = Some(original.clone());
+        true
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn is_registered_native_accounting(
+        &self,
+        accounting: &Arc<crate::demand::NativeProofAccounting>,
+    ) -> bool {
+        let completed = self.completed_data_work.lock();
+        completed.native_registered
+            && completed
+                .native_accounting
+                .as_ref()
+                .is_some_and(|bound| Arc::ptr_eq(bound, accounting))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn register_native_accounting(
+        &self,
+        accounting: &Arc<crate::demand::NativeProofAccounting>,
+    ) -> Result<(), crate::NativeTreeMaterializationError> {
+        let mut completed = self.completed_data_work.lock();
+        if completed.native_registered
+            || !completed
+                .native_accounting
+                .as_ref()
+                .is_some_and(|bound| Arc::ptr_eq(bound, accounting))
+        {
+            return Err(crate::NativeTreeMaterializationError::InvalidLayout);
+        }
+        completed.native_registered = true;
+        Ok(())
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_native_original(
         &self,
@@ -52,31 +97,12 @@ impl ProofDataCustody {
             .lock()
             .native_original
             .as_ref()
-            .is_some_and(|bound| bound.as_ptr() == Arc::as_ptr(original))
+            .is_some_and(|bound| Arc::ptr_eq(bound, original))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native_control_events(&self) -> (u128, u128) {
-        let completed = self.completed_data_work.lock();
-        (
-            completed.native_control_born,
-            completed.native_control_retired,
-        )
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(
-        clippy::expect_used,
-        reason = "Claims are admitted before attachment and retire exactly once with their owned data."
-    )]
-    pub(crate) fn non_native_retained_payload_bytes(&self) -> u64 {
-        let completed = self.completed_data_work.lock();
-        let native_live =
-            u64::try_from(completed.native_control_born - completed.native_control_retired)
-                .expect("live native primitives fit their original allocation ledger");
-        self.retained_payload_bytes()
-            .checked_sub(native_live)
-            .expect("native live primitives are included in actual payload custody")
+    pub(crate) fn has_native_control_events(&self) -> bool {
+        self.completed_data_work.lock().native_claimed
     }
 
     pub(crate) fn retained_bytes(&self) -> u64 {
@@ -273,16 +299,14 @@ impl ProofDataCustody {
 
 #[derive(Default)]
 pub(crate) struct ProofDataClaim {
-    owner: Weak<ProofDataCustody>,
     pub(super) bytes: u64,
     delivery_generation: u64,
     pub(super) physical: bool,
     physical_reported: bool,
     #[cfg(not(target_arch = "wasm32"))]
     native_resource: Option<crate::materializer::NativeResourceRetirement>,
-    // Last: retain the original ledger until physical retirement is published.
-    #[cfg(not(target_arch = "wasm32"))]
-    native_original: Option<Arc<crate::demand::NativeDemandReadMeter>>,
+    // Last: resource retirement precedes final custody destruction.
+    owner: Option<Arc<ProofDataCustody>>,
 }
 
 impl std::fmt::Debug for ProofDataClaim {
@@ -305,16 +329,18 @@ impl ProofDataClaim {
         };
         let completed = owner.completed_data_work.lock();
         owner.retained.fetch_add(bytes, Ordering::AcqRel);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(shared) = &completed.native_accounting {
+            shared.retain_non_native(bytes);
+        }
         Self {
-            owner: Arc::downgrade(owner),
+            owner: Some(owner.clone()),
             bytes,
             delivery_generation: completed.delivery_generation,
             physical: false,
             physical_reported: false,
             #[cfg(not(target_arch = "wasm32"))]
             native_resource: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_original: None,
         }
     }
 
@@ -331,20 +357,16 @@ impl ProofDataClaim {
         if bytes == 0 {
             return Self::default();
         }
-        let original = Arc::clone(retirement.original_meter());
         let mut completed = owner.completed_data_work.lock();
         debug_assert!(
             completed
                 .native_original
                 .as_ref()
-                .is_some_and(|registered| registered.ptr_eq(&Arc::downgrade(&original)))
+                .is_some_and(|registered| Arc::ptr_eq(registered, retirement.original_meter()))
         );
-        // Each newly owned primitive has one genuine positive allocation.
-        // At most u64 allocation operations of at most u64 bytes fit in u128.
-        completed.native_control_born += u128::from(bytes);
-        let mut claim = Self::control_claim_in_report(owner, bytes, true, &mut completed);
+        completed.native_claimed = true;
+        let mut claim = Self::control_claim_in_report(owner, bytes, true, true, &mut completed);
         claim.native_resource = Some(retirement);
-        claim.native_original = Some(original);
         claim
     }
 
@@ -355,14 +377,14 @@ impl ProofDataClaim {
         known_bytes: u64,
     ) -> bool {
         if known_bytes == 0 {
-            return self.bytes == 0 && self.native_original.is_none();
+            return self.bytes == 0 && self.native_resource.is_none();
         }
         self.physical
             && self.bytes == known_bytes
             && self
-                .native_original
+                .native_resource
                 .as_ref()
-                .is_some_and(|paid| Arc::ptr_eq(paid, original))
+                .is_some_and(|paid| Arc::ptr_eq(paid.original_meter(), original))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -378,30 +400,26 @@ impl ProofDataClaim {
         if bytes == 0 {
             return Self::default();
         }
-        let original = Arc::clone(retirement.original_meter());
         let mut completed = owner.completed_data_work.lock();
         debug_assert!(
             completed
                 .native_original
                 .as_ref()
-                .is_some_and(|registered| registered.ptr_eq(&Arc::downgrade(&original)))
+                .is_some_and(|registered| Arc::ptr_eq(registered, retirement.original_meter()))
         );
         completed.reported_retained_bytes = completed
             .reported_retained_bytes
             .checked_add(bytes)
             .expect("native DATA fits its admitted original allocation ledger");
-        // Each actual buffer has one birth; u64 bytes * u64 allocation ops
-        // cannot overflow the fixed u128 cumulative original-event counters.
-        completed.native_control_born += u128::from(bytes);
+        completed.native_claimed = true;
         owner.retained.fetch_add(bytes, Ordering::AcqRel);
         Self {
-            owner: Arc::downgrade(owner),
+            owner: Some(owner.clone()),
             bytes,
             delivery_generation: completed.delivery_generation,
             physical: false,
             physical_reported: false,
             native_resource: Some(retirement),
-            native_original: Some(original),
         }
     }
 
@@ -414,7 +432,7 @@ impl ProofDataClaim {
             return Self::default();
         }
         let mut completed = owner.completed_data_work.lock();
-        Self::control_claim_in_report(owner, bytes, reported, &mut completed)
+        Self::control_claim_in_report(owner, bytes, reported, false, &mut completed)
     }
 
     #[allow(
@@ -425,6 +443,7 @@ impl ProofDataClaim {
         owner: &Arc<ProofDataCustody>,
         bytes: u64,
         reported: bool,
+        native: bool,
         completed: &mut ProofDataWorkReport,
     ) -> Self {
         if reported {
@@ -434,16 +453,20 @@ impl ProofDataClaim {
                 .expect("constructor control fits its original allocation ledger");
         }
         owner.physical_retained.fetch_add(bytes, Ordering::AcqRel);
+        #[cfg(not(target_arch = "wasm32"))]
+        if !native && let Some(shared) = &completed.native_accounting {
+            shared.retain_non_native(bytes);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = native;
         Self {
-            owner: Arc::downgrade(owner),
+            owner: Some(owner.clone()),
             bytes,
             delivery_generation: completed.delivery_generation,
             physical: true,
             physical_reported: reported,
             #[cfg(not(target_arch = "wasm32"))]
             native_resource: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_original: None,
         }
     }
 }
@@ -460,15 +483,19 @@ impl Drop for ProofDataClaim {
         reason = "Claims are admitted before attachment and retire exactly once with their owned data."
     )]
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.upgrade() {
+        if let Some(owner) = &self.owner {
             let mut completed = owner.completed_data_work.lock();
             #[cfg(not(target_arch = "wasm32"))]
-            let native = self.native_original.is_some();
+            let native = self.native_resource.is_some();
             #[cfg(target_arch = "wasm32")]
             let native = false;
             #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                completed.native_control_retired += u128::from(self.bytes);
+            if let Some(shared) = &completed.native_accounting {
+                if native {
+                    shared.retire_native(self.bytes);
+                } else {
+                    shared.retire_non_native(self.bytes);
+                }
             }
             if self.physical {
                 if self.physical_reported
@@ -491,6 +518,18 @@ impl Drop for ProofDataClaim {
                     .expect("reported proof DATA retires with its actual key");
             }
             owner.retained.fetch_sub(self.bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ProofDataCustody {
+    fn drop(&mut self) {
+        let completed = self.completed_data_work.get_mut();
+        if completed.native_registered
+            && let Some(shared) = &completed.native_accounting
+        {
+            shared.retire_native(std::mem::size_of::<Self>() as u64);
         }
     }
 }

@@ -1,0 +1,309 @@
+// Normative acyclic.auth.v1 wire rules:
+// Capability.version is exactly 1 and enters each block transcript as LE u32
+// after its LE u64 index. Unsupported versions have a distinct error.
+// Block 0 contains only the PUBLIC Birth + complete KeyCertificate chain.
+// No block contains an account bearer or a signing key (except the tip proof).
+// Verify Birth with environment trust, each key with the trusted account issuer
+// root (genesis or authenticated keyring rotation, NEVER an offline leaf), block 0
+// with the certified leaf, and block k with block k-1.next_public_key.
+// Certificate signatures use BIRTH_DOMAIN / KEY_DOMAIN followed by canonical
+// protobuf claims; snapshots use KEYRING_DOMAIN followed by canonical snapshot.
+// Domains are acyclic.auth.v1/{birth,key,keyring} followed by a NUL byte.
+// Canonical ingress rejects unknown/duplicate fields and misplaced certificates.
+// Check ALL ancestor key ids/epochs and parent_revocation_ids, not just the leaf.
+// A revoked block or online key invalidates every descendant. Online issuance
+// MUST include all parent block ids and the complete parent certificate ancestry.
+// Issuer-certified Principal claims cannot appear in attenuation blocks.
+// LineageAppend changes acting identity (last id, else certified root id) only.
+// It cannot add roles/groups/attributes. Subject references bind at the declaring
+// block, not the final tip; lineage read matching is ancestor-or-self, pins are
+// single-valued acting-id or literal. All grant/filter/pin/holder/time/audience
+// caveats intersect; each grant set is a union. Owner policy Deny always wins.
+// Audience is an exact canonical ResourcePattern (prefix=false); no slash trim.
+// All timestamps are Unix SECONDS UTC; validity is [not_before, expires_at),
+// at most 30 days. Values after 9999-12-31 are invalid (catches modern millis).
+// MaxDepth is an absolute terminal block index (root=0), minimum over all blocks.
+// Sealing appends no block and consumes no depth. Limits share the chain root:
+// rates/concurrency at admission, cumulative lifetime totals globally at the
+// metering owner/billing ledger. Delegation and renewal never reset counters.
+// Label is advisory, scoped to its block revocation id, and grants no authority.
+// Product resource encodings/actions and static/dynamic extractor vocabularies
+// live in validation/v1/options.proto FileOptions. Owners encode substitutions
+// BEFORE expansion: Objects bucket / entire opaque key as separate components;
+// other products canonicalize paths then encode each component. Never normalize
+// Objects keys or decode before exact/whole-segment-prefix matching. New product catalogs
+// do not require changing the verifier. HTTP-only routes use FileOptions.http_routes.
+// Resource prefixes match complete slash-delimited component lists, never
+// partial components: objects:/logs covers that bucket and its keys, but never
+// objects:/logs-private. A final slash on a prefix is a segment separator.
+// Opaque Objects keys remain encoded as one component; use bucket scope or exact
+// encoded keys, not a partial encoded-key prefix.
+// RecordAttributes is single-valued: every duplicate name is rejected at decode,
+// including equal-value duplicates. All record consumers use this admitted type;
+// certified principal attribute decoding applies the same uniqueness rule.
+// External WebSocket destinations use typed DNS/IP and nonzero port facts, not
+// resource grants. DNS is ASCII case-insensitive (one trailing dot is equivalent).
+// Wildcard *.example.com matches subdomains at a dot boundary, never the apex.
+// IP/CIDR rules match literal IP facts of the same family; no DNS lookup occurs.
+// Each socket rule is host AND port (empty ports means 443); rules are a union,
+// and ancestor certificates plus caveat grant sets are all intersected.
+// A child certificate preserves principal kind/id and inherited lineage, and
+// may only remove roles/groups/attested attributes. No child can certify a claim
+// absent from its parent; only lineage may append.
+syntax = "proto3";
+
+package acyclic.auth.v1;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/auth/v1;authv1";
+
+enum AuditDecision {
+  AUDIT_DECISION_UNSPECIFIED = 0;
+  AUDIT_DECISION_ALLOW = 1;
+  AUDIT_DECISION_DENY = 2;
+  AUDIT_DECISION_MINT = 3;
+  AUDIT_DECISION_REVOKE = 4;
+  AUDIT_DECISION_CHANNEL_OPEN = 5;
+}
+
+enum PrincipalKind {
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+  PRINCIPAL_KIND_USER = 1;
+  PRINCIPAL_KIND_AGENT = 2;
+  PRINCIPAL_KIND_SERVICE = 3;
+  PRINCIPAL_KIND_GROUP = 4;
+  PRINCIPAL_KIND_ANONYMOUS = 5;
+}
+
+message Attribute {
+  string name = 1;
+  bytes value = 2;
+}
+
+message AttributeMatch {
+  string name = 1;
+  repeated bytes any_of = 2;
+  repeated SubjectReference subjects = 3;
+}
+
+message AuditRecord {
+  uint64 at_unix_seconds = 1;
+  repeated bytes chain_ids = 2;
+  Principal subject = 3;
+  repeated string lineage = 4;
+  Holder holder = 5;
+  string action = 6;
+  string resource = 7;
+  bytes filter_hash = 8;
+  AuditDecision decision = 9;
+  string reason = 10;
+}
+
+message BillingGrant {
+  ResourceGrant grant = 1;
+  optional uint64 spend_micros = 2;
+}
+
+message Birth {
+  string account_id = 1;
+  string environment = 2;
+  bytes genesis_public_key = 3;
+  uint64 issued_at_unix_seconds = 4;
+}
+
+message BirthCertificate {
+  Birth birth = 1;
+  bytes signature = 2;
+}
+
+message Block {
+  CertificateChain certificates = 1;
+  repeated Caveat caveats = 2;
+  bytes next_public_key = 3;
+}
+
+message Capability {
+  repeated SignedBlock blocks = 1;
+  oneof proof {
+    bytes secret = 2;
+    bytes sealed = 3;
+  }
+  uint32 version = 4;
+}
+
+message Caveat {
+  oneof kind {
+    GrantSet grants = 1;
+    uint64 expires_at_unix_seconds = 2;
+    uint64 not_before_unix_seconds = 3;
+    ResourcePattern audience = 4;
+    Holder holder = 5;
+    LineageAppend lineage_append = 6;
+    Filter filter = 7;
+    Pin pin = 8;
+    Limits limits = 9;
+    uint32 max_depth = 10;
+    string label = 11;
+  }
+}
+
+message CertificateChain {
+  BirthCertificate birth = 1;
+  repeated KeyCertificate keys = 2;
+}
+
+message CertifiedKey {
+  string account_id = 1;
+  string key_id = 2;
+  bytes public_key = 3;
+  uint64 key_epoch = 4;
+  Validity validity = 5;
+  GrantSet grants = 6;
+  Principal principal = 7;
+  optional string parent_key_id = 8;
+  repeated bytes parent_revocation_ids = 9;
+}
+
+message ExecutionGrant {
+  ResourceGrant grant = 1;
+  optional uint64 cpu_millis = 2;
+  optional uint64 memory_bytes = 3;
+}
+
+message Filter {
+  repeated KeyRange keys = 1;
+  repeated AttributeMatch attributes = 2;
+}
+
+message Grant {
+  oneof kind {
+    ResourceGrant resource = 1;
+    ExecutionGrant execution = 2;
+    BillingGrant billing = 3;
+    WebsocketConnectGrant websocket_connect = 4;
+  }
+}
+
+message GrantSet {
+  repeated Grant grants = 1;
+}
+
+message Holder {
+  optional string account = 1;
+}
+
+message KeyCertificate {
+  CertifiedKey key = 1;
+  bytes signature = 2;
+}
+
+message KeyRange {
+  bytes start = 1;
+  bytes end = 2;
+}
+
+message KeyringSnapshot {
+  string account_id = 1;
+  uint64 sequence = 2;
+  bytes previous_digest = 3;
+  uint64 minimum_key_epoch = 4;
+  repeated string revoked_key_ids = 5;
+  repeated Revocation revocations = 6;
+  bytes root_public_key = 7;
+  uint64 issued_at_unix_seconds = 8;
+}
+
+message Limits {
+  optional uint64 rps = 1;
+  optional uint64 burst = 2;
+  optional uint64 bytes_per_s = 3;
+  optional uint64 channels = 4;
+  optional uint64 concurrency = 5;
+  optional uint64 bytes = 6;
+  optional uint64 spend_micros = 7;
+  optional uint64 tokens = 8;
+}
+
+message LineageAppend {
+  repeated string ids = 1;
+}
+
+message Pin {
+  string name = 1;
+  oneof value {
+    bytes literal = 2;
+    SubjectId subject_id = 3;
+  }
+}
+
+message Principal {
+  PrincipalKind kind = 1;
+  string id = 2;
+  repeated string lineage = 3;
+  repeated string groups = 4;
+  repeated string roles = 5;
+  repeated Attribute attributes = 6;
+}
+
+message RecordAttributes {
+  repeated Attribute attributes = 1;
+}
+
+message ResourceGrant {
+  ResourcePattern resource = 1;
+  repeated string actions = 2;
+}
+
+message ResourcePattern {
+  string name = 1;
+  bool prefix = 2;
+}
+
+message Revocation {
+  bytes id = 1;
+  uint64 expires_at_unix_seconds = 2;
+  string reason = 3;
+  optional string label = 4;
+}
+
+message SignedBlock {
+  bytes payload = 1;
+  bytes signature = 2;
+}
+
+message SignedKeyringSnapshot {
+  KeyringSnapshot snapshot = 1;
+  bytes signature = 2;
+}
+
+message SocketHostRule {
+  string host = 1;
+  repeated SocketPortRange ports = 2;
+}
+
+message SocketPortRange {
+  uint32 first = 1;
+  uint32 last = 2;
+}
+
+message SubjectId {
+}
+
+message SubjectLineage {
+}
+
+message SubjectReference {
+  oneof kind {
+    SubjectId id = 1;
+    SubjectLineage lineage = 2;
+  }
+}
+
+message Validity {
+  uint64 not_before_unix_seconds = 1;
+  uint64 expires_at_unix_seconds = 2;
+}
+
+message WebsocketConnectGrant {
+  repeated SocketHostRule rules = 1;
+}
+

@@ -168,7 +168,7 @@ mod tests {
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "file-projection".into(),
-            name: "acyclic.read_file".into(),
+            name: "read".into(),
             arguments: json!({"file":file}),
         };
         let published = ToolResult {
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn file_schemas_reject_empty_edits_and_patches() -> Result<()> {
         let file = crate::tool::tests::file(b"exact")?;
-        let edit = files::edit_file()?;
+        let edit = files::edit()?;
         let patch = files::patch_file(8192, 8)?;
         for (schema, value) in [
             (

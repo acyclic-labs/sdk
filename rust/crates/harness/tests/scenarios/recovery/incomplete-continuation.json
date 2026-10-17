@@ -1,0 +1,4 @@
+{"prompt":"An incomplete continuation remains uncertain.","turns":[[{"type":"event","kind":"content","delta":"one"},
+  {"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content","delta":"one"}],
+  "continuation":[{"kind":"content","delta":"two"}]}],"expect":{"error":"operation outcome is indeterminate",
+  "events":[{"kind":"model","event":{"delta":"one"}},{"kind":"model","event":{"delta":"two"}}]}}

@@ -57,10 +57,13 @@ pub enum WorkPull {
 impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
-        match self.pull_for(worker, None, None, None, &mut None).await? {
-            WorkPull::Idle => Ok(None),
-            WorkPull::Claimed(lease) => Ok(Some(lease)),
-            WorkPull::Unresolved { error, .. } => Err(error),
+        let mut work = None;
+        let mut frame = CodecQuota::new(&mut work, 0)?;
+        let future = self.pull_for(worker, None, None, None, &mut frame)?;
+        match future.await {
+            Ok(WorkPull::Idle) => Ok(None),
+            Ok(WorkPull::Claimed(lease)) => Ok(Some(lease)),
+            Ok(WorkPull::Unresolved { error, .. }) | Err(error) => Err(error),
         }
     }
 
@@ -72,10 +75,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<Option<WorkLease>> {
         let bytes = crate::contract::canonical_json_bytes(worker)?;
         let fingerprint = blake3::hash(&bytes).to_hex().to_string();
-        match self
-            .pull_for(worker, None, None, Some((identity, fingerprint)), &mut None)
-            .await?
-        {
+        let mut work = None;
+        let mut frame = CodecQuota::new(&mut work, 0)?;
+        let future = self.pull_for(
+            worker,
+            None,
+            None,
+            Some((identity, fingerprint)),
+            &mut frame,
+        )?;
+        match future.await? {
             WorkPull::Idle => Ok(None),
             WorkPull::Claimed(lease) => Ok(Some(lease)),
             WorkPull::Unresolved { error, .. } => Err(error),
@@ -102,257 +111,277 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "owned pull requires operation:declare and operation:observe",
             ));
         }
-        self.pull_for(worker, Some((owner, verifier)), operation_id, None, work)
-            .await
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future = self.pull_for(
+            worker,
+            Some((owner, verifier)),
+            operation_id,
+            None,
+            &mut frame,
+        )?;
+        future.await
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "The admitted lease and unresolved append error retain original custody through same-key resolution."
     )]
-    async fn pull_for(
-        &mut self,
-        worker: &Worker,
-        authorization: Option<(&Authority, &AuthorityVerifier)>,
+    fn pull_for<'a, 'q, 'w: 'a>(
+        &'a mut self,
+        worker: &'a Worker,
+        authorization: Option<(&'a Authority, &'a AuthorityVerifier)>,
         target: Option<OperationId>,
         identity: Option<(IdempotencyKey, String)>,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<WorkPull> {
-        let owner = authorization.map(|(owner, _)| owner);
-        self.refresh(work).await?;
-        if worker.id.trim().is_empty() {
-            return Err(guarded_boundary(
-                work,
-                wire::ErrorCode::Invalid,
-                "worker identity is empty",
-            ));
-        }
-        if let Some((key, fingerprint)) = &identity
-            && let Some((_, event, _, _)) =
-                read_intent(&self.client, key.as_str(), Some(self.revision), work).await?
-        {
-            let SchedulerEvent::Admitted {
-                operation_id,
-                reservation,
-            } = event
-            else {
-                return Err(Error::Conflict(
-                    "pull identity belongs to another scheduler mutation".into(),
-                ));
-            };
-            if reservation.placement != worker.id
-                || !reservation.id.starts_with(&format!("pull:{fingerprint}:"))
-            {
-                return Err(Error::Conflict(
-                    "pull retry identity reused with different worker declaration".into(),
+        frame: &'a mut CodecQuota<'q, 'w>,
+    ) -> Result<crate::store::HistoryContentFuture<'a, WorkPull>> {
+        crate::store::HistoryContentFuture::with_quota(frame, |work| async move {
+            let owner = authorization.map(|(owner, _)| owner);
+            self.refresh(work).await?;
+            if worker.id.trim().is_empty() {
+                return Err(guarded_boundary(
+                    work,
+                    wire::ErrorCode::Invalid,
+                    "worker identity is empty",
                 ));
             }
-            let state = self
-                .scheduler
-                .operation(operation_id)
-                .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
-            if state.reservation.as_ref() != Some(&reservation)
-                || !matches!(
-                    state.phase,
-                    crate::scheduler::OperationPhase::Admitted
-                        | crate::scheduler::OperationPhase::Running
-                )
+            if let Some((key, fingerprint)) = &identity
+                && let Some((_, event, _, _)) =
+                    read_intent(&self.client, key.as_str(), Some(self.revision), work).await?
             {
-                return Ok(WorkPull::Idle);
-            }
-            return Ok(WorkPull::Claimed(WorkLease {
-                operation: state.spec.clone(),
-                reservation,
-                checkpoint: state.checkpoint.clone(),
-                operation_revision: state.revision,
-            }));
-        }
-        if let Some(target) = target {
-            let state = self
-                .scheduler
-                .operation(target)
-                .filter(|state| owner.is_some_and(|owner| state.spec.owner.authority() == owner))
-                .ok_or_else(|| {
-                    guarded_boundary(
-                        work,
-                        wire::ErrorCode::NotFound,
-                        "owned pull target is absent",
-                    )
-                })?;
-            if let Some((owner, verifier)) = authorization {
-                self.authorize_owner(owner, verifier, target, work)?;
-            }
-            if state.reservation.is_some() || state.cancellation_requested {
-                return Ok(WorkPull::Idle);
-            }
-        }
-        let blocked = match target {
-            Some(target) => self
-                .scheduler
-                .operation_blocked_by_dependencies(target, owner)
-                .then_some(target),
-            None => self.scheduler.blocked_by_dependencies(owner).next(),
-        };
-        if let Some(operation_id) = blocked {
-            if let Some((owner, verifier)) = authorization {
-                self.authorize_owner(owner, verifier, operation_id, work)?;
-            }
-            let mut custody = CodecQuota::new(work, 0)?;
-            let key = formatted_text(
-                "dependency-rejected:".len() + 36,
-                format_args!("dependency-rejected:{operation_id}"),
-                custody.work(),
-            )?;
-            if custody.work().is_some() {
-                custody.adopt(key.capacity() as u64)?;
-            }
-            validate_idempotency_key(&key, custody.work())?;
-            let key = IdempotencyKey(key);
-            let reason =
-                crate::core::copy_text("a required dependency did not succeed", &mut custody)?;
-            self.apply(
-                key,
-                SchedulerEvent::Rejected {
-                    operation_id,
-                    reason,
-                },
-                custody.work(),
-            )
-            .await?;
-            return Ok(WorkPull::Idle);
-        }
-        let mut custody = CodecQuota::new(work, 0)?;
-        let available =
-            self.scheduler
-                .available_for(&worker.id, &worker.available, custody.work())?;
-        let available_bytes = if custody.work().is_some() {
-            available.logical_owned_bytes()?
-        } else {
-            0
-        };
-        custody.adopt(available_bytes)?;
-        let selected = match target {
-            Some(target) => self
-                .scheduler
-                .operation(target)
-                .filter(|operation| {
-                    self.scheduler
-                        .is_ready(operation, &available, &worker.labels, owner)
-                })
-                .map(|_| target),
-            None => self
-                .scheduler
-                .ready(&available, &worker.labels, owner)
-                .next(),
-        };
-        drop(available);
-        custody.relinquish(available_bytes)?;
-        let Some(operation_id) = selected else {
-            return Ok(WorkPull::Idle);
-        };
-        if let Some((owner, verifier)) = authorization {
-            self.authorize_owner(owner, verifier, operation_id, custody.work())?;
-        }
-        let state = self.scheduler.operation(operation_id).ok_or_else(|| {
-            guarded_boundary(
-                custody.work(),
-                wire::ErrorCode::NotFound,
-                "selected owned operation is absent",
-            )
-        })?;
-        let operation_revision = state.revision.checked_add(1).ok_or_else(|| {
-            guarded_boundary(
-                custody.work(),
-                wire::ErrorCode::Storage,
-                "operation revision exhausted",
-            )
-        })?;
-        let operation = state.spec.clone_with_work(custody.work())?;
-        if custody.work().is_some() {
-            custody.adopt(operation.logical_owned_bytes()?)?;
-        }
-        let checkpoint = state
-            .checkpoint
-            .as_ref()
-            .map(|checkpoint| checkpoint.clone_with_work(custody.work()))
-            .transpose()?;
-        if custody.work().is_some()
-            && let Some(checkpoint) = &checkpoint
-        {
-            custody.adopt(checkpoint.logical_owned_bytes()?)?;
-        }
-        let revision = next_revision(self.revision)?;
-        let revision_digits = revision.checked_ilog10().unwrap_or(0) as usize + 1;
-        let reservation_id = match &identity {
-            Some((_, fingerprint)) => {
-                format!("pull:{fingerprint}:{}:{operation_id}:{revision}", worker.id)
-            }
-            None => formatted_text(
-                worker.id.len() + 1 + 36 + 1 + revision_digits,
-                format_args!("{}:{operation_id}:{revision}", worker.id),
-                custody.work(),
-            )?,
-        };
-        if custody.work().is_some() {
-            custody.adopt(reservation_id.capacity() as u64)?;
-        }
-        let placement = crate::core::copy_text(&worker.id, &mut custody)?;
-        let admitted = operation.resources.clone_with_work(custody.work())?;
-        if custody.work().is_some() {
-            custody.adopt(admitted.logical_owned_bytes()?)?;
-        }
-        let mut lease = WorkLease {
-            operation,
-            reservation: Reservation {
-                id: reservation_id,
-                placement,
-                admitted,
-            },
-            checkpoint,
-            operation_revision,
-        };
-        let appended = {
-            let mut attempt = CodecQuota::new(custody.work(), 0)?;
-            let reservation = lease.reservation.clone_with_work(attempt.work())?;
-            if attempt.work().is_some() {
-                attempt.adopt(reservation.logical_owned_bytes()?)?;
-            }
-            let key = if let Some((key, _)) = identity {
-                key
-            } else {
-                let key = formatted_text(
-                    "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
-                    format_args!("pull:{}:{operation_id}:{revision}", worker.id),
-                    attempt.work(),
-                )?;
-                if attempt.work().is_some() {
-                    attempt.adopt(key.capacity() as u64)?;
-                }
-                validate_idempotency_key(&key, attempt.work())?;
-                IdempotencyKey(key)
-            };
-            self.apply(
-                key,
-                SchedulerEvent::Admitted {
+                let SchedulerEvent::Admitted {
                     operation_id,
                     reservation,
-                },
-                attempt.work(),
-            )
-            .await
-        };
-        if let Err(error) = appended {
-            if custody.work().is_some() && error.is_native_failure() {
-                return Err(error);
+                } = event
+                else {
+                    return Err(Error::Conflict(
+                        "pull identity belongs to another scheduler mutation".into(),
+                    ));
+                };
+                if reservation.placement != worker.id
+                    || !reservation.id.starts_with(&format!("pull:{fingerprint}:"))
+                {
+                    return Err(Error::Conflict(
+                        "pull retry identity reused with different worker declaration".into(),
+                    ));
+                }
+                let state = self
+                    .scheduler
+                    .operation(operation_id)
+                    .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+                if state.reservation.as_ref() != Some(&reservation)
+                    || !matches!(
+                        state.phase,
+                        crate::scheduler::OperationPhase::Admitted
+                            | crate::scheduler::OperationPhase::Running
+                    )
+                {
+                    return Ok(WorkPull::Idle);
+                }
+                return Ok(WorkPull::Claimed(WorkLease {
+                    operation: state.spec.clone(),
+                    reservation,
+                    checkpoint: state.checkpoint.clone(),
+                    operation_revision: state.revision,
+                }));
             }
+            if let Some(target) = target {
+                let state = self
+                    .scheduler
+                    .operation(target)
+                    .filter(|state| {
+                        owner.is_some_and(|owner| state.spec.owner.authority() == owner)
+                    })
+                    .ok_or_else(|| {
+                        guarded_boundary(
+                            work,
+                            wire::ErrorCode::NotFound,
+                            "owned pull target is absent",
+                        )
+                    })?;
+                if let Some((owner, verifier)) = authorization {
+                    self.authorize_owner(owner, verifier, target, work)?;
+                }
+                if state.reservation.is_some() || state.cancellation_requested {
+                    return Ok(WorkPull::Idle);
+                }
+            }
+            let blocked = match target {
+                Some(target) => self
+                    .scheduler
+                    .operation_blocked_by_dependencies(target, owner)
+                    .then_some(target),
+                None => self.scheduler.blocked_by_dependencies(owner).next(),
+            };
+            if let Some(operation_id) = blocked {
+                if let Some((owner, verifier)) = authorization {
+                    self.authorize_owner(owner, verifier, operation_id, work)?;
+                }
+                let mut custody = CodecQuota::new(work, 0)?;
+                let key = formatted_text(
+                    "dependency-rejected:".len() + 36,
+                    format_args!("dependency-rejected:{operation_id}"),
+                    custody.work(),
+                )?;
+                if custody.work().is_some() {
+                    custody.adopt(key.capacity() as u64)?;
+                }
+                validate_idempotency_key(&key, custody.work())?;
+                let key = IdempotencyKey(key);
+                let reason =
+                    crate::core::copy_text("a required dependency did not succeed", &mut custody)?;
+                self.apply(
+                    key,
+                    SchedulerEvent::Rejected {
+                        operation_id,
+                        reason,
+                    },
+                    custody.work(),
+                )
+                .await?;
+                return Ok(WorkPull::Idle);
+            }
+            let mut custody = CodecQuota::new(work, 0)?;
+            let available =
+                self.scheduler
+                    .available_for(&worker.id, &worker.available, custody.work())?;
+            let available_bytes = if custody.work().is_some() {
+                available.logical_owned_bytes()?
+            } else {
+                0
+            };
+            custody.adopt(available_bytes)?;
+            let selected = match target {
+                Some(target) => self
+                    .scheduler
+                    .operation(target)
+                    .filter(|operation| {
+                        self.scheduler
+                            .is_ready(operation, &available, &worker.labels, owner)
+                    })
+                    .map(|_| target),
+                None => self
+                    .scheduler
+                    .ready(&available, &worker.labels, owner)
+                    .next(),
+            };
+            drop(available);
+            custody.relinquish(available_bytes)?;
+            let Some(operation_id) = selected else {
+                return Ok(WorkPull::Idle);
+            };
+            if let Some((owner, verifier)) = authorization {
+                self.authorize_owner(owner, verifier, operation_id, custody.work())?;
+            }
+            let state = self.scheduler.operation(operation_id).ok_or_else(|| {
+                guarded_boundary(
+                    custody.work(),
+                    wire::ErrorCode::NotFound,
+                    "selected owned operation is absent",
+                )
+            })?;
+            let operation_revision = state.revision.checked_add(1).ok_or_else(|| {
+                guarded_boundary(
+                    custody.work(),
+                    wire::ErrorCode::Storage,
+                    "operation revision exhausted",
+                )
+            })?;
+            let operation = state.spec.clone_with_work(custody.work())?;
+            if custody.work().is_some() {
+                custody.adopt(operation.logical_owned_bytes()?)?;
+            }
+            let checkpoint = state
+                .checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.clone_with_work(custody.work()))
+                .transpose()?;
+            if custody.work().is_some()
+                && let Some(checkpoint) = &checkpoint
+            {
+                custody.adopt(checkpoint.logical_owned_bytes()?)?;
+            }
+            let revision = next_revision(self.revision)?;
+            let revision_digits = revision.checked_ilog10().unwrap_or(0) as usize + 1;
+            let reservation_id = match &identity {
+                Some((_, fingerprint)) => {
+                    format!("pull:{fingerprint}:{}:{operation_id}:{revision}", worker.id)
+                }
+                None => formatted_text(
+                    worker.id.len() + 1 + 36 + 1 + revision_digits,
+                    format_args!("{}:{operation_id}:{revision}", worker.id),
+                    custody.work(),
+                )?,
+            };
+            if custody.work().is_some() {
+                custody.adopt(reservation_id.capacity() as u64)?;
+            }
+            let placement = crate::core::copy_text(&worker.id, &mut custody)?;
+            let admitted = operation.resources.clone_with_work(custody.work())?;
+            if custody.work().is_some() {
+                custody.adopt(admitted.logical_owned_bytes()?)?;
+            }
+            let box_bytes = std::mem::size_of::<WorkLease>() as u64;
+            let mut lease_custody = CodecQuota::new(custody.work(), box_bytes)?;
+            if let Some(work) = lease_custody.work().as_deref_mut() {
+                work.admit_allocation(box_bytes)?;
+            }
+            let mut lease = Box::new(WorkLease {
+                operation,
+                reservation: Reservation {
+                    id: reservation_id,
+                    placement,
+                    admitted,
+                },
+                checkpoint,
+                operation_revision,
+            });
+            let appended = {
+                let mut attempt = CodecQuota::new(lease_custody.work(), 0)?;
+                let reservation = lease.reservation.clone_with_work(attempt.work())?;
+                if attempt.work().is_some() {
+                    attempt.adopt(reservation.logical_owned_bytes()?)?;
+                }
+                let key = if let Some((key, _)) = identity {
+                    key
+                } else {
+                    let key = formatted_text(
+                        "pull:".len() + worker.id.len() + 1 + 36 + 1 + revision_digits,
+                        format_args!("pull:{}:{operation_id}:{revision}", worker.id),
+                        attempt.work(),
+                    )?;
+                    if attempt.work().is_some() {
+                        attempt.adopt(key.capacity() as u64)?;
+                    }
+                    validate_idempotency_key(&key, attempt.work())?;
+                    IdempotencyKey(key)
+                };
+                self.apply(
+                    key,
+                    SchedulerEvent::Admitted {
+                        operation_id,
+                        reservation,
+                    },
+                    attempt.work(),
+                )
+                .await
+            };
+            if let Err(error) = appended {
+                if lease_custody.work().is_some() && error.is_native_failure() {
+                    return Err(error);
+                }
+                let lease = *lease;
+                drop(lease_custody);
+                custody.transfer();
+                return Ok(WorkPull::Unresolved { lease, error });
+            }
+            lease.operation_revision = self
+                .scheduler
+                .operation(operation_id)
+                .map_or(0, |value| value.revision);
+            let lease = *lease;
+            drop(lease_custody);
             custody.transfer();
-            return Ok(WorkPull::Unresolved { lease, error });
-        }
-        lease.operation_revision = self
-            .scheduler
-            .operation(operation_id)
-            .map_or(0, |value| value.revision);
-        custody.transfer();
-        Ok(WorkPull::Claimed(lease))
+            Ok(WorkPull::Claimed(lease))
+        })
     }
 }

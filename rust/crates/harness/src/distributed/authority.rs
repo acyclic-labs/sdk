@@ -299,38 +299,49 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         parent_fence: Option<LeaseFence>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        if parent_fence.is_some() && spec.parent.is_none() {
-            return Err(guarded_boundary(
-                work,
-                wire::ErrorCode::Invalid,
-                "owned child declaration has no parent",
-            ));
-        }
-        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_DECLARE, work)?;
-        spec.verify_owner(owner, verifier, work)?;
-        if let Some(parent) = &spec.parent {
-            self.refresh(work).await?;
-            self.authorize_owner(owner, verifier, parent.operation_id, work)?;
-        }
-        let box_bytes = std::mem::size_of::<OperationSpec>() as u64;
-        let mut custody = CodecQuota::new(work, box_bytes)?;
-        if let Some(work) = custody.work().as_deref_mut() {
-            work.admit_allocation(box_bytes)?;
-        }
-        let event = SchedulerEvent::Declared {
-            spec: Box::new(spec),
-        };
-        self.apply_internal(
-            idempotency_key,
-            event,
-            parent_fence.as_ref(),
-            None,
-            None,
-            None,
-            None,
-            custody.work(),
-        )
-        .await
+        let mut frame = CodecQuota::new(work, 0)?;
+        let future =
+            crate::store::HistoryContentFuture::with_quota(&mut frame, |work| async move {
+                if parent_fence.is_some() && spec.parent.is_none() {
+                    return Err(guarded_boundary(
+                        work,
+                        wire::ErrorCode::Invalid,
+                        "owned child declaration has no parent",
+                    ));
+                }
+                authorize_operation_scope(
+                    owner,
+                    scope,
+                    verifier,
+                    capability::OPERATION_DECLARE,
+                    work,
+                )?;
+                spec.verify_owner(owner, verifier, work)?;
+                if let Some(parent) = &spec.parent {
+                    self.refresh(work).await?;
+                    self.authorize_owner(owner, verifier, parent.operation_id, work)?;
+                }
+                let box_bytes = std::mem::size_of::<OperationSpec>() as u64;
+                let mut custody = CodecQuota::new(work, box_bytes)?;
+                if let Some(work) = custody.work().as_deref_mut() {
+                    work.admit_allocation(box_bytes)?;
+                }
+                let event = SchedulerEvent::Declared {
+                    spec: Box::new(spec),
+                };
+                self.apply_internal(
+                    idempotency_key,
+                    event,
+                    parent_fence.as_ref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    custody.work(),
+                )
+                .await
+            })?;
+        future.await
     }
 }
 

@@ -91,11 +91,13 @@ where
     let exchange = vec![
         ModelMessage {
             role: ModelRole::Assistant,
-            content: ModelContent::Parts(vec![ModelContentPart::ToolCall {
-                call_id: invocation.call_id.clone(),
-                name: invocation.name.clone(),
-                arguments: invocation.arguments,
-            }]),
+            content: ModelContent::Parts(vec![ModelContentPart::ToolCall(
+                acyclic_harness::model::ToolCall::new(
+                    invocation.call_id.clone(),
+                    invocation.name.clone(),
+                    invocation.arguments,
+                ),
+            )]),
         },
         ModelMessage {
             role: ModelRole::Tool,

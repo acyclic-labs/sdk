@@ -14,9 +14,9 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         arguments: Value::Null,
     };
     for (tool, arguments) in [
-        (read_file()?, json!({"file":file})),
+        (read()?, json!({"file":file})),
         (
-            edit_file()?,
+            edit()?,
             json!({"file":file,"old_text":"exact","new_text":"changed"}),
         ),
         (
@@ -33,7 +33,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
             ));
         }
     }
-    invocation.name = "acyclic.read_file".into();
+    invocation.name = "read".into();
     invocation.arguments = json!({"file":file});
     let narrow = RuntimeScope::new(
         grants,
@@ -43,7 +43,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         },
     )?;
     assert!(matches!(
-        read_file()?
+        read()?
             .executor
             .authorize(Some(&narrow), None, &invocation, None),
         Err(Error::Invalid(_))
@@ -53,7 +53,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
 
 #[test]
 fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch() -> Result<()> {
-    let tool = write_file()?;
+    let tool = write()?;
     let scope = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),

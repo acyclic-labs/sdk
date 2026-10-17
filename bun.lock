@@ -37,6 +37,13 @@
         "@acyclic-labs/actors-win32-x64-msvc": "0.2.0",
       },
     },
+    "typescript/packages/auth": {
+      "name": "@acyclic-labs/auth",
+      "version": "0.2.0",
+      "dependencies": {
+        "@bufbuild/protobuf": "2.16.0",
+      },
+    },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",
       "version": "0.2.0",
@@ -191,6 +198,7 @@
   },
   "packages": {
     "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],
+    "@acyclic-labs/auth": ["@acyclic-labs/auth@workspace:typescript/packages/auth"],
 
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 

@@ -10,6 +10,10 @@ mod blob;
 mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
+#[doc(hidden)]
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod encoder_fuzz;
+
 mod export;
 mod extent;
 mod extent_clone;
@@ -69,6 +73,8 @@ pub(crate) use generation_mutation::{
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
+#[cfg(feature = "native-mount")]
+pub(crate) use merge::{MergeFileTableRequest, merge_file_tables_with_accounting, resolve_three};
 pub(crate) use merge::{
     MergeGenerationBorrowedRequest, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
@@ -254,3 +260,7 @@ pub use types::{
 pub(crate) use volume::encode_config;
 pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config, encode_volume_created};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod decoder_fuzz;

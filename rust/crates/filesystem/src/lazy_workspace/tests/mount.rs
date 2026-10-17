@@ -445,3 +445,135 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         .value;
     assert_eq!(read.bytes, content);
 }
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn source_directory_identity_cannot_be_promoted_twice() {
+    let mut source = CountingSource::new(Bytes::new());
+    source.node.kind = SourceNodeKind::Directory;
+    let source = Arc::new(source);
+    let reference = source.reference();
+    let node = source.versioned_node(reference).unwrap();
+    let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let mut transaction = root
+        .workspace()
+        .begin_transaction(
+            IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .value;
+    root.populate_source_node(&mut transaction, "/d", reference, node, 0, accounting!())
+        .await
+        .unwrap();
+    let error = root
+        .populate_source_node(&mut transaction, "/e", reference, node, 0, accounting!())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            LazyWorkspaceError::Filesystem(crate::FsError::FileIdentityCollision)
+        ),
+        "{error:?}"
+    );
+    assert!(
+        root.authored_record(&mut transaction.checkout, "/d", accounting!())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        root.authored_record(&mut transaction.checkout, "/e", accounting!())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn source_parent_promotion_reads_only_the_record() {
+    for published in [false, true] {
+        let root = attach(
+            &Fs::memory(),
+            Arc::new(CountingSource::new(Bytes::new())),
+            MemoryLazyWorkspaceStore::default(),
+        )
+        .await
+        .unwrap();
+        if published {
+            let mut transaction = root
+                .workspace()
+                .begin_transaction(
+                    IdempotencyKey::new(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+                .value;
+            transaction
+                .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .unwrap();
+            root.commit(
+                &mut transaction,
+                crate::PublicationPermit::Unrestricted,
+                accounting!(),
+            )
+            .await
+            .unwrap();
+        }
+        let mut counts = Vec::new();
+        for promote in [false, true] {
+            let mut transaction = root
+                .workspace()
+                .begin_transaction(
+                    IdempotencyKey::new(),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+                .value;
+            if !published {
+                transaction
+                    .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .unwrap();
+            }
+            let path = root.namespace_path("/d", accounting!()).unwrap();
+            let cancel = CancellationToken::new();
+            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+            if promote {
+                root.stage_source_parents(&mut transaction, "/d/file", &mut ctx)
+                    .await
+                    .unwrap();
+            } else {
+                transaction
+                    .checkout
+                    .lookup_no_follow_with_accounting(&path.value, &mut ctx, &cancel, true)
+                    .await
+                    .unwrap();
+            }
+            counts.push(ctx.spent());
+        }
+        assert_eq!(
+            counts[1].backend_read_operations,
+            counts[0].backend_read_operations
+        );
+        assert_eq!(counts[1].object_bytes_read, counts[0].object_bytes_read);
+        eprintln!(
+            "existing source parent (published={published}): {} reads / {} bytes (record-only control: {} / {})",
+            counts[1].backend_read_operations,
+            counts[1].object_bytes_read,
+            counts[0].backend_read_operations,
+            counts[0].object_bytes_read
+        );
+    }
+}

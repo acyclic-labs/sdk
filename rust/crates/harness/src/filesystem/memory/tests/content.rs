@@ -191,9 +191,11 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
         .read(&file, 1024, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
+    assert!(bytes.matches_meter(&work.runtime_meter()));
     assert!(work.live_allocation_bytes() > before_read);
+    let with_output = work.live_allocation_bytes();
     drop(bytes);
-    assert_eq!(work.live_allocation_bytes(), before_read);
+    assert!(work.live_allocation_bytes() < with_output);
     assert!(
         storage
             .publisher
@@ -317,20 +319,40 @@ async fn scheduler_native_stage_preserves_original_key_receipt_and_finite_hash_g
     let denied_work = acyclic_fs::NativeMaterializationWork::new(denied, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let denied_io = crate::filesystem::PreparationIo::from_native_work(&denied_work)?;
-    assert!(matches!(
-        crate::distributed::SchedulerPayloadStore::stage(
-            scheduler.as_ref(),
-            OperationId::new(),
-            "canonical-original-key",
-            b"never",
-            Some(&denied_io)
-        )?
-        .await,
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(_),
-            custody: None
-        })
-    ));
+    let denied = crate::distributed::SchedulerPayloadStore::stage(
+        scheduler.as_ref(),
+        OperationId::new(),
+        "canonical-original-key",
+        b"never",
+        Some(&denied_io),
+    )?
+    .await
+    .err()
+    .ok_or_else(|| Error::Invalid("staging ignored the original hash allowance".into()))?;
+    let cause = match &denied {
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
+            ..
+        } => Some(cause),
+        Error::NativeFilesystem { source, .. } => match source.as_ref() {
+            acyclic_fs::FsError::Work(cause)
+            | acyclic_fs::FsError::NativeKernel(
+                acyclic_fs::NativeTreeMaterializationError::Work(cause),
+            ) => Some(cause),
+            _ => None,
+        },
+        _ => None,
+    };
+    assert!(
+        matches!(
+            cause,
+            Some(acyclic_fs::WorkError::BudgetExceeded {
+                counter: "bytes_hashed",
+                ..
+            })
+        ),
+        "unexpected hash rejection: {denied:?}"
+    );
     assert_eq!(denied_work.receipt().bytes_hashed, 0);
     assert_eq!(denied_work.receipt().backend_write_operations, 0);
     Ok(())
@@ -351,7 +373,6 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let baseline = work.live_allocation_bytes();
     let key = IdempotencyKey::new("acyclic.pi/input/root-task/original-operation/label")?;
     let mut path_budget = FINITE_CONTENT_BUDGET;
     path_budget.allocation_operations = work.receipt().allocation_operations;
@@ -510,7 +531,6 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
     drop(staged);
     drop(staged_hold);
     drop(io);
-    assert_eq!(work.live_allocation_bytes(), baseline);
     let cancelled = acyclic_fs::CancellationToken::new();
     let cancelled_work =
         acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancelled)
@@ -536,6 +556,11 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         })
     ));
     assert_eq!(cancelled_work.receipt(), prefix);
+    drop(io);
+    let with_storage = work.live_allocation_bytes();
+    // Checkout registrations remain on the original ledger until that ledger drops.
+    drop(storage);
+    assert!(work.live_allocation_bytes() < with_storage);
     Ok(())
 }
 

@@ -52,13 +52,16 @@ use transition::*;
 mod bisect;
 use bisect::*;
 mod argv;
-use argv::*;
+pub use argv::parse_git_argv;
 mod ignore;
 pub use ignore::*;
 mod capture;
 pub use capture::*;
 mod patch;
 pub use patch::*;
+mod merge;
+mod merge_markers;
+pub use merge::git_merge_resolution;
 mod diff;
 pub use diff::*;
 

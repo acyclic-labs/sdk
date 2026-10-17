@@ -69,6 +69,23 @@ impl FileDescriptor {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        if self.matches_bytes(bytes, work)? {
+            return Ok(());
+        }
+        Err(conversation_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "file content does not match its descriptor",
+        ))
+    }
+
+    pub(crate) fn matches_bytes(
+        &self,
+        bytes: &[u8],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("verify", bytes.len() as u64));
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
@@ -77,14 +94,10 @@ impl FileDescriptor {
                 io.hashed_bytes(bytes.len() as u64)?;
             }
             if Sha256::digest(bytes).as_slice() == self.sha256 {
-                return Ok(());
+                return Ok(true);
             }
         }
-        Err(conversation_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "file content does not match its descriptor",
-        ))
+        Ok(false)
     }
 
     /// Validates metadata under the caller's optional work observer.
@@ -158,6 +171,13 @@ pub struct FileRef {
 }
 
 impl FileRef {
+    #[cfg(feature = "objects")]
+    pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
+        validate_label(&version, &mut None)?;
+        self.version = version;
+        Ok(self)
+    }
+
     /// Creates a reference after checking paths, version and descriptor.
     pub fn new(
         volume: VolumeRef,
@@ -227,7 +247,7 @@ impl FileRef {
     ) -> Result<String> {
         self.validate(work)?;
         content_label(
-            "file:read:",
+            acyclic_fs::access::FILE_READ_PREFIX,
             crate::executor::json::canonical_json_digest(
                 self,
                 crate::store::default_projection_read_limits().maximum_bytes,

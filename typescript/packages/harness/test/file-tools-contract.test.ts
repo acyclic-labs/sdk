@@ -29,6 +29,12 @@ test("native file-tool definitions retain their exact identities through WASM", 
     definitions.set(entry.variant, definition);
   }
   expect(definitions.size).toBe(fixture.tool_definitions.length);
+  for (const variant of ["exact_read_full", "exact_read_reference", "range_read_full", "range_read_reference"]) {
+    expect(definitions.get(variant)?.name).toBe("read");
+  }
+  expect(definitions.get("write_full")?.name).toBe("write");
+  expect(definitions.get("exact_edit_full")?.name).toBe("edit");
+  expect([...definitions.values()].some(tool => tool.name === "acyclic.read_file_range")).toBe(false);
 });
 
 function definition(variant: string): Definition {
@@ -71,6 +77,11 @@ test("native file results and Full/Reference projections pass actual WASM contra
     contracts.validateToolProjection(tool, fixture.file_result[mode], DEFAULT_LIMITS);
     expect(() => contracts.validateToolResult(tool, { value: { file: {} } })).toThrow();
   }
+  expect(definition("range_read_full")).toMatchObject({
+    name: "read", revision: definition("exact_read_full").revision,
+    inputSchema: definition("exact_read_full").inputSchema,
+    outputSchema: definition("exact_read_full").outputSchema,
+  });
   const wrongReference = structuredClone(fixture.range_read.reference);
   wrongReference.parts[1].policy = "bounded_full";
   expect(() => contracts.validateToolProjection(definition("range_read_reference"), wrongReference, DEFAULT_LIMITS)).toThrow();

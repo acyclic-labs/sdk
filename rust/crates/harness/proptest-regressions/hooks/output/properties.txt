@@ -1,0 +1,2 @@
+# Replays the block-plus-approval reason-preservation counterexample before random cases.
+cc e4b0840326b98aae915956ee75b7a7464f2d18db84c1691b859adf2e2c3c9e1a # index=1, continue_run=true, deny=true, permission=1, reason="", context="", argument=Null

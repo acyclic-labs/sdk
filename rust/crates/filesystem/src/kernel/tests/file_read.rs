@@ -10,6 +10,9 @@ use crate::storage::{ObjectId, ObjectKind};
 use acyclic_stream::OwnedBytes;
 use std::io::Cursor;
 
+#[path = "file_read/accounting.rs"]
+mod accounting;
+
 fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
         file_id: FileId::from_bytes([7; 16]),

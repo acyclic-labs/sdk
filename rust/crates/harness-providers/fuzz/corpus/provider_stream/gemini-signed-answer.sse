@@ -1,0 +1,5 @@
+data: {"candidates":[{"content":{"parts":[{"text":"prefix\n"},{ "thoughtSignature" : "opaque-one", "text" : "h\u00e9\"llo\\" }]}}]}
+
+data: {"candidates":[{"content":{"parts":[{ "text":"", "thoughtSignature":"opaque-empty" },{ "text" : " tail", "thoughtSignature" : "opaque-two" }]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}
+
+:end

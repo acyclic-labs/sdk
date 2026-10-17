@@ -27,7 +27,7 @@ export function checkCopies(guide, llms) {
   }
 }
 
-export function checkReadmes() {
+function checkReadmes() {
   const read = file => readFileSync(resolve(root, file), "utf8");
   const guide = examples(read("typescript/packages/sdk/README.md"), "ts");
   checkCopies(guide, examples(read("llms.txt"), "ts"));

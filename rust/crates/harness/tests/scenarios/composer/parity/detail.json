@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "details"
+    },
+    "file_values": {
+      "config/settings.json": {
+        "tool_details": true,
+        "diff_modes": [
+          "auto",
+          "unified",
+          "split"
+        ],
+        "diff_mode": "auto",
+        "retained": "settings"
+      }
+    }
+  },
+  "prompt": "/detail"
+}

@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf changed > plans/a.md; printf out; printf err >&2"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"content":{"value":{"stdout":"out","stderr":"err"}}}}}}

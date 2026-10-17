@@ -28,24 +28,28 @@ use acyclic_harness::fork::{
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-    ModelPrefix, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
+    ModelPrefix, ModelRequest, ModelRole, PreparedModelRequest,
 };
 use acyclic_harness::resources::{ProviderRef, StreamRef};
 use acyclic_harness::runtime::RuntimeScope;
 use acyclic_harness::store::StreamAggregate;
+use acyclic_harness::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 use acyclic_harness::tool::{
-    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
+    JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry,
+    ToolResult,
 };
 use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
 use acyclic_stream::{LocalStream, LocalStreamLimits};
-use futures::{future::BoxFuture, stream::BoxStream};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
 
 const DEPTH: u8 = 3;
 
-impl ToolExecutor for PrefixModel {
+struct Echo;
+
+impl ToolExecutor for Echo {
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
@@ -65,67 +69,14 @@ impl ToolExecutor for PrefixModel {
         Box::pin(async { Ok(None) })
     }
 }
-impl ToolProjection for PrefixModel {
-    fn project(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
-        self.supports_native_projection(work)?;
-        Ok((
-            serde_json::json!({"kind":"json","value":result.value}),
-            None,
-        ))
+fn reuse_prefix(warm: Option<&ModelRequest>, request: &ModelRequest) -> Result<bool> {
+    let Some(warm) = warm else { return Ok(false) };
+    if warm.model.name != request.model.name {
+        return Err(Error::Unsupported(
+            "fixture cannot reuse another model profile".into(),
+        ));
     }
-}
-struct PrefixModel {
-    requests: Mutex<Vec<(PreparedModelRequest, Result<bool>)>>,
-    children: Value,
-    inherited: Option<ModelRequest>,
-}
-impl PrefixModel {
-    fn reuse_prefix(warm: Option<&ModelRequest>, request: &ModelRequest) -> Result<bool> {
-        let Some(warm) = warm else { return Ok(false) };
-        if warm.model.name != request.model.name {
-            return Err(Error::Unsupported(
-                "fixture cannot reuse another model profile".into(),
-            ));
-        }
-        Ok(warm.model == request.model && request.messages.starts_with(&warm.messages))
-    }
-}
-impl ModelProvider for PrefixModel {
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        let mut requests = self
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let reuse = Self::reuse_prefix(
-            requests
-                .last()
-                .map(|(request, _)| request.request())
-                .or(self.inherited.as_ref()),
-            request.request(),
-        );
-        requests.push((request, reuse));
-        let mut events = Vec::new();
-        if requests.len() == 1 {
-            events.push(Ok(ModelEvent::ToolCall {
-                call_id: "fork-plan".into(),
-                name: "example.fork".into(),
-                arguments: self.children.clone(),
-            }));
-        }
-        events.push(Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        }));
-        Box::pin(futures::stream::iter(events))
-    }
+    Ok(warm.model == request.model && request.messages.starts_with(&warm.messages))
 }
 
 #[allow(
@@ -216,11 +167,24 @@ where
     } else {
         json!({"children": [format!("local-child-{}", level + 1)]})
     };
-    let provider = Arc::new(PrefixModel {
-        requests: Mutex::new(Vec::new()),
-        children,
-        inherited: previous.map(|(_, parent)| parent.request().clone()),
-    });
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
+                    "fork-plan".into(),
+                    "example.fork".into(),
+                    children,
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            })]),
+        ])
+        .without_accounting(),
+    );
     let model = Model::new(
         "example".into(),
         if level >= 3 { "alternate" } else { "exact" }.into(),
@@ -228,11 +192,11 @@ where
         Value::Null,
     )?;
     let mut tools = ToolRegistry::default();
-    tools.register((Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
+    tools.register((Tool { hook_names: &[], definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },
-        executor: provider.clone(), projection: provider.clone() }, None), &mut None, None)?;
+        executor: Arc::new(Echo), projection: Arc::new(JsonToolProjection) }, None), &mut None, None)?;
     let mut executor =
         StockExecutor::new(model, provider.clone(), ContextPipeline::default(), tools)
             .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled)
@@ -306,13 +270,8 @@ where
         .completed_tool_prefix(&journal, &input, 0, Some("fork-plan"))
         .await
         .map_err(|error| Error::Storage(format!("prefix extract level {level}: {error}")))?;
-    let captured = provider
-        .requests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .map(|(request, _)| request.bytes().to_vec())
-        .collect::<Vec<_>>();
+    let captured = provider.requests();
+    let dispatches = provider.dispatches();
     let mut expected = completed.request().clone();
     expected.messages =
         previous.map_or_else(Vec::new, |(_, parent)| parent.request().messages.clone());
@@ -320,12 +279,19 @@ where
         role: ModelRole::User,
         content: input.input.clone(),
     });
+    let expected = PreparedModelRequest::prepare(expected, Limits::default(), None)?;
+    assert_eq!(captured.first(), Some(expected.request()));
+    assert_eq!(captured.get(1), Some(completed.request()));
     assert_eq!(
-        captured.first().map(Vec::as_slice),
-        Some(PreparedModelRequest::prepare(expected, Limits::default(), None)?.bytes())
+        dispatches.first().map(|dispatch| dispatch.request_digest),
+        Some(expected.request_digest())
     );
-    assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
+    assert_eq!(
+        dispatches.get(1).map(|dispatch| dispatch.request_digest),
+        Some(completed.request_digest())
+    );
     drop(captured);
+    drop(dispatches);
     let cold_journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -346,30 +312,21 @@ where
         2 => Some(false),
         _ => None,
     };
-    {
-        let requests = provider
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match expected_reuse {
-            Some(expected) => {
-                assert!(matches!(requests.first(), Some((_, Ok(reuse))) if *reuse == expected))
-            }
-            None => assert!(matches!(
-                requests.first(),
-                Some((_, Err(Error::Unsupported(_))))
-            )),
-        }
-        assert!(matches!(requests.get(1), Some((_, Ok(true)))));
+    let requests = provider.requests();
+    let first = requests
+        .first()
+        .ok_or_else(|| Error::Invalid("missing first request".into()))?;
+    let second = requests
+        .get(1)
+        .ok_or_else(|| Error::Invalid("missing continuation request".into()))?;
+    let reuse = reuse_prefix(previous.map(|(_, parent)| parent.request()), first);
+    match expected_reuse {
+        Some(expected) => assert_eq!(reuse?, expected),
+        None => assert!(matches!(reuse, Err(Error::Unsupported(_)))),
     }
-    assert_eq!(
-        provider
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        2
-    );
+    assert!(reuse_prefix(Some(first), second)?);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(provider.remaining(), 0);
     let segment = ModelPrefix::select(&completed, previous)?;
     let wire: Value = serde_json::from_slice(&segment.canonical_bytes(None)?)
         .map_err(|error| Error::Invalid(error.to_string()))?;

@@ -23,7 +23,7 @@ function protocolError(error: unknown): InferenceProtocolError {
     code === "unavailable" ? code : "invalid");
 }
 
-export type { RunTerminalKind, RunTerminalMetadata };
+export type { RunTerminalKind };
 
 const empty = new Uint8Array();
 

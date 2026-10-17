@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_TASK_RUNTIME_FUTURE_BYTES: usize = 4096;
+
 #[tokio::test]
 async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_expired_work()
 -> Result<()> {
@@ -30,6 +32,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
                 model.clone(),
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None,
             )
             .await?
@@ -71,6 +74,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
                 model,
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None,
             )
             .await?
@@ -117,15 +121,23 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         "1".into(),
         Value::Null,
     )?;
-    let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
         acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let runtime = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime open future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime open future is {bytes} bytes"
+    );
+    let runtime = opening.await?;
     let input = super::super::super::ModelTaskCommand {
+        summary_source: None,
+        context_manifest: super::manifest::manifest(&fixture, true, "").await?.0,
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
         max_steps: 1,
@@ -146,15 +158,19 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let commands = runtime.commands().with_model(
         &model,
         provider.clone(),
-        &context,
         &compaction,
         Some(&super::super::super::PreparationIo::from_native_work(
             &work,
         )?),
     )?;
-    let (attempt, custody) = runtime
-        .resume_task_with_native_work(lease, custody, &commands, 2, &work)
-        .await?;
+    let recovery = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native resume future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native resume future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     let lease = match attempt {
         TaskWorkerAttempt::Unresolved {
             lease,
@@ -176,19 +192,31 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     let before = work.receipt();
     drop(commands);
     drop(runtime);
-    let reopened = fixture.runtime(Some(&io)).await?;
+    let opening = fixture.runtime(Some(&io));
+    let bytes = std::mem::size_of_val(&opening);
+    eprintln!("native runtime reopen future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native runtime reopen future is {bytes} bytes"
+    );
+    let reopened = opening.await?;
     let commands = reopened.commands().with_model(
         &model,
         provider.clone(),
-        &context,
         &compaction,
         Some(&super::super::super::PreparationIo::from_native_work(
             &work,
         )?),
     )?;
-    let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work)
-        .await?;
+    let recovery =
+        reopened.reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work);
+    let bytes = std::mem::size_of_val(&recovery);
+    eprintln!("native reconciliation future: {bytes} bytes");
+    assert!(
+        bytes <= MAX_TASK_RUNTIME_FUTURE_BYTES,
+        "native reconciliation future is {bytes} bytes"
+    );
+    let (attempt, custody) = recovery.await?;
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
     }
@@ -204,7 +232,13 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         reopened.task_host().outcome(task).await?,
         Some(Outcome::Cancelled)
     ));
-    let replay_io = crate::executor::PreparationIo::from_native_work(&work)?;
+    // The worker has settled on its original ledger. Passive journal inspection
+    // is a separate bounded query, not additional work for the completed worker.
+    let settled_receipt = work.receipt();
+    let inspection =
+        acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let replay_io = crate::executor::PreparationIo::from_native_work(&inspection)?;
     let owner = reopened
         .task_host()
         .original_journal_owner(
@@ -221,7 +255,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
             .is_err()
     );
     let witness = crate::filesystem::FilesystemWorkflowJournal::for_task(
-        owner.into_native_shared(&work)?,
+        owner.into_native_shared(&inspection)?,
         fixture.filesystem.clone(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &fixture.volume,
@@ -235,7 +269,16 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         crate::workflow::WorkflowJournal::replay(witness.as_ref(), 0, 64, Some(&replay_io))?
             .await?;
     assert!(!records.0.is_empty());
-    assert!(records.1.as_ref().unwrap().work().shares_ledger(&work));
+    assert!(
+        records
+            .1
+            .as_ref()
+            .unwrap()
+            .work()
+            .shares_ledger(&inspection)
+    );
+    assert!(!records.1.as_ref().unwrap().work().shares_ledger(&work));
+    assert_eq!(work.receipt(), settled_receipt);
     drop(records);
     drop(witness);
     drop(attempt);
@@ -250,6 +293,8 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     fixture.machine.native.store(true, Ordering::SeqCst);
 
     let input = super::super::super::ModelTaskCommand {
+        summary_source: None,
+        context_manifest: super::manifest::manifest(&fixture, true, "").await?.0,
         input: crate::model::ModelContent::Text("must not dispatch".into()),
         selected_context: None,
         max_steps: 1,
@@ -269,7 +314,6 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
         "1".into(),
         Value::Null,
     )?;
-    let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work =
@@ -280,7 +324,6 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let commands = runtime.commands().with_model(
         &model,
         provider.clone(),
-        &context,
         &compaction,
         Some(&super::super::super::PreparationIo::from_native_work(
             &work,
@@ -326,7 +369,6 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
         "1".into(),
         serde_json::json!({"configured": true}),
     )?;
-    let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock),
@@ -347,13 +389,10 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
             cancellation.cancel();
         }
         let before = work.receipt();
-        let result = runtime.commands().with_model(
-            &model,
-            provider.clone(),
-            &context,
-            &compaction,
-            Some(&io),
-        );
+        let result =
+            runtime
+                .commands()
+                .with_model(&model, provider.clone(), &compaction, Some(&io));
         assert!(result.as_ref().is_err_and(Error::is_native_failure));
         assert_eq!(
             work.receipt().allocation_operations,
@@ -382,7 +421,6 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
         "1".into(),
         json!({"configured": "retained"}),
     )?;
-    let context = ContextPipeline::default();
     let compaction = crate::context::CompactionPolicy::Disabled;
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock),
@@ -397,7 +435,6 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
     let commands = runtime.commands().with_model(
         &model,
         provider.clone(),
-        &context,
         &compaction,
         Some(&super::super::super::PreparationIo::from_native_work(
             &work,
@@ -412,7 +449,6 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
     let result = commands.with_model(
         &model,
         provider.clone(),
-        &context,
         &compaction,
         Some(&super::super::super::PreparationIo::from_native_work(
             &foreign,

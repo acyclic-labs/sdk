@@ -72,13 +72,28 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::TailResponse>, Status> {
         unary(serve_span!("tail"), async {
             check_command_size(&request)?;
-            let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
+            let request = request.into_inner();
+            let path = path(request.path).map_err(|error| error_status(&error))?;
+            if request.accepted {
+                let watermarks = self
+                    .provider
+                    .watermarks(path)
+                    .await
+                    .map_err(|error| error_status(&error))?;
+                return Ok(wire::TailResponse {
+                    tail: watermarks.accepted,
+                    durable: Some(watermarks.durable),
+                });
+            }
             let bounds = self
                 .provider
                 .bounds(path)
                 .await
                 .map_err(|error| error_status(&error))?;
-            Ok(wire::TailResponse { tail: bounds.tail })
+            Ok(wire::TailResponse {
+                tail: bounds.tail,
+                durable: None,
+            })
         })
         .await
     }

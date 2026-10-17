@@ -100,6 +100,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
         path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+        publication_proof: Mutex::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));

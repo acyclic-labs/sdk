@@ -1,17 +1,34 @@
 //! Repository-local protobuf generator entry point.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 mod native_absence;
 mod native_family;
 mod readonly;
 mod service;
 
-use prost::Message;
-use protoc_gen_prost::GeneratorResultExt;
-
 fn main() -> io::Result<()> {
     let generator = std::env::args().nth(1);
+    if generator.as_deref() == Some("descriptors") {
+        let args = std::env::args().skip(2).collect::<Vec<_>>();
+        let [root, output] = args.as_slice() else {
+            return Err(io::Error::other(
+                "descriptors expects source root and output directory",
+            ));
+        };
+        let root = std::path::Path::new(root);
+        let output = std::path::Path::new(output);
+        std::fs::create_dir_all(output)?;
+        for (family, baseline, protos) in acyclic_proto_build::FAMILIES {
+            acyclic_proto_build::descriptor(
+                &root.join("rust/crates").join(family),
+                protos,
+                &output.join(baseline),
+            )
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        }
+        return Ok(());
+    }
     if generator.as_deref() == Some("readonly") {
         if std::env::args().len() != 2 {
             return Err(io::Error::other("readonly mode takes no arguments"));
@@ -39,15 +56,7 @@ fn main() -> io::Result<()> {
             .map_err(|error| io::Error::other(error.to_string()))?;
         return serde_json::to_writer(io::stdout(), &facts).map_err(io::Error::other);
     }
-    let mut request = Vec::new();
-    io::stdin().read_to_end(&mut request)?;
-    let response = match generator.as_deref() {
-        Some("prost") => protoc_gen_prost::execute(&request),
-        Some("tonic") => protoc_gen_tonic::execute(&request),
-        _ => return Err(io::Error::other("expected prost or tonic generator")),
-    }
-    .unwrap_codegen_response();
-    let mut encoded = Vec::new();
-    response.encode(&mut encoded).map_err(io::Error::other)?;
-    io::stdout().write_all(&encoded)
+    Err(io::Error::other(
+        "expected descriptors, readonly, native-absence, service or native-family generator",
+    ))
 }

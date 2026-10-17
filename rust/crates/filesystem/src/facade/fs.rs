@@ -18,6 +18,7 @@ pub(super) struct FsInner<A, O> {
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
     pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
+    pub(super) publication_proof: Mutex<crate::kernel::closure::CachedProofs>,
     // This field must remain last: Rust drops fields in declaration order, so every durable
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
@@ -174,6 +175,7 @@ impl<A, O> Fs<A, O> {
                 capabilities,
                 workspace_namespace,
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                publication_proof: Mutex::default(),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 _local_root_lifecycle: None,
             }),
@@ -183,6 +185,18 @@ impl<A, O> Fs<A, O> {
 
 #[cfg(feature = "distributed")]
 impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
+    /// Returns the existing durable history behind a volume snapshot/follow.
+    /// This does not publish a second copy of file contents.
+    pub fn authority_records(
+        &self,
+        volume: crate::VolumeId,
+    ) -> Result<(Arc<P>, acyclic_stream::StreamPath), crate::AuthorityStoreError> {
+        Ok((
+            self.inner.authority.provider(),
+            crate::distributed::authority_records_path(volume)?,
+        ))
+    }
+
     /// Opens the SDK operation-window store on the exact Stream provider used
     #[must_use]
     pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {

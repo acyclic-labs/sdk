@@ -141,33 +141,22 @@ pub(super) fn clone_namespace(
     limits: crate::model::VolumeLimits,
     receipt: &mut GenerationReceipt,
 ) -> Result<NamespacePath, MaterializeError> {
-    let result = receipt
-        .custody
-        .work()
-        .allocations(|ledger, work, budget, cancellation| {
-            let mut accounting = crate::kernel::KernelAccounting::borrowed_standalone(
-                ledger,
-                work,
-                budget,
-                cancellation,
-            );
-            let result = match extra {
-                Some(name) => {
-                    path.child_with_accounting(name, limits, &mut accounting, cancellation)
-                }
-                None => path.clone_with_accounting(&mut accounting, cancellation),
-            };
-            result.map(|(path, _)| path).map_err(|error| match error {
-                crate::FsError::Work(error) => crate::NativeTreeMaterializationError::Work(error),
-                crate::FsError::Cancelled(_) => crate::NativeTreeMaterializationError::Cancelled,
-                _ => crate::NativeTreeMaterializationError::InvalidLayout,
-            })
-        });
-    let (path, mut custody) = result?;
-    let result = receipt.custody.absorb(&mut custody);
-    result?;
+    let work = receipt.custody.work().clone();
+    let cancellation = work.cancellation();
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, cancellation);
+    let (path, allocation) = match extra {
+        Some(name) => path.child_with_accounting(name, limits, &mut accounting, cancellation),
+        None => path.clone_with_accounting(&mut accounting, cancellation),
+    }?;
+    let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut custody) = allocation else {
+        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+    };
+    receipt.custody.absorb(&mut custody)?;
     Ok(path)
 }
+
+#[cfg(test)]
+mod allocation_properties;
 
 #[cfg(unix)]
 pub(super) type HostPathUnit = u8;

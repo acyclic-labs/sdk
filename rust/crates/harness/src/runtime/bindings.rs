@@ -4,6 +4,7 @@ use super::*;
 pub struct AgentHarness {
     pub(super) tasks: TaskRegistry,
     pub(super) tools: ToolRegistry,
+    pub(crate) workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
     pub(super) resumable_tools: ResumableToolRegistry,
     pub(super) live: TaskGroup,
     pub(super) concurrency: usize,
@@ -43,6 +44,7 @@ impl Clone for AgentHarness {
         Self {
             tasks: self.tasks.clone(),
             tools: self.tools.clone(),
+            workspace_tools: self.workspace_tools.clone(),
             resumable_tools: self.resumable_tools.clone(),
             live: self.live.clone(),
             concurrency: self.concurrency,
@@ -114,6 +116,8 @@ pub struct Bindings {
     pub tasks: TaskRegistry,
     /// Version-pinned tool definitions and executors.
     pub tools: ToolRegistry,
+    /// Executor for the task's selected checkout or fork view.
+    pub workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
     /// Exact resumable tool implementations, never substituted by live executors.
     pub resumable_tools: ResumableToolRegistry,
     /// Effective authority and bounds.
@@ -149,6 +153,7 @@ impl Bindings {
         Self {
             tasks: TaskRegistry::default(),
             tools: ToolRegistry::default(),
+            workspace_tools: None,
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::default(),
             concurrency: tokio::sync::Semaphore::MAX_PERMITS,
@@ -358,6 +363,7 @@ impl Bindings {
             live: TaskGroup::new(concurrency, native)?,
             tasks: self.tasks,
             tools: self.tools,
+            workspace_tools: self.workspace_tools,
             resumable_tools: self.resumable_tools,
             scope: self.scope,
             concurrency,

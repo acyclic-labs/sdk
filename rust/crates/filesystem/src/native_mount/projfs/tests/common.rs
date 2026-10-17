@@ -19,6 +19,12 @@ pub(super) fn windows_path(name: &str) -> MountPath {
 
 pub(super) async fn windows_checkout_source()
 -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
+    windows_checkout_source_with_files(0).await
+}
+
+pub(super) async fn windows_checkout_source_with_files(
+    files: usize,
+) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
     let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
     config.profile = crate::model::FilesystemProfile::Windows;
     let fs = Fs::memory();
@@ -28,7 +34,7 @@ pub(super) async fn windows_checkout_source()
         .await
         .map_err(|failure| failure.error)?
         .value;
-    let checkout = volume
+    let mut checkout = volume
         .checkout(
             GenerationSelector::Head,
             CheckoutMode {
@@ -42,6 +48,25 @@ pub(super) async fn windows_checkout_source()
         .await
         .map_err(|failure| failure.error)?
         .value;
+    if files != 0 {
+        let mut mutations = Vec::with_capacity(files);
+        for index in 0..files {
+            let portable =
+                crate::path::PortablePath::parse(&format!("/f{index}.txt"), config.limits)?;
+            mutations.push(crate::AuthoredMutation::CreateFile {
+                path: crate::kernel::NamespacePath::from_portable_in_profile(
+                    &portable,
+                    config.profile,
+                    config.limits,
+                )?,
+                bytes: Bytes::from(vec![b'x'; 4096 * (index % 2)]).into(),
+                metadata: FileMetadata::default(),
+            });
+        }
+        checkout
+            .apply_authored_transaction(mutations, WorkBudget::UNBOUNDED, &cancellation)
+            .await?;
+    }
     Ok(Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::new(checkout)),
         config,

@@ -1,0 +1,2 @@
+{"seed":{"AGENTS.md":"root","extra":"count me","src/CLAUDE.md":"child"},"discovery":{"instructions":[{
+  "active_directory":"src"}],"limits":{"entries":2}},"expect":{"error":"discovery entry bound exceeded"}}

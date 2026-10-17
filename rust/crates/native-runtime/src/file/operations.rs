@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use super::ReadDestination;
 use crate::*;
 
 /// Required durability boundary for one file operation.
@@ -86,7 +88,12 @@ pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
 
 /// Reads at an absolute offset without changing the file cursor.
 pub fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    with_file_admission(file, || read_at_impl(file, offset, destination))
+    with_file_admission(file, || {
+        #[cfg(target_vendor = "apple")]
+        return read_at_impl(file, offset, ReadDestination::Slice(destination));
+        #[cfg(not(target_vendor = "apple"))]
+        read_at_impl(file, offset, destination)
+    })
 }
 
 /// Reads one declared source prefix into caller-admitted storage without changing the cursor or allocating.
@@ -97,15 +104,37 @@ pub fn read_declared_source_bytes(
     destination: &mut [u8],
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
+    read_declared_source(file, offset, ReadDestination::Slice(destination), meter)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_declared_source_spare(
+    file: &File,
+    offset: u64,
+    data: &mut Vec<u8>,
+    length: usize,
+    meter: &dyn NativeReadMeter,
+) -> io::Result<usize> {
+    read_declared_source(file, offset, ReadDestination::Spare { data, length }, meter)
+}
+
+#[cfg(unix)]
+fn read_declared_source(
+    file: &File,
+    offset: u64,
+    mut destination: ReadDestination<'_>,
+    meter: &dyn NativeReadMeter,
+) -> io::Result<usize> {
     meter.check()?;
-    if destination.is_empty() {
+    let (_, length) = destination.parts()?;
+    if length == 0 {
         return Ok(0);
     }
     #[cfg(target_os = "linux")]
-    linux::validate_io_range(offset, destination.len())?;
+    linux::validate_io_range(offset, length)?;
     #[cfg(not(target_os = "linux"))]
     {
-        let length = u64::try_from(destination.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let length = u64::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
         let end = offset
             .checked_add(length)
             .ok_or(io::ErrorKind::InvalidInput)?;
@@ -114,8 +143,7 @@ pub fn read_declared_source_bytes(
         }
     }
     let mut operation = NativeOperationReservation::new(meter, NativeOperationKind::Read, 1)?;
-    let mut bytes =
-        NativeByteReservation::new(meter, NativeOperationKind::Read, destination.len())?;
+    let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)?;
     meter.check()?;
     #[cfg(target_os = "linux")]
     let (result, recorded_operation) =
@@ -288,29 +316,42 @@ pub(crate) fn write_bounded_in_place(
     unsafe_code,
     reason = "reads the validated destination on a held descriptor"
 )]
-pub(crate) fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read_at_impl(
+    file: &File,
+    offset: u64,
+    mut destination: ReadDestination<'_>,
+) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let (pointer, length) = destination.parts()?;
     // SAFETY: the held file and writable destination live through this syscall.
-    let result = unsafe {
-        libc::pread(
-            file.as_raw_fd(),
-            destination.as_mut_ptr().cast(),
-            destination.len(),
-            offset,
-        )
-    };
+    let result = unsafe { libc::pread(file.as_raw_fd(), pointer.cast(), length, offset) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(result as usize)
+        let count = usize::try_from(result).map_err(|_| io::ErrorKind::InvalidData)?;
+        if count > length {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if let ReadDestination::Spare { data, .. } = destination {
+            // SAFETY: pread initialized count bytes in the validated spare slice.
+            unsafe { data.set_len(data.len() + count) };
+        }
+        Ok(count)
     }
 }
 
 #[cfg(all(unix, not(target_os = "linux"), not(target_vendor = "apple")))]
-pub(crate) fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read_at_impl(
+    file: &File,
+    offset: u64,
+    destination: ReadDestination<'_>,
+) -> io::Result<usize> {
     use std::os::unix::fs::FileExt as _;
-    file.read_at(destination, offset)
+    match destination {
+        ReadDestination::Slice(data) => file.read_at(data, offset),
+        ReadDestination::Spare { .. } => Err(io::ErrorKind::Unsupported.into()),
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]

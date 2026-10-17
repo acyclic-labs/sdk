@@ -5,6 +5,19 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 
+pub(crate) fn tool_result(value: Value) -> Result<rmcp::model::CallToolResult> {
+    if !value.get("content").is_some_and(Value::is_array)
+        || value
+            .get("isError")
+            .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(crate::Error::Invalid(
+            "invalid MCP tool result envelope".into(),
+        ));
+    }
+    serde_json::from_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))
+}
+
 /// Validates service input on the supplied work ledger.
 pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Result<()> {
     charge(work, 1, 0, 0)?;
@@ -22,22 +35,7 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
         "resources/read" => check::<rmcp::model::ReadResourceRequestParams>(params, work),
         "prompts/get" => check::<rmcp::model::GetPromptRequestParams>(params, work),
         "tools/call" => {
-            for key in [
-                "task",
-                "requestState",
-                "inputResponses",
-                "request_state",
-                "input_responses",
-            ] {
-                charge(work, 1, 0, 0)?;
-                if params.get(key).is_some() {
-                    return Err(error(
-                        work,
-                        ErrorCode::Unsupported,
-                        "MCP stdio continuation needs its own authority owner",
-                    ));
-                }
-            }
+            reject_tool_continuation(params, work)?;
             check::<rmcp::model::CallToolRequestParams>(params, work)
         }
         _ => Err(error(
@@ -46,6 +44,26 @@ pub fn validate_params(method: &str, params: &Value, work: NativeWork<'_>) -> Re
             "MCP service method not selected",
         )),
     }
+}
+
+pub(crate) fn reject_tool_continuation(params: &Value, work: NativeWork<'_>) -> Result<()> {
+    for key in [
+        "task",
+        "requestState",
+        "inputResponses",
+        "request_state",
+        "input_responses",
+    ] {
+        charge(work, 1, 0, 0)?;
+        if params.get(key).is_some() {
+            return Err(error(
+                work,
+                ErrorCode::Unsupported,
+                "MCP stdio continuation needs its own authority owner",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validates protocol results using the maintained protocol library.

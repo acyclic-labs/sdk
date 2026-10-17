@@ -14,7 +14,14 @@
   },
   "type": "module",
   "exports": {
-    "./observe": { "types": "./dist/observe.d.ts", "default": "./dist/observe.js" },
+    "./credential": {
+      "types": "./dist/credential.d.ts",
+      "default": "./dist/credential.js"
+    },
+    "./observe": {
+      "types": "./dist/observe.d.ts",
+      "default": "./dist/observe.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -37,15 +44,19 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run generate:client && bun run build:wasm && tsc -b",
+    "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
+    "build": "bun run generate && bun run generate:client && bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs actors",
     "generate:client": "node ../../../scripts/generate-actors.mjs write",
     "build:native": "node ../../../scripts/build-actors-native.mjs build",
     "stage:native": "node ../../../scripts/build-actors-native.mjs stage",
     "check:native": "node ../../../scripts/build-actors-native.mjs check",
     "assemble:native": "node ../../../scripts/assemble-actors-native-package.mjs",
-    "test": "tsc -b --pretty false",
-    "pack:dry": "bun pm pack --dry-run"
+    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
+    "test:timers": "node --test test/timers.test.mjs",
+    "pack:dry": "bun pm pack --dry-run",
+    "generate": "bun ../../../scripts/generate.mjs actors",
+    "prepack": "bun run generate"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0"

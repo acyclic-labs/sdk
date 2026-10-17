@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, loadAuthority, qualificationOutput, readInput, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
@@ -16,12 +16,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
   const authority = realpathSync(args.authority);
   const cache = realpathSync(args.cache);
   const javaHome = realpathSync(args["java-home"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [installation, authority, cache, javaHome, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [installation, authority, cache, javaHome, dirname(directory)]);
   const proofBytes = readFileSync(join(installation, "qualification.json"));
   const proof = JSON.parse(proofBytes);
   const approved = loadAuthority(authority);

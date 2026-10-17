@@ -131,3 +131,10 @@ mod yielding_tests;
 mod test_support;
 #[cfg(test)]
 use test_support::{test_path, test_root};
+
+#[cfg(windows)]
+pub(crate) mod private_file;
+
+#[cfg(all(test, any(windows, target_os = "linux", target_os = "macos")))]
+#[path = "tests_flat_parent.rs"]
+mod flat_parent_tests;

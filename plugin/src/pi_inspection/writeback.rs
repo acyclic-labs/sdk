@@ -20,38 +20,10 @@ pub(crate) async fn prepare_writeback(
             "writeback candidate is not the original selected root workspace",
         ));
     }
-    let operation = acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes());
-    let prepared = acyclic_fs::materializer::prepare_native_generation_transition(
-        from,
-        candidate,
-        state,
-        acyclic_fs::NativeWorkspacePublication {
-            root: &root.path,
-            source_root_identity: root.identity,
-            operation_directory: &root.operation_directory,
-            operation_id: operation,
-            from: from.id(),
-            to: candidate.id(),
-            excluded_names: &[".git"],
-            options,
-            budget: native_work.remaining()?,
-            cancellation: native_work.cancellation(),
-        },
-    )
-    .await;
-    let journal = match prepared {
-        Ok(receipt) => {
-            native_work.spent(receipt.work)?;
-            receipt.value
-        }
-        Err((source, spent)) => {
-            native_work.spent(spent)?;
-            return Err(Error::NativeWorkspacePublication {
-                source: Box::new(source),
-                custody: None,
-            });
-        }
-    };
+    let journal = root
+        .publication
+        .prepare(from, candidate, state, options, native_work)
+        .await?;
     if journal.root_identity != Some(root.identity.to_bytes())
         || journal.phase != acyclic_fs::MaterializationPhase::Prepared
     {
@@ -76,7 +48,6 @@ pub(crate) fn publish_writeback<'a>(
     native_work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> impl std::future::Future<Output = Result<acyclic_fs::MaterializationJournal>> + Send + 'a {
     async move {
-        let operation = acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes());
         root.verify(native_work).await?;
         let from = &generations.from;
         let candidate = &generations.candidate;
@@ -92,53 +63,25 @@ pub(crate) fn publish_writeback<'a>(
                 "writeback lacks exact original-root user approval",
             ));
         }
-        let work = native_work.clone();
-        let guard_work = work.clone();
+        let guard_work = native_work.clone();
         let guard_cause = std::sync::Mutex::new(None);
-        let receipt = acyclic_fs::publish_native_generation_transition(
-            from,
-            candidate,
-            state,
-            acyclic_fs::NativeWorkspacePublication {
-                root: &root.path,
-                source_root_identity: root.identity,
-                operation_directory: &root.operation_directory,
-                operation_id: operation,
-                from: from.id(),
-                to: candidate.id(),
-                excluded_names: &[".git"],
-                options,
-                budget: native_work.budget(),
-                cancellation: native_work.cancellation(),
-            },
-            work,
-            || async {
+        let receipt = root
+            .publication
+            .publish(from, candidate, state, options, native_work, || async {
                 root.verify(&guard_work)
                     .await
                     .map_err(|error| native_guard_cause(error, &guard_cause))?;
                 Ok(())
-            },
-        )
-        .await;
+            })
+            .await;
         let value = match receipt {
-            Ok(receipt) => receipt.value,
-            Err((source, _producer_work)) => {
+            Ok(journal) => journal,
+            Err(source) => {
                 return Err(guard_cause
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
-                    .unwrap_or_else(|| match source {
-                        acyclic_fs::NativeWorkspacePublicationError::Native(cause) => {
-                            Error::NativeWork {
-                                cause,
-                                custody: None,
-                            }
-                        }
-                        source => Error::NativeWorkspacePublication {
-                            source: Box::new(source),
-                            custody: None,
-                        },
-                    }));
+                    .unwrap_or(source));
             }
         };
         Ok(value)
@@ -205,8 +148,8 @@ pub(crate) fn writeback_digest_value<'a>(
         &root.volume,
         root.workspace,
         root.identity.to_bytes(),
-        &root.path,
-        &root.operation_directory,
+        root.publication.root(),
+        root.publication.directory(),
         acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes()),
         generations.from.id(),
         generations.candidate.id(),

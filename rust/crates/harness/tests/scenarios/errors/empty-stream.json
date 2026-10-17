@@ -1,0 +1,5 @@
+{
+  "prompt": "EOF is not completion.",
+  "turns": [[]],
+  "expect": {"error":"operation outcome is indeterminate", "not_events":[{"kind":"model","event":{"kind":"completed"}}]}
+}

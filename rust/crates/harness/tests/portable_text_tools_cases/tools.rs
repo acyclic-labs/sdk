@@ -79,7 +79,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         Capabilities::new([read_cap.clone(), write_cap.clone()]),
     )
     .await?;
-    let read_tool = files::read_file()?;
+    let read_tool = files::read()?;
     let read_operation = OperationId::new();
     let read_invocation = ToolInvocation {
         operation_id: read_operation,
@@ -115,7 +115,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             Err(Error::Unauthorized(_))
         ));
     }
-    let mut tool = files::edit_file()?;
+    let mut tool = files::edit()?;
     tool.definition.name = "example.exact_edit".into();
     tool.definition.description =
         "Consumer-defined edit contract using the portable executor".into();
@@ -169,7 +169,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         task.read_file(&user, None).await?.as_ref(),
         b"user edit".as_ref()
     );
-    let write_tool = files::write_file()?;
+    let write_tool = files::write()?;
     let write_operation = OperationId::new();
     let write_invocation = ToolInvocation {
         operation_id: write_operation,
@@ -358,7 +358,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         Capabilities::new([write_cap]),
     )
     .await?;
-    let write_tool = files::write_file()?;
+    let write_tool = files::write()?;
     for path in ["../escape.txt", ".system/private.json"] {
         let op = OperationId::new();
         let invalid = ToolInvocation {

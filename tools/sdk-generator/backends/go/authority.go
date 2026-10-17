@@ -59,11 +59,6 @@ func validateRequest(path, sourceRoot, outputRoot string) error {
 	return nil
 }
 
-func validateInput(root, relative, want string) error {
-	_, err := readInput(root, relative, want)
-	return err
-}
-
 // Return the exact bytes that passed admission, without rereading after hashing.
 func readInput(root, relative, want string) ([]byte, error) {
 	clean := filepath.ToSlash(filepath.Clean(relative))

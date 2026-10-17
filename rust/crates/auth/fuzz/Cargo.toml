@@ -1,0 +1,53 @@
+[package]
+name = "acyclic-auth-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+syn = { version = "3", features = ["full"] }
+libfuzzer-sys = "0.4"
+prost = "0.14.4"
+acyclic-auth = { path = ".." }
+acyclic-auth-wasm = { path = "../../auth-wasm" }
+ed25519-dalek = "=3.0.0"
+
+[[bin]]
+name = "capability"
+path = "fuzz_targets/capability.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "authorization"
+path = "fuzz_targets/authorization.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+
+[[bin]]
+name = "verifier"
+path = "fuzz_targets/verifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "credential"
+path = "fuzz_targets/credential.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "holder_snapshot"
+path = "fuzz_targets/holder_snapshot.rs"
+test = false
+doc = false
+bench = false

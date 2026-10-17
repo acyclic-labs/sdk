@@ -14,6 +14,7 @@
     }
   },
   "include": [
-    "test/deployment.type-test.ts"
+    "test/deployment.type-test.ts",
+    "test/manifest-types.ts"
   ]
 }

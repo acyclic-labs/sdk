@@ -206,6 +206,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     tools.register(
         (
             Tool {
+                hook_names: &[],
                 definition: definition.clone(),
                 executor: projector.clone(),
                 projection: projector.clone(),
@@ -268,11 +269,13 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
     }];
     messages.push(ModelMessage {
         role: ModelRole::Assistant,
-        content: ModelContent::Part(ModelContentPart::ToolCall {
-            call_id: invocation.call_id.clone(),
-            name: invocation.name.clone(),
-            arguments: invocation.arguments.clone(),
-        }),
+        content: ModelContent::Part(ModelContentPart::ToolCall(
+            acyclic_harness::model::ToolCall::new(
+                invocation.call_id.clone(),
+                invocation.name.clone(),
+                invocation.arguments.clone(),
+            ),
+        )),
     });
     messages.push(ModelMessage {
         role: ModelRole::Tool,
@@ -335,6 +338,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                     CapturedPart::Text(_) => "text", CapturedPart::Call(..) => "call",
                     CapturedPart::Result(..) => "result", CapturedPart::Json(_) => "json",
                     CapturedPart::Media(..) => "media",
+                    CapturedPart::Reasoning(..) => "reasoning",
                 }).collect::<Vec<_>>(), vec!["text", "media", "text", "media", "call", "result", "text", "media", "media"]);
                 assert_eq!(
                     capture
@@ -631,7 +635,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             writer: None,
         })
         .tasks(tasks)
-        .tools(tools)
+        .replace_tools(tools)
         .extensions_from(&agent)?
         .extensions(linked.clone())
         .grant("model:generate")

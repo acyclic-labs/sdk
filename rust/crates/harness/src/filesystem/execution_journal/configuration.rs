@@ -36,6 +36,14 @@ where
             })
     }
 
+    pub(crate) fn with_task_files(
+        mut self,
+        files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
+    ) -> Self {
+        self.task_files = files;
+        self
+    }
+
     /// Binds the execution to the task's exact lease and coordinator provider.
     pub fn for_task(
         owner: TaskJournalOwner<P>,
@@ -74,11 +82,7 @@ where
     }
 
     /// Binds passive replay to an original turn without granting a task lease.
-    pub(in crate::filesystem) fn with_turn(
-        mut self,
-        operation: OperationId,
-        turn: OperationId,
-    ) -> Self {
+    pub(crate) fn with_turn(mut self, operation: OperationId, turn: OperationId) -> Self {
         self.execution = Some((operation, turn));
         self
     }
@@ -241,6 +245,7 @@ where
             verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
+            task_files: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_metadata,
         })

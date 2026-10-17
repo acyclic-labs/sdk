@@ -1,23 +1,18 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { assertTreeEqual } from "./generate-actors.mjs";
+import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 
-const root = join(fileURLToPath(new URL("..", import.meta.url)));
-const semantic = join(root, "typescript/packages/actors/src/generated");
+const source = readFileSync(new URL("../typescript/packages/actors/src/generated/actors-service.ts", import.meta.url), "utf8");
+const names = [...new Set(ActorsService.methods.flatMap(method => [method.input.typeName, method.output.typeName]))];
+const complete = text => {
+  for (const name of names) assert.ok(text.includes(`"${name}":`), `missing semantic root: ${name}`);
+};
 
-test("Actors generation detects a missing Rust-owned semantic output", async () => {
-  const temporary = await mkdtemp(join(root, ".tmp-actors-drift-test-"));
-  try {
-    await cp(semantic, temporary, { recursive: true });
-    await rm(join(temporary, "semantic/actors/CurrentHeadMarker.ts"));
-    await assert.rejects(
-      () => assertTreeEqual(semantic, temporary, "Actors Rust TypeScript generation"),
-      /file set drift/,
-    );
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+test("Actors build emits every descriptor-bound semantic RPC root", () => {
+  assert.ok(names.length > 0);
+  complete(source);
+  for (const name of names) assert.throws(() => complete(source.replace(`"${name}":`, '"removed":')));
+  const marker = readFileSync(new URL("../typescript/packages/actors/src/generated/semantic/actors/CurrentHeadMarker.ts", import.meta.url), "utf8");
+  assert.ok(marker.includes("CurrentHeadMarker"));
 });

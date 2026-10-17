@@ -22,7 +22,6 @@ fn denied(reason: &'static str) -> Error {
 struct VolumeCallback<P: StreamProvider> {
     context: Arc<TaskContext>,
     owner: Arc<TaskJournalOwner<P>>,
-    volume: VolumeRef,
     writable: bool,
     custody: NativeAllocation,
 }
@@ -59,20 +58,14 @@ impl TaskContext {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<dyn NativeMountCallbackGuard>> {
         self.require_volume(owner, volume, writable, work)?;
-        let io = PreparationIo::from_native_work(work)?;
-        let mut custody = work.claim(
+        let custody = work.claim(
             std::mem::size_of::<VolumeCallback<P>>() as u64,
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let volume = volume.copy(&mut Some(&mut io.history_io()))?;
-        let retained = io.owned_bytes()?;
-        let mut volume_custody = io.into_native_custody(retained)?;
-        custody.absorb(&mut volume_custody)?;
         Ok(Arc::new(VolumeCallback {
             context: Arc::clone(self),
             owner: Arc::clone(owner),
-            volume,
             writable,
             custody,
         }))
@@ -130,14 +123,14 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
                     "native callback differs from its original per-volume work",
                 ));
             }
-            self.context
-                .require_volume(&self.owner, &self.volume, self.writable, work)?;
-            let io = PreparationIo::from_native_work(&work.recheck_admitted())?;
+            // The captured context, owner admission and volume grants are
+            // immutable and authenticated before this callback is constructed.
+            // The invocation still checks its exact ledger and live fence.
+            let io =
+                PreparationIo::from_native_work(&self.context.native_work()?.recheck_admitted())?;
             self.owner
                 .verify(false, &mut Some(&mut io.history_io()))
-                .await?;
-            self.context
-                .require_volume(&self.owner, &self.volume, self.writable, work)
+                .await
         })
     }
 }

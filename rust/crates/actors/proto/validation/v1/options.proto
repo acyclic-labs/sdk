@@ -1,0 +1,165 @@
+syntax = "proto2";
+package acyclic.validation.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// Exact nonzero byte length for a public identity, revision, profile, or digest.
+extend google.protobuf.FieldOptions {
+  optional uint32 nonzero_fixed_bytes = 51001;
+  // Presence required for a message that carries a replay or binding invariant.
+  optional bool required_message = 51002;
+  optional bool positive_uint64 = 51003;
+  optional uint32 min_items = 51005;
+  optional uint32 max_items = 51006;
+  // Nonempty UTF-8 string or bytes value, bounded by its encoded byte length.
+  optional uint32 nonempty_max_bytes = 51007;
+  optional uint64 max_uint64 = 51008;
+  optional bool known_nonzero_enum = 51009;
+  optional uint32 nonempty_max_item_bytes = 51010;
+}
+
+// Marks terminal outcomes that may contain incomplete output.
+extend google.protobuf.EnumValueOptions {
+  optional bool partial_terminal = 51011;
+}
+
+extend google.protobuf.OneofOptions {
+  optional bool required_oneof = 51004;
+}
+
+// Relative authenticated HTTP path for a public inference RPC. The path is
+// rooted below /v1/inference and is the sole source for the SDK transport
+// route; every public RPC must declare exactly one nonempty path.
+extend google.protobuf.MethodOptions {
+  optional string http_path = 51012;
+  // All entries are conjunctive. Resolve every repeated-field occurrence;
+  // missing fields, unknown extractors and an empty extraction fail closed.
+  repeated Authorization auth = 51013;
+}
+
+// The owning service canonicalizes extracted names (including the volume's
+// case fold) before matching. Account identity comes from the verified root.
+message Authorization {
+  // Semantic action, e.g. fs/read or streams/append, never an RPC name.
+  repeated string action = 1;
+  // Literal template with scalar or repeated substitutions, e.g.
+  // streams:/{mutations[].append.path}. Every expansion must be authorized.
+  optional string resource = 2;
+  // Product-owned extractor for oneofs, references, and multi-path operations.
+  // Static extractors return resources only; action is declared alongside them.
+  // Dynamic extractors return action/resource pairs, constrained by the registered
+  // possible_actions. Unknown extractors/actions and empty results fail closed.
+  optional string extractor = 3;
+}
+
+// Metadata home for all products, including HTTP-only Cloud surfaces. Consumers
+// validate extractor output against this registry, never infer actions from RPC
+// names. Each product owner declares HTTP routes here (or in its importing file).
+extend google.protobuf.FileOptions {
+  repeated Product products = 51014;
+  repeated Extractor extractors = 51015;
+  repeated HttpRoute http_routes = 51016;
+}
+message Product {
+  optional string name = 1;
+  // percent-components: canonical bytes in uppercase %HH components; only
+  // [A-Za-z0-9_~-] are literal. Dot is escaped. Never decode before prefix match.
+  // objects-bucket-key: same encoding, exactly bucket / entire opaque key.
+  optional string resource_encoding = 2;
+  // fs folds according to volume policy BEFORE encoding; opaque Objects keys
+  // never normalize, case-fold, collapse slashes or resolve dot segments.
+  optional bool canonicalize_at_owner = 3;
+  repeated string actions = 4;
+}
+message Extractor {
+  optional string name = 1;
+  optional bool resources_only = 2;
+  // Complete allowable output vocabulary, also for dynamic oneof operations.
+  repeated string possible_actions = 3;
+}
+message HttpRoute {
+  optional string method = 1;
+  optional string path = 2;
+  repeated Authorization auth = 3;
+}
+
+option (products) = { name: "actors" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "actors/checkpoint" actions: "actors/connect" actions: "actors/create" actions: "actors/delete" actions: "actors/invoke" actions: "actors/read" actions: "actors/resume" actions: "actors/subscribe" actions: "actors/unsubscribe" actions: "actors/update" };
+option (products) = { name: "billing" resource_encoding: "percent-components" canonicalize_at_owner: false  };
+option (products) = { name: "execution" resource_encoding: "percent-components" canonicalize_at_owner: false  };
+option (products) = { name: "fs" resource_encoding: "percent-components" canonicalize_at_owner: true actions: "fs/admin" actions: "fs/append" actions: "fs/create" actions: "fs/delete" actions: "fs/fork" actions: "fs/list" actions: "fs/lock" actions: "fs/merge-into" actions: "fs/read" actions: "fs/read-history" actions: "fs/rename" actions: "fs/write" };
+option (products) = { name: "identity" resource_encoding: "percent-components" canonicalize_at_owner: false  };
+option (products) = { name: "infer" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "infer/cancel-run" actions: "infer/create-context" actions: "infer/create-evaluation" actions: "infer/follow-run" actions: "infer/generate" actions: "infer/list-models" actions: "infer/read-context" actions: "infer/read-evaluation" actions: "infer/read-retention" actions: "infer/read-run" actions: "infer/release-retention" actions: "infer/renew-retention" actions: "infer/retain-context" actions: "infer/write-context" };
+option (products) = { name: "machines" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "machines/cancel" actions: "machines/checkpoint" actions: "machines/create" actions: "machines/delete" actions: "machines/delete-checkpoint" actions: "machines/exec" actions: "machines/follow" actions: "machines/list" actions: "machines/qualify" actions: "machines/read" actions: "machines/read-checkpoint" actions: "machines/read-output" actions: "machines/read-usage" actions: "machines/recover" actions: "machines/update" };
+option (products) = { name: "objects" resource_encoding: "objects-bucket-key" canonicalize_at_owner: false actions: "objects/create-bucket" actions: "objects/delete" actions: "objects/delete-bucket" actions: "objects/get" actions: "objects/head" actions: "objects/head-bucket" actions: "objects/list" actions: "objects/list-parts" actions: "objects/put" actions: "objects/restore" };
+option (products) = { name: "streams" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "streams/append" actions: "streams/commit" actions: "streams/create" actions: "streams/follow" actions: "streams/fork" actions: "streams/list" actions: "streams/read" };
+option (products) = { name: "workers" resource_encoding: "percent-components" canonicalize_at_owner: false  };
+option (extractors) = { name: "actors.checkpoint" resources_only: true possible_actions: "actors/checkpoint" };
+option (extractors) = { name: "actors.create-with-bindings" resources_only: true possible_actions: "actors/create" };
+option (extractors) = { name: "actors.delete" resources_only: true possible_actions: "actors/delete" };
+option (extractors) = { name: "actors.invoke" resources_only: true possible_actions: "actors/invoke" };
+option (extractors) = { name: "actors.read" resources_only: true possible_actions: "actors/read" };
+option (extractors) = { name: "actors.resume" resources_only: true possible_actions: "actors/resume" };
+option (extractors) = { name: "actors.subscribe" resources_only: true possible_actions: "actors/subscribe" };
+option (extractors) = { name: "actors.unsubscribe" resources_only: true possible_actions: "actors/unsubscribe" };
+option (extractors) = { name: "actors.update-with-bindings" resources_only: true possible_actions: "actors/update" };
+option (extractors) = { name: "fs.admin-source" resources_only: true possible_actions: "fs/admin" };
+option (extractors) = { name: "fs.cancel-operation" resources_only: false possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/create" possible_actions: "fs/write" possible_actions: "fs/append" possible_actions: "fs/delete" possible_actions: "fs/rename" possible_actions: "fs/fork" possible_actions: "fs/merge-into" possible_actions: "fs/read-history" possible_actions: "fs/lock" possible_actions: "fs/admin" };
+option (extractors) = { name: "fs.create-volume" resources_only: true possible_actions: "fs/create" };
+option (extractors) = { name: "fs.delegate-volume" resources_only: false possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/create" possible_actions: "fs/write" possible_actions: "fs/append" possible_actions: "fs/delete" possible_actions: "fs/rename" possible_actions: "fs/fork" possible_actions: "fs/merge-into" possible_actions: "fs/read-history" possible_actions: "fs/lock" };
+option (extractors) = { name: "fs.delete-volume" resources_only: true possible_actions: "fs/delete" };
+option (extractors) = { name: "fs.export-paths" resources_only: false possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/read-history" };
+option (extractors) = { name: "fs.fork-volume" resources_only: false possible_actions: "fs/fork" possible_actions: "fs/create" possible_actions: "fs/read-history" };
+option (extractors) = { name: "fs.handshake" resources_only: true possible_actions: "fs/list" };
+option (extractors) = { name: "fs.import-paths" resources_only: false possible_actions: "fs/create" possible_actions: "fs/write" possible_actions: "fs/list" };
+option (extractors) = { name: "fs.list-path" resources_only: true possible_actions: "fs/list" };
+option (extractors) = { name: "fs.list-source" resources_only: true possible_actions: "fs/list" };
+option (extractors) = { name: "fs.list-volume" resources_only: true possible_actions: "fs/list" };
+option (extractors) = { name: "fs.merge-volumes" resources_only: false possible_actions: "fs/read-history" possible_actions: "fs/merge-into" };
+option (extractors) = { name: "fs.observe-operation" resources_only: true possible_actions: "fs/list" };
+option (extractors) = { name: "fs.read-history" resources_only: true possible_actions: "fs/read-history" };
+option (extractors) = { name: "fs.read-history-pair" resources_only: true possible_actions: "fs/read-history" };
+option (extractors) = { name: "fs.read-path" resources_only: true possible_actions: "fs/read" };
+option (extractors) = { name: "fs.retain-generation" resources_only: true possible_actions: "fs/read-history" };
+option (extractors) = { name: "fs.transaction" resources_only: false possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/create" possible_actions: "fs/write" possible_actions: "fs/append" possible_actions: "fs/delete" possible_actions: "fs/rename" possible_actions: "fs/fork" possible_actions: "fs/merge-into" possible_actions: "fs/read-history" possible_actions: "fs/lock" possible_actions: "fs/admin" };
+option (extractors) = { name: "infer.contexts-create" resources_only: true possible_actions: "infer/create-context" };
+option (extractors) = { name: "infer.contexts-inspect" resources_only: true possible_actions: "infer/read-context" };
+option (extractors) = { name: "infer.contexts-mutate" resources_only: true possible_actions: "infer/write-context" };
+option (extractors) = { name: "infer.evaluations-create" resources_only: true possible_actions: "infer/create-evaluation" };
+option (extractors) = { name: "infer.evaluations-inspect" resources_only: true possible_actions: "infer/read-evaluation" };
+option (extractors) = { name: "infer.models-list" resources_only: true possible_actions: "infer/list-models" };
+option (extractors) = { name: "infer.runs-cancel" resources_only: true possible_actions: "infer/cancel-run" };
+option (extractors) = { name: "infer.runs-generate" resources_only: true possible_actions: "infer/generate" };
+option (extractors) = { name: "infer.runs-inspect" resources_only: true possible_actions: "infer/read-run" };
+option (extractors) = { name: "infer.runs-watch" resources_only: true possible_actions: "infer/follow-run" };
+option (extractors) = { name: "infer.warm-inspect" resources_only: true possible_actions: "infer/read-retention" };
+option (extractors) = { name: "infer.warm-release" resources_only: true possible_actions: "infer/release-retention" };
+option (extractors) = { name: "infer.warm-renew" resources_only: true possible_actions: "infer/renew-retention" };
+option (extractors) = { name: "infer.warm-retain" resources_only: true possible_actions: "infer/retain-context" };
+option (extractors) = { name: "machines.cancel-operation" resources_only: true possible_actions: "machines/cancel" };
+option (extractors) = { name: "machines.checkpoint" resources_only: true possible_actions: "machines/checkpoint" };
+option (extractors) = { name: "machines.create" resources_only: true possible_actions: "machines/create" };
+option (extractors) = { name: "machines.delete" resources_only: true possible_actions: "machines/delete" };
+option (extractors) = { name: "machines.delete-checkpoint" resources_only: true possible_actions: "machines/delete-checkpoint" };
+option (extractors) = { name: "machines.exec" resources_only: true possible_actions: "machines/exec" };
+option (extractors) = { name: "machines.follow" resources_only: true possible_actions: "machines/follow" };
+option (extractors) = { name: "machines.fork-checkpoint" resources_only: false possible_actions: "machines/read-checkpoint" possible_actions: "machines/create" };
+option (extractors) = { name: "machines.fork-machine" resources_only: false possible_actions: "machines/read" possible_actions: "machines/create" };
+option (extractors) = { name: "machines.list-visible" resources_only: true possible_actions: "machines/list" };
+option (extractors) = { name: "machines.qualify-image" resources_only: true possible_actions: "machines/qualify" };
+option (extractors) = { name: "machines.read" resources_only: true possible_actions: "machines/read" };
+option (extractors) = { name: "machines.read-checkpoint" resources_only: true possible_actions: "machines/read-checkpoint" };
+option (extractors) = { name: "machines.read-operation" resources_only: true possible_actions: "machines/read" };
+option (extractors) = { name: "machines.read-output" resources_only: true possible_actions: "machines/read-output" };
+option (extractors) = { name: "machines.read-usage" resources_only: true possible_actions: "machines/read-usage" };
+option (extractors) = { name: "machines.recover" resources_only: true possible_actions: "machines/recover" };
+option (extractors) = { name: "machines.update" resources_only: true possible_actions: "machines/update" };
+option (extractors) = { name: "objects.list-visible-prefix" resources_only: true possible_actions: "objects/list" };
+option (extractors) = { name: "objects.multipart-delete" resources_only: true possible_actions: "objects/delete" };
+option (extractors) = { name: "objects.multipart-list" resources_only: true possible_actions: "objects/list-parts" };
+option (extractors) = { name: "objects.multipart-put" resources_only: true possible_actions: "objects/put" };
+option (extractors) = { name: "streams.commit-resources" resources_only: true possible_actions: "streams/read" };
+option (extractors) = { name: "streams.delivery-resource" resources_only: true possible_actions: "streams/follow" };
+option (extractors) = { name: "streams.idempotency-resources" resources_only: true possible_actions: "streams/read" };
+option (extractors) = { name: "streams.list-visible-children" resources_only: true possible_actions: "streams/list" };
+option (extractors) = { name: "streams.session-channels" resources_only: false possible_actions: "streams/follow" possible_actions: "streams/list" possible_actions: "fs/list" possible_actions: "fs/read" possible_actions: "fs/read-history" possible_actions: "objects/list" possible_actions: "objects/get" possible_actions: "actors/read" possible_actions: "actors/invoke" possible_actions: "actors/connect" };
+option (extractors) = { name: "streams.transaction" resources_only: false possible_actions: "streams/read" possible_actions: "streams/commit" possible_actions: "streams/append" possible_actions: "streams/fork" possible_actions: "streams/create" };

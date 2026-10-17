@@ -220,6 +220,20 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         b"owner bytes"
     );
     assert!(attached.bindings().writer.is_none());
+    assert_eq!(
+        attached
+            .read_range(
+                &file,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 3
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"wne"
+    );
     assert!(
         attached
             .stage(

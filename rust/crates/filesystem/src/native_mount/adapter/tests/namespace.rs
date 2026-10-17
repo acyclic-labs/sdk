@@ -490,3 +490,111 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
     assert!(!source.unchanged_since(&untouched, None, stamp));
     Ok(())
 }
+
+/// A rename across kinds, over a directory that is not empty, over an
+/// existing name without replacement or of an absent name, and the removal
+/// of a directory that is not empty, fail with their own POSIX error, which
+/// a native mount reports as is, not as an I/O error.
+#[test]
+fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn std::error::Error>> {
+    let source = source(FilesystemProfile::Posix)?;
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    let (directory, file, full, absent) = (
+        native_test_path("directory"),
+        native_test_path("file"),
+        native_test_path("full"),
+        native_test_path("absent"),
+    );
+    source.create_directory(&directory, metadata(), &work)?;
+    source.create_file(&file, metadata(), None, &work)?;
+    source.create_directory(&full, metadata(), &work)?;
+    source.create_file(&native_test_path("full/child"), metadata(), None, &work)?;
+
+    let refusals = [
+        (source.rename(&directory, &file, true, &work), "ENOTDIR"),
+        (source.rename(&file, &directory, true, &work), "EISDIR"),
+        (source.rename(&directory, &full, true, &work), "ENOTEMPTY"),
+        (source.remove(&full, None, &work), "ENOTEMPTY"),
+        (source.rename(&file, &directory, false, &work), "EEXIST"),
+        (source.rename(&absent, &file, true, &work), "ENOENT"),
+    ];
+    for (refusal, expected) in refusals {
+        let error = refusal.err().ok_or("the operation succeeded")?;
+        let reported = match error.semantic_error() {
+            MountSourceError::NotDirectory => "ENOTDIR",
+            MountSourceError::IsDirectory => "EISDIR",
+            MountSourceError::DirectoryNotEmpty => "ENOTEMPTY",
+            MountSourceError::AlreadyExists => "EEXIST",
+            MountSourceError::NotFound => "ENOENT",
+            _ => "other",
+        };
+        assert_eq!(reported, expected, "{error:?}");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            crate::native_mount::errno(&error),
+            match expected {
+                "ENOTDIR" => libc::ENOTDIR,
+                "EISDIR" => libc::EISDIR,
+                "ENOTEMPTY" => libc::ENOTEMPTY,
+                "EEXIST" => libc::EEXIST,
+                _ => libc::ENOENT,
+            }
+        );
+    }
+    assert!(source.lookup(&directory)?.is_some());
+    assert!(source.lookup(&file)?.is_some());
+    Ok(())
+}
+
+/// The kernel checks a rename's kinds itself but leaves emptiness to the
+/// file system, so a mount's own refusal must arrive as `ENOTEMPTY`.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "mounts a live FUSE session"]
+fn a_linux_mount_refuses_replacing_or_removing_a_full_directory_with_enotempty()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = Arc::new(source(FilesystemProfile::Posix)?);
+    let temporary = tempfile::tempdir()?;
+    let mut mount = mount_source(&source, temporary.path())?;
+
+    let (empty, full) = (
+        temporary.path().join("empty"),
+        temporary.path().join("full"),
+    );
+    std::fs::create_dir(&empty)?;
+    std::fs::create_dir(&full)?;
+    std::fs::write(full.join("child"), b"child")?;
+    let renamed = std::fs::rename(&empty, &full).err();
+    let removed = std::fs::remove_dir(&full).err();
+    assert_eq!(
+        renamed.and_then(|error| error.raw_os_error()),
+        Some(libc::ENOTEMPTY)
+    );
+    assert_eq!(
+        removed.and_then(|error| error.raw_os_error()),
+        Some(libc::ENOTEMPTY)
+    );
+    assert!(empty.is_dir() && full.join("child").is_file());
+    assert!(mount.stop()?);
+    Ok(())
+}
+
+#[test]
+fn full_case_fold_native_comparison_keys_can_expand_past_name_limits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = source(FilesystemProfile::Portable)?;
+    source.folds_names = true;
+    let text = "ΐ".repeat(100);
+    let path = native_test_path(&text);
+    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    source.create_file(&path, metadata(), None, &work)?;
+    let folded = source
+        .fold_path(&path, &work)?
+        .ok_or("missing comparison key")?;
+    assert_eq!(
+        folded.0.components()[0],
+        native_test_path(&"ι\u{308}\u{301}".repeat(100)).components()[0]
+    );
+    assert!(source.lookup(&path)?.is_some());
+    Ok(())
+}

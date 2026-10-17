@@ -1,0 +1,8 @@
+{
+  "seed":{"plans/a.md":"before\n"},
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"change","name":"write",
+    "arguments":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}},
+    {"type":"event","kind":"completed","metadata":null}],"done"],
+  "expect":{"files":{"plans/a.md":"after\n"},
+    "diffs":{"plans/a.md":{"kind":"modified","binary":false,"added":1,"removed":1,"hunks":[{"old_start":1,"old_lines":1,"new_start":1,"new_lines":1}],"patch":"--- original\n+++ modified\n@@ -1 +1 @@\n-before\n+after\n"}}}
+}

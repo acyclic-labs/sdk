@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-inference"
 version = "0.2.0"
 edition.workspace = true
@@ -13,12 +14,14 @@ categories = ["api-bindings"]
 publish = true
 build = "build.rs"
 
+
 [features]
 default = ["host"]
-host = ["dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
+host = ["dep:acyclic-auth", "dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
 http-codec = ["dep:prost-reflect", "dep:serde_json"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
 prost.workspace = true
 sha2.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }
@@ -30,12 +33,10 @@ uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
 [build-dependencies]
-prost.workspace = true
-prost-build.workspace = true
-prost-types.workspace = true
-tonic-prost-build.workspace = true
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 
 [dev-dependencies]
+proptest.workspace = true
 prost-reflect.workspace = true
 prost-types.workspace = true
 tokio.workspace = true

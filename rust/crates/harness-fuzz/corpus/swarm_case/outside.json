@@ -1,0 +1,1 @@
+{"agents":3,"attention_every":2,"layouts":[{"visible":[0,4],"prefetch":[0,0]}],"turns":[["a","b","c"]],"expect":{"text":"abc","wire":{}}}

@@ -40,6 +40,7 @@ mod generation;
 mod handle;
 mod identity;
 mod join;
+mod join_git;
 mod join_apply;
 mod join_helpers;
 #[cfg(not(target_arch = "wasm32"))]
@@ -100,9 +101,7 @@ pub use transaction::Transaction;
 mod tests;
 
 use reverse_traversal::{
-    NamespaceRecordSearch, NamespaceRecords, namespace_records_bytes,
-    namespace_records_to_file_root_with_accounting, reverse_drop, reverse_grow,
-    sorted_changed_file_ids,
+    NamespaceRecordSearch, NamespaceRecords, reverse_drop, reverse_grow, sorted_changed_file_ids,
 };
 
 async fn publication_ready(
@@ -126,3 +125,7 @@ fn item_work(items: u64) -> crate::WorkCounters {
         ..crate::WorkCounters::UNCHARGED
     }
 }
+
+pub(crate) use reverse_traversal::{
+    namespace_records_bytes, namespace_records_to_file_root_with_accounting,
+};

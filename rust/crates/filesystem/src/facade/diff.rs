@@ -53,12 +53,12 @@ pub enum MergePreparation {
     },
 }
 
-pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
+pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
     maximum_changes: u32,
-    config: VolumeConfig,
+    limits: DecodeLimits,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -73,7 +73,7 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
         Some(before),
         Some(after),
         maximum_changes,
-        DecodeLimits::for_volume(config),
+        limits,
         accounting,
         cancellation,
     )
@@ -123,7 +123,7 @@ pub(super) async fn diff_generation_file_tables<O: AsyncObjectStore>(
             before_entries,
             after_entries,
             u32::try_from(remaining_changes).unwrap_or(u32::MAX),
-            DecodeLimits::for_volume(config),
+            limits,
             accounting,
             cancellation,
         )
@@ -256,7 +256,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 base_root.value.file_table,
                 source_root.value.file_table,
                 maximum_changes,
-                config,
+                DecodeLimits::for_volume(config),
                 &mut accounting,
                 cancellation,
             )
@@ -335,7 +335,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 before_root.value.file_table,
                 after_root.value.file_table,
                 maximum_changes,
-                self.config,
+                DecodeLimits::for_volume(self.config),
                 &mut accounting,
                 cancellation,
             )
@@ -367,7 +367,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.root.file_table,
                 candidate.root.file_table,
                 maximum_changes,
-                self.volume.config,
+                DecodeLimits::for_volume(self.volume.config),
                 &mut accounting,
                 cancellation,
             )

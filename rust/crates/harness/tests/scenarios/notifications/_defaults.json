@@ -1,0 +1,2 @@
+{"driver":"notifications","protocol":"osc9","maximum_tasks":4,"maximum_pending":16,"maximum_text_bytes":256,
+ "records":[],"expect":{"applied":[],"presented":0,"view":{"pending":[]}}}

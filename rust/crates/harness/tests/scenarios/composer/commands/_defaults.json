@@ -1,0 +1,8 @@
+{
+  "commands": [{"scope":"project","directory":"project"},{"scope":"user","directory":"home"}],
+  "workspace": "project",
+  "seed":{"home/.claude/commands/review.md":"User $ARGUMENTS","project/.claude/commands/review.md":
+    "---\ndescription: Review changes\nallowed-tools: [read]\n---\nProject $ARGUMENTS","project/.codex/prompts/test.md":
+    "Run tests","project/.claude/commands/git/status.md":"Inspect status","home/.claude/commands/read-home.md":
+    "Read $ARGUMENTS","project/a.txt":"before"}
+}

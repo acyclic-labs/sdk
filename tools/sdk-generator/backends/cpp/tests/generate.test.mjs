@@ -1,35 +1,14 @@
+import { generatorFixture } from "../../../shared/tests/generation.mjs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { generate } from "../src/generate.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "cpp-generator-test-"));
-  t.after(() => rmSync(root, { recursive: true }));
-  const source = join(root, "source");
-  const authority = join(root, "authority");
-  mkdirSync(source);
-  mkdirSync(authority);
-  for (const name of ["LICENSE", "NOTICE"]) writeFileSync(join(source, name), name);
-  for (const name of ["a.proto", "b.proto", "import.proto"]) writeFileSync(join(authority, name), name);
-  writeFileSync(join(authority, "shared.bin"), "attested descriptors");
-  const manifest = { schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40),
-    families: ["b.proto", "a.proto"].map(source => ({ source, source_sha256: hash(source),
-      descriptor: "shared.bin", descriptor_sha256: hash("attested descriptors") })) };
-  manifest.families.push({ source: "import.proto", source_sha256: hash("import.proto") });
-  const save = () => writeFileSync(join(authority, "rust-authority.json"), JSON.stringify(manifest));
-  save();
-  const protoc = join(root, "protoc");
-  const plugin = join(root, "plugin");
-  writeFileSync(protoc, "compiler fixture");
-  writeFileSync(plugin, "plugin fixture");
-  const toolchain = { protoc_version: "libprotoc 28.3",
-    protoc: { [`${process.platform}-${process.arch}`]: { sha256: hash("compiler fixture") } }, cpp_plugin_version: "fixture",
-    cpp_plugin: { [`${process.platform}-${process.arch}`]: { sha256: hash("plugin fixture"), url: "fixture" } } };
+  const { root, source, authority, manifest, save, protoc, plugin, toolchain } = generatorFixture(t, "cpp", "cpp_plugin");
   const args = { "source-root": source, authority, protoc, "cpp-plugin": plugin, output: join(root, "new-package") };
   const calls = [];
   let snapshot;
@@ -57,6 +36,10 @@ test("each family uses only verified descriptor snapshots and has inventoried ou
   assert.equal(receipt.source_revision, f.manifest.source_revision);
   assert.equal(receipt.authority_manifest_sha256, hash(readFileSync(join(f.args.authority, "rust-authority.json"))));
   for (const name of receipt.outputs) assert.equal(receipt.output_sha256[name], hash(readFileSync(join(f.args.output, name))));
+  assert.deepEqual(receipt.outputs.filter(name => name.startsWith("include/") || name.startsWith("src/")), [
+    "include/a.grpc.pb.h", "include/a.pb.h", "include/b.grpc.pb.h", "include/b.pb.h", "include/import.grpc.pb.h", "include/import.pb.h",
+    "src/a.grpc.pb.cc", "src/a.pb.cc", "src/b.grpc.pb.cc", "src/b.pb.cc", "src/import.grpc.pb.cc", "src/import.pb.cc",
+  ]);
   assert.ok(receipt.outputs.includes("CMakeLists.txt"));
   assert.ok(receipt.outputs.includes("LICENSE"));
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "generation-receipt.json"))), receipt);

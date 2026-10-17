@@ -1,0 +1,4 @@
+{"prompt":"Continue partial output exactly once.","turns":[[{"type":"event","kind":"content","delta":"partial-"},
+  {"type":"error","error":"offline"}]],"recoveries":[{"observed":[{"kind":"content","delta":"partial-"}],
+  "continuation":[{"kind":"content","delta":"restored"},{"kind":"completed","metadata":{"finish":"stop"}}]}],
+  "replay":true,"expect":{"text":"partial-restored","result":{"metadata":{"finish":"stop"}}}}

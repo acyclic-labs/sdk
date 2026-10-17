@@ -9,6 +9,51 @@ impl crate::filesystem::UploadRecord for TimerEvent {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Guest scheduling uses the same fenced publication as native timer commands.
+    #[cfg(feature = "filesystem")]
+    pub async fn schedule_timer(
+        self: &Arc<Self>,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        timer: &acyclic_actors::timers::TimerRecord,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        acyclic_actors::timers::schedule(
+            async |target, operation, deadline| {
+                if target.into_bytes() != task.into_bytes() {
+                    return Err(Error::Unauthorized(
+                        "timer target differs from scoped task".into(),
+                    ));
+                }
+                self.poll_timer(
+                    task,
+                    fence,
+                    OperationId::from_bytes(operation.into_bytes()),
+                    deadline,
+                    io,
+                )
+                .await
+            },
+            timer,
+        )
+        .await
+    }
+
+    /// Retains a scoped absolute wait and reports readiness on the injected clock.
+    /// The runtime owns waiting for timer delivery; this entry point never polls time.
+    #[cfg(feature = "filesystem")]
+    pub async fn wait_until(
+        self: &Arc<Self>,
+        task: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        operation: OperationId,
+        deadline_unix_ms: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        self.poll_timer(task, fence, operation, deadline_unix_ms, io)
+            .await
+    }
+
     /// Retains the exact timer identity under the current task fence.
     #[cfg(feature = "filesystem")]
     pub async fn poll_timer(
@@ -55,7 +100,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .append(
                         path.clone(),
                         tail,
-                        &key,
+                        Some(&key),
                         bytes.clone(),
                         crate::distributed::JournalWrite::Fresh,
                         quota.work(),
@@ -79,11 +124,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         let (_, retained) = self.timer_state(task, operation, deadline, work).await?;
         Ok(retained && self.now_unix_millis() >= deadline)
-    }
-
-    pub(super) fn timer_stream(&self, task: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/timers/{task}"))
-            .map_err(Into::into)
     }
 
     pub(super) async fn timer_state(

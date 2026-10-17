@@ -1,0 +1,2 @@
+{"writes":[{"path":"plans/main.md","text":"before\u001b[31mafter\n","files":{"plans/main.md":"before\u001b[31mafter\n"},
+  "panel":["plans/main.md","before\\u{1b}[31mafter"]}]}

@@ -1,0 +1,4 @@
+{"compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],
+  "native_media":true}}},"turns":["summary"],"expect":{"error":"model event limit exceeded","request_count":1,
+  "reconciliation_count":0,"not_events":[{"kind":"model_started","purpose":"response"}]},
+  "limits":{"model_events_per_step":1}}

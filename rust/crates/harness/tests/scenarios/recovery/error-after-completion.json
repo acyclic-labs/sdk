@@ -1,0 +1,4 @@
+{"prompt":"Replay a completed request after transport loss.","turns":[[{"type":"event","kind":"content",
+  "delta":"answer"},{"type":"event","kind":"completed","metadata":{"finish":"stop"}},{"type":"error",
+  "error":"offline"}]],"replay":true,"expect":{"text":"answer","result":{"metadata":{"finish":"stop"}},
+  "reconciliation_count":0}}

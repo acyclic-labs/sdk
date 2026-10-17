@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "scrollback_lines": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "wrap": {
+      "type": "boolean"
+    },
+    "notifications": {
+      "type": "string",
+      "enum": [
+        "on",
+        "off",
+        "attention-only"
+      ]
+    },
+    "notify_when_focused": {
+      "type": "boolean"
+    },
+    "max_input_height_percent": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "tab_width": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "paste_collapse_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "paste_collapse_lines": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "undo_group_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60000
+    },
+    "undo_group_graphemes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "chord_timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000
+    },
+    "double_interrupt_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000
+    },
+    "multi_click_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60000
+    },
+    "cursor_idle_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60000
+    },
+    "cursor_cycle_ms": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 60000
+    },
+    "activity_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60000
+    },
+    "completion_max_width": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 1000
+    },
+    "completion_max_height": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 1000
+    },
+    "image_max_dimension": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16384
+    },
+    "image_quality": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "$schema": {
+      "type": "string"
+    }
+  }
+}

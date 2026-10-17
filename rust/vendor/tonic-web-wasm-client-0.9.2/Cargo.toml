@@ -53,6 +53,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 base64 = "0.23"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false }

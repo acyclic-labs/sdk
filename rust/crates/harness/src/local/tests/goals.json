@@ -1,0 +1,99 @@
+[
+  {
+    "name": "unmounted-stock-writer-disabled-admission-negative-control",
+    "initial_goal": "Finish the objective",
+    "enabled": false,
+    "writes": [
+      "---\nstatus: done\n---\nFinish the objective"
+    ],
+    "tasks": 1,
+    "calls": 2,
+    "final_goal": "Finish the objective",
+    "panel": [
+      "Status: active | Continuations: 0",
+      "Finish the objective"
+    ],
+    "path": "GOAL.md",
+    "cap": 2,
+    "private_mount": false
+  },
+  {
+    "name": "zero-cap",
+    "initial_goal": "Finish the objective",
+    "cap": 0,
+    "writes": [
+      null
+    ],
+    "tasks": 1,
+    "calls": 1,
+    "final_goal": "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 0).\"\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 0",
+      "Reason: Maximum goal continuations reached (limit 0).",
+      "Finish the objective"
+    ],
+    "path": "GOAL.md"
+  },
+  {
+    "name": "agent-blocked",
+    "initial_goal": "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective",
+    "writes": [
+      null
+    ],
+    "tasks": 1,
+    "calls": 1,
+    "final_goal": "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 0",
+      "Reason: waiting",
+      "Finish the objective"
+    ],
+    "path": "GOAL.md"
+  },
+  {
+    "name": "absent",
+    "writes": [
+      null
+    ],
+    "tasks": 1,
+    "calls": 1,
+    "panel": [
+      "Status: missing | Continuations: 0"
+    ],
+    "path": "GOAL.md"
+  },
+  {
+    "name": "already-done-needs-no-task-view-route",
+    "initial_goal": "---\nstatus: done\n---\nFinish the objective",
+    "writes": [
+      null
+    ],
+    "tasks": 1,
+    "calls": 1,
+    "final_goal": "---\nstatus: done\n---\nFinish the objective",
+    "panel": [
+      "Status: done | Continuations: 0",
+      "Finish the objective"
+    ],
+    "path": "GOAL.md"
+  },
+  {
+    "name": "unmounted-stock-project-writer-blocks-private-goal-without-consuming-cap",
+    "initial_goal": "Finish the objective",
+    "path": "GOAL.md",
+    "unreachable": true,
+    "cap": 2,
+    "writes": [
+      "---\nstatus: done\n---\nFinish the objective"
+    ],
+    "tasks": 1,
+    "calls": 2,
+    "final_goal": "---\nstatus: blocked\nreason: \"GOAL.md is not reachable through the task view.\"\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 0",
+      "Reason: GOAL.md is not reachable through the task view.",
+      "Finish the objective"
+    ],
+    "private_mount": false
+  }
+]

@@ -20,21 +20,72 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
         .unwrap();
     held.lock_exclusive().unwrap();
 
-    let contender =
-        tokio::spawn(async move { MaterializationJournalStore::load(&store, held_id).await });
+    let (waiting, wait_started) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = std::sync::mpsc::sync_channel(1);
+    let contender = tokio::spawn(async move {
+        let mut waiting = Some(waiting);
+        let mut attempts = 0;
+        let mut original_deadline = None;
+        store
+            .load_materialization_with_retry(held_id, move |deadline| {
+                assert_eq!(*original_deadline.get_or_insert(deadline), deadline);
+                attempts += 1;
+                assert!(attempts <= 2, "one retry, then timeout at the deadline");
+                let now = if attempts == 1 {
+                    deadline - RECORD_LOCK_RETRY
+                } else {
+                    deadline
+                };
+                retry_record_lock_at(deadline, now, |delay| {
+                    assert_eq!(delay, RECORD_LOCK_RETRY);
+                    waiting.take().unwrap().send(()).unwrap();
+                    resumed.recv().unwrap();
+                })
+            })
+            .await
+    });
+    wait_started.await.unwrap();
+    assert!(!contender.is_finished());
     let unrelated = LocalCoreStateStore::new(directory.path());
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        MaterializationJournalStore::load(&unrelated, other_id),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    assert!(
+        MaterializationJournalStore::load(&unrelated, other_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(!contender.is_finished());
+    resume.send(()).unwrap();
     assert!(matches!(
         contender.await.unwrap(),
         Err(LocalCoreStateStoreError::LockTimeout(path)) if path == paths.lock
     ));
     FileExt::unlock(&held).unwrap();
+    assert!(
+        MaterializationJournalStore::load(&unrelated, held_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+proptest::proptest! {
+    #[test]
+    fn record_lock_retry_obeys_the_original_deadline(
+        deadline_ns in proptest::num::u64::ANY,
+        now_ns in proptest::num::u64::ANY,
+        at_deadline in proptest::bool::ANY,
+    ) {
+        let now_ns = if at_deadline { deadline_ns } else { now_ns };
+        let origin = Instant::now();
+        let mut waited = None;
+        let retry = retry_record_lock_at(
+            origin + Duration::from_nanos(deadline_ns),
+            origin + Duration::from_nanos(now_ns),
+            |duration| waited = Some(duration),
+        );
+        proptest::prop_assert_eq!(retry, now_ns < deadline_ns);
+        proptest::prop_assert_eq!(waited, retry.then_some(RECORD_LOCK_RETRY));
+    }
 }
 
 #[tokio::test]

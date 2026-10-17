@@ -1,0 +1,8 @@
+{
+  "driver":"swarm", "agents":3, "attention_every":2,
+  "layouts":[{"visible":[0,1],"prefetch":[1,2]},{"visible":[1,2],"prefetch":[2,3]}],
+  "turns":[["before","Î´","now"],["edge","after"]],
+  "expect":{"text":"beforeÎ´nowedgeafter","wire":{"sessions":1,"children":1,"actor_channels":0,
+    "membership_follows":1,"status_follows":3,"content_follows":3,"removed":1,"peak_full":2,
+    "statuses":3,"attention":4,"snapshots":3,"peak_heads":2,"retained_full":2,"visible_updates":6,"fold_items":24,"full_records":8}}
+}

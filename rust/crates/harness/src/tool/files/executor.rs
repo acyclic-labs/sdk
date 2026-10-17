@@ -1,17 +1,13 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(in crate::tool) enum FileTool {
+pub(crate) enum FileTool {
     Read,
     Write,
     Edit,
     Patch {
         maximum_work: u64,
         maximum_hunks: u32,
-    },
-    ReadRange {
-        options: super::text::ReadOptions,
-        maximum_result_bytes: u64,
     },
     Search {
         options: super::text::SearchOptions,
@@ -21,10 +17,7 @@ pub(in crate::tool) enum FileTool {
 
 impl FileTool {
     pub(in crate::tool) fn is_read(&self) -> bool {
-        matches!(
-            self,
-            Self::Read | Self::ReadRange { .. } | Self::Search { .. }
-        )
+        matches!(self, Self::Read | Self::Search { .. })
     }
     async fn run(
         &self,
@@ -48,20 +41,6 @@ impl FileTool {
         )?;
 
         let file = match self {
-            Self::ReadRange {
-                options,
-                maximum_result_bytes,
-            } => {
-                return self
-                    .read_range(
-                        context,
-                        invocation,
-                        (*options, *maximum_result_bytes),
-                        work,
-                        io,
-                    )
-                    .await;
-            }
             Self::Search {
                 options,
                 maximum_result_bytes,
@@ -112,41 +91,6 @@ impl FileTool {
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
-    async fn read_range(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        bounds: (super::text::ReadOptions, u64),
-        work: crate::NativeWork<'_>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let (options, maximum_result_bytes) = bounds;
-        let invalid = |reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return native::invalid(reason);
-            }
-            Error::Invalid(reason.into())
-        };
-
-        let input = decode::<super::super::text_files::ReadInput>(&invocation.arguments, work)?;
-        let bytes = context.read_file(&input.0.file, io).await?;
-        let source = std::str::from_utf8(bytes.as_ref())
-            .map_err(|_| invalid("text tool requires UTF-8 content"))?;
-        let mut allocation =
-            super::edit::allocation(work, std::mem::size_of::<super::text::TextSelection>())?;
-        let result = super::super::text_files::ReadResult {
-            selection: super::text::read_range(source, input.0.range, options, &mut allocation)?,
-            file: input.0.file,
-        };
-        let encoded = super::value(
-            &result,
-            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
-            work,
-        )?;
-        Ok((ToolResult { value: encoded.0 }, encoded.1))
-    }
-
     async fn search(
         &self,
         context: &ToolContext,
@@ -243,9 +187,43 @@ impl FileTool {
         };
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let bytes = context.read_file(&input.0.file, io).await?;
-        let source = std::str::from_utf8(bytes.as_ref())
-            .map_err(|_| invalid("file read requires UTF-8 content"))?;
+        let length = input.0.file.descriptor().byte_length();
+        let empty = input.0.range.is_some_and(|range| range.start == range.end);
+        let bytes = if let Some(range) = input.0.range {
+            let count = range
+                .end
+                .checked_sub(range.start)
+                .ok_or_else(|| invalid("read range is reversed"))?;
+            if range.end > length {
+                return Err(invalid("read range exceeds the file"));
+            }
+            context
+                .read_file_range(
+                    &input.0.file,
+                    acyclic_fs::ByteRange {
+                        offset: range.start,
+                        // An empty interval still has to lie on a UTF-8 boundary.
+                        length: if empty && range.start < length {
+                            1
+                        } else {
+                            count
+                        },
+                    },
+                    io,
+                )
+                .await?
+        } else {
+            context.read_file(&input.0.file, io).await?
+        };
+        let source = if empty {
+            if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+                return Err(invalid("read range splits UTF-8"));
+            }
+            ""
+        } else {
+            std::str::from_utf8(bytes.as_ref())
+                .map_err(|_| invalid("file read requires UTF-8 content"))?
+        };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let (text, mut custody) = work.display(source)?;
@@ -337,6 +315,11 @@ impl ToolExecutor for FileTool {
             return Err(unauthorized());
         }
         let (file, _custody) = self.preflight(scope, invocation, work)?;
+        let path = file
+            .as_ref()
+            .map(FileRef::path)
+            .or_else(|| invocation.arguments.get("path").and_then(Value::as_str))
+            .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -349,13 +332,18 @@ impl ToolExecutor for FileTool {
                     work,
                 )
             } else {
-                context.authorize_content_publication_with_native_work(file.as_ref(), work)
+                context.authorize_content_publication_with_native_work(path, file.as_ref(), work)
             };
         }
         if self.is_read() {
             Ok(())
         } else {
-            context.task().authorize_content_publication(file.as_ref())
+            context.task().authorize_content_publication(
+                path,
+                file.as_ref(),
+                context.effective_scope(),
+                None,
+            )
         }
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

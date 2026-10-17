@@ -1,24 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { copyGeneratedFiles, runCli, generationOutput, inventory, loadAuthority, readInput, sha256, stageDescriptorSets } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
-
-function inventory(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
-    if (entry.isDirectory()) return inventory(root, name);
-    if (!entry.isFile()) throw new Error("generated output is not a regular file");
-    return [name];
-  }).sort();
-}
 
 // The command and toolchain injection are for offline staging controls. The CLI
 // always uses spawnSync and the checked-in Swift plugin build pins.
@@ -29,19 +18,10 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   const plugin = realpathSync(args["swift-plugin"]);
   const grpcPlugin = realpathSync(args["grpc-plugin"]);
   const swiftHome = realpathSync(args["swift-home"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [source, authority, protoc, plugin, grpcPlugin, swiftHome, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
-  }
+  const output = generationOutput(args.output, [source, authority, protoc, plugin, grpcPlugin, swiftHome, dirname(directory)]);
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
   const sourceBytes = new Map(["generate.mjs", "../../../shared/authority.mjs", "../../../shared/protoc.json", "../toolchains/toolchain.json"]
     .map(name => [name, readFileSync(join(directory, name))]));
-  const descriptors = new Map();
-  for (const family of manifest.families) {
-    if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
-  }
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
   const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
   for (const name of ["Package.swift"]) metadata[name] = readFileSync(join(directory, "../templates/package", name));
@@ -70,11 +50,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
   const temporary = mkdtempSync(join(tmpdir(), "sdk-swift-descriptors-"));
   try {
-    const paths = [...descriptors].sort(([a], [b]) => a.localeCompare(b)).map(([digest, bytes]) => {
-      const path = join(temporary, `${digest}.bin`);
-      writeFileSync(path, bytes, { flag: "wx" });
-      return path;
-    });
+    const paths = stageDescriptorSets(manifest, inputs, temporary);
     mkdirSync(output);
     mkdirSync(join(output, "Sources/AcyclicTransport"), { recursive: true });
     const emitted = new Set();
@@ -90,13 +66,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       const stem = name.slice(0, -6);
       if (![".pb.swift", ".grpc.swift"].every(suffix => files.includes(stem + suffix))) throw new Error(`generator lacks complete Swift bindings for ${name}`);
       for (const file of files) {
-        const key = process.platform === "win32" ? file.toLowerCase() : file;
-        if (emitted.has(key)) throw new Error("generated family outputs collide");
-        emitted.add(key);
         if (!/\.(?:pb|grpc)\.swift$/.test(file)) throw new Error("unexpected generated Swift output");
-        const destination = join(output, "Sources/AcyclicTransport", file);
-        mkdirSync(dirname(destination), { recursive: true });
-        writeFileSync(destination, readFileSync(join(familyOutput, file)), { flag: "wx" });
+        copyGeneratedFiles(familyOutput, join(output, "Sources/AcyclicTransport"), [file], emitted);
       }
     }
     const resources = join(output, "authority");
@@ -131,9 +102,4 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["source-root", "authority", "protoc", "swift-plugin", "grpc-plugin", "swift-home", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--source-root, --authority, --protoc, --swift-plugin, --grpc-plugin, --swift-home and --output are required");
-  console.log(JSON.stringify(generate(values), null, 2));
-}
+runCli(import.meta.url, generate, ["source-root", "authority", "protoc", "swift-plugin", "grpc-plugin", "swift-home", "output"]);

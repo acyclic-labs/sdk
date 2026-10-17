@@ -9,6 +9,7 @@ use std::{
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
+use crate::query_sync::{RwLock, watch};
 #[cfg(test)]
 use crate::request::validate_append_size;
 use crate::request::{append_digest, commit_digest, condition_path, fork_digest, mutation_path};
@@ -22,7 +23,6 @@ use futures::{StreamExt as _, stream};
 #[cfg(test)]
 use prost::Message;
 use sha2::{Digest, Sha256};
-use tokio::sync::{RwLock, watch};
 
 #[cfg(feature = "local")]
 mod snapshot;
@@ -38,6 +38,12 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+/// Models checked cursor preparation and publication interests against recovery.
+pub mod browser_follow_model;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Models the actual indexed child discovery and its local visibility adapter.
+pub mod discovery_model;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
@@ -48,10 +54,14 @@ include!("memory_limits.rs");
 
 include!("memory_stream.rs");
 include!("provider.rs");
+include!("follow.rs");
 
 include!("state.rs");
+include!("children.rs");
 
 include!("retained.rs");
+
+include!("replay.rs");
 
 include!("path_state.rs");
 

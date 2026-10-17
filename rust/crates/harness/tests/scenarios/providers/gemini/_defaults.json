@@ -1,0 +1,21 @@
+{
+  "protocol":"gemini",
+  "responses":[
+    [
+      "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hé\"}]}}]}\n\ndata: {\"candidates",
+      "\":[{\"content\":{\"parts\":[{\"text\":\"🦀\"}]}}]}\n\ndata: {\"candidates\":[{\"finishReason\"",
+      ":\"STOP\"}],\"responseId\":\"run\",\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesToken",
+      "Count\":1}}\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {"kind":"completed","metadata":{"usage":{"promptTokenCount":5,"candidatesTokenCount":1}}}
+      ]
+    ],
+    "endpoint":"/models/model:streamGenerateContent?alt=sse"
+  }
+}

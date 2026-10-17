@@ -68,9 +68,9 @@ pub(crate) fn open(
         .map_err(corrupt)?;
         let key = header.cursor_key.as_slice().try_into().map_err(corrupt)?;
         Ok(MemoryObjects {
-            state: Arc::new(Mutex::new(state)),
+            state: StateArc::new(Mutex::new(state)),
             options,
-            token_key: Arc::new(Mutex::new(Some(key))),
+            token_key: StateArc::new(Mutex::new(Some(key))),
             defer_local: false,
             journal: Some(Arc::new(Journal {
                 root,

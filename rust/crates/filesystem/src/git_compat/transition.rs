@@ -165,6 +165,7 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
             source_head,
             source_branch,
             rebase,
+            ..
         } => {
             let tree = resulting_tree.ok_or(GitCompatError::MissingResultGeneration)?;
             let tracked_paths = match result {

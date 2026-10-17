@@ -394,5 +394,5 @@ async function main() {
 }
 
 
-return { assertNativeSet, assertCommonBindings, qualifiedCompanionManifest, qualifiedParentManifest, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, writeCompanionManifest, main };
+return { assertNativeSet, assertCommonBindings, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, writeCompanionManifest, main };
 }

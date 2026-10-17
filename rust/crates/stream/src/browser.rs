@@ -18,6 +18,12 @@ use std::{
 };
 use wasm_bindgen::{JsCast, JsValue};
 
+mod discovery;
+mod follow;
+mod publication;
+#[cfg(test)]
+mod tests;
+
 const JOURNAL: &str = "journal";
 const METADATA: &str = "metadata";
 const METADATA_WORDS: usize = 10;
@@ -73,12 +79,24 @@ struct Cache {
     provider: MemoryStream,
     cursor: u64,
     valid: bool,
+    announced: u64,
 }
 struct Inner {
     database: Database,
-    cache: tokio::sync::Mutex<Cache>,
+    // Lock order: cache -> memory state or refresh request. The refresh lock is
+    // released before acquiring cache; interest/Change dispatch follows release.
+    cache: crate::query_sync::Mutex<Cache>,
     clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
+    publications: discovery::Publications,
+    #[cfg(test)]
+    refreshes: std::cell::Cell<usize>,
+    #[cfg(test)]
+    follow_reads: std::cell::Cell<usize>,
+    #[cfg(test)]
+    transactions: std::cell::Cell<usize>,
+    #[cfg(test)]
+    messages: std::cell::Cell<usize>,
 }
 
 /// One account-local durable provider, shared safely across tabs and workers.
@@ -116,21 +134,35 @@ impl BrowserStream {
             .map_err(backend)?;
         let clock = Arc::new(ReplayClock::default());
         let provider = memory(limits.memory, Arc::clone(&clock));
-        Ok(Self {
-            inner: Rc::new(Inner {
-                database,
-                cache: tokio::sync::Mutex::new(Cache {
-                    provider,
-                    cursor: 0,
-                    valid: true,
-                }),
-                clock,
-                limits,
+        let inner = Rc::new(Inner {
+            publications: discovery::Publications::new(name)?,
+            database,
+            cache: crate::query_sync::Mutex::new(Cache {
+                provider,
+                cursor: 0,
+                valid: true,
+                announced: 0,
             }),
-        })
+            clock,
+            limits,
+            #[cfg(test)]
+            refreshes: std::cell::Cell::new(0),
+            #[cfg(test)]
+            follow_reads: std::cell::Cell::new(0),
+            #[cfg(test)]
+            transactions: std::cell::Cell::new(0),
+            #[cfg(test)]
+            messages: std::cell::Cell::new(0),
+        });
+        inner.publications.bind(&inner);
+        Ok(Self { inner })
     }
 
     fn transaction(&self) -> Result<Transaction<'_>, StreamError> {
+        #[cfg(test)]
+        self.inner
+            .transactions
+            .set(self.inner.transactions.get() + 1);
         let mut options = TransactionOptions::new();
         options.set_durability(TransactionDurability::Strict);
         self.inner
@@ -146,6 +178,7 @@ impl BrowserStream {
         &self,
         transaction: &Transaction<'_>,
         cache: &mut Cache,
+        changed: &mut std::collections::BTreeSet<publication::Key>,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
             cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
@@ -181,6 +214,7 @@ impl BrowserStream {
         if count > self.inner.limits.commands
             || bytes > self.inner.limits.journal_bytes
             || cache.cursor > count
+            || cache.announced > count
         {
             return Err(StreamError::Unavailable);
         }
@@ -197,7 +231,17 @@ impl BrowserStream {
             let (time, encoded) = frame.split_at(8);
             let millis = u64::from_le_bytes(time.try_into().map_err(backend)?);
             self.inner.clock.set(millis);
-            replay(&cache.provider, decode_command(encoded)?).await?;
+            let command = decode_command(encoded)?;
+            let before = if cache.cursor >= cache.announced {
+                Some(publication::Before::capture(&cache.provider, &command).await?)
+            } else {
+                None
+            };
+            replay(&cache.provider, command).await?;
+            if let Some(before) = before {
+                before.collect(&cache.provider, changed).await?;
+                cache.announced = cache.cursor + 1;
+            }
             cache.cursor += 1;
         }
         cache.valid = true;
@@ -208,9 +252,16 @@ impl BrowserStream {
         &self,
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
+        let mut dispatch = publication::Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
         let transaction = self.transaction()?;
-        self.refresh(&transaction, &mut cache).await?;
+        dispatch.repair = true;
+        let result = self
+            .refresh(&transaction, &mut cache, &mut dispatch.keys)
+            .await;
+        dispatch.repair = false;
+        dispatch.failed = result.is_err();
+        result?;
         operation(&cache.provider).await
     }
 
@@ -235,9 +286,17 @@ impl BrowserStream {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec();
+        let mut dispatch = publication::Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
         let transaction = self.transaction()?;
-        let (count, bytes) = self.refresh(&transaction, &mut cache).await?;
+        dispatch.repair = true;
+        let result = self
+            .refresh(&transaction, &mut cache, &mut dispatch.keys)
+            .await;
+        dispatch.repair = false;
+        dispatch.failed = result.is_err();
+        let (count, bytes) = result?;
+        let before = publication::Before::capture(&cache.provider, &command).await?;
         let key = match &command {
             Command::Append(request) => request.idempotency_key.clone(),
             Command::Fork(request) => request.idempotency_key.clone(),
@@ -251,6 +310,7 @@ impl BrowserStream {
         let millis = BrowserClock.now_unix_millis();
         self.inner.clock.set(millis);
         cache.valid = false;
+        dispatch.repair = true;
         let outcome = match command {
             Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
             Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
@@ -298,9 +358,16 @@ impl BrowserStream {
             .map_err(backend)?
             .await
             .map_err(backend)?;
+        // Wake before the commit await so cancelling that await cannot strand
+        // subscribers. Their refresh transaction waits for this one to commit
+        // or abort, and same-handle readers also share the cache lock.
+        self.inner.publications.publish()?;
         transaction.commit().await.map_err(backend)?;
+        before.collect(&cache.provider, &mut dispatch.keys).await?;
         cache.cursor = count + 1;
+        cache.announced = cache.cursor;
         cache.valid = true;
+        dispatch.repair = false;
         Ok(outcome)
     }
 }
@@ -340,6 +407,15 @@ impl StreamProvider for BrowserStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.with_provider(async move |provider| provider.tail(path).await)
             .await
+    }
+    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
+        // tail refreshes from completed strict IndexedDB transactions; an
+        // uncommitted cache mutation is never exposed outside its writer.
+        let accepted = self.tail(path).await?;
+        Ok(StreamWatermarks {
+            accepted,
+            durable: accepted,
+        })
     }
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
         self.with_provider(async move |provider| provider.bounds(path).await)
@@ -381,8 +457,7 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.with_provider(async move |provider| provider.children(request).await)
-            .await
+        self.discover(request).await
     }
     async fn children_page(
         &self,
@@ -396,42 +471,14 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        if from > self.tail(path.clone()).await? {
-            return Err(StreamError::OutOfRange);
-        }
-        // Durable polling is the wakeup transport. It observes publication even
-        Ok(stream::try_unfold(
-            (self.clone(), path, memory::HistoryCursor::at(from)),
-            |(provider, path, mut cursor)| async move {
-                loop {
-                    let record = provider
-                        .with_provider(async |memory| {
-                            memory.next_follow_record(&path, &mut cursor).await
-                        })
-                        .await?;
-                    if let Some(record) = record {
-                        return Ok(Some((record, (provider, path, cursor))));
-                    }
-                    poll_delay().await?;
-                }
-            },
-        )
-        .boxed_local())
+        self.follow_from(path, from, None).await
     }
-}
-
-async fn poll_delay() -> Result<(), StreamError> {
-    let timer = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
-        .map_err(backend)?
-        .dyn_into::<js_sys::Function>()
-        .map_err(backend)?;
-    let promise = js_sys::Promise::new(&mut |resolve, reject| {
-        if let Err(error) = timer.call2(&JsValue::UNDEFINED, &resolve, &JsValue::from_f64(100.0)) {
-            let _ = reject.call1(&JsValue::UNDEFINED, &error);
-        }
-    });
-    wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(backend)?;
-    Ok(())
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
+    }
 }

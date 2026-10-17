@@ -393,7 +393,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         #[cfg(target_arch = "wasm32")]
         Ok(None)
     }
-    fn check_custody(
+    pub(super) fn check_custody(
         &self,
         _journal: &MaterializationJournal,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {
@@ -411,7 +411,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         }
         Ok(())
     }
-    fn check_plan(
+    pub(super) fn check_plan(
         &self,
         plan: &MaterializationPlan,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {

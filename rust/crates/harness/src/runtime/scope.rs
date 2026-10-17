@@ -547,6 +547,17 @@ impl RuntimeScope {
             .map(|binding| &binding.binding)
     }
 
+    pub(super) fn created_private_content(&self) -> Option<&ContentBindings> {
+        self.created_access
+            .as_ref()?
+            .content
+            .iter()
+            .find_map(|binding| {
+                (binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate)
+                    .then_some(&binding.binding)
+            })
+    }
+
     /// Finds only an exact provider-authenticated, owner-consumed reference.
     #[cfg(feature = "filesystem")]
     pub(crate) fn created_reference(

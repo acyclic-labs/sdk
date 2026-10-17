@@ -1,44 +1,17 @@
 use super::*;
 use crate::{executor::stock_boundary, wire::ErrorCode};
 
-pub(crate) fn checked_compaction_budget(
+pub(crate) fn plan_compaction_budget(
     policy: &ThresholdCompaction,
     context: &Context,
     count: &ModelTokenCount,
-    capacity: ModelContextCapacity,
     maximum_messages: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {
-    let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
+    // Weights select the retained suffix; they cannot reject or admit a request.
+    // The completed compacted request is counted before response dispatch.
     crate::executor::with_history_io(io, |work| {
-        let (through, maximum) =
-            policy.projection_budget(context, count, maximum_messages, work)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (selected, _pending) =
-            compaction::mandatory_flags(context, through, &policy.retention, &mut quota)?;
-        let mandatory_tokens = selected
-            .iter()
-            .enumerate()
-            .filter(|(_, selected)| **selected)
-            .try_fold(u64::from(count.fixed_tokens), |total, (position, _)| {
-                if let Some(work) = quota.work().as_deref_mut() {
-                    work.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                        bytes: 0,
-                        items: 1,
-                    })?;
-                }
-                let tokens = count
-                    .message_tokens
-                    .get(position)
-                    .ok_or_else(|| invalid("mandatory token position is missing"))?;
-                total
-                    .checked_add(u64::from(*tokens))
-                    .ok_or_else(|| invalid("mandatory token count overflows"))
-            })?;
-        if policy.needs_compaction(capacity, mandatory_tokens)? {
-            return Err(invalid("mandatory content exceeds selected model capacity"));
-        }
-        Ok((through, maximum))
+        policy.projection_budget(context, count, maximum_messages, work)
     })
 }
 

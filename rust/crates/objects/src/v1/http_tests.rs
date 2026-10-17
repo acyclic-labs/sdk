@@ -66,6 +66,23 @@ async fn operation(
         "buckets/delete" => unary!(wire::DeleteBucketRequest, delete_bucket),
         "objects/head" => unary!(wire::HeadObjectRequest, head),
         "objects/delete" => unary!(wire::DeleteObjectRequest, delete),
+        "objects/restore" => {
+            let query: wire::RestoreObjectsRequest = json::decode(input, bytes, 1024 * 1024)?;
+            super::request::restore(&query)?;
+            if query.at.as_ref().is_some_and(|at| at.seconds == 42) {
+                Ok((
+                    "application/json",
+                    json::encode(
+                        output,
+                        &wire::RestoreObjectsResponse {
+                            restored_objects: 2,
+                        },
+                    )?,
+                ))
+            } else {
+                Err(wire::ErrorCode::PreconditionFailed.into())
+            }
+        }
         "objects/list" => unary!(wire::ListObjectsRequest, list),
         "multipart/create" => unary!(wire::CreateMultipartRequest, create_multipart),
         "multipart/list-parts" => unary!(wire::ListPartsRequest, list_parts),
@@ -330,6 +347,36 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
+    let query = wire::RestoreObjectsRequest {
+        bucket: Some(wire::BucketRef {
+            name: "customer.inputs".into(),
+        }),
+        prefix: "orders/".into(),
+        at: Some(prost_types::Timestamp {
+            seconds: 42,
+            nanos: 1000,
+        }),
+        mutation: Some(wire::MutationIdentity {
+            idempotency_key: "restore".into(),
+        }),
+    };
+    assert_eq!(client.restore(query.clone()).await?.restored_objects, 2);
+    assert_eq!(
+        unauthorized.restore(query.clone()).await.unwrap_err().code,
+        wire::ErrorCode::AccessDenied
+    );
+    let mut expired = query.clone();
+    expired.at.as_mut().unwrap().seconds = 1;
+    assert_eq!(
+        client.restore(expired).await.unwrap_err().code,
+        wire::ErrorCode::PreconditionFailed
+    );
+    let mut invalid = query;
+    invalid.mutation = None;
+    assert_eq!(
+        client.restore(invalid).await.unwrap_err().code,
+        wire::ErrorCode::InvalidArgument
+    );
     let calls = server
         .fixture
         .calls

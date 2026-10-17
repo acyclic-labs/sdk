@@ -37,7 +37,13 @@ pub async fn call(
     let content_type = content_type.ok_or(Error::MissingContentTypeHeader)?;
     let body_stream = response.body().ok_or(Error::MissingResponseBody)?;
 
-    let body = ResponseBody::new(body_stream, &content_type, abort, options.response_limits)?;
+    let body = ResponseBody::new(
+        body_stream,
+        &content_type,
+        abort,
+        options.response_limits,
+        options.streaming_response,
+    )?;
 
     result.body(body).map_err(Into::into)
 }

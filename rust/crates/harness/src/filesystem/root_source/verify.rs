@@ -59,7 +59,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             &ordinary
         };
         io.check_cancellation()?;
-        if !io.contains_capability(&context.source.grants, &snapshot.project, "volume:read:")? {
+        if !io.contains_capability(
+            &context.source.grants,
+            &snapshot.project,
+            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+        )? {
             return Err(denied(
                 "selected source admission lacks original project read authority",
             ));

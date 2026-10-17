@@ -1,0 +1,2 @@
+{"seed":{},"discovery":{"limits":{"instruction_bytes":0}},"expect":{"error":
+  "discovery requires finite positive bounds"}}

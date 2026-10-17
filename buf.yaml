@@ -1,9 +1,27 @@
 version: v2
 modules:
-  - path: proto
+  - path: rust/crates/auth/proto
+  - path: rust/crates/objects/proto
+    excludes:
+      - rust/crates/objects/proto/validation
+  - path: rust/crates/machines/proto
+    excludes:
+      - rust/crates/machines/proto/validation
+  - path: rust/crates/actors/proto
+    excludes:
+      - rust/crates/actors/proto/validation
+  - path: rust/crates/filesystem/proto
+    excludes:
+      - rust/crates/filesystem/proto/validation
+      - rust/crates/filesystem/proto/protocol
+  - path: rust/crates/inference/proto
+    excludes:
+      - rust/crates/inference/proto/validation
+  - path: rust/crates/harness/proto
   - path: rust/crates/stream/proto
-deps:
-  - buf.build/googleapis/googleapis
+    excludes:
+      - rust/crates/stream/proto/validation
+  - path: rust/crates/contract-derive/proto
 lint:
   use:
     - STANDARD

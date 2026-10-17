@@ -368,6 +368,13 @@ mod http {
             }
             set(&result, "expectedAbsent", &JsValue::TRUE)?;
             set(&result, "actual", &string_js(field(item, "actual")?)?)?;
+        } else if let Some(expected) = item.get("expectedCommitId") {
+            set(&result, "expectedCommitId", &bytes_js(expected)?)?;
+            set(
+                &result,
+                "actualCommitId",
+                &bytes_js(field(item, "actualCommitId")?)?,
+            )?;
         } else {
             u64_string(field(item, "expectedTail")?)?;
             if let Some(actual) = item.get("actualTail") {

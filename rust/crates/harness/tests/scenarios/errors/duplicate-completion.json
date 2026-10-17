@@ -1,0 +1,5 @@
+{
+  "prompt":"Reject duplicate completion.",
+  "turns":[[{"type":"event","kind":"completed","metadata":null},{"type":"event","kind":"completed","metadata":{}}]],
+  "expect":{"error":"model emitted an event after completion"}
+}

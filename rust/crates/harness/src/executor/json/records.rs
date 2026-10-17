@@ -94,7 +94,15 @@ pub(super) fn decode_error(
 }
 
 /// Known owned String and container slot capacities of a resident Value.
-pub(crate) fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
+pub fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
+    value_owned_bytes(value, false)
+}
+
+pub(super) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
+    value_owned_bytes(value, true)
+}
+
+fn value_owned_bytes(value: &Value, retained: bool) -> Result<u64> {
     let overflow = || {
         boundary(
             "JSON value capacity inventory overflows",
@@ -110,17 +118,28 @@ pub(crate) fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
                 .ok_or_else(overflow)? as u64;
             values.iter().try_fold(slots, |bytes, value| {
                 bytes
-                    .checked_add(json_value_logical_owned_bytes(value)?)
+                    .checked_add(value_owned_bytes(value, retained)?)
                     .ok_or_else(overflow)
             })
         }
         Value::Object(values) => {
-            let slots = values
-                .len()
-                .checked_mul(std::mem::size_of::<(String, Value)>())
-                .ok_or_else(overflow)? as u64;
+            // std BTreeMap nodes contain 11 key/value slots, a two-word
+            // header, and (for internal nodes) 12 child pointers. The root
+            // owns at least one entry; every other node owns at least five.
+            // Newly decoded empty maps have no node. Retain the bound until
+            // destruction, including unused slots in sparsely filled nodes.
+            let slots = if retained && !values.is_empty() {
+                let node =
+                    11 * std::mem::size_of::<(String, Value)>() + 14 * std::mem::size_of::<usize>();
+                (1 + (values.len() - 1) / 5).checked_mul(node)
+            } else {
+                values
+                    .len()
+                    .checked_mul(std::mem::size_of::<(String, Value)>())
+            }
+            .ok_or_else(overflow)? as u64;
             values.iter().try_fold(slots, |bytes, (key, value)| {
-                let value_bytes = json_value_logical_owned_bytes(value)?;
+                let value_bytes = value_owned_bytes(value, retained)?;
                 bytes
                     .checked_add(key.capacity() as u64)
                     .and_then(|bytes| bytes.checked_add(value_bytes))

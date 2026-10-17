@@ -142,6 +142,29 @@ pub(super) async fn read_record<P: StreamProvider>(
     work: &NativeMaterializationWork,
 ) -> Result<Option<MaterializationJournal>> {
     let operation = operation(task, work)?;
+    let Some(record) = read_payload(client, task, work).await? else {
+        return Ok(None);
+    };
+    let io = PreparationIo::from_native_work(work)?;
+    let (mut journal, mut custody) = native_decoded(io.decode(
+        std::marker::PhantomData::<MaterializationJournal>,
+        &record.value,
+        crate::wire::ErrorCode::Storage,
+    )?)?;
+    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
+    if record.sequence.checked_add(1) != Some(journal.revision) || !journal.is_valid_for(operation)
+    {
+        return Err(invalid());
+    }
+    journal.custody = Some(custody);
+    Ok(Some(journal))
+}
+
+async fn read_payload<P: StreamProvider>(
+    client: &Arc<P>,
+    task: crate::TaskId,
+    work: &NativeMaterializationWork,
+) -> Result<Option<crate::store::operations::ObservedRecord>> {
     let path = path(task, work)?;
     let io = PreparationIo::from_native_work(work)?;
     let mut history = &io;
@@ -164,31 +187,17 @@ pub(super) async fn read_record<P: StreamProvider>(
     let record = crate::store::operations::one_record(client, &path, sequence, &mut observer)
         .await?
         .ok_or_else(invalid)?;
-    let (mut journal, mut custody) = native_decoded(io.decode(
-        std::marker::PhantomData::<MaterializationJournal>,
-        &record.value,
-        crate::wire::ErrorCode::Storage,
-    )?)?;
-    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
-    if record.sequence != sequence
-        || journal.revision != bounds.tail
-        || !journal.is_valid_for(operation)
-    {
+    if record.sequence != sequence {
         return Err(invalid());
     }
-    journal.custody = Some(custody);
-    Ok(Some(journal))
+    Ok(Some(record))
 }
 
-pub(in crate::filesystem) fn key(
-    bytes: &[u8],
+pub(super) fn key_from_digest(
+    digest: &[u8; 32],
     work: &NativeMaterializationWork,
 ) -> Result<acyclic_stream::IdempotencyKey> {
-    work.charge(WorkCounters {
-        bytes_hashed: bytes.len() as u64,
-        ..Default::default()
-    })?;
-    let (bytes, custody) = work.copy_bytes(blake3::hash(bytes).as_bytes())?;
+    let (bytes, custody) = work.copy_bytes(digest)?;
     let bytes =
         acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, work.runtime_meter())
             .map_err(|failure| match failure.into_error() {
@@ -205,6 +214,11 @@ pub(in crate::filesystem) fn key(
 pub(super) struct Store<P: StreamProvider> {
     pub(super) owner: Arc<TaskJournalOwner<P>>,
     pub(super) work: NativeMaterializationWork,
+    pub(super) original: Option<(
+        Arc<super::preparation_record::Intent>,
+        Vec<u8>,
+        NativeAllocation,
+    )>,
 }
 
 impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
@@ -270,14 +284,17 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
         }
         replacement.work = self.work.journal_work()?;
         let io = PreparationIo::from_native_work(&self.work)?;
-        let bytes = io.encode(&replacement, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-        let key = key(&bytes, &self.work)?;
+        let bytes = io.encode(
+            &super::journal_encoding::Canonical(&replacement),
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            false,
+        )?;
         let committed = self
             .owner
             .append(
                 path(self.owner.task_binding().0, &self.work)?,
                 expected,
-                &key,
+                None,
                 bytes,
                 crate::distributed::JournalWrite::Fresh,
                 &mut Some(&mut io.history_io()),
@@ -290,19 +307,44 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
         &'a self,
         journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'a>> {
-        let retained = self
-            .load(journal.plan.operation_id)
-            .await?
-            .ok_or_else(invalid)?;
-        if retained != journal {
+        let io = PreparationIo::from_native_work(&self.work)?;
+        let (original, encoded, _) = self.original.as_ref().ok_or_else(invalid)?;
+        let acyclic_fs::MaterializationIntent::NativePreparation {
+            original: retained_original,
+            ..
+        } = &journal.plan.intent
+        else {
+            return Err(invalid());
+        };
+        self.work.charge(WorkCounters {
+            items_examined: encoded.len() as u64,
+            ..Default::default()
+        })?;
+        if retained_original != encoded {
             return Err(invalid());
         }
-        drop(retained);
+        if journal.plan.operation_id != operation(self.owner.task_binding().0, &self.work)? {
+            return Err(invalid());
+        }
+        let identity = io
+            .digest(
+                &super::journal_encoding::Canonical(&journal),
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                None,
+            )?
+            .ok_or_else(invalid)?;
+        self.work.set_original_work(journal.work);
         let template = super::completion::NativePreparationCompletionTemplate::new(
             journal,
             self.owner.as_ref(),
             &self.work,
+            identity,
+            original,
         )?;
+        // This private adapter receives journals only from load, successful CAS,
+        // or an accepted completion. Immutable records cannot change under the
+        // same tail. Acceptance checks that tail and the live owner atomically
+        // before acknowledging any physical action.
         crate::distributed::prepare_materialization_commit(
             self.owner.as_ref(),
             template,

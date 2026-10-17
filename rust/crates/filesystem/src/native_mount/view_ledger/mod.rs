@@ -4,17 +4,20 @@ use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
 use crate::demand::NativeMountAllocationCustody;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+use crate::lock_order::{Mutex as RankedMutex, OBSERVERS};
+use crate::sync::RwLock;
 use notifications::ObserverEntries;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use std::sync::{Arc, PoisonError, Weak};
 use storage::ChangePositions;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(super) use storage::same_work;
 pub(super) use storage::{copy_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
+use writeable::Writeable as _;
 mod notifications;
 mod storage;
 
@@ -181,7 +184,7 @@ pub(crate) struct ViewLedger {
     bindings: RwLock<ChangePositions>,
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
-    observers: Mutex<Option<Arc<ObserverEntries>>>,
+    observers: RankedMutex<Option<Arc<ObserverEntries>>, OBSERVERS>,
     _custody: Option<Arc<NativeMountAllocationCustody>>,
 }
 
@@ -208,6 +211,17 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
+        let (recorded, notify) = self.record_deferred(change, carrier)?;
+        notify();
+        recorded
+    }
+
+    pub(super) fn record_deferred(
+        &self,
+        change: &ViewChange<'_>,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<(Result<(), MountSourceError>, impl FnOnce() + Send + use<>), MountSourceError>
+    {
         let position = ViewStamp::next();
         let observers = self
             .observers
@@ -287,18 +301,22 @@ impl ViewLedger {
             position.record_in(&self.unconfirmed);
         }
         position.record_in(&self.latest);
-        for observer in observers
-            .iter()
-            .flat_map(|entries| &entries.entries)
-            .filter_map(|entry| entry.observer.upgrade())
-        {
-            if recorded.is_err() || matches!(change, ViewChange::Unconfirmed) {
-                observer.view_unconfirmed(position);
-            } else {
-                observer.view_changed(position, ViewOrigin::current());
+        let unconfirmed = recorded.is_err() || matches!(change, ViewChange::Unconfirmed);
+        let origin = ViewOrigin::current();
+        let notify = move || {
+            for observer in observers
+                .iter()
+                .flat_map(|entries| &entries.entries)
+                .filter_map(|entry| entry.observer.upgrade())
+            {
+                if unconfirmed {
+                    observer.view_unconfirmed(position);
+                } else {
+                    observer.view_changed(position, origin);
+                }
             }
-        }
-        recorded
+        };
+        Ok((recorded, notify))
     }
 
     fn rebound(
@@ -435,13 +453,22 @@ fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
 
 fn hash_text(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
     hasher.write_u8(1);
+    let mapper = icu_casemap::CaseMapper::new();
     let mut encoded = [0_u8; 4];
-    for folded in text
-        .nfc()
-        .flat_map(char::to_uppercase)
-        .flat_map(char::to_lowercase)
-    {
-        hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
+    for scalar in text.nfc() {
+        // Hash writes cannot fail; stream the full fold without a temporary key.
+        let _ = mapper
+            .fold(scalar.encode_utf8(&mut encoded))
+            .write_to(&mut HashWriter(hasher));
+    }
+}
+
+struct HashWriter<'a>(&'a mut DefaultHasher);
+
+impl std::fmt::Write for HashWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        self.0.write(text.as_bytes());
+        Ok(())
     }
 }
 

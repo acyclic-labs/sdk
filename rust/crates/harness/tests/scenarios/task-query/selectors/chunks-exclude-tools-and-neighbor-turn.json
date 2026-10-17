@@ -1,0 +1,7 @@
+{"folder":".tasks/t/turns/1/chunks","writes":[{"path":".tasks/t/turns/1/tools/c/stdout/0","text":"tool"},{"path":
+  ".tasks/t/turns/1/chunks/1","text":"visible","channel":"Text"},{"path":".tasks/t/turns/2/chunks/0","text":"later",
+  "channel":"Text"},{"path":".tasks/t/turns/1/chunks/2","text":"thought","channel":"Reasoning"}],"expect":{"files":{
+  ".tasks/t/turns/1/chunks/1":"visible",".tasks/t/turns/1/chunks/2":"thought"},"changes":[null,{"path":
+  ".tasks/t/turns/1/chunks/1","text":"visible","channel":"Text"},null,{"path":".tasks/t/turns/1/chunks/2","text":
+  "thought","channel":"Reasoning"}],"heads":{".tasks/t/turns/1/text.md":"visible",".tasks/t/turns/1/reasoning.md":
+  "thought"}}}

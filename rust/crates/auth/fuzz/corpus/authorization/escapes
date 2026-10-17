@@ -1,0 +1,1 @@
+auth(action = "fs/\u{263a}", resource = "fs:/\x00")

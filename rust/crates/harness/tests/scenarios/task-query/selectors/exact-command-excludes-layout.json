@@ -1,0 +1,4 @@
+{"folder":"commands/check.md","writes":[{"path":"commands/other.md","text":"other"},{"path":"commands/check.md","text":
+  "run"},{"path":"workspace/layout.json","text":"{}"},{"path":"commands/check.md","text":"revised"}],"expect":{"files":{
+  "commands/check.md":"revised"},"changes":[null,{"path":"commands/check.md","text":"run"},null,{"path":
+  "commands/check.md","text":"revised"}]}}

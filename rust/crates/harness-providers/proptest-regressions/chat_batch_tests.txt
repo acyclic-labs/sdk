@@ -1,0 +1,2 @@
+# Shrunk regression: calls = 1, turns = 1.
+cc f1a512eb3f143c713d5043f84a931c3b04f93650c683d4e3e8b883058aac74b3

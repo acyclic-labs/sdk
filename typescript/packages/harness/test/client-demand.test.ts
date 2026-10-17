@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
 import { DemandLoader } from "../src/client-demand.js";
 import { RequestCapacityError, RequestScheduler } from "../src/client-requests.js";
-import { ScheduledTransport } from "../src/client-transport.js";
-import type { ClientCommand, Connection } from "../src/client.js";
 
 const turn = async (): Promise<void> => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 
@@ -135,67 +133,4 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   expect(boundary.residency.demand).toBe(0);
   boundary.dispose(); boundaryScheduler.dispose();
   loader.dispose(); scheduler.dispose();
-});
-
-test("transport shares request pressure and preserves original commands, delivery and lifecycle abort", async () => {
-  const scheduler = new RequestScheduler({ concurrent: 1, requests: 2, bytes: 8 });
-  const sent: ClientCommand[] = [];
-  const blocked = Promise.withResolvers<void>();
-  let closed = 0;
-  let providerSignal: AbortSignal | undefined;
-  const underlying: Connection<number> = {
-    async *[Symbol.asyncIterator]() { /* no history buffering */ },
-    send: async command => { sent.push(command); await blocked.promise; },
-    close: () => { closed++; },
-  };
-  const transport = new ScheduledTransport({ connect: async (_cursors, signal) => { providerSignal = signal; return underlying; } }, scheduler,
-    { connect: () => 1, send: () => 4 });
-  const abort = new AbortController();
-  const connected = await transport.connect(new Map(), abort.signal);
-  const command = { operationId: "original-operation", authority: { kind: "task", id: "original-authority" }, kind: "task.cancel", payload: {} } as ClientCommand;
-  const first = connected.send(command);
-  const firstFailed = first.catch(error => error);
-  const second = connected.send(command);
-  const secondFailed = second.catch(error => error);
-  await expect(scheduler.schedule(1, async () => 1)).rejects.toBeInstanceOf(RequestCapacityError);
-  await turn(); expect(sent).toEqual([command]); expect(sent[0]).toBe(command);
-  abort.abort(); expect(providerSignal?.aborted).toBe(true);
-  expect((await firstFailed).name).toBe("AbortError"); expect((await secondFailed).name).toBe("AbortError");
-  expect(scheduler.residency.requests).toBe(1);
-  await connected.close(); await connected.close(); expect(closed).toBe(1);
-  blocked.resolve(); await turn(); expect(scheduler.residency.requests).toBe(0);
-  const late = Promise.withResolvers<Connection<number>>();
-  const lateTransport = new ScheduledTransport({ connect: () => late.promise }, scheduler, { connect: () => 1, send: () => 4 });
-  const lateAbort = new AbortController();
-  const cancelledConnect = lateTransport.connect(new Map(), lateAbort.signal).catch(error => error);
-  await turn(); lateAbort.abort();
-  expect((await cancelledConnect).name).toBe("AbortError");
-  expect(scheduler.residency.requests).toBe(1);
-  late.resolve(underlying); await turn();
-  expect(closed).toBe(2);
-  expect(scheduler.residency.requests).toBe(0);
-  const handoffAbort = new AbortController();
-  const handoff = new ScheduledTransport({ connect: async () => {
-    queueMicrotask(() => queueMicrotask(() => handoffAbort.abort()));
-    return underlying;
-  } }, scheduler, { connect: () => 1, send: () => 4 });
-  expect((await handoff.connect(new Map(), handoffAbort.signal).catch(error => error)).name).toBe("AbortError");
-  await turn(); expect(closed).toBe(3);
-  const closeFault = new Error("close failed");
-  const failedClose = new ScheduledTransport({ connect: async () => ({ ...underlying, close: () => { throw closeFault; } }) },
-    scheduler, { connect: () => 1, send: () => 4 });
-  const faultConnection = await failedClose.connect(new Map());
-  expect(await Promise.resolve(faultConnection.close()).catch(error => error)).toBe(closeFault);
-  expect(await Promise.resolve(faultConnection.close()).catch(error => error)).toBe(closeFault);
-  const lateFault = Promise.withResolvers<Connection<number>>();
-  const cleanupErrors: unknown[] = [];
-  const detachedFault = new ScheduledTransport({ connect: () => lateFault.promise }, scheduler,
-    { connect: () => 1, send: () => 4 }, error => cleanupErrors.push(error));
-  const detachedAbort = new AbortController();
-  const detachedConnect = detachedFault.connect(new Map(), detachedAbort.signal).catch(error => error);
-  await turn(); detachedAbort.abort();
-  expect((await detachedConnect).name).toBe("AbortError");
-  lateFault.resolve({ ...underlying, close: () => { throw closeFault; } });
-  await turn(); expect(cleanupErrors).toEqual([closeFault]);
-  scheduler.dispose();
 });

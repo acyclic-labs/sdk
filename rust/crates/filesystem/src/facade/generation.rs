@@ -58,19 +58,26 @@ pub(super) fn generation_from_record(
     volume_id: VolumeId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
 ) -> Result<ObjectId, FsError> {
+    generation_from_payload(record.sequence, &record.payload, volume_id, accounting)
+}
+
+fn generation_from_payload(
+    sequence: Sequence,
+    payload: &[u8],
+    volume_id: VolumeId,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<ObjectId, FsError> {
     let mut observer = crate::kernel::OriginalReadAccounting::new(accounting)?;
-    let (record_volume, root) = if record.sequence == Sequence::new(1) {
-        let created =
-            decode_volume_created(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
-                observer.observe(step)
-            })?;
+    let (record_volume, root) = if sequence == Sequence::new(1) {
+        let created = decode_volume_created(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+            observer.observe(step)
+        })?;
         (created.volume_id, created.initial_generation_root)
     } else {
-        let published = decode_published_generation(
-            &record.payload,
-            MAXIMUM_VOLUME_EVENT_BYTES,
-            &mut |step| observer.observe(step),
-        )?;
+        let published =
+            decode_published_generation(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+                observer.observe(step)
+            })?;
         (published.volume_id, published.generation_root)
     };
     let _allocation = observer.into_allocation();
@@ -193,33 +200,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .fs
             .inner
             .authority
-            .head(authority_id, &mut authority)
+            .head_payload(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
             .await;
         record_authority_work(accounting, &authority)?;
-        let head = result?;
+        // Introduce the payload after its funding, so every exit drops the
+        // payload first, including decoding failures and unwinding.
+        let (value, _allocation) = result?;
+        let (head, latest) = value;
         if head.sequence == Sequence::GENESIS {
             return Err(FsError::EmptyAuthority);
         }
-        let mut authority = authority_work(accounting, cancellation)?;
-        let result = self
-            .fs
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                Sequence::new(head.sequence.get().saturating_sub(1)),
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                &mut authority,
-            )
-            .await;
-        record_authority_work(accounting, &authority)?;
-        let (records, _allocation) = result?;
-        let latest = records.first().ok_or(FsError::InvalidAuthorityHistory)?;
+        let latest = latest.ok_or(FsError::InvalidAuthorityHistory)?;
         Ok((
-            generation_from_head_record_value(latest, self.id, accounting)?,
+            generation_from_head_payload(head.sequence, &latest, self.id, accounting)?,
             head,
         ))
     }
@@ -230,11 +223,49 @@ pub(super) fn generation_from_head_record_value(
     volume_id: VolumeId,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<ObjectId, FsError> {
-    if let Ok(deleted) = decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
+    generation_from_head_payload(record.sequence, &record.payload, volume_id, accounting)
+}
+
+fn generation_from_head_payload(
+    sequence: Sequence,
+    payload: &[u8],
+    volume_id: VolumeId,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+) -> Result<ObjectId, FsError> {
+    if let Ok(deleted) = decode_workspace_deleted(payload, MAXIMUM_VOLUME_EVENT_BYTES) {
         if deleted != volume_id {
             return Err(FsError::VolumeMismatch);
         }
         return Err(FsError::WorkspaceDeleted);
     }
-    generation_from_record(record, volume_id, accounting)
+    generation_from_payload(sequence, payload, volume_id, accounting)
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
+    /// Resolves the owning workspace from an authenticated immutable generation.
+    pub async fn generation_workspace_id<W: FsWork>(
+        &self,
+        generation: GenerationId,
+        config: VolumeConfig,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::WorkspaceId, FsError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let (root, _allocation) = crate::kernel::read_generation_root_with_accounting(
+                &self.inner.objects,
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
+                config,
+                &mut accounting,
+                cancellation,
+            )
+            .await?;
+            Ok(crate::WorkspaceId::from_bytes(root.volume_id.into_bytes()))
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
 }

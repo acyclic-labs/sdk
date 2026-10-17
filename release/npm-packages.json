@@ -1,4 +1,5 @@
 [
+  { "slug": "auth", "directory": "auth", "name": "@acyclic-labs/auth", "source": "typescript" },
   { "slug": "actors", "directory": "actors", "name": "@acyclic-labs/actors", "source": "typescript" },
   { "slug": "harness", "directory": "harness", "name": "@acyclic-labs/harness", "source": "typescript" },
   { "slug": "objects", "directory": "objects", "name": "@acyclic-labs/objects", "source": "typescript" },

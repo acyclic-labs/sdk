@@ -513,7 +513,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
                     io,
                     preparation,
-                )
+                )?
                 .await?
         };
         let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;

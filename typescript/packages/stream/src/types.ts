@@ -1,3 +1,4 @@
+import type { CredentialOptions } from "@acyclic-labs/actors/credential";
 import type {
   AppendReceipt as WireAppendReceipt, AppendRequest as WireAppendRequest,
   CommittedAppend as WireCommittedAppend, CommittedFork as WireCommittedFork,
@@ -8,6 +9,7 @@ import type {
   CommitMutation as WireCommitMutation,
   CommitConflict as WireCommitConflict, TailCommitConflict as WireTailCommitConflict,
   ExistsCommitConflict as WireExistsCommitConflict,
+  HeadCommitConflict as WireHeadCommitConflict,
   ForkReceipt as WireForkReceipt,
   ForkRequest as WireForkRequest, ReadRequest as WireReadRequest,
   Record as WireRecord, TailConflict as WireTailConflict,
@@ -30,11 +32,11 @@ type _CommitOutcomes = AssertNever<Exclude<CommitOutcomeKind, "committed" | "con
 type IdempotencyKind = Exclude<WireIdempotencyObservation["outcome"]["case"], undefined>;
 type _IdempotencyKinds = AssertNever<Exclude<IdempotencyKind, "append" | "fork" | "commit"> | Exclude<"append" | "fork" | "commit", IdempotencyKind>>;
 type ProviderConditionKind = Exclude<WireCommitCondition["condition"]["case"], undefined>;
-type _ProviderConditionKinds = AssertNever<Exclude<ProviderConditionKind, "tail" | "absent"> | Exclude<"tail" | "absent", ProviderConditionKind>>;
+type _ProviderConditionKinds = AssertNever<Exclude<ProviderConditionKind, "tail" | "absent" | "head"> | Exclude<"tail" | "absent" | "head", ProviderConditionKind>>;
 type ProviderMutationKind = Exclude<WireCommitMutation["mutation"]["case"], undefined>;
 type _ProviderMutationKinds = AssertNever<Exclude<ProviderMutationKind, "append" | "fork"> | Exclude<"append" | "fork", ProviderMutationKind>>;
 type CommitConflictKind = Exclude<WireCommitConflict["conflict"]["case"], undefined>;
-type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "exists"> | Exclude<"tail" | "exists", CommitConflictKind>>;
+type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "exists" | "head"> | Exclude<"tail" | "exists" | "head", CommitConflictKind>>;
 
 declare const streamIdentityBrand: unique symbol;
 /** Exact unsigned 64-bit protocol position. */
@@ -72,6 +74,7 @@ export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
 export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal }
 export interface StreamChild { readonly path: string }
+export interface ChildrenRequest { readonly parent?: string; readonly limit: number; readonly signal?: AbortSignal }
 export type ChildrenPageRequest = Readonly<{ parent?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>
@@ -80,7 +83,7 @@ export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly ch
 export type ForkReceipt = PublicWire<WireForkReceipt, { readonly commitId: CommitId }>;
 
 export type CommitCondition =
-  | { readonly stream: import("./client.js").Stream<unknown>; readonly ifTail: Sequence }
+  | { readonly stream: import("./client.js").Stream<unknown>; readonly ifTail: Sequence; readonly ifCommitId?: CommitId }
   | { readonly path: string; readonly ifAbsent: true };
 export type CommitMutation =
   | { readonly append: { readonly stream: import("./client.js").Stream<unknown>; readonly values: readonly unknown[] } }
@@ -90,6 +93,7 @@ export type CommittedMutation =
   | (PublicWire<WireCommittedFork, { readonly records: readonly Record<unknown>[] }> & { readonly type: Extract<CommittedKind, "fork"> });
 export type CommittedEnvelope = PublicWire<WireCommittedEnvelope, { readonly commitId: CommitId; readonly mutations: readonly CommittedMutation[] }>;
 export type CommitConflict =
+  | PublicWire<WireHeadCommitConflict, { readonly expectedCommitId: CommitId; readonly actualCommitId: CommitId }, "expected" | "actual">
   | PublicWire<WireTailCommitConflict, {
       readonly expectedTail: WireTailCommitConflict["expected"];
       readonly actualTail?: WireTailCommitConflict["actual"];
@@ -110,7 +114,7 @@ export type CreateTokenRequest = PublicWire<WireCreateTokenRequest, { readonly a
 export interface AccessToken { readonly token: string; readonly expiresAt: Date }
 
 export interface ProviderCommitRequest {
-  readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence } | { readonly path: string; readonly ifAbsent: true })[];
+  readonly conditions: readonly ({ readonly path: string; readonly ifTail: Sequence; readonly ifCommitId?: CommitId } | { readonly path: string; readonly ifAbsent: true })[];
   readonly mutations: readonly (
     | { readonly append: { readonly path: string; readonly values: readonly Uint8Array[] } }
     | { readonly fork: { readonly source: string; readonly destination: string; readonly atTail: Sequence; readonly values: readonly Uint8Array[] } }
@@ -123,13 +127,14 @@ export interface StreamProvider {
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
   read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
+  children?(request: ChildrenRequest): AsyncIterable<StreamChild>;
   childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
   commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
   readCommit(commitId: CommitId): Promise<CommittedEnvelope>;
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
+export interface StreamEnvironment extends CredentialOptions { readonly endpoint: string; readonly caCertificate?: Uint8Array }
 /** Rust-owned and provider/client error codes. */
 export type StreamFailureCode = RustStreamErrorCode
   | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"

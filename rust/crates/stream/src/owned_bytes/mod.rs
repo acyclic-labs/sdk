@@ -1,6 +1,6 @@
 //! Immutable bytes with bounded native ownership.
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+use acyclic_native_runtime::{NativeReadMeter, ReadAllocation, ReadAllocationReservation};
 use bytes::Bytes;
 use std::{
     borrow::Borrow,
@@ -35,20 +35,30 @@ impl<G: Send + Sync + 'static> GuardBundle<G> {
         guard: G,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
-        let metadata = match ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>()) {
+        Self::with_allocation(
+            (data, guard),
+            ReadAllocation::new(meter, std::mem::size_of::<Self>()),
+        )
+    }
+
+    fn with_allocation(
+        storage: (Vec<u8>, G),
+        allocation: io::Result<ReadAllocation>,
+    ) -> Result<Arc<Self>, PreparedOwnedBytesFailure<G>> {
+        let metadata = match allocation {
             Ok(metadata) => metadata,
             Err(error) => {
                 return Err(PreparedOwnedBytesFailure {
-                    data,
-                    original_guard: guard,
+                    data: storage.0,
+                    original_guard: storage.1,
                     error: PreparedOwnedBytesError::Admission(error),
                 });
             }
         };
         Ok(Arc::new(Self {
-            data,
+            data: storage.0,
             metadata,
-            _original_guard: guard,
+            _original_guard: storage.1,
         }))
     }
 }
@@ -94,6 +104,32 @@ impl OwnedBytes {
         });
         drop(meter);
         result
+    }
+
+    /// Reserves the ownership header before a native producer starts I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn reserve_vec_guard<G: Send + Sync + 'static>(
+        meter: &Arc<dyn NativeReadMeter>,
+    ) -> io::Result<ReadAllocationReservation> {
+        ReadAllocationReservation::new(meter, std::mem::size_of::<GuardBundle<G>>() as u64)
+    }
+
+    /// Publishes initialized vector bytes using the header reserved before I/O.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_vec_with_reserved_guard<G: Send + Sync + 'static>(
+        storage: (Vec<u8>, G),
+        reservation: ReadAllocationReservation,
+    ) -> Result<Self, PreparedOwnedBytesFailure<G>> {
+        let (length, capacity) = (storage.0.len(), storage.0.capacity());
+        GuardBundle::with_allocation(
+            storage,
+            reservation.allocate_exact(std::mem::size_of::<GuardBundle<G>>()),
+        )
+        .map(|guard| Self {
+            data: Data::Native(guard),
+            range: 0..length,
+            retained_capacity: Some(capacity),
+        })
     }
     /// Leaves the vector and its owner untouched if admission fails.
     #[cfg(not(target_arch = "wasm32"))]

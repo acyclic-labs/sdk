@@ -23,7 +23,10 @@ where
             .authenticate(context, Some(&owner), true, cancellation, io)
             .await?;
         if let Some(io) = io {
-            for prefix in ["volume:read:", "volume:write:"] {
+            for prefix in [
+                acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
+            ] {
                 crate::model::charge_items(Some(io), 1)?;
                 if !io.contains_capability(
                     context.effective_scope().grants(),
@@ -92,7 +95,7 @@ where
                 Some(io) => io.contains_capability(
                     context.effective_scope().grants(),
                     &selected.volume,
-                    "volume:read:",
+                    acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                 )?,
                 None => context.scope().grants().contains(
                     &selected

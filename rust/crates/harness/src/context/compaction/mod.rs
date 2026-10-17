@@ -28,6 +28,28 @@ impl Default for ThresholdCompaction {
 }
 
 impl ThresholdCompaction {
+    /// Keeps at least half the capacity after fixed overhead for input, then
+    /// splits that input between recent context and mandatory content/summary.
+    pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
+        capacity.validate()?;
+        let available = capacity
+            .context_tokens
+            .checked_sub(fixed_tokens)
+            .filter(|available| *available >= 3)
+            .ok_or_else(|| {
+                Error::Invalid("compaction budgets exceed selected model capacity".into())
+            })?;
+        let mut policy = Self::default();
+        policy.response_reserve_tokens = policy
+            .response_reserve_tokens
+            .min(capacity.output_tokens)
+            .min(available / 2);
+        let usable = available - policy.response_reserve_tokens;
+        policy.recent_tokens = policy.recent_tokens.min(usable / 2);
+        policy.validate(capacity, None)?;
+        Ok(policy)
+    }
+
     /// Validates the defaults or replacement against the actual selected capacity.
     pub fn validate(
         &self,
@@ -86,7 +108,7 @@ impl Default for CompactionPolicy {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl CompactionPolicy {
     /// Copies the policy on the optional original preparation ledger.
     pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
@@ -101,13 +123,17 @@ impl CompactionPolicy {
     }
 }
 
+mod exchanges;
 mod selection;
-pub(crate) use selection::compact_context;
-pub(super) use selection::mandatory_flags;
+pub(crate) use selection::{compact_context, mandatory_messages};
 mod copying;
 pub(crate) use copying::{clone_context, clone_messages, clone_metadata};
 mod allocation;
 pub(crate) use allocation::reserve_vector;
 use allocation::{quota_vector, retire_vector};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod copying_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod defaults_tests;
 #[cfg(test)]
 mod tests;

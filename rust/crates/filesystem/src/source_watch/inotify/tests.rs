@@ -232,14 +232,12 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(
-            WorkBudget {
-                items_returned: 0,
-                ..ORIGINAL_BUDGET
-            },
-            &cancellation,
-        ),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        WorkBudget {
+            items_returned: 0,
+            ..ORIGINAL_BUDGET
+        },
+        &cancellation,
     )));
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
@@ -343,14 +341,12 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(
-            WorkBudget {
-                items_returned: 0,
-                ..ORIGINAL_BUDGET
-            },
-            &CancellationToken::new(),
-        ),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        WorkBudget {
+            items_returned: 0,
+            ..ORIGINAL_BUDGET
+        },
+        &CancellationToken::new(),
     )));
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
@@ -445,8 +441,9 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(ORIGINAL_BUDGET, &cancellation),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &cancellation,
     )));
     let (entered, receive) = std::sync::mpsc::channel();
     let sink = Arc::new(PanicsAfterRelease {
@@ -544,8 +541,9 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
     let cancellation = CancellationToken::new();
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(ORIGINAL_BUDGET, &cancellation),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &cancellation,
     )));
     let sink = Arc::new(Cancels {
         original: Arc::downgrade(&original),
@@ -655,8 +653,9 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
-    let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
-        DemandWork::new(ORIGINAL_BUDGET, &CancellationToken::new()),
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
     )));
     let lifetime = Arc::downgrade(&original);
     let sink = Arc::new(Retires {

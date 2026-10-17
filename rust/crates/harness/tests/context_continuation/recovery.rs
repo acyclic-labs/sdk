@@ -133,7 +133,7 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
 pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_or_stage_replay()
 -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
-    let provider = Arc::new(SummaryModel::default());
+    let (provider, counts) = summary_model(4);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let journal = Arc::new(LostCanonicalAck {
         inner: storage.journal(),
@@ -187,12 +187,8 @@ pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_withou
         .await?
         .is_some()
     );
-    let generated = provider
-        .requests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
-    let counted = provider.counts.load(Ordering::SeqCst);
+    let generated = provider.requests().len();
+    let counted = counts.load(Ordering::SeqCst);
     let transformed = calls.load(Ordering::SeqCst);
     assert!(
         storage
@@ -204,15 +200,8 @@ pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_withou
         .run_conversation(&bundle, operation, file, Vec::new(), 1)
         .await?;
     assert_eq!(output.text, "retained summary");
-    assert_eq!(
-        provider
-            .requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        generated + 1
-    );
-    assert_eq!(provider.counts.load(Ordering::SeqCst), counted);
+    assert_eq!(provider.requests().len(), generated + 1);
+    assert_eq!(counts.load(Ordering::SeqCst), counted);
     assert_eq!(calls.load(Ordering::SeqCst), transformed);
     let records = storage.journal().replay(operation, 0, 64, None)?.await?;
     assert_eq!(
@@ -242,6 +231,7 @@ pub(super) async fn default_canonical_checkpoint_recovers_lost_commit_ack_withou
         .run_prompt(&bundle, "after recovery", Vec::new())
         .await?;
     assert_checkpoint_read_admission(&storage, &journal, operation).await?;
+    assert_eq!(provider.remaining(), 0);
     Ok(())
 }
 

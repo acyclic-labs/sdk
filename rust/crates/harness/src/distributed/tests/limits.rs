@@ -23,9 +23,64 @@ async fn append_source(
         &mut None,
     )?;
     let length = bytes.len() as u64;
-    acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?
-        .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
-        .await?;
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), COORDINATOR_PATH)?;
+    if let Some(path) = origins::event_path(&event, &mut None)? {
+        let (retry, _) = stream_key(key.len(), format_args!("{key}"), &mut None)?;
+        // Deliberately permit a second indexed origin only in this adversarial
+        // fixture. Production requires absence and can never publish one.
+        if let Ok(index_tail) = client.inner.tail(path.clone()).await {
+            let request = acyclic_stream::CommitRequest {
+                conditions: vec![
+                    acyclic_stream::CommitCondition::Tail {
+                        path: stream.path().clone(),
+                        expected: revision - 1,
+                    },
+                    acyclic_stream::CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: index_tail,
+                    },
+                ],
+                mutations: vec![
+                    acyclic_stream::CommitMutation::Append {
+                        path: stream.path().clone(),
+                        records: vec![bytes.into()],
+                    },
+                    acyclic_stream::CommitMutation::Append {
+                        path,
+                        records: vec![
+                            [(revision - 1).to_le_bytes().as_slice(), retry.as_bytes()]
+                                .concat()
+                                .into(),
+                        ],
+                    },
+                ],
+                idempotency_key: retry,
+            };
+            assert!(matches!(
+                client.commit(request).await?,
+                acyclic_stream::CommitOutcome::Committed(_)
+            ));
+        } else {
+            assert!(matches!(
+                origins::append_origin::<true, _, 1>(
+                    (&stream, client),
+                    [OwnedBytes::from(bytes)],
+                    0,
+                    revision - 1,
+                    retry,
+                    event.operation_id(),
+                    path,
+                    &mut None,
+                )
+                .await?,
+                AppendOutcome::Committed(_)
+            ));
+        }
+    } else {
+        stream
+            .append_batch(vec![OwnedBytes::from(bytes)], Some(revision - 1), None)
+            .await?;
+    }
     Ok(length)
 }
 
@@ -375,5 +430,148 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         assert_eq!(client.io_snapshot().writes, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);
     }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn indexed_original_reservation_work_is_independent_of_coordinator_history() -> Result<()> {
+    let client = Arc::new(LostSessionAck::<MemoryStream>::default());
+    let operation = OperationId::from_bytes([130; 16]);
+    let (owner, issuer, scope, fence, time) = historical_source(&client, operation).await?;
+    let verifier = issuer.verifier(&mut None)?;
+    let mut measurements = Vec::new();
+    let mut history_walk_control = Vec::new();
+    for phase in 0..3 {
+        if phase == 1 {
+            // Grow the canonical history while keeping the replay-key index
+            // fixed: valid checkpoints retain the running operation's fence.
+            for n in 0..128u64 {
+                append_source(
+                    &client,
+                    4 + n,
+                    &format!("checkpoint-{n}"),
+                    SchedulerEvent::Checkpointed {
+                        operation_id: operation,
+                        checkpoint: crate::resources::CheckpointRef::new(
+                            ProviderRef::new(
+                                "test".into(),
+                                "machines".into(),
+                                "1".into(),
+                                &mut None,
+                            )?,
+                            n.to_le_bytes().to_vec(),
+                            Some("1".into()),
+                        )?,
+                        fence: fence.clone(),
+                    },
+                    time + 3 + n,
+                )
+                .await?;
+            }
+        } else if phase == 2 {
+            // Also retain the original new-key growth case. Only balanced
+            // replay-index probes may grow; RPC and payload work stay fixed.
+            for n in 0..128u64 {
+                let mut bytes = [0; 16];
+                bytes[..4].copy_from_slice(&(n as u32).to_le_bytes());
+                append_source(
+                    &client,
+                    132 + n,
+                    &format!("unrelated-{n}"),
+                    SchedulerEvent::Declared {
+                        spec: Box::new(spec(OperationId::from_bytes(bytes), 0)?),
+                    },
+                    time + 131 + n,
+                )
+                .await?;
+            }
+        }
+        client.reset_io();
+        let cancellation = CancellationToken::new();
+        let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .expect("native observer");
+        let mut work =
+            HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let proof = original_reservation_proof(
+            &client,
+            &owner,
+            &scope,
+            &verifier,
+            operation,
+            &fence,
+            &mut Some(&mut work),
+        )
+        .await?;
+        assert_eq!(proof.0.operation_id, operation);
+        let custody = work.into_custody()?;
+        let measured = native.receipt();
+        let calls = client.io_snapshot();
+        assert_eq!(calls.writes, 0);
+        println!(
+            "indexed owner history={} calls={} source_bytes={} authority_bytes={} items={}",
+            3 + phase * 128,
+            calls.reads + calls.inspections,
+            measured.source_bytes_read,
+            measured.authority_bytes_read,
+            measured.items_examined
+        );
+        measurements.push((
+            calls.reads + calls.inspections,
+            measured.source_bytes_read,
+            measured.authority_bytes_read,
+            measured.items_examined,
+        ));
+        drop((proof, custody));
+        // Deliberately restore one old canonical sequence lookup. Its SDK
+        // cursor walks retained history for the started record, beyond the
+        // initial-batch prefix cache, even though the payload stays bounded.
+        let mut control =
+            HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let source = coordinator_stream(&client, &mut Some(&mut control))?;
+        let record =
+            operations::one_record(&client, source.0.path(), 2, &mut Some(&mut control)).await?;
+        assert!(record.is_some());
+        drop((record, source));
+        drop(control.into_custody()?);
+        let measured = native.receipt();
+        let calls = client.io_snapshot();
+        println!(
+            "history-walk control history={} items={}",
+            3 + phase * 128,
+            measured.items_examined
+        );
+        history_walk_control.push((
+            calls.reads + calls.inspections,
+            measured.source_bytes_read,
+            measured.authority_bytes_read,
+            measured.items_examined,
+        ));
+    }
+    let bounded =
+        |before: (u64, u64, u64, u64), after: (u64, u64, u64, u64), retained: u64, lookups: u64| {
+            // The SDK's balanced replay tree includes unkeyed retained commits.
+            // Its height is bounded by twice log2(N); payload work must stay exact.
+            (before.0, before.1, before.2) == (after.0, after.1, after.2)
+                && after.3.saturating_sub(before.3) <= lookups * 2 * (retained.ilog2() as u64 + 1)
+        };
+    for (phase, retained) in [(1, 131), (2, 259)] {
+        assert!(bounded(measurements[0], measurements[phase], retained, 3));
+        assert!(
+            !bounded(
+                history_walk_control[0],
+                history_walk_control[phase],
+                retained,
+                4
+            ),
+            "same measurement harness missed the old canonical history walk"
+        );
+    }
+    // A deliberate full-source scan is the former algorithm's cost control.
+    // The same source observer must expose the additional work.
+    client.reset_io();
+    let scanned = read_coordinator_event_page(&client, 0, 1024).await?;
+    assert_eq!(scanned.len(), 259);
+    assert!(client.io_snapshot().read_bytes > measurements[0].1);
     Ok(())
 }

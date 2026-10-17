@@ -1,3 +1,4 @@
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { rootCertificates } from "node:tls";
 import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
@@ -5,15 +6,14 @@ import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-no
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v1/objects_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 /** Node/Bun transport configuration for the logical Objects service. */
-export interface ObjectsV1GrpcOptions {
+export interface ObjectsV1GrpcOptions extends CredentialOptions {
   readonly endpoint: string;
-  readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
 }
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
-import { MAX_BEARER_TOKEN_BYTES, ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
+import { ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
 import { validate_objects_v1_get_header, validate_objects_v1_request, validate_objects_v1_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
@@ -29,12 +29,12 @@ function grpcError(error: unknown): ObjectsV1Error {
 export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
+  const credential = credentialProvider(options);
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
@@ -143,6 +143,7 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
         case "buckets/delete": return await unary(wire.DeleteBucketRequestSchema, wire.DeleteBucketResponseSchema, value => this.clients.buckets.deleteBucket(value));
         case "objects/head": return await unary(wire.HeadObjectRequestSchema, wire.HeadObjectResponseSchema, value => this.clients.objects.headObject(value));
         case "objects/delete": return await unary(wire.DeleteObjectRequestSchema, wire.DeleteObjectResponseSchema, value => this.clients.objects.deleteObject(value));
+        case "objects/restore": return await unary(wire.RestoreObjectsRequestSchema, wire.RestoreObjectsResponseSchema, value => this.clients.objects.restoreObjects(value));
         case "objects/list": return await unary(wire.ListObjectsRequestSchema, wire.ListObjectsResponseSchema, value => this.clients.objects.listObjects(value));
         case "multipart/create": return await unary(wire.CreateMultipartRequestSchema, wire.MultipartUploadSchema, value => this.clients.multipart.createMultipart(value));
         case "multipart/list-parts": return await unary(wire.ListPartsRequestSchema, wire.ListPartsResponseSchema, value => this.clients.multipart.listParts(value));

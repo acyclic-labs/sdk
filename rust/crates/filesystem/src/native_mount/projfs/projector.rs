@@ -116,10 +116,19 @@ impl Projector {
                 if previous == Some(is_directory) {
                     continue;
                 }
-                let Some(child) = self.retire_previous_child(projection, child, previous)? else {
+                let Some(mut child) = self.retire_previous_child(projection, child, previous)?
+                else {
                     return Ok(Vec::new());
                 };
-                let placed = write_entry(projection, &child, entry)?;
+                let placed = match basis {
+                    Some(basis) => with_creating_name(
+                        &projection.runtime.creating_name,
+                        &mut child,
+                        (entry.facts.lookup.node.file_id, basis),
+                        |path| write_entry(projection, path, entry),
+                    ),
+                    None => write_entry(projection, &child, entry),
+                }?;
                 if placed == Placed::Retry {
                     names.remove(entry.component.as_slice());
                     lock_recover(&self.state).stale.insert(directory.clone());

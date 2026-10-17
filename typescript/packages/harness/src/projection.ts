@@ -1,7 +1,7 @@
 import type * as NativeModel from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicit, ref-only selection from canonical conversation history into model context. */
 import { DEFAULT_LIMITS,
-  type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
+  type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
 import { NativeContracts, type NativeFileRef } from "./native-contracts.js";
 import type { ContentBindings } from "./content.js";
@@ -142,12 +142,25 @@ export async function selectModelContext(
     ...(selection.checkpoint === undefined ? {} : { checkpoint: selection.checkpoint }),
   };
   contracts.validateModelContextSelection(nativeConversation, nativeSelection);
-  const files = await captureProjectionFiles(projectedMessages,
-    selection.messageIds, options, contracts, maxManifestBytes, maxAttachments, maxRenderBytes);
+  const fileKey = (file: FileRef) => new TextDecoder().decode(contracts.encodeCanonicalJson(file));
+  const manifests = new Set([...validated.values()].flatMap(message => message.attachments.kind === "manifest"
+    ? [fileKey(message.attachments.manifest)] : []));
+  const read = async (file: FileRef, maximumBytes: number): Promise<Uint8Array> => {
+    const manifest = manifests.has(fileKey(file));
+    const limit = Math.min(maximumBytes, manifest ? maxManifestBytes : HARNESS_PROJECTION_MAX_JSON_BYTES);
+    if (file.descriptor.byte_length > limit) throw new TypeError("projection file exceeds byte limit");
+    const resolve = manifest ? options.resolveManifest ?? options.resolveFile : options.resolveFile;
+    if (resolve === undefined) throw new TypeError("projection file resolution is unavailable");
+    const bytes = await resolve(file);
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
+      throw new TypeError("projection reader exceeded byte limit");
+    }
+    return bytes;
+  };
   const projected = await contracts.selectModelContext(
     nativeConversation,
     nativeSelection,
-    files, Math.min(maxMessages, 0xffff_ffff), Math.min(maxAttachments, 0xffff_ffff), maxRenderBytes, maxProjectedAttachments,
+    read, Math.min(maxMessages, 0xffff_ffff), Math.min(maxAttachments, 0xffff_ffff), maxRenderBytes, maxProjectedAttachments,
   );
   return Object.freeze({
     selection: Object.freeze({
@@ -157,68 +170,6 @@ export async function selectModelContext(
     }),
     messages: Object.freeze(projected.messages.map(message => Object.freeze({ role: message.role, content: publicModelContent(message.content) }))),
   });
-}
-
-async function captureProjectionFiles(
-  messages: readonly ConversationState["messages"][number][],
-  selectedIds: readonly ConversationMessageId[],
-  options: ConversationProjectionOptions,
-  contracts: NativeContracts,
-  maxManifestBytes: number,
-  maxAttachments: number,
-  maxRenderBytes: number,
-): Promise<Map<string, Uint8Array>> {
-  const files = new Map<string, Uint8Array>();
-  const byId = new Map(messages.map(message => [message.id, message]));
-  const fileKey = (file: FileRef): string => new TextDecoder().decode(contracts.encodeCanonicalJson(file));
-  const capture = async (
-    file: FileRef,
-    resolver: ConversationProjectionOptions["resolveFile"],
-    label: string,
-    limit: number,
-    ceiling?: number,
-  ) => {
-    if (resolver === undefined) throw new TypeError(`${label} resolution is unavailable`);
-    const reference = contracts.validate("file_ref", file);
-    if (ceiling !== undefined && reference.descriptor.byte_length > ceiling) {
-      throw new TypeError(`${label} exceeds JSON byte limit`);
-    }
-    if (reference.descriptor.byte_length > limit) throw new TypeError(`${label} exceeds its rendering limit`);
-    const bytes = await resolver(reference);
-    if (!(bytes instanceof Uint8Array)) throw new TypeError(`${label} resolver returned invalid bytes`);
-    if (ceiling !== undefined && bytes.byteLength > ceiling) {
-      throw new TypeError(`${label} exceeds JSON byte limit`);
-    }
-    if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
-    contracts.verifyFileBytes(reference, bytes);
-    const owned = Uint8Array.from(bytes);
-    files.set(fileKey(reference), owned);
-    return owned;
-  };
-  const manifestResolver = options.resolveManifest ?? options.resolveFile;
-  const manifest = async (reference: FileRef, itemCount: number): Promise<readonly Attachment[]> => {
-    if (itemCount > maxAttachments) throw new TypeError("selected message exceeds attachment projection limit");
-    if (reference.descriptor.byte_length > maxManifestBytes) throw new TypeError("attachment manifest exceeds projection limit");
-    const bytes = await capture(reference, manifestResolver, "attachment manifest", maxManifestBytes);
-    return contracts.decodeAttachmentManifest(reference, bytes, itemCount);
-  };
-  for (const id of selectedIds) {
-    const message = byId.get(id);
-    if (message === undefined) throw new TypeError("selected conversation message is missing");
-    if (message.kind === "tool_call") {
-      await capture(message.content, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
-      continue;
-    }
-    let attachments: readonly Attachment[] | undefined;
-    if (message.attachments.kind === "manifest") attachments = await manifest(message.attachments.manifest, message.attachments.item_count);
-    else attachments = message.attachments.items;
-    if (message.kind === "tool_result") {
-      const projection = attachments.find(attachment => attachment.label === "model_projection");
-      if (projection === undefined) throw new TypeError("tool result lacks its model projection");
-      await capture(projection.file, options.resolveFile, "tool artifact", maxRenderBytes, HARNESS_PROJECTION_MAX_JSON_BYTES);
-    }
-  }
-  return files;
 }
 
 function publicFile(file: NativeFileRef | Extract<NativeModel.ModelContentPart, { kind: "file" }>["file"]): FileRef {
@@ -245,7 +196,8 @@ export function publicModelContent(content: NativeModel.ModelContent): ModelCont
   };
   const mapContentPart = (part: NativeModel.ModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
-      return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
+      return { kind: part.kind, callId: part.call_id, name: part.name,
+        arguments: normalizeModelJson(part.arguments), metadata: part.metadata ?? null };
     }
     if (part.kind === "tool_result") {
       const content = part.content.kind === "json"

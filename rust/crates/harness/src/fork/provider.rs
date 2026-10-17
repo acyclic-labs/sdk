@@ -77,28 +77,7 @@ where
     F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
     B: FnOnce(&'a mut Option<&'w mut dyn HistoryIo>) -> F,
 {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(native) = work
-        .as_ref()
-        .and_then(|io| io.original_native_work())
-        .cloned()
-    {
-        return crate::NativeFutureBundle::new(&native, || build(work))
-            .map(HistoryContentFuture::Native);
-    }
-    let frame_bytes = if let Some(io) = work.as_deref_mut() {
-        let bytes = std::mem::size_of::<F>() as u64;
-        io.check_cancellation()?;
-        io.admit_owned(bytes)?;
-        io.retain_owned(bytes)?;
-        bytes
-    } else {
-        0
-    };
-    Ok(HistoryContentFuture::Ordinary {
-        future: Box::pin(build(work)),
-        frame_bytes,
-    })
+    HistoryContentFuture::new(work, build)
 }
 
 pub(crate) fn boundary_error(
@@ -123,11 +102,7 @@ pub(crate) fn boundary_error(
 }
 
 pub(in crate::fork) fn frame_bytes<T>(future: &HistoryContentFuture<'_, T>) -> u64 {
-    match future {
-        HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        HistoryContentFuture::Native(_) => 0,
-    }
+    future.frame_bytes()
 }
 
 pub(in crate::fork) fn release_frame<T>(

@@ -12,6 +12,11 @@ pub mod client;
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
+/// Shared durable timer records, derived from the harness timer stream format.
+pub mod timers;
+/// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
+pub mod guest;
+
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
@@ -37,9 +42,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 pub(crate) fn valid_token(token: &str) -> bool {
-    !token.trim().is_empty()
-        && token.len() <= MAX_BEARER_TOKEN_BYTES
-        && !token.contains(['\r', '\n', '\0'])
+    acyclic_auth::credential::valid_credential(token)
 }
 
 /// Rust-owned route names used by the TypeScript transport generator.

@@ -1,3 +1,4 @@
+import { tar } from "../../../shared/tests/archive.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,25 +12,8 @@ const entry = (path, body = "module fixture\n", type = "0") => ({ path, body: Bu
 const receiptFor = entries => ({ outputs: entries.map(item => item.path),
   output_sha256: Object.fromEntries(entries.map(item => [item.path, sha256(item.body)])) });
 
-// Minimal regular-file TAR fixture for the existing shared archive reader.
 function archiveBytes(entries) {
-  const blocks = [];
-  for (const item of entries) {
-    const header = Buffer.alloc(512);
-    header.write(item.path, 0, 100);
-    header.write("0000644\0", 100);
-    header.write("0000000\0", 108);
-    header.write("0000000\0", 116);
-    header.write(item.body.length.toString(8).padStart(11, "0") + "\0", 124);
-    header.write("00000000000\0", 136);
-    header.fill(32, 148, 156);
-    header.write(item.type, 156);
-    header.write("ustar\0", 257);
-    const checksum = header.reduce((sum, byte) => sum + byte, 0);
-    header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-    blocks.push(header, item.body, Buffer.alloc((512 - item.body.length % 512) % 512));
-  }
-  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+  return gzipSync(tar(entries.map(({ path, body, type }) => ({ name: path, bytes: body, type }))));
 }
 
 test("archive admission rejects traversal, links, aliases and digest drift", () => {

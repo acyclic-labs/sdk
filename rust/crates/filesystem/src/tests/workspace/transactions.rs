@@ -266,6 +266,9 @@ async fn transaction_rename_follows_posix_kind_rules() -> Result<(), Box<dyn Err
     let workspace = unbounded!(fs, create_workspace("rename-kinds"))?;
     let mut setup = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
     unbounded!(setup, create_dir_all("/a"))?;
+    unbounded!(setup, create_dir_all("/e"))?;
+    unbounded!(setup, create_dir_all("/full"))?;
+    unbounded!(setup, write("/full/x", OwnedBytes::from_static(b"x")))?;
     unbounded!(
         setup,
         create_symbolic_link("/d", OwnedBytes::from_static(b"/\x08"))
@@ -283,8 +286,19 @@ async fn transaction_rename_follows_posix_kind_rules() -> Result<(), Box<dyn Err
         unbounded!(transaction, rename("/a", "/f", true)),
         Err(WorkspaceError::NotDirectory)
     ));
-    assert!(unbounded!(transaction, rename("/d", "/a", true)).is_err());
-    assert!(unbounded!(transaction, rename("/f", "/a", true)).is_err());
+    assert!(matches!(
+        unbounded!(transaction, rename("/d", "/a", true)),
+        Err(WorkspaceError::IsDirectory)
+    ));
+    assert!(matches!(
+        unbounded!(transaction, rename("/f", "/a", true)),
+        Err(WorkspaceError::IsDirectory)
+    ));
+    // Nor does anything replace a directory that is not empty (`ENOTEMPTY`).
+    assert!(matches!(
+        unbounded!(transaction, rename("/e", "/full", true)),
+        Err(WorkspaceError::DirectoryNotEmpty)
+    ));
     unbounded!(transaction, rename("/a", "/a", true))?;
     unbounded!(transaction, rename("/a", "/a", false))
         .err()

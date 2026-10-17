@@ -1,6 +1,10 @@
 use super::*;
 
 impl CreationFixture {
+    pub(crate) fn signed_authority(&self) -> (&AuthorityVerifier, &Scope) {
+        (&self.host.verifier, &self.host.owner_scope)
+    }
+
     pub(crate) async fn new() -> Result<Self> {
         Self::new_with_grants(&[]).await
     }

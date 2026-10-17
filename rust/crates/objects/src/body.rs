@@ -72,8 +72,8 @@ impl BodyReadBuffer {
 }
 
 fn box_body_read<'a, F>(
-    future: F,
-    mode: &BodyReadMode,
+    mode: BodyReadMode,
+    future: impl FnOnce(BodyReadMode) -> F,
 ) -> Result<
     crate::v1::Guarded<BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>,
     BodyReadError,
@@ -82,7 +82,7 @@ where
     F: Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send + 'a,
 {
     #[cfg(not(target_arch = "wasm32"))]
-    let allocation = match mode {
+    let allocation = match &mode {
         BodyReadMode::Ordinary => None,
         BodyReadMode::Native(meter) => Some(
             acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<F>())
@@ -90,12 +90,9 @@ where
         ),
     };
     #[cfg(target_arch = "wasm32")]
-    let allocation = {
-        let _ = mode;
-        None
-    };
+    let allocation = None;
     Ok(crate::v1::Guarded {
-        value: Box::pin(future),
+        value: Box::pin(future(mode)),
         _allocation: allocation,
     })
 }
@@ -237,72 +234,77 @@ impl StoredBody {
                 Ok(body.slice(start..end))
             });
         }
-        futures::future::Either::Right(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let BodyReadMode::Native(meter) = &mode {
-                meter.check().map_err(crate::v1::NativeObjectsError::from)?;
-            }
-            if start > end || end > self.len() {
-                Err(Error::from(Unavailable))?;
-            }
-            match self {
-                Self::Memory(_) => unreachable!("memory reads use the direct path"),
-                Self::Composite { parts, .. } => {
-                    let mut offset = 0usize;
-                    for part in parts.value.iter() {
-                        let part_end = offset
-                            .checked_add(part.len())
-                            .ok_or(Error::from(Unavailable))?;
-                        if start >= offset && end <= part_end {
-                            return box_body_read(
-                                part.read_inner_async(start - offset, end - offset, mode.clone()),
-                                &mode,
-                            )?
+        let read = box_body_read(mode, |mode| self.read_nonresident(start, end, mode));
+        futures::future::Either::Right(async move { read?.await })
+    }
+
+    // Keep disk I/O state out of every resident read and its callers' frames.
+    async fn read_nonresident(
+        &self,
+        start: usize,
+        end: usize,
+        mode: BodyReadMode,
+    ) -> Result<acyclic_stream::OwnedBytes, BodyReadError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let BodyReadMode::Native(meter) = &mode {
+            meter.check().map_err(crate::v1::NativeObjectsError::from)?;
+        }
+        if start > end || end > self.len() {
+            Err(Error::from(Unavailable))?;
+        }
+        match self {
+            Self::Memory(_) => unreachable!("memory reads use the direct path"),
+            Self::Composite { parts, .. } => {
+                let mut offset = 0usize;
+                for part in parts.value.iter() {
+                    let part_end = offset
+                        .checked_add(part.len())
+                        .ok_or(Error::from(Unavailable))?;
+                    if start >= offset && end <= part_end {
+                        return part
+                            .read_inner_async(start - offset, end - offset, mode.clone())
                             .await;
-                        }
-                        offset = part_end;
                     }
-                    let mut output = BodyReadBuffer::new(end - start, &mode)?;
-                    let mut written = 0usize;
-                    let mut offset = 0usize;
-                    for part in parts.value.iter() {
-                        let part_end = offset
-                            .checked_add(part.len())
-                            .ok_or(Error::from(Unavailable))?;
-                        if part_end > start && offset < end {
-                            let bytes = box_body_read(
-                                part.read_inner_async(
-                                    start.saturating_sub(offset).min(part.len()),
-                                    end.saturating_sub(offset).min(part.len()),
-                                    mode.clone(),
-                                ),
-                                &mode,
-                            )?
+                    offset = part_end;
+                }
+                let mut output = BodyReadBuffer::new(end - start, &mode)?;
+                let mut written = 0usize;
+                let mut offset = 0usize;
+                for part in parts.value.iter() {
+                    let part_end = offset
+                        .checked_add(part.len())
+                        .ok_or(Error::from(Unavailable))?;
+                    if part_end > start && offset < end {
+                        let bytes = part
+                            .read_inner_async(
+                                start.saturating_sub(offset).min(part.len()),
+                                end.saturating_sub(offset).min(part.len()),
+                                mode.clone(),
+                            )
                             .await?;
-                            output.append(written, bytes.as_slice())?;
-                            written = written
-                                .checked_add(bytes.len())
-                                .ok_or(Error::from(Unavailable))?;
-                        }
-                        offset = part_end;
+                        output.append(written, bytes.as_slice())?;
+                        written = written
+                            .checked_add(bytes.len())
+                            .ok_or(Error::from(Unavailable))?;
                     }
-                    if written != end - start {
-                        Err(Error::from(Unavailable))?;
-                    }
-                    output.freeze(written)
+                    offset = part_end;
                 }
-                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-                Self::Local {
-                    root,
-                    digest,
-                    length,
-                    location,
-                } => {
-                    crate::physical::read_body_at(root, digest, *length, location, start, end, mode)
-                        .await
+                if written != end - start {
+                    Err(Error::from(Unavailable))?;
                 }
+                output.freeze(written)
             }
-        })
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+            Self::Local {
+                root,
+                digest,
+                length,
+                location,
+            } => {
+                crate::physical::read_body_at(root, digest, *length, location, start, end, mode)
+                    .await
+            }
+        }
     }
 }
 
@@ -350,6 +352,68 @@ pub(crate) struct LocalBodyReference {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn compact_read(frame: usize) -> bool {
+        frame <= 512
+    }
+
+    #[test]
+    fn resident_reads_do_not_carry_disk_future_storage() {
+        let body = StoredBody::memory(vec![1, 2, 3].into());
+        let fast = body.read_inner_async(0, 3, BodyReadMode::Ordinary);
+        // The unchanged disk/composite implementation is the inline negative control.
+        let inline = body.read_nonresident(0, 3, BodyReadMode::Ordinary);
+        let fast = std::mem::size_of_val(&fast);
+        let inline = std::mem::size_of_val(&inline);
+        eprintln!("body read frames: resident={fast}, inline-disk={inline}");
+        assert!(
+            compact_read(fast),
+            "resident frame retains disk state: {fast}"
+        );
+        assert!(
+            !compact_read(inline),
+            "inline control no longer exceeds the bound: {inline}"
+        );
+    }
+
+    proptest! {
+        // Frame separation preserves every selected byte and both range rejections,
+        // including reads crossing or lying within nested multipart boundaries.
+        #[test]
+        fn resident_and_nested_composite_ranges_equal_the_original_bytes(
+            parts in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..24), 1..8),
+            a in any::<usize>(), b in any::<usize>(),
+        ) {
+            let bytes: Vec<_> = parts.iter().flatten().copied().collect();
+            let resident = StoredBody::memory(bytes.clone().into());
+            let mut composite = StoredBody::Composite {
+                parts: Arc::new(crate::v1::Guarded {
+                    value: parts.into_iter().map(|part| StoredBody::memory(part.into())).collect(),
+                    _allocation: None,
+                }),
+                length: bytes.len(),
+            };
+            composite = StoredBody::Composite {
+                parts: Arc::new(crate::v1::Guarded {
+                    value: vec![composite],
+                    _allocation: None,
+                }),
+                length: bytes.len(),
+            };
+            let (a, b) = (a % (bytes.len() + 1), b % (bytes.len() + 1));
+            let (start, end) = (a.min(b), a.max(b));
+            for body in [&resident, &composite] {
+                let selected = futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary))
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                prop_assert_eq!(selected.as_slice(), &bytes[start..end]);
+                for (start, end) in [(1, 0), (0, bytes.len() + 1)] {
+                    prop_assert!(futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary)).is_err());
+                }
+            }
+        }
+    }
+
     #[test]
     fn resident_ranges_share_original_known_capacity_even_when_empty() {
         let mut bytes = Vec::with_capacity(128);

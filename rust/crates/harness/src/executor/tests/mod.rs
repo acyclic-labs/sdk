@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod sampling_allocations;
+
 use serde_json::json;
 
 fn uncompacted_executor(
@@ -15,23 +18,12 @@ fn uncompacted_executor(
 fn fixture_token_count(
     request: &crate::model::PreparedModelRequest,
 ) -> Result<crate::context::ModelTokenCount> {
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(request.bytes().len())
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-        message_tokens: vec![0; request.request().messages.len()],
-    })
-}
-
-#[derive(Default)]
-struct CountedModel {
-    capacity: u32,
-    requests: Mutex<Vec<ModelRequest>>,
-    interrupt_summary: bool,
-    reconciliations: AtomicUsize,
-    dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    accounting_fault: Option<AccountingFault>,
-    accounting_calls: AtomicUsize,
+        vec![0; request.request().messages.len()],
+    ))
 }
 
 #[derive(Clone, Copy)]
@@ -42,21 +34,23 @@ enum AccountingFault {
     CompactedPressure,
 }
 
-impl ModelProvider for CountedModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: self.capacity,
+fn counted_model(
+    capacity: u32,
+    fault: Option<AccountingFault>,
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+    recoveries: impl IntoIterator<Item = ScriptedReconciliation>,
+) -> (Arc<ScriptedModelProvider>, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let provider = ScriptedModelProvider::new(turns)
+        .with_reconciliations(recoveries)
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: capacity,
             output_tokens: 4_096,
         })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        self.accounting_calls.fetch_add(1, Ordering::SeqCst);
-        let message_tokens =
-            request
+        .with_token_counter(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let message_tokens = request
                 .request()
                 .messages
                 .iter()
@@ -82,88 +76,33 @@ impl ModelProvider for CountedModel {
                         .map_err(|_| Error::Invalid("synthetic token bound exceeds u32".into()))
                 })
                 .collect::<Result<Vec<_>>>()?;
-        let mut count = crate::context::ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: 100,
-            message_tokens,
-        };
-        match self.accounting_fault {
-            Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
-            Some(AccountingFault::MissingMessage) => {
-                count.message_tokens.pop();
-            }
-            Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
-            Some(AccountingFault::CompactedPressure)
-                if request.request().messages.first().is_some_and(|message| {
-                    matches!(
-                        message.content,
-                        ModelContent::Part(ModelContentPart::File { .. })
-                    )
-                }) =>
-            {
-                count.fixed_tokens = self.capacity;
-            }
-            _ => {}
-        }
-        Ok(count)
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        let summary = request.request().messages.last().is_some_and(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("Summarize the preceding context")));
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.request().clone());
-        self.dispatches.lock().unwrap().push(dispatch);
-        if summary && self.interrupt_summary {
-            return Box::pin(stream::iter([
-                Ok(ModelEvent::Content {
-                    delta: "partial-".into(),
-                }),
-                Err(Error::Storage("synthetic summary interruption".into())),
-            ]));
-        }
-        Box::pin(stream::iter([
-            Ok(ModelEvent::Content {
-                delta: if summary { "summary" } else { "answer" }.into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: crate::model::ModelDispatch,
-        observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async move {
-            if !self.interrupt_summary {
-                return Ok(None);
-            }
-            assert!(self.dispatches.lock().unwrap().contains(&dispatch));
-            assert_eq!(
-                observed,
-                vec![ModelEvent::Content {
-                    delta: "partial-".into()
-                }]
+            let mut count = crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                100,
+                message_tokens,
             );
-            self.reconciliations.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(vec![
-                ModelEvent::Content {
-                    delta: "summary".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: Value::Null,
-                },
-            ]))
-        })
-    }
+            match fault {
+                Some(AccountingFault::Digest) => count.request_digest[0] ^= 1,
+                Some(AccountingFault::MissingMessage) => {
+                    count.message_tokens.pop();
+                }
+                Some(AccountingFault::ExtraMessage) => count.message_tokens.push(1),
+                Some(AccountingFault::CompactedPressure)
+                    if request.request().messages.first().is_some_and(|message| {
+                        matches!(
+                            message.content,
+                            ModelContent::Part(ModelContentPart::File { .. })
+                        )
+                    }) =>
+                {
+                    count.input_tokens = u64::from(capacity);
+                    count.fixed_tokens = capacity;
+                }
+                _ => {}
+            }
+            Ok(count)
+        });
+    (Arc::new(provider), calls)
 }
 
 struct ChangingCompactionSource(AtomicUsize);
@@ -202,8 +141,6 @@ use crate::{
     tool::ToolExecutor,
 };
 
-use futures::stream;
-
 use std::collections::HashMap;
 
 use std::sync::{
@@ -211,94 +148,85 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-struct ScriptedModel {
-    calls: AtomicUsize,
-    requests: Mutex<Vec<ModelRequest>>,
-    dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    reconciliations: AtomicUsize,
-    responses: Vec<Vec<std::result::Result<ModelEvent, String>>>,
-    recovery: Option<(Vec<ModelEvent>, Vec<ModelEvent>)>,
-}
+use crate::test_support::{
+    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+};
 
 fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
-    ModelEvent::ToolCall {
-        call_id: call_id.into(),
-        name: "example.echo".into(),
+    ModelEvent::ToolCall(crate::model::ToolCall::new(
+        call_id.into(),
+        "example.echo".into(),
         arguments,
-    }
+    ))
 }
 
-impl Default for ScriptedModel {
-    fn default() -> Self {
-        Self {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-            dispatches: Mutex::new(Vec::new()),
-            reconciliations: AtomicUsize::new(0),
-            responses: vec![
-                vec![
-                    Ok(echo_call("call-1", json!({"value":"hello"}))),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish":"stop"}),
-                    }),
-                ],
-            ],
-            recovery: None,
-        }
-    }
+fn tool_turn(calls: impl IntoIterator<Item = ModelEvent>) -> ScriptedTurn {
+    let mut events: Vec<_> = calls.into_iter().map(ScriptedEvent::Event).collect();
+    events.push(ScriptedEvent::Event(ModelEvent::Completed {
+        metadata: Value::Null,
+    }));
+    ScriptedTurn::Events(events)
 }
 
-impl ScriptedModel {
-    fn slipping() -> Self {
-        let mut model = Self::default();
-        model.responses.insert(
-            0,
-            vec![
-                Ok(echo_call("call-1", json!({"parameters":{"value":"hello"}}))),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ],
-        );
-        model.responses[1][0] = Ok(echo_call("call-2", json!({"value":"hello"})));
-        model
-    }
-
-    fn recoverable() -> Self {
-        let observed = vec![
-            ModelEvent::Content {
-                delta: "partial-".into()
-            };
-            70
-        ];
-        let mut response: Vec<_> = observed.iter().cloned().map(Ok).collect();
-        response.push(Err("stream interrupted".into()));
-        Self {
-            responses: vec![response],
-            recovery: Some((
-                observed,
-                vec![
-                    ModelEvent::Content {
-                        delta: "restored".into(),
-                    },
-                    ModelEvent::Completed {
-                        metadata: json!({"finish":"stop"}),
-                    },
-                ],
-            )),
-            ..Self::default()
-        }
-    }
+fn done_turn() -> ScriptedTurn {
+    ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Content {
+            delta: "done".into(),
+        }),
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"finish":"stop"}),
+        }),
+    ])
 }
 
+fn scripted_model() -> ScriptedModelProvider {
+    ScriptedModelProvider::new([
+        tool_turn([echo_call("call-1", json!({"value":"hello"}))]),
+        done_turn(),
+    ])
+    .with_token_counter(fixture_token_count)
+}
+
+fn slipping_model() -> ScriptedModelProvider {
+    ScriptedModelProvider::new([
+        tool_turn([echo_call("call-1", json!({"parameters":{"value":"hello"}}))]),
+        tool_turn([echo_call("call-2", json!({"value":"hello"}))]),
+        done_turn(),
+    ])
+    .with_token_counter(fixture_token_count)
+}
+
+fn recoverable_model(attempts: usize) -> ScriptedModelProvider {
+    let observed = vec![
+        ModelEvent::Content {
+            delta: "partial-".into()
+        };
+        70
+    ];
+    let turns = (0..attempts)
+        .map(|_| {
+            let mut events: Vec<_> = observed.iter().cloned().map(ScriptedEvent::Event).collect();
+            events.push(ScriptedEvent::Error {
+                error: "stream interrupted".into(),
+            });
+            ScriptedTurn::Events(events)
+        })
+        .collect::<Vec<_>>();
+    ScriptedModelProvider::new(turns)
+        .with_reconciliations((0..attempts).map(|_| ScriptedReconciliation {
+            orphan: false,
+            observed: observed.clone(),
+            continuation: Some(vec![
+                ModelEvent::Content {
+                    delta: "restored".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: json!({"finish":"stop"}),
+                },
+            ]),
+        }))
+        .with_token_counter(fixture_token_count)
+}
 async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
     let captured = Arc::new(Mutex::new(None));
     let sink = captured.clone();
@@ -378,69 +306,6 @@ impl ToolExecutor for ContextOnlyTool {
     }
 }
 
-impl ModelProvider for ScriptedModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        fixture_token_count(request)
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(
-            request.bytes(),
-            crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
-        );
-        assert_eq!(
-            request.request_digest(),
-            *blake3::hash(request.bytes()).as_bytes()
-        );
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.dispatches.lock().unwrap().push(dispatch);
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.request().clone());
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let events = &self.responses[call.min(self.responses.len() - 1)];
-        Box::pin(stream::iter(
-            events
-                .iter()
-                .cloned()
-                .map(|event| event.map_err(Error::Storage)),
-        ))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: crate::model::ModelDispatch,
-        observed: &'a [ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        let Some((expected, response)) = &self.recovery else {
-            return Box::pin(async { Ok(None) });
-        };
-        assert!(self.dispatches.lock().unwrap().contains(&dispatch));
-        self.reconciliations.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move {
-            if observed != expected {
-                return Err(Error::Conflict("unexpected model event prefix".into()));
-            }
-            Ok(Some(response.clone()))
-        })
-    }
-}
-
 struct FakeTool(AtomicUsize);
 
 impl crate::tool::ToolExecutor for FakeTool {
@@ -488,6 +353,7 @@ struct Journal(
     Mutex<Vec<ExecutionRecord>>,
     Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
+    AtomicUsize,
     AtomicUsize,
     AtomicUsize,
 );
@@ -556,6 +422,7 @@ impl ExecutionJournal for Journal {
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
         _context: Option<&'a crate::runtime::TaskContext>,
+        _summary_files: &'a [&'a FileRef],
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_some() {
             return Err(stock_boundary(
@@ -728,6 +595,9 @@ impl ExecutionJournal for Journal {
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.4.fetch_add(1, Ordering::SeqCst);
+            if reference.descriptor().media_type() == "text/plain" {
+                self.5.fetch_add(1, Ordering::SeqCst);
+            }
             self.1
                 .lock()
                 .unwrap()
@@ -798,22 +668,6 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
     }
 }
 
-#[derive(Default)]
-struct PrefixBoundaryModel(Mutex<Vec<Vec<u8>>>);
-
-impl ModelProvider for PrefixBoundaryModel {
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        _dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        self.0.lock().unwrap().push(request.bytes().to_vec());
-        Box::pin(stream::iter([Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
-    }
-}
-
 struct OnceStage(AtomicUsize);
 
 impl crate::context::ContextStage for OnceStage {
@@ -841,8 +695,17 @@ impl crate::context::ContextStage for OnceStage {
 
 mod compaction;
 mod content;
+mod invocation_bounds;
+mod output_bounds;
 mod recovery;
 mod replay;
+mod summary_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod request_ownership;
+#[cfg(feature = "filesystem")]
+mod summary_authorization;
+#[cfg(not(target_arch = "wasm32"))]
+mod tool_metadata;
 mod tools_1;
 mod tools_2;
 fn echo_tools(
@@ -855,6 +718,7 @@ fn echo_tools(
     tools.register(
         (
             crate::tool::Tool {
+                hook_names: &[],
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
                     revision: "1".into(),
@@ -872,4 +736,15 @@ fn echo_tools(
         None,
     )?;
     Ok(tools)
+}
+
+fn call_message(invocation: &ToolInvocation) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        ))),
+    }
 }

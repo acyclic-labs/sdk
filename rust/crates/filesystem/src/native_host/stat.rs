@@ -23,6 +23,8 @@ pub struct HostStat {
     pub volume_serial_number: u32,
     #[cfg(unix)]
     created: Option<cap_std::time::SystemTime>,
+    #[cfg(unix)]
+    handle: Option<[u8; 32]>,
 }
 #[cfg(unix)]
 impl std::fmt::Debug for HostStat {
@@ -81,7 +83,7 @@ impl HostStat {
     pub fn nlink(&self) -> u64 {
         #[cfg(target_os = "linux")]
         {
-            self.raw.st_nlink
+            lossless(self.raw.st_nlink)
         }
         #[cfg(target_os = "macos")]
         {
@@ -146,7 +148,11 @@ impl HostStat {
         let created = None;
         #[cfg(target_os = "macos")]
         let created = unix_time(raw.st_birthtime, raw.st_birthtime_nsec).ok();
-        Ok(Self { raw, created })
+        Ok(Self {
+            raw,
+            created,
+            handle: None,
+        })
     }
     #[cfg(target_os = "linux")]
     pub(super) fn from_statx(stat: rustix::fs::Statx) -> Self {
@@ -156,7 +162,7 @@ impl HostStat {
         raw.st_size = stat.stx_size.cast_signed();
         raw.st_dev = rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor);
         raw.st_ino = stat.stx_ino;
-        raw.st_nlink = u64::from(stat.stx_nlink);
+        raw.st_nlink = lossless(stat.stx_nlink);
         raw.st_uid = stat.stx_uid;
         raw.st_gid = stat.stx_gid;
         raw.st_rdev = rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor);
@@ -171,7 +177,25 @@ impl HostStat {
         } else {
             None
         };
-        Self { raw, created }
+        Self {
+            raw,
+            created,
+            handle: None,
+        }
+    }
+    /// A digest of the object's kernel file handle, which names its inode
+    /// and, unlike the inode number, that inode's generation: a file
+    /// created on a removed one's inode gets another, even within one tick
+    /// of the birth time. `None` where the file system issues no handles.
+    #[cfg(unix)]
+    #[must_use]
+    pub const fn handle(&self) -> Option<&[u8; 32]> {
+        self.handle.as_ref()
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) const fn with_handle(mut self, handle: Option<[u8; 32]>) -> Self {
+        self.handle = handle;
+        self
     }
     #[cfg(windows)]
     pub(super) fn from_stat_information(
@@ -192,6 +216,13 @@ impl HostStat {
         })
     }
 }
+/// Converts between integer widths that differ by Linux architecture (`nlink_t` is
+/// u64 on x86_64 and u32 on aarch64) without a same-type conversion on either.
+#[cfg(target_os = "linux")]
+fn lossless<T, U: From<T>>(value: T) -> U {
+    U::from(value)
+}
+
 #[cfg(unix)]
 pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::SystemTime> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);

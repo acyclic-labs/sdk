@@ -318,37 +318,6 @@ pub(crate) fn validate_path(path: &str, child: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn workspace_path_argument(mount: &Path, argument: &str) -> Result<String, String> {
-    let argument = Path::new(argument);
-    let relative = if argument.is_absolute() {
-        argument
-            .strip_prefix(mount)
-            .map_err(|_| "path is outside the managed workspace".to_owned())?
-    } else {
-        argument
-    };
-    let mut result = String::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(name) => {
-                let name = name
-                    .to_str()
-                    .ok_or_else(|| "compatibility path is not valid Unicode".to_owned())?;
-                result.push('/');
-                result.push_str(name);
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err("path escapes the managed workspace".to_owned());
-            }
-        }
-    }
-    if result.is_empty() {
-        return Err("path must name a file inside the managed workspace".to_owned());
-    }
-    Ok(result)
-}
-
 pub(crate) fn validate_shell_paths(command: &str, child: &Path) -> Result<(), String> {
     if command.contains(['$', '`'])
         || cfg!(target_os = "windows") && command.contains('%')
@@ -444,13 +413,6 @@ pub(crate) fn native_namespace_path(path: &str) -> Result<NamespacePath, String>
         .map_err(display)
 }
 
-pub(crate) fn reserved_ignore_rules() -> String {
-    RESERVED_ROOT_NAMES
-        .iter()
-        .map(|name| format!("{name}/\n"))
-        .collect()
-}
-
 pub(crate) const fn native_filesystem_profile() -> FilesystemProfile {
     if cfg!(windows) {
         FilesystemProfile::Windows
@@ -478,38 +440,6 @@ pub(crate) fn verify_native_root_identity(
         ));
     }
     Ok(())
-}
-
-pub(crate) async fn merge_drivers_for(
-    workspace: &LocalLazyWorkspace,
-) -> Result<Arc<MergeDriverRegistry>, String> {
-    let attributes = match workspace
-        .read(
-            "/.gitattributes",
-            1024 * 1024,
-            &mut acyclic_fs::kernel::KernelAccounting::Standalone {
-                allocations: Default::default(),
-                work: acyclic_fs::WorkCounters::UNCHARGED,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &CancellationToken::new(),
-            },
-        )
-        .await
-    {
-        Ok(chunk) => String::from_utf8(chunk.bytes.to_vec())
-            .map_err(|_| ".gitattributes must be UTF-8".to_owned())?,
-        Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
-        Err(error) => return Err(display(error)),
-    };
-    let mut registry = MergeDriverRegistry::new();
-    registry
-        .register("text", Arc::new(DefaultTextMergeDriver))
-        .map_err(display)?;
-    registry.set_default("text").map_err(display)?;
-    if !attributes.trim().is_empty() {
-        registry.set_git_attributes(&attributes).map_err(display)?;
-    }
-    Ok(Arc::new(registry))
 }
 
 pub(crate) fn agent_change_filter(

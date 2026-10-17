@@ -36,7 +36,10 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
     .chain(fork.preparation.child_result_volume.as_ref());
     if let Some(io) = io {
         for volume in volumes {
-            for prefix in ["volume:read:", "volume:write:"] {
+            for prefix in [
+                acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
+            ] {
                 if !io.contains_capability(&child.grants, volume, prefix)? {
                     return Err(recursive_reject(
                         Some(io),
@@ -47,7 +50,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
             }
         }
         for file in &input_files {
-            if !io.contains_capability(&child.grants, file, "file:read:")? {
+            if !io.contains_capability(&child.grants, file, acyclic_fs::access::FILE_READ_PREFIX)? {
                 return Err(recursive_reject(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,

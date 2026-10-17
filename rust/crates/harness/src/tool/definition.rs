@@ -13,12 +13,15 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema for invocation arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub projection_schema: Value,
 }
 
@@ -76,7 +79,9 @@ impl ToolDefinition {
                 crate::wire::ErrorCode::Invalid,
             )?)?,
         };
-        crate::executor::with_history_io(Some(&io), |work| definition.validate_schemas(work))?;
+        crate::executor::with_history_io(Some(&io), |work| {
+            definition.validate_schemas_checked(work, &|| Ok(()))
+        })?;
         use crate::filesystem::UploadRecord as _;
         let retained = (std::mem::size_of::<Self>() as u64)
             .checked_add(definition.logical_owned_bytes()?)
@@ -93,20 +98,32 @@ impl ToolDefinition {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        Self::validate_identity_fields(&self.name, &self.revision, work)?;
-        self.validate_schemas(work)
+        self.validate_checked(work, &|| Ok(()))
     }
 
-    fn validate_schemas(
+    pub(crate) fn validate_checked(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        check: &impl Fn() -> Result<()>,
+    ) -> Result<()> {
+        check()?;
+        Self::validate_identity_fields(&self.name, &self.revision, work)?;
+        self.validate_schemas_checked(work, check)
+    }
+
+    fn validate_schemas_checked(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         for schema in [
             &self.input_schema,
             &self.output_schema,
             &self.projection_schema,
         ] {
+            check()?;
             crate::executor::compile_json_schema(schema, "tool", work)?;
+            check()?;
         }
         Ok(())
     }

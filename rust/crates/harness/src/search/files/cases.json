@@ -1,0 +1,164 @@
+[
+  {
+    "name": "blank-query",
+    "request": {
+      "query": "  \n"
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": true,
+    "steps": [],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "capability-denied",
+    "request": {
+      "query": "test"
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": false,
+    "steps": [],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "hidden-dispatch",
+    "request": {
+      "query": "test"
+    },
+    "submit": true,
+    "configured": false,
+    "authorized": true,
+    "steps": [],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "invalid-limit",
+    "request": {
+      "query": "test",
+      "max_results": 0
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": true,
+    "steps": [],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "no-key",
+    "request": {
+      "query": "test"
+    },
+    "submit": false,
+    "configured": false,
+    "authorized": true,
+    "steps": [],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "provider-rejected",
+    "request": {
+      "query": "test"
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": true,
+    "steps": [
+      {
+        "request": {
+          "query": "test",
+          "max_results": 5
+        },
+        "error": "scripted search unavailable"
+      }
+    ],
+    "expected": {
+      "status": "rejected"
+    }
+  },
+  {
+    "name": "ranked-sources",
+    "request": {
+      "query": "Rust release",
+      "max_results": 2
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": true,
+    "steps": [
+      {
+        "request": {
+          "query": "Rust release",
+          "max_results": 2
+        },
+        "response": {
+          "results": [
+            {
+              "url": "https://example.com/release",
+              "title": "Release",
+              "snippet": "Current release"
+            },
+            {
+              "url": "https://example.com/notes",
+              "title": "Notes",
+              "snippet": "Release notes"
+            }
+          ]
+        }
+      }
+    ],
+    "expected": {
+      "status": "succeeded",
+      "response": {
+        "results": [
+          {
+            "url": "https://example.com/release",
+            "title": "Release",
+            "snippet": "Current release"
+          },
+          {
+            "url": "https://example.com/notes",
+            "title": "Notes",
+            "snippet": "Release notes"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "unicode-default-limit",
+    "request": {
+      "query": "東京 & Rust"
+    },
+    "submit": true,
+    "configured": true,
+    "authorized": true,
+    "steps": [
+      {
+        "request": {
+          "query": "東京 & Rust",
+          "max_results": 5
+        },
+        "response": {
+          "results": []
+        }
+      }
+    ],
+    "expected": {
+      "status": "succeeded",
+      "response": {
+        "results": []
+      }
+    }
+  }
+]

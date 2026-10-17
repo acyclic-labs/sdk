@@ -1,0 +1,8 @@
+{"writes":[{"path":".tasks/t/turns/0/tools/c/arguments/0","text":"{\"path\":"},{"path":
+  ".tasks/t/turns/0/tools/c/arguments/1","text":"\"a\"}"},{"path":".tasks/t/turns/0/tools/c/stdout/0","text":"o"},{
+  "path":".tasks/t/turns/0/tools/c/stdout/1","text":"ut"},{"path":".tasks/t/turns/0/tools/c/stderr/0","text":"err"}],
+  "expect":{"files":{".tasks/t/turns/0/tools/c/arguments/0":"{\"path\":",".tasks/t/turns/0/tools/c/arguments/1":"\"a\"}"
+  ,".tasks/t/turns/0/tools/c/stdout/0":"o",".tasks/t/turns/0/tools/c/stdout/1":"ut",".tasks/t/turns/0/tools/c/stderr/0":
+  "err"},"changes":[{"path":".tasks/t/turns/0/tools/c/arguments/0","text":"{\"path\":"},{"path":
+  ".tasks/t/turns/0/tools/c/arguments/1","text":"\"a\"}"},{"path":".tasks/t/turns/0/tools/c/stdout/0","text":"o"},{
+  "path":".tasks/t/turns/0/tools/c/stdout/1","text":"ut"},{"path":".tasks/t/turns/0/tools/c/stderr/0","text":"err"}]}}

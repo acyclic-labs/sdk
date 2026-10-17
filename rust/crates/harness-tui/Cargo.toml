@@ -1,0 +1,54 @@
+[package]
+name = "acyclic-harness-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Renderer-independent prompt editor and ratatui input widget"
+
+[features]
+default = []
+tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:serde"]
+
+[build-dependencies]
+serde_json.workspace = true
+
+[dependencies]
+serde = { workspace = true, optional = true }
+vte = { version = "0.15", optional = true }
+caseless = { version = "0.2.2", optional = true }
+arrayvec = { version = "0.7", optional = true }
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.28", features = ["event-stream"], optional = true }
+serde_json = { workspace = true, optional = true }
+shell-words = { version = "1.1", optional = true }
+tempfile = { version = "3.27", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+
+[dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+alacritty_terminal = "0.26"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "termios"], optional = true }
+signal-hook = { version = "0.4", optional = true }
+
+[target.'cfg(acyclic_harness_tui_loom)'.dependencies]
+loom = "=0.7.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix-openpty = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
+
+[lints]
+workspace = true

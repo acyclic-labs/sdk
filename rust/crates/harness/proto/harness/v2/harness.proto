@@ -59,6 +59,9 @@ message OperationStatus {
   Authority owner = 5;
   bool cancellation_requested = 6;
   uint64 revision = 7;
+  // Owner history committed after reading this operation projection. Headless
+  // clients must consume through this cut before deciding whether it settled.
+  ReplayCursor replay_through = 8;
 }
 message ObserveRequest {
   string operation_id = 1;
@@ -239,6 +242,7 @@ service HarnessService {
   rpc Submit(CommandEnvelope) returns (Admission);
   rpc Replay(ResumeRequest) returns (stream Delivery);
   rpc Observe(ObserveRequest) returns (OperationStatus);
+  rpc WatchOperation(ObserveRequest) returns (stream OperationStatus);
   rpc Cancel(CancelRequest) returns (CancelResponse);
 }
 

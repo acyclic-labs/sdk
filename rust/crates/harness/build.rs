@@ -2,21 +2,24 @@
 //! the tonic service glue under the `grpc` feature.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // This checked mirror is generated from the repository's canonical schema.
-    // Keeping the build input inside the crate makes crates.io archives
-    // independently buildable instead of depending on the monorepo layout.
+    // Crate-owned protocol sources make the published archive independently buildable.
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
-    println!("cargo:rerun-if-changed={proto}");
-    println!("cargo:rerun-if-changed={include}/protocol/v1/protocol.proto");
+    println!("cargo:rerun-if-changed=proto");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");
-    config.file_descriptor_set_path(
-        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin"),
-    );
+    let descriptor =
+        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin");
+    config.file_descriptor_set_path(&descriptor);
     config.compile_protos(&[proto], &[include])?;
+    let digest = blake3::hash(&std::fs::read(descriptor)?);
+    println!(
+        "cargo:rustc-env=HARNESS_DESCRIPTOR_DIGEST={}",
+        digest.to_hex()
+    );
     #[cfg(feature = "grpc")]
     {
         // Tonic service glue reuses the canonical messages generated above;

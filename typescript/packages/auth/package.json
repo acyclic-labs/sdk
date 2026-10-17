@@ -1,0 +1,33 @@
+{
+  "name": "@acyclic-labs/auth",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "Shared Acyclic capability chain contract",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./dist/index.js",
+    "./holder": {
+      "types": "./dist/holder.d.ts",
+      "default": "./dist/holder.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/auth/v1/auth_pb.d.ts",
+      "default": "./generated/proto/auth/v1/auth_pb.js"
+    }
+  },
+  "files": [
+    "dist",
+    "generated"
+  ],
+  "dependencies": {
+    "@bufbuild/protobuf": "2.16.0"
+  },
+  "scripts": {
+    "build": "bun run generate && bun run build:wasm && tsc -b",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs auth",
+    "generate": "bun ../../../scripts/generate.mjs auth",
+    "test": "bun run generate",
+    "prepack": "bun run generate"
+  }
+}

@@ -13,14 +13,33 @@ where
         invoke(&self.runtime, work, || async {
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
+            let observation = self
+                .checkout
+                .observe(
+                    ViewGate::callback_owner()?,
+                    &mut carrier,
+                    cancellation,
+                    Some(&self.cancellation),
+                )
+                .await?;
+            let file = self
+                .lookup_in(&observation, path, &mut carrier)
+                .await?
+                .ok_or(MountSourceError::NotFound)?
+                .node
+                .file_id;
+            drop(observation);
             let mut candidate = self
                 .checkout
-                .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
+                .file_candidate(file, &mut carrier, cancellation, Some(&self.cancellation))
                 .await?;
             let lookup = self
                 .lookup_in(&candidate.checkout, path, &mut carrier)
                 .await?
                 .ok_or(MountSourceError::NotFound)?;
+            if lookup.node.file_id != file {
+                return Err(MountSourceError::Stale);
+            }
             candidate
                 .checkout
                 .set_attributes(

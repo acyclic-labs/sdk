@@ -8,6 +8,9 @@ pub struct ReadFileInput {
     /// Owner-authorized immutable source.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
+    /// Optional exact UTF-8 byte interval; omission reads the complete file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<super::text::TextRange>,
 }
 
 /// Single-operation UTF-8 publication arguments.
@@ -61,4 +64,42 @@ pub struct FileResult {
     /// Exact retained publication result with workspace and content identity.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
     pub file: FileRef,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod codec_tests {
+    use super::*;
+    use crate::{
+        conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+    use proptest::prelude::*;
+
+    fn round_trip<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        value: T,
+    ) {
+        let encoded = serde_json::to_vec(&value).unwrap();
+        assert_eq!(serde_json::from_slice::<T>(&encoded).unwrap(), value);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Every accepted structured tool argument has a lossless wire codec,
+        // including arbitrary Unicode text and the full range endpoint domain.
+        #[test]
+        fn file_arguments_round_trip(
+            path in "[a-z]{1,16}/[a-z]{1,16}", text in ".{0,128}",
+            replacement in ".{0,128}", endpoints in any::<Option<(u64, u64)>>(),
+        ) {
+            let volume = VolumeRef::new(
+                ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
+                "volume".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None,
+            ).unwrap();
+            let file = FileRef::new(volume, path.clone(), "version".into(),
+                FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
+            round_trip(ReadFileInput { file: file.clone(), range: endpoints.map(|(start, end)| text::TextRange { start, end }) });
+            round_trip(EditFileInput { file, old_text: text.clone(), new_text: replacement });
+            round_trip(WriteFileInput { path, text, media_type: "text/plain".into(), display_name: "file".into() });
+        }
+    }
 }

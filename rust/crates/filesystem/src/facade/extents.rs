@@ -151,7 +151,7 @@ pub(crate) async fn seek_record_extent_with_accounting<
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    pub(super) async fn plan_record_extents(
+    pub(crate) async fn plan_record_extents(
         &mut self,
         record: FileRecord,
         range: ByteRange,

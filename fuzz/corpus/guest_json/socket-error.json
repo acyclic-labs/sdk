@@ -1,0 +1,1 @@
+{"type":"socket","connectionId":"app-1","event":{"type":"error","offset":"3","code":"timeout","message":"closed"}}

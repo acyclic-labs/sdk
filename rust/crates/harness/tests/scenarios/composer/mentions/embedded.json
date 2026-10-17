@@ -1,0 +1,4 @@
+{
+  "prompt": "path@a.txt",
+  "expect": {"mention_files":[],"result":{"kind":"prompt","text":"path@a.txt","mentions":[]}}
+}

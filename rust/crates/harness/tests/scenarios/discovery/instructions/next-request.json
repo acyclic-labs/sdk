@@ -1,0 +1,2 @@
+{"seed":{"AGENTS.md":"Old rules"},"discovery":{"after_capture":{"AGENTS.md":"New rules"},"reload":"next_request"},
+  "expect":{"request_files":[["New rules"]],"files":{"AGENTS.md":"New rules"}}}

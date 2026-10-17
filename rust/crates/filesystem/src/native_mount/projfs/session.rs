@@ -121,6 +121,7 @@ impl ProjFsSession {
             root,
             metadata_root,
             staging: Mutex::new(None),
+            creating_name: RwLock::new((MountPath::root(), None)),
             writable: request.writable,
             metadata_baselines: Mutex::new(HashMap::new()),
             projection: Mutex::new(HashMap::new()),
@@ -191,6 +192,8 @@ impl ProjFsSession {
             })?;
         }
         let callbacks = callbacks();
+        #[cfg(test)]
+        let callbacks = super::tests::read_bindings::registered_callbacks(callbacks);
         let context = (&mut &*work).attempt_io(WriteOperations.delta(1), || {
             // SAFETY: this Arc allocation is stable until SDK stop drains callbacks.
             unsafe {
@@ -556,6 +559,11 @@ pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
     match error.semantic_error() {
         MountSourceError::NotFound => HR_FILE_NOT_FOUND,
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
+        // The statuses NTFS gives a rename across kinds or over a
+        // directory that is not empty.
+        MountSourceError::NotDirectory => HR_DIRECTORY,
+        MountSourceError::IsDirectory => HR_ACCESS_DENIED,
+        MountSourceError::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
         MountSourceError::Invalid(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
         MountSourceError::Stale

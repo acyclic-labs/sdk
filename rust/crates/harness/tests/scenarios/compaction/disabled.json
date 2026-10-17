@@ -1,0 +1,6 @@
+{"compaction":{"kind":"disabled"},"turns":["answer"],"replay":true,"expect":{"text":"answer","request_count":1,
+  "requests":[{"max_output_tokens":null,"messages":[{"role":"system","content":"keep instructions"},{"role":"user",
+  "content":"old request"},{"role":"assistant","content":"old answer"},{"role":"user","content":"older request"},
+  {"role":"assistant","content":"recent answer"},{"role":"user","content":"recent request"},{"role":"user",
+  "content":"current request"}]}],"not_events":[{"kind":"context_compacted"},{"kind":"model_started",
+  "purpose":"summary"}]}}

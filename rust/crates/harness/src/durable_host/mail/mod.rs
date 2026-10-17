@@ -435,6 +435,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             ) {
                 *slot = match condition {
                     CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
+                    CommitCondition::Head { path, expected, .. } => {
+                        (path.as_str(), Some(*expected))
+                    }
                     CommitCondition::Absent { path } => (path.as_str(), None),
                 };
                 count += 1;

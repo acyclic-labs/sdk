@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// If 8th MSB of a frame is `0` for data and `1` for trailer
-const TRAILER_BIT: u8 = 0b10000000;
+pub(crate) const TRAILER_BIT: u8 = 0b10000000;
 
 pub struct EncodedBytes {
     encoding: Encoding,
@@ -36,6 +36,7 @@ impl EncodedBytes {
         })
     }
 
+    #[cfg(test)]
     fn response_limit(&self, limits: UnaryResponseLimits) -> usize {
         match self.encoding {
             Encoding::None => limits.binary_body_bytes(),
@@ -144,12 +145,15 @@ impl ResponseBody {
         content_type: &str,
         abort: AbortGuard,
         limits: Option<UnaryResponseLimits>,
+        streaming: bool,
     ) -> Result<Self, Error> {
         let body_stream =
             wasm_streams::ReadableStream::from_raw(body_stream.unchecked_into()).into_stream();
 
         let buf = EncodedBytes::new(content_type)?;
-        let maximum = limits.map(|limits| buf.response_limit(limits));
+        let maximum = limits.and_then(|limits| {
+            limits.body_bytes(streaming, matches!(buf.encoding, Encoding::Base64))
+        });
         Ok(Self {
             body_stream: BodyStream::new(body_stream, abort, maximum),
             buf,
@@ -564,17 +568,19 @@ mod budget_regressions {
 
     #[test]
     fn explicit_data_frame_bound_is_independent_of_encoded_body_bound() {
-        let mut body = ResponseBody::default();
-        body.state = ReadState::DataLength;
-        body.maximum = Some(128);
-        body.maximum_message = Some(8);
-        body.buf.append(Bytes::from_static(&[0, 0, 0, 9])).unwrap();
-        assert!(matches!(
-            Pin::new(&mut body).step(),
-            Err(Error::ResponseTooLarge)
-        ));
-        assert!(body.data.is_none());
-        assert!(body.incomplete_data.is_empty());
+        for aggregate in [None, Some(128)] {
+            let mut body = ResponseBody::default();
+            body.state = ReadState::DataLength;
+            body.maximum = aggregate;
+            body.maximum_message = Some(8);
+            body.buf.append(Bytes::from_static(&[0, 0, 0, 9])).unwrap();
+            assert!(matches!(
+                Pin::new(&mut body).step(),
+                Err(Error::ResponseTooLarge)
+            ));
+            assert!(body.data.is_none());
+            assert!(body.incomplete_data.is_empty());
+        }
     }
 
     #[test]

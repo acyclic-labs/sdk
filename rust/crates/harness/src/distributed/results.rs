@@ -74,72 +74,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Err(Error::Conflict("coordinator retry identity reused".into()))
             };
         }
-        let expected_revision = self
-            .scheduler
-            .operation(parent)
-            .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?
-            .revision;
-        let (outcome, cancel, reducer, reduction_digest) = match self
-            .scheduler
-            .orchestration(parent, &mut None)?
-        {
-            OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None, None),
-            OrchestrationDecision::Assemble {
-                assembly,
-                values,
-                cancel,
-            } => {
-                let digest = assembly_invocation_digest(assembly, &values)?;
-                let value = self.assemble_values(assembly, &values, &mut None).await?.0;
-                let result = self
-                    .stage_json(parent, idempotency_key.as_str(), &value)
-                    .await?;
-                (
-                    crate::Outcome::Succeeded(result),
-                    cancel,
-                    None,
-                    Some(digest),
-                )
-            }
-            OrchestrationDecision::Reduce { reducer, values } => {
-                let Some(reducers) = reducers else {
-                    return Ok(false);
-                };
-                let implementation = reducers.get(&reducer).ok_or_else(|| {
-                    Error::Unsupported("exact reducer implementation is not registered".into())
-                })?;
-                let mut decoded = Vec::with_capacity(values.len());
-                for (slot, reference) in &values {
-                    decoded.push((slot.clone(), self.load_json(reference, &mut None).await?.0));
-                }
-                let outcome = match implementation(&decoded)? {
-                    crate::Outcome::Succeeded(value) => crate::Outcome::Succeeded(
-                        self.stage_json(parent, idempotency_key.as_str(), &value)
-                            .await?,
-                    ),
-                    crate::Outcome::Failed { message } => crate::Outcome::Failed { message },
-                    crate::Outcome::Cancelled => crate::Outcome::Cancelled,
-                    crate::Outcome::Indeterminate { .. } => {
-                        return Err(Error::Invalid(
-                            "a synchronous reducer cannot return an indeterminate outcome".into(),
-                        ));
-                    }
-                };
-                let digest = reduction_invocation_digest(&reducer, &values)?;
-                (outcome, Vec::new(), Some(reducer), Some(digest))
-            }
-            OrchestrationDecision::Wait => return Ok(false),
+        let Some(event) = self
+            .orchestration_event(parent, idempotency_key.as_str(), reducers)
+            .await?
+        else {
+            return Ok(false);
         };
         self.apply_internal(
             idempotency_key,
-            SchedulerEvent::Orchestrated {
-                operation_id: parent,
-                expected_revision,
-                outcome,
-                cancel,
-                reducer,
-                reduction_digest,
-            },
+            event,
             None,
             None,
             None,
@@ -148,6 +91,82 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             &mut None,
         )
         .await
+    }
+
+    #[inline(never)]
+    fn orchestration_event<'a>(
+        &'a self,
+        parent: OperationId,
+        key: &'a str,
+        reducers: Option<&'a ReducerRegistry>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Option<SchedulerEvent>>> + 'a>>
+    {
+        Box::pin(async move {
+            let expected_revision = self
+                .scheduler
+                .operation(parent)
+                .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?
+                .revision;
+            let (outcome, cancel, reducer, reduction_digest) = match self
+                .scheduler
+                .orchestration(parent, &mut None)?
+            {
+                OrchestrationDecision::Complete { outcome, cancel } => {
+                    (outcome, cancel, None, None)
+                }
+                OrchestrationDecision::Assemble {
+                    assembly,
+                    values,
+                    cancel,
+                } => {
+                    let digest = assembly_invocation_digest(assembly, &values)?;
+                    let value = self.assemble_values(assembly, &values, &mut None).await?.0;
+                    let result = self.stage_json(parent, key, &value).await?;
+                    (
+                        crate::Outcome::Succeeded(result),
+                        cancel,
+                        None,
+                        Some(digest),
+                    )
+                }
+                OrchestrationDecision::Reduce { reducer, values } => {
+                    let Some(reducers) = reducers else {
+                        return Ok(None);
+                    };
+                    let implementation = reducers.get(&reducer).ok_or_else(|| {
+                        Error::Unsupported("exact reducer implementation is not registered".into())
+                    })?;
+                    let mut decoded = Vec::with_capacity(values.len());
+                    for (slot, reference) in &values {
+                        decoded.push((slot.clone(), self.load_json(reference, &mut None).await?.0));
+                    }
+                    let outcome = match implementation(&decoded)? {
+                        crate::Outcome::Succeeded(value) => {
+                            crate::Outcome::Succeeded(self.stage_json(parent, key, &value).await?)
+                        }
+                        crate::Outcome::Failed { message } => crate::Outcome::Failed { message },
+                        crate::Outcome::Cancelled => crate::Outcome::Cancelled,
+                        crate::Outcome::Indeterminate { .. } => {
+                            return Err(Error::Invalid(
+                                "a synchronous reducer cannot return an indeterminate outcome"
+                                    .into(),
+                            ));
+                        }
+                    };
+                    let digest = reduction_invocation_digest(&reducer, &values)?;
+                    (outcome, Vec::new(), Some(reducer), Some(digest))
+                }
+                OrchestrationDecision::Wait => return Ok(None),
+            };
+            Ok(Some(SchedulerEvent::Orchestrated {
+                operation_id: parent,
+                expected_revision,
+                outcome,
+                cancel,
+                reducer,
+                reduction_digest,
+            }))
+        })
     }
 
     pub(super) async fn load_json(

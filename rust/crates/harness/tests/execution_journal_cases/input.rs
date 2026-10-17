@@ -107,7 +107,11 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         .await?;
     let stream = Arc::new(MemoryStream::default());
     let journal = journal(stream, host, &private, &issuer, &scope)?;
-    let model = Arc::new(CapturingModel::default());
+    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: Value::Null,
+        }),
+    ])]));
     let executor = StockExecutor::new(
         Model::new("test".into(), "capture".into(), "1".into(), Value::Null)?,
         model.clone(),
@@ -198,10 +202,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             &journal,
         )
         .await?;
-    let requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let requests = model.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(requests[0].messages[0].content, content);

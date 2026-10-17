@@ -34,15 +34,12 @@ export * from "./fork.js";
 export * from "./project.js";
 export * from "./interaction.js";
 export * from "./extension.js";
-export { type ReplayCursor, type ClientEvent, type Delivery, type OfflinePayload, type ClientCommand, type Connection, type Transport, type ProjectionRecovery, type ClientAdmissionLimits, ProjectionStore, HarnessClient, ReplayError, TerminalAdmissionError } from "./client.js";
-export { type OutboxStore, type OutboxPage, type CursorStore, type AtomicClientStateStore, type ClientCheckpoint, ClientCheckpointConflict, type ClientRecoveryRecord, MemoryOutbox, MemoryCursorStore, type IndexedDbClientStoreOptions, IndexedDbClientStore } from "./client-store.js";
-export * from "./client-views.js";
+export * from "./client.js";
+export * from "./hypotheses.js";
 export * from "./client-demand.js";
 export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./client-requests.js";
-export * from "./client-transport.js";
 export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
-export * from "./wire-transport.js";
 export * from "./model.js";
 export { type BatchId, type GroupId, type InputKey, type Outcome, AdmissionUncertainError, type CancelReceipt, type Admission, type Rejection, type TaskEvent, type DurableTaskDriver, type TaskDefinitionOptions, type RuntimeSchema, defineRuntimeSchema, type ResumableTransition, type ResumableTask, TaskDefinition, type TaskRef, type EffectStatus, type TaskMessage, type HostTaskAttachment, type HostBatchReplay, type HarnessRuntimeSpawner, type TaskChildrenPage, type HarnessRuntimeState, type HarnessExecutionProvider, Task } from "./task.js";
 export { type BatchAdmissionRequest, type Batch, type GroupEntry, type BatchCancellationStatus, type BatchCancellationReport, type GroupOutcome, TaskGroup, GroupError } from "./task-group.js";
@@ -51,13 +48,12 @@ export { type InteractionHandler, type PolicyDigest, type ComponentIdentity, typ
 export { type ContentBindings, type PrivateDirectoryPage, type PrivateDirectoryBindings, type ContentReader, type ContentMountResolver, composeContentBindings, type InheritedModelPrefix } from "./content.js";
 export { HarnessBuilder } from "./harness-builder.js";
 export { IndeterminateModelTurnError, TerminalModelTurnError, type RunReceipt, type RunOutput, type SelectedAgentInput, AgentHarness, TaskRunError } from "./agent-harness.js";
-export * from "./openai.js";
+export * from "./providers.js";
 export * from "./projection.js";
 export * from "./memory-conversation.js";
 export * from "./browser-history.js";
 
-declare const brand: unique symbol;
-type Id<Name extends string> = string & { readonly [brand]: Name };
+type Id<Name extends string> = import("../generated/wasm/acyclic_harness_wasm.js").WasmId<Name>;
 
 export type AgentId = Id<"AgentId">;
 export type ConversationId = Id<"ConversationId">;

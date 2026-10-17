@@ -1,5 +1,6 @@
 use super::*;
 type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
+mod incremental;
 
 pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
@@ -50,6 +51,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     pub(crate) async fn prove(
         &mut self,
         generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
     ) -> Result<(GenerationProof, ProofGuard), crate::FsError> {
         Self::require_kind(generation_root, ObjectKind::GenerationRoot)?;
         let root_bytes = self.read_object(generation_root, false).await?;
@@ -62,6 +64,54 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         })?;
         drop(root_bytes);
         let generation_id = GenerationId::new(generation_root.digest);
+        let root_object_bytes = self.object_bytes;
+        // Collected stores must continue to enumerate the exact live closure.
+        let cache = cache.filter(|_| self.store.collection().is_none());
+        let previous = match cache {
+            Some(cache) => cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(root.0.volume_id, &self.meter)?,
+            None => None,
+        }
+        .filter(|cached| {
+            cached.limits == self.limits
+                && root.0.volume_id == cached.root.volume_id
+                && root.0.root_file_id == cached.root.root_file_id
+                && root.0.required_features == cached.root.required_features
+                && root.0.parents.as_slice() == [cached.generation_id]
+        });
+        if let Some(previous) = previous {
+            let increment = match self.prove_increment(&root.0, &previous).await {
+                Err(crate::FsError::Closure(
+                    ClosureError::TooManyObjects { .. } | ClosureError::ClosureBytesExceeded { .. },
+                )) => None,
+                result => result?,
+            };
+            if let Some((file_count, logical_file_bytes, object_count)) = increment {
+                let objects = self.take_objects()?;
+                let mut output = (
+                    GenerationProof {
+                        root: root.0,
+                        generation_id,
+                        file_count,
+                        logical_file_bytes,
+                        objects: objects.0,
+                        work: self.meter.work(),
+                    },
+                    objects.1,
+                );
+                let mut root_guard = root.1;
+                output.1.absorb(&mut root_guard)?;
+                self.remember(cache, &output.0, object_count)?;
+                output.0.work = self.meter.work();
+                return Ok(output);
+            }
+            self.objects = ProofVec::new(&self.meter);
+            set_insert(&mut self.objects, generation_root)?;
+            self.proven_lengths = ProofVec::new(&self.meter);
+            self.object_bytes = root_object_bytes;
+        }
         let records = self.prove_file_table(root.0.file_table).await?;
         let file_count = usize_to_u64(records.values.len());
         if file_count > self.limits.maximum_files {
@@ -100,6 +150,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             objects.1,
         );
         output.1.absorb(&mut root.1)?;
+        self.remember(cache, &output.0, output.0.objects.len() as u64)?;
+        output.0.work = self.meter.work();
         Ok(output)
     }
 

@@ -1,15 +1,22 @@
 //! Immutable provider-neutral model values and streaming contract.
 
+mod call_id;
 mod content;
 mod inventory;
 mod media;
 mod prefix;
 mod preparation;
 mod provider;
+mod reasoning;
 mod request;
+mod usage;
+pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod tests;
+mod tool_call;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
     ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
 };
@@ -27,7 +34,9 @@ pub(crate) use preparation::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use provider::NativeModelStream;
 pub use provider::{ModelDispatch, ModelEvent, ModelProvider};
+pub use reasoning::{ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
 pub use request::{ModelRequest, PreparedModelRequest};
+pub use tool_call::ToolCall;
 
 use crate::store::HistoryIo;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -61,6 +70,7 @@ pub struct Model {
     pub revision: String,
     /// Provider-specific options.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub options: Value,
 }
 impl Model {

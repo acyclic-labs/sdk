@@ -1,0 +1,6 @@
+{"folder":".tasks/t/turns/1/tools/c","writes":[{"path":".tasks/t/turns/1/tools/d/request.json","text":"other"},{"path":
+  ".tasks/t/turns/1/tools/c/request.json","text":"read"},{"path":".tasks/t/turns/1/tools/c/stdout/0","text":"out"},{
+  "path":".tasks/t/turns/1/tools/d/stdout/0","text":"hidden"}],"expect":{"files":{
+  ".tasks/t/turns/1/tools/c/request.json":"read",".tasks/t/turns/1/tools/c/stdout/0":"out"},"changes":[null,{"path":
+  ".tasks/t/turns/1/tools/c/request.json","text":"read"},{"path":".tasks/t/turns/1/tools/c/stdout/0","text":"out"},null]
+  }}

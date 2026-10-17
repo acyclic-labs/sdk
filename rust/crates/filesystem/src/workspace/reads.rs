@@ -33,8 +33,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             self,
             GenerationSelector::Head,
             path,
-            offset,
-            length,
+            crate::ByteRange { offset, length },
+            None,
             work,
             cancellation,
         )

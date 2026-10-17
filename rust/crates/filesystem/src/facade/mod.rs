@@ -128,6 +128,8 @@ mod attributes;
 mod authored_compile;
 mod authored_model;
 mod authored_records;
+#[cfg(feature = "native-mount")]
+mod candidate_rebase;
 mod candidates;
 mod checkout;
 mod collection;
@@ -136,9 +138,14 @@ mod content;
 mod content_model;
 mod detached;
 mod diff;
+pub(crate) use diff::diff_generation_file_tables;
 mod directory;
 mod error;
 mod extents;
+#[cfg(feature = "native-mount")]
+mod merged_names;
+#[cfg(feature = "native-mount")]
+mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
 mod fork;
 mod fs;
@@ -155,6 +162,10 @@ mod metadata;
 mod mutation_regions;
 mod mutations;
 mod names;
+#[cfg(feature = "native-mount")]
+mod names_unique;
+#[cfg(feature = "native-mount")]
+pub(crate) use names_unique::ambiguous_folded_name;
 mod namespace;
 mod proof;
 mod publication;
@@ -298,3 +309,6 @@ use workspace_creation::decode_first_creation_record;
 pub(crate) mod test_authority;
 
 use crate::kernel::{decode_published_generation, decode_volume_created};
+
+#[cfg(all(test, feature = "memory", feature = "distributed"))]
+pub(crate) mod test_fixtures;

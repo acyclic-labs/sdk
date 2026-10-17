@@ -1,0 +1,6 @@
+{
+  "writes": [{"path":"plans/notes.md","text":"# Notes\n- [?] Unsupported marker\nKeep all original text.\n"}],
+  "expect": {
+    "plans/notes.md": {"markdown":"# Notes\n- [?] Unsupported marker\nKeep all original text.\n","tasks":null}
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "prompt": " /compact keep decisions\nand tests",
+  "expect": {"result":{"kind":"submit","request":{"kind":"compact","instructions":"keep decisions\nand tests"}}}
+}

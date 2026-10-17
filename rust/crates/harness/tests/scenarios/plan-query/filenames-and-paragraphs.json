@@ -1,0 +1,7 @@
+{
+  "writes": [
+    {"path":"plans/release notes.md","text":"- [ ] First paragraph\n\n  Second paragraph\n","files":{"plans/release notes.md":"- [ ] First paragraph\n\n  Second paragraph\n"},"panel":["plans/release notes.md","[ ] First paragraph","    ","    Second paragraph"]},
+    {"path":"plans/調査.md","text":"- [~] 調査\n","files":{"plans/release notes.md":"- [ ] First paragraph\n\n  Second paragraph\n","plans/調査.md":"- [~] 調査\n"},"panel":["plans/release notes.md","[ ] First paragraph","    ","    Second paragraph","plans/調査.md","[~] 調査"]},
+    {"path":"plans/release notes.md","text":"- [x] Done\n","files":{"plans/release notes.md":"- [x] Done\n","plans/調査.md":"- [~] 調査\n"},"panel":["plans/release notes.md","[x] Done","plans/調査.md","[~] 調査"]}
+  ]
+}

@@ -1,0 +1,2 @@
+# Allocation-operation exhaustion must not allocate a boxed FsError.
+cc 121fd889838ead4dd05e15158009e71d21dc6f5f7d855770e6a18e0fd442ddd1

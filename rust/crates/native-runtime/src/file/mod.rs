@@ -1,10 +1,14 @@
 use crate::*;
 pub(crate) use operations::write_bounded_in_place;
+#[cfg(test)]
+pub(crate) use range::read_bounded_spare;
 pub(crate) use range::validate_prepared_read_range;
 pub(crate) use scope::{with_file_admission, with_file_scope};
 pub(crate) use write_validation::validate_write_batch;
 
 mod capability;
+mod destination;
+pub(crate) use destination::ReadDestination;
 mod operations;
 mod range;
 mod scope;

@@ -9,8 +9,8 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
-pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput};
-use capture::{PendingStdin, drain_pipe, pipe_operation_attempt};
+pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
+use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
@@ -25,6 +25,8 @@ mod platform;
 mod platform;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod wait_tests;
 
 /// One child and descendants that remain in its operating-system containment.
 pub struct ProcessTree {
@@ -335,6 +337,12 @@ impl ProcessTree {
                     return Err(io::Error::other("process output was already collected"));
                 }
                 self.close_stdin();
+                #[cfg(windows)]
+                return platform::wait_for_exit(
+                    self.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
+                    deadline,
+                );
+                #[cfg(unix)]
                 loop {
                     if let Some(status) = self.try_wait(None)? {
                         return Ok(status);
@@ -363,7 +371,7 @@ impl ProcessTree {
         max_bytes: usize,
         input: Option<CaptureInput<'_>>,
         mut check: impl FnMut() -> io::Result<()>,
-        mut observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
+        mut observe: impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
         meter: Option<&dyn crate::NativeReadMeter>,
         buffers: Option<[Vec<u8>; 3]>,
     ) -> Result<Output, ProcessCaptureFailure> {
@@ -430,17 +438,34 @@ impl ProcessTree {
                         .as_mut()
                         .map_or(Ok(false), |stdin| stdin.poll(self, meter))?;
                     let before_stdout = output[0].len();
-                    progressed |= drain_pipe(&mut stdout, &mut output[0], &mut remaining, meter)?
-                        | drain_pipe(&mut stderr, &mut output[1], &mut remaining, meter)?;
-                    if let Some(input) = input.as_mut()
-                        && !input.complete
-                        && output[0].len() > before_stdout
-                    {
+                    let before_stderr = output[1].len();
+                    let drained = (|| {
+                        Ok::<_, io::Error>(
+                            drain_pipe(&mut stdout, &mut output[0], &mut remaining, meter)?
+                                | drain_pipe(&mut stderr, &mut output[1], &mut remaining, meter)?,
+                        )
+                    })();
+                    if output[0].len() > before_stdout {
                         let chunk = output[0]
                             .get(before_stdout..)
                             .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
-                        input.observe(chunk, &mut observe, meter)?;
+                        if let Some(input) = input.as_mut().filter(|input| !input.complete) {
+                            input.observe(
+                                chunk,
+                                &mut |bytes| observe(ProcessOutput::Stdout(bytes)),
+                                meter,
+                            )?;
+                        } else {
+                            observe_output(ProcessOutput::Stdout(chunk), &mut observe)?;
+                        }
                     }
+                    if output[1].len() > before_stderr {
+                        let chunk = output[1]
+                            .get(before_stderr..)
+                            .ok_or_else(|| io::Error::other("invalid observed process stderr"))?;
+                        observe_output(ProcessOutput::Stderr(chunk), &mut observe)?;
+                    }
+                    progressed |= drained?;
                     if status.is_none()
                         && let Some(exit) = self.try_wait(meter)?
                     {

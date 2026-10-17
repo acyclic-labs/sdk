@@ -361,42 +361,6 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     Ok(())
 }
 
-struct ModelFixture(AtomicUsize);
-impl ModelProvider for ModelFixture {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 8_192,
-        })
-    }
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        Ok(crate::context::ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: u32::try_from(request.bytes().len())
-                .map_err(|_| Error::Invalid("fixture request size".into()))?,
-            message_tokens: vec![0; request.request().messages.len()],
-        })
-    }
-    fn generate<'a>(
-        &'a self,
-        _: crate::model::PreparedModelRequest,
-        _: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(futures::stream::iter([
-            Ok(crate::model::ModelEvent::Content {
-                delta: "one retained response".into(),
-            }),
-            Ok(crate::model::ModelEvent::Completed {
-                metadata: json!({}),
-            }),
-        ]))
-    }
-}
-
 #[tokio::test]
 async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retargeting() -> Result<()>
 {
@@ -437,7 +401,30 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let lease = fixture.admit(&runtime).await?;
     runtime.task_host().start_task(&lease, &mut None).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    let provider = Arc::new(ModelFixture(AtomicUsize::new(0)));
+    let provider = Arc::new(
+        crate::test_support::ScriptedModelProvider::new([
+            crate::test_support::ScriptedTurn::Events(vec![
+                crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Content {
+                    delta: "one retained response".into(),
+                }),
+                crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                    metadata: json!({}),
+                }),
+            ]),
+        ])
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: 131_072,
+            output_tokens: 8_192,
+        })
+        .with_token_counter(|request| {
+            Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                u32::try_from(request.bytes().len())
+                    .map_err(|_| Error::Invalid("fixture request size".into()))?,
+                vec![0; request.request().messages.len()],
+            ))
+        }),
+    );
     let turn = OperationId::from_bytes([130; 16]);
     let execution = runtime
         .stock_execution(
@@ -447,6 +434,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?
@@ -459,7 +447,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     };
     let events = execution.model_step(&input, 0, &[]).await?;
     assert_eq!(events, execution.model_step(&input, 0, &[]).await?);
-    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
     let mut changed = input.clone();
     changed.operation_id = OperationId::from_bytes([131; 16]);
     assert!(matches!(
@@ -478,12 +466,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None
             )
             .await
             .is_err()
     );
-    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
     use crate::conversation::{ConversationMessage, MessageKind};
     use crate::core::{Action, Command};
     use crate::filesystem::{
@@ -954,11 +943,12 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?
         .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     assert_eq!(replay.model_step(&input, 0, &[]).await?, events);
-    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
     Ok(())
 }

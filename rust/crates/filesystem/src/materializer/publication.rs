@@ -185,12 +185,12 @@ where
         journal
     } else {
         let (plan, custody) = generation_plan(from, to, &request, work).await?;
-        let parent = crate::native_host::HostRoot::open(
-            operation
-                .parent()
-                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-            &mut &*work,
-        )?;
+        let parent = super::directory_preparation::prepare_publication_parent(
+            &operation,
+            work,
+            before_effect,
+        )
+        .await?;
         let journal = MaterializationJournal {
             version: JOURNAL_VERSION,
             revision: 1,

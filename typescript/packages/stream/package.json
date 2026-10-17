@@ -31,6 +31,10 @@
     "./native": {
       "default": "./dist/native.js",
       "types": "./dist/native.d.ts"
+    },
+    "./session/proto": {
+      "types": "./generated/proto/stream/v1/session_pb.d.ts",
+      "default": "./generated/proto/stream/v1/session_pb.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -41,15 +45,17 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run build:wasm && tsc -b",
+    "build": "bun run generate && bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs stream",
     "build:native": "node ../../../scripts/build-stream-native.mjs build",
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
-    "test": "bun run build && bun test test",
+    "test": "bun run generate && bun run build && bun test test",
     "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
     "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",
-    "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts"
+    "example": "bun run build && tsc --ignoreConfig --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --pretty false examples/quickstart.ts && bun examples/quickstart.ts",
+    "generate": "bun ../../../scripts/generate.mjs stream",
+    "prepack": "bun run generate"
   },
   "napi": {
     "binaryName": "index",

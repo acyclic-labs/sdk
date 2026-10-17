@@ -1,0 +1,2 @@
+{"writes":[{"path":".tasks/t/not-a-file","text":"bad"},{"path":".tasks/t/status.json","text":"ok"}],"expect":{"files":{
+  ".tasks/t/status.json":"ok"},"changes":[{"path":".tasks/t/status.json","text":"ok"}],"errors":["invalid_path"]}}

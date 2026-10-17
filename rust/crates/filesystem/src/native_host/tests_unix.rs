@@ -47,6 +47,46 @@ fn capability_reads_do_not_change_owned_access_times() -> std::io::Result<()> {
     }
     Ok(())
 }
+/// Every way of stating one file reports one handle, so its identity does
+/// not depend on which query saw it, and another file reports another.
+#[cfg(target_os = "linux")]
+#[test]
+fn every_stat_of_a_file_reports_its_one_handle() -> std::io::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    std::fs::write(temporary.path().join("file"), b"body")?;
+    std::fs::write(temporary.path().join("other"), b"body")?;
+    let root = test_root(temporary.path())?;
+    let mut work = ordinary_work();
+
+    let named = root
+        .stat(Path::new("file"), &mut work)
+        .map_err(ordinary_error)?;
+    let opened = root
+        .stat_file(&File::open(temporary.path().join("file"))?, &mut work)
+        .map_err(ordinary_error)?;
+    let (mut reader, _) = root
+        .read_dir_stats(Path::new(""), &mut work)
+        .map_err(ordinary_error)?;
+    let mut listed = None;
+    while let Some((entry, _)) = reader.next(&mut work).map_err(ordinary_error)? {
+        if entry.is_named("file") {
+            listed = entry.stat;
+        }
+    }
+    let listed = listed.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let handle = named.handle();
+    assert_eq!(opened.handle(), handle);
+    assert_eq!(listed.handle(), handle);
+    let other = root
+        .stat(Path::new("other"), &mut work)
+        .map_err(ordinary_error)?;
+    // A file system without handles (an overlay without exports) reports
+    // none for either.
+    if handle.is_some() {
+        assert_ne!(other.handle(), handle);
+    }
+    Ok(())
+}
 #[test]
 fn held_root_rejects_intermediate_symlink_escape_for_reads_and_writes() -> std::io::Result<()> {
     use std::os::unix::fs::symlink;
@@ -258,4 +298,32 @@ fn bound_unix_socket_rejects_paths_beyond_sun_path() -> std::io::Result<()> {
         Ok(()) => return Err(std::io::Error::other("over-long socket path was admitted")),
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Root metadata always targets the held directory, even when its name is replaced.
+    #[test]
+    fn empty_metadata_path_keeps_the_held_root(mode in 0_u32..=0o777) {
+        use crate::kernel::{FileMetadata, MetadataField};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let temporary = tempfile::tempdir().unwrap();
+        let original = temporary.path().join("root");
+        let moved = temporary.path().join("moved");
+        std::fs::create_dir(&original).unwrap();
+        let root = test_root(&original).unwrap();
+        std::fs::rename(&original, &moved).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut work = ordinary_work();
+        let target = root.open_linux_metadata_target(Path::new(""), &mut work).unwrap();
+        proptest::prop_assert_eq!(target.metadata().unwrap().ino(), std::fs::metadata(&moved).unwrap().ino());
+        apply_metadata(&target, FileMetadata {
+            posix_mode: MetadataField::Value(mode),
+            ..FileMetadata::default()
+        }, &mut work).unwrap();
+        proptest::prop_assert_eq!(std::fs::metadata(&moved).unwrap().permissions().mode() & 0o777, mode);
+        proptest::prop_assert_eq!(std::fs::metadata(&original).unwrap().permissions().mode() & 0o777, 0o700);
+    }
 }

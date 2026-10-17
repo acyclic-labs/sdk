@@ -1,5 +1,8 @@
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
 /// Selects standard output as the spawned service's readiness channel.
 pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 
@@ -40,9 +43,13 @@ impl ServiceReadiness {
 pub struct ServiceReadySignal(File);
 
 impl ServiceReadySignal {
-    /// Tells the starter that the service answers requests, and closes the channel.
+    /// Tells a connected starter that the service answers requests, and closes the channel.
+    /// A starter that has already exited does not prevent the service from running.
     pub fn signal(mut self) -> io::Result<()> {
-        io::Write::write_all(&mut self.0, b"\n")
+        match io::Write::write_all(&mut self.0, b"\n") {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
+mod digest;
 pub(in crate::core) use capture::admit_copy;
 mod entries;
 mod restoration;
@@ -121,6 +122,9 @@ impl Snapshot {
         maximum as u64
     };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+        if work.is_none() {
+            return digest::without_work(self);
+        }
         crate::executor::json::canonical_json_digest(
             &(
                 self.format_version,
@@ -177,18 +181,31 @@ impl Snapshot {
                 ));
             }
         }
+        let indexed = work.is_none() && self.events.len() > 256;
+        let mut operation_ids = None;
         let mut previous = None;
         for (index, event) in self.events.iter().enumerate() {
             verifier.verify_event(event, work)?;
-            for prior in self.events.iter().take(index) {
-                if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
-                        bytes: 0,
-                        items: 1,
-                    })?;
-                }
-                if prior.operation_id == event.operation_id {
+            if indexed {
+                if !operation_ids
+                    .get_or_insert_with(|| {
+                        std::collections::HashSet::with_capacity(self.events.len())
+                    })
+                    .insert(&event.operation_id)
+                {
                     return Err(Error::Invalid("snapshot event suffix is invalid".into()));
+                }
+            } else {
+                for prior in self.events.iter().take(index) {
+                    if let Some(io) = work.as_deref_mut() {
+                        io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                            bytes: 0,
+                            items: 1,
+                        })?;
+                    }
+                    if prior.operation_id == event.operation_id {
+                        return Err(Error::Invalid("snapshot event suffix is invalid".into()));
+                    }
                 }
             }
             if event.revision == 0

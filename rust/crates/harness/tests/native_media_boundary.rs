@@ -188,6 +188,7 @@ fn measure(bytes: &[u8], intent: &NativeMediaIntent) -> Result<Measurement> {
 
 #[derive(Clone, Debug, PartialEq)]
 enum CapturedPart {
+    Reasoning(acyclic_harness::model::ReasoningBlock),
     Text(String),
     Call(String, String),
     Result(String, String),
@@ -341,66 +342,73 @@ impl ModelProvider for MockAdapter {
             output_tokens: 4_096,
         })
     }
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Self::selection(&request.request().model)?;
-        self.counts.fetch_add(1, Ordering::SeqCst);
-        let message_tokens = request
-            .request()
-            .messages
-            .iter()
-            .map(|message| {
-                let mut units = serde_json::to_vec(message)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .len() as u64
-                    + 1;
-                // The model receives payloads and options, not reference or admission metadata.
-                for binding in message.content.native_configurations() {
-                    let metadata = serde_json::to_vec(binding)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            Self::selection(&request.request().model)?;
+            self.counts.fetch_add(1, Ordering::SeqCst);
+            let message_tokens = request
+                .request()
+                .messages
+                .iter()
+                .map(|message| {
+                    let mut units = serde_json::to_vec(message)
                         .map_err(|error| Error::Invalid(error.to_string()))?
-                        .len() as u64;
-                    units = units
-                        .checked_sub(metadata)
-                        .ok_or_else(|| Error::Invalid("fixture metadata count differs".into()))?;
-                }
-                for file in message.content.file_refs() {
-                    if !message
-                        .content
-                        .native_configurations()
-                        .any(|binding| &binding.configuration.content == file)
-                    {
-                        let metadata = serde_json::to_vec(file)
+                        .len() as u64
+                        + 1;
+                    // The model receives payloads and options, not reference or admission metadata.
+                    for binding in message.content.native_configurations() {
+                        let metadata = serde_json::to_vec(binding)
                             .map_err(|error| Error::Invalid(error.to_string()))?
                             .len() as u64;
                         units = units.checked_sub(metadata).ok_or_else(|| {
-                            Error::Invalid("fixture reference count differs".into())
+                            Error::Invalid("fixture metadata count differs".into())
                         })?;
                     }
-                    units = units
-                        .checked_add(file.descriptor().byte_length())
-                        .ok_or_else(|| Error::Invalid("fixture count overflow".into()))?;
-                }
-                u32::try_from(units).map_err(|_| Error::Invalid("fixture count overflow".into()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let fixed = serde_json::to_vec(&(
-            &request.request().model,
-            &request.request().tools,
-            request.request().max_output_tokens,
-        ))
-        .map_err(|error| Error::Invalid(error.to_string()))?
-        .len()
-            + 64;
-        Ok(ModelTokenCount {
-            request_digest: if self.wrong_count_digest.load(Ordering::SeqCst) {
-                [99; 32]
-            } else {
-                request.request_digest()
-            },
-            fixed_tokens: u32::try_from(fixed)
-                .map_err(|_| Error::Invalid("fixture framing count overflow".into()))?,
-            message_tokens,
+                    for file in message.content.file_refs() {
+                        if !message
+                            .content
+                            .native_configurations()
+                            .any(|binding| &binding.configuration.content == file)
+                        {
+                            let metadata = serde_json::to_vec(file)
+                                .map_err(|error| Error::Invalid(error.to_string()))?
+                                .len() as u64;
+                            units = units.checked_sub(metadata).ok_or_else(|| {
+                                Error::Invalid("fixture reference count differs".into())
+                            })?;
+                        }
+                        units = units
+                            .checked_add(file.descriptor().byte_length())
+                            .ok_or_else(|| Error::Invalid("fixture count overflow".into()))?;
+                    }
+                    u32::try_from(units)
+                        .map_err(|_| Error::Invalid("fixture count overflow".into()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let fixed = serde_json::to_vec(&(
+                &request.request().model,
+                &request.request().tools,
+                request.request().max_output_tokens,
+            ))
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .len()
+                + 64;
+            Ok(ModelTokenCount::from_upper_bounds(
+                if self.wrong_count_digest.load(Ordering::SeqCst) {
+                    [99; 32]
+                } else {
+                    request.request_digest()
+                },
+                u32::try_from(fixed)
+                    .map_err(|_| Error::Invalid("fixture framing count overflow".into()))?,
+                message_tokens,
+            ))
         })
     }
+
     fn generate<'a>(
         &'a self,
         request: PreparedModelRequest,
@@ -419,13 +427,16 @@ impl ModelProvider for MockAdapter {
                 }
                 for part in message.content.parts() {
                     match part {
+                        ModelContentPart::Reasoning { block } => {
+                            parts.push(CapturedPart::Reasoning(block.clone()));
+                        }
                         ModelContentPart::Text { text } => {
                             parts.push(CapturedPart::Text(text.clone()));
                         }
                         ModelContentPart::File { file, policy } => {
                             parts.push(self.file(file, policy).await?);
                         }
-                        ModelContentPart::ToolCall { call_id, name, .. } => {
+                        ModelContentPart::ToolCall(acyclic_harness::model::ToolCall { call_id, name, .. }) => {
                             parts.push(CapturedPart::Call(call_id.clone(), name.clone()));
                         }
                         ModelContentPart::ToolResult {

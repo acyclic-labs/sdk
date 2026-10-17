@@ -1,4 +1,5 @@
 use super::*;
+pub use acyclic_auth::credential::CredentialProvider;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
@@ -28,7 +29,7 @@ struct BearerAuth(Option<MetadataValue<Ascii>>);
 
 impl BearerAuth {
     fn new(token: &str) -> Result<Self, ProviderError> {
-        if token.trim().is_empty() {
+        if !acyclic_auth::credential::valid_credential(token) {
             return Err(ProviderError::Invalid(
                 "invalid Machines bearer credential".into(),
             ));
@@ -58,7 +59,9 @@ type Client =
 /// Authenticated remote Machines provider.
 #[derive(Clone)]
 pub struct GrpcProvider {
-    client: Client,
+    channel: Channel,
+    authorization: BearerAuth,
+    credential: Option<CredentialProvider>,
 }
 
 #[cfg(target_os = "linux")]
@@ -82,6 +85,47 @@ fn owner_private_socket(
 }
 
 impl GrpcProvider {
+    /// Resolve the current callback for each physical RPC, including watch reopenings.
+    pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
+        self.authorization = BearerAuth::default();
+        self.credential = Some(credential);
+        self
+    }
+
+    /// Establish mutual TLS without obtaining a bearer until the first request.
+    pub async fn connect_with_credential(
+        uri: &str,
+        tls: Tls<'_>,
+        credential: CredentialProvider,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self::connect(uri, tls, None)
+            .await?
+            .with_credential_provider(credential))
+    }
+
+    async fn authorization(&self) -> Result<BearerAuth, ProviderError> {
+        if let Some(provider) = &self.credential {
+            let token = provider.resolve().await.map_err(|_| {
+                ProviderError::Rejected("Machines credential renewal failed".into())
+            })?;
+            BearerAuth::new(&token)
+        } else {
+            Ok(self.authorization.clone())
+        }
+    }
+
+    async fn client(&self) -> Result<Client, ProviderError> {
+        let authorization = self.authorization().await?;
+        Ok(
+            wire::machines_service_client::MachinesServiceClient::with_interceptor(
+                self.channel.clone(),
+                authorization,
+            )
+            .max_decoding_message_size(MAX_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_MESSAGE_BYTES),
+        )
+    }
+
     /// Connects with mutual TLS and an optional account bearer.
     pub async fn connect(
         uri: &str,
@@ -168,12 +212,12 @@ impl GrpcProvider {
         ))
     }
 
-    fn grpc_with_auth(channel: Channel, auth: BearerAuth) -> Self {
-        let client =
-            wire::machines_service_client::MachinesServiceClient::with_interceptor(channel, auth)
-                .max_decoding_message_size(MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        Self { client }
+    fn grpc_with_auth(channel: Channel, authorization: BearerAuth) -> Self {
+        Self {
+            channel,
+            authorization,
+            credential: None,
+        }
     }
 }
 
@@ -189,3 +233,6 @@ use recovery::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod credential_tests;

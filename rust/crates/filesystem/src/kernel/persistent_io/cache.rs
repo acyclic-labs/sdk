@@ -165,6 +165,35 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     if matches!(&decoded.0.page, PageLease::Shared { .. }) {
         return Ok(decoded);
     }
+    if !store.supports_decoded_cache() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+            work.remaining()
+                .map_err(crate::ObjectStoreError::from)
+                .map_err(read_store_error)?;
+            cancellation.check()?;
+            // Sharing used to absorb a control guard, which also required the
+            // same resource scope. Retain that invariant without a zero guard.
+            if !matches!(&decoded.1, KernelOwnedAllocation::NativeOriginal(body)
+                if body.work().shares_allocation_context(work))
+            {
+                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+            }
+            return Ok(decoded);
+        }
+        let (allocations, work, budget, _) = accounting
+            .standalone_parts()
+            .ok_or(crate::ObjectStoreError::Corrupt)?;
+        if let Err(error) = claim_read_allocation(0, 0, allocations, work, budget, data_custody, 0)
+        {
+            let (page, mut allocation) = decoded;
+            let bytes = page.logical_bytes;
+            drop(page);
+            accounting.release_owned(&mut allocation, bytes)?;
+            return Err(error);
+        }
+        return Ok(decoded);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
         let mut source = crate::kernel::file_read::ReadOwned {

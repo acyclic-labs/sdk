@@ -2,6 +2,10 @@ use super::*;
 use crate::fork::{CapturedResource, ResourceRevision};
 use crate::resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "fork_grant_properties.rs"]
+mod grant_properties;
+
 #[test]
 fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     let mut seed: ForkSeed =

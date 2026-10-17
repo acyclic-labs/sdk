@@ -55,8 +55,9 @@ impl StockExecution<'_> {
                 let operation = span.clone();
                 span.scope(async move {
                     let result = self
-                        .dispatch_model_step(journal, input, step, prior_messages, purpose)
-                        .await;
+                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
+                        .await
+                        .and_then(|events| completed_model_events(events, input.operation_id));
                     operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
                     if let Err(error) = &result {
                         operation.record("error.kind", error.kind());
@@ -67,7 +68,12 @@ impl StockExecution<'_> {
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = span;
-                self.dispatch_model_step(journal, input, step, prior_messages, purpose)
+                async move {
+                    let events = self
+                        .cancellable_model_step(journal, input, step, prior_messages, purpose)
+                        .await?;
+                    completed_model_events(events, input.operation_id)
+                }
             }
         })
     }
@@ -78,9 +84,9 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
-        let projection = self.prepare_projection(input, step, prior_messages).await?;
+        let mut projection = self.prepare_projection(input, step, prior_messages).await?;
         crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&projection)?,
+            self.request_taking_context(&mut projection)?,
             self.stock.limits,
             self.io,
         )
@@ -147,7 +153,8 @@ impl StockExecution<'_> {
             .context_pipeline()
             .transform(input, base, self.stock.limits, self.io)
             .await?;
-        let request = self.request_from_context(&context)?;
+        let message_count = context.messages.len();
+        let request = self.request_taking_context(&mut context)?;
         let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
             crate::model::PreparedModelRequest::inherit(
                 request,
@@ -160,7 +167,7 @@ impl StockExecution<'_> {
         } else {
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?
         };
-        let prefix_count = prepared.request().messages.len() - context.messages.len();
+        let prefix_count = prepared.request().messages.len() - message_count;
         if let Some(index) = context.current_input_index {
             context.current_input_index = Some(
                 u32::try_from(prefix_count)
@@ -175,7 +182,9 @@ impl StockExecution<'_> {
                     })?,
             );
         }
-        if prefix_count != 0 {
+        if self.io.is_none() {
+            context.messages = prepared.into_messages();
+        } else if prefix_count != 0 {
             context.messages = crate::model::clone_messages(&prepared.request().messages, self.io)?;
         }
         crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
@@ -186,13 +195,30 @@ impl StockExecution<'_> {
         &self,
         context: &crate::context::Context,
     ) -> Result<ModelRequest> {
+        self.request_from_messages(crate::model::clone_messages(&context.messages, self.io)?)
+    }
+
+    pub(super) fn request_taking_context(
+        &self,
+        context: &mut crate::context::Context,
+    ) -> Result<ModelRequest> {
+        if self.io.is_some() {
+            return self.request_from_context(context);
+        }
+        self.request_from_messages(std::mem::take(&mut context.messages))
+    }
+
+    pub(super) fn request_from_messages(
+        &self,
+        messages: Vec<ModelMessage>,
+    ) -> Result<ModelRequest> {
         let mut tools_required = self.summary.is_none();
         if !tools_required {
-            for message in &context.messages {
+            for message in &messages {
                 crate::model::charge_items(self.io, 1)?;
                 for part in message.content.parts() {
                     crate::model::charge_items(self.io, 1)?;
-                    if matches!(part, crate::model::ModelContentPart::ToolCall { .. }) {
+                    if matches!(part, crate::model::ModelContentPart::ToolCall(_)) {
                         tools_required = true;
                         break;
                     }
@@ -204,7 +230,7 @@ impl StockExecution<'_> {
         }
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
-            messages: crate::model::clone_messages(&context.messages, self.io)?,
+            messages,
             tools: if tools_required {
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
             } else {
@@ -213,4 +239,14 @@ impl StockExecution<'_> {
             max_output_tokens: self.output_budget()?,
         })
     }
+}
+
+fn completed_model_events(
+    events: Vec<ModelEvent>,
+    operation_id: OperationId,
+) -> Result<Vec<ModelEvent>> {
+    if !matches!(events.last(), Some(ModelEvent::Completed { .. })) {
+        return Err(Error::Indeterminate(operation_id));
+    }
+    Ok(events)
 }

@@ -71,6 +71,11 @@ use native::*;
 mod append;
 mod authority;
 mod bindings;
+mod head_payload;
+#[cfg(all(test, acyclic_fs_loom, not(acyclic_loom)))]
+compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --cfg acyclic_loom'");
+#[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+mod head_payload_loom_tests;
 mod lineage;
 mod replay;
 use append::seal;
@@ -81,6 +86,13 @@ pub(crate) use records::object_id_from_key;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use records::object_key;
 use records::*;
+pub(crate) fn authority_records_path(
+    volume: crate::VolumeId,
+) -> Result<StreamPath, AuthorityStoreError> {
+    stream_path(volume_authority_id(volume), "/records")
+}
 mod accounting;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_record_tests;
 #[cfg(test)]
 mod tests;

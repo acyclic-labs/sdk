@@ -31,16 +31,15 @@ impl StockExecution<'_> {
             self.io,
         )?;
         let count = if projection.canonical.is_some() {
-            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io)?
+            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
         } else {
             accounting.count
         };
         with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
-        let (through, maximum) = crate::context::checked_compaction_budget(
+        let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             &context,
             &count,
-            accounting.capacity,
             self.compaction_message_limit(
                 projection.canonical.is_some(),
                 projection
@@ -51,8 +50,27 @@ impl StockExecution<'_> {
             ),
             self.io,
         )?;
+        let mandatory = with_history_io(self.io, |work| {
+            crate::context::mandatory_messages(&context, through, &policy.retention, work)
+        })?;
+        let mandatory = crate::model::PreparedModelRequest::prepare(
+            self.request_from_messages(mandatory)?,
+            self.stock.limits,
+            self.io,
+        )?;
+        let mandatory_count =
+            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, self.io).await?;
+        let mandatory_count =
+            with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
+        if policy.needs_compaction(accounting.capacity, mandatory_count)? {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "mandatory content exceeds selected model capacity",
+            ));
+        }
         let (source, instruction) = self.prepare_summary_source(&context, through)?;
-        let summary = crate::conversation::BoundedContentFuture::new(self.io, || {
+        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
             self.summarize(
                 journal,
                 Some(input),
@@ -63,6 +81,14 @@ impl StockExecution<'_> {
             )
         })?
         .await?;
+        #[cfg(feature = "filesystem")]
+        let text_hold = self
+            .io
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        drop(text);
+        #[cfg(feature = "filesystem")]
+        drop(text_hold);
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
@@ -91,7 +117,7 @@ impl StockExecution<'_> {
                 projection.canonical.as_ref(),
                 &context,
                 &compacted,
-                &compaction,
+                (&compaction, &reference),
             )
             .await?;
         let compacted = if checkpoint.is_some() {
@@ -122,11 +148,12 @@ impl StockExecution<'_> {
         source: Option<&FileRef>,
         context: &crate::context::Context,
         compacted: &crate::context::Context,
-        compaction: &FileRef,
+        compaction: (&FileRef, &crate::context::CompactionReference),
     ) -> Result<Option<FileRef>> {
         let Some(source) = source else {
             return Ok(None);
         };
+        let (compaction, proof) = compaction;
         let selection = stock_selection_copy(
             &input
                 .selected_context
@@ -156,10 +183,9 @@ impl StockExecution<'_> {
             retained,
             compaction: crate::model::clone_file(compaction, self.io)?,
         };
-        let proof = retain_preparation(
-            load_json::<crate::context::CompactionReference>(journal, compaction, self.io).await?,
-        )?;
-        envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io)?;
+        // stage_json authenticated these exact proof bytes before returning its
+        // reference; validate the held value without loading a second copy.
+        envelope.validate_projection(context, compacted, proof, self.stock.limits, self.io)?;
         Ok(Some(
             stage_json(
                 journal,
@@ -251,7 +277,7 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io)?;
+        let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
         let final_count = with_history_io(self.io, |work| count.validate(&request, work))?;
         if policy.needs_compaction(capacity, final_count)? {
             return Err(stock_boundary(

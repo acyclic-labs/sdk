@@ -1,14 +1,21 @@
 use super::*;
+use crate::tool::ToolRegistry;
 
-#[tokio::test]
 #[allow(
     clippy::too_many_lines,
     reason = "one actual parent compaction, child capture, retry and publication scenario"
 )]
-async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
+async fn summary_parent_inputs(
+    inputs: [&[u8]; 2],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<(
+    MemoryHarnessStorage,
+    crate::bundle::HarnessBundle,
+    FileRef,
+    Limits,
+)> {
     let agent = AgentId::new();
     let storage = MemoryHarnessStorage::new(agent, 262_144).await?;
-    let model = Arc::new(SummaryModel::default());
     let limits = Limits {
         context_messages: 8,
         ..Limits::default()
@@ -34,7 +41,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .stage(
                 last,
                 &format!("turns/{index}/input.txt"),
-                "q".repeat(60_000).as_bytes(),
+                inputs[index],
                 "text/plain",
                 "input.txt",
             )
@@ -43,14 +50,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             .run_conversation(&bundle, last, input, Vec::new(), 1)
             .await?;
     }
-    assert_eq!(
-        model
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        3
-    );
+    assert_eq!(model.dispatches().len(), 3);
     {
         let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
@@ -70,12 +70,21 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     )
     .await?
     .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
+    Ok((storage, bundle, reference, limits))
+}
+
+async fn summary_preparation(
+    inputs: [&[u8]; 3],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<SummaryFixture> {
+    let (storage, bundle, reference, limits) =
+        summary_parent_inputs([inputs[0], inputs[1]], model.clone()).await?;
     let later = OperationId::new();
     let later_input = storage
         .stage(
             later,
             "turns/later/input.txt",
-            "r".repeat(60_000).as_bytes(),
+            inputs[2],
             "text/plain",
             "later-input.txt",
         )
@@ -83,6 +92,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     storage
         .run_conversation(&bundle, later, later_input, Vec::new(), 1)
         .await?;
+    assert_eq!(model.remaining(), 0);
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
         storage.journal.as_ref(),
         later,
@@ -144,6 +154,24 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert_eq!(retired.resident_after_sequence(), 6);
     assert!(retired.messages().is_empty());
 
+    summary_fork_fixture(storage, aggregate, reference, limits).await
+}
+
+async fn summary_fork_fixture(
+    storage: MemoryHarnessStorage,
+    aggregate: StreamAggregate<MemoryStream>,
+    reference: FileRef,
+    limits: Limits,
+) -> Result<SummaryFixture> {
+    let agent = storage
+        .scope
+        .agent()
+        .ok_or_else(|| Error::Invalid("missing agent".into()))?;
+    let through = aggregate
+        .reducer()
+        .conversation()
+        .ok_or_else(|| Error::Invalid("missing conversation".into()))?
+        .logical_revision();
     let history = HistoryReader::new(
         &storage.stream,
         &storage.conversation,
@@ -207,9 +235,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let archived = history
         .fork_history(
             aggregate.reducer(),
-            6,
+            through,
             HistoryReadLimits {
-                maximum_events: 6,
+                maximum_events: u32::try_from(through)
+                    .map_err(|e| Error::Invalid(e.to_string()))?,
                 maximum_bytes: 2_097_152,
             },
             &mut None,
@@ -311,6 +340,55 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         ForkHistoryPolicy::Summary(Box::new(selection)),
         &mut None,
     )?;
+    Ok(SummaryFixture {
+        storage,
+        aggregate,
+        preparer,
+        request,
+        source,
+        scope,
+        stream_provider,
+        child_private,
+        provider,
+        limits,
+    })
+}
+
+struct SummaryFixture {
+    storage: MemoryHarnessStorage,
+    aggregate: StreamAggregate<MemoryStream>,
+    preparer: FilesystemForkPreparer<MemoryAuthorityBackend, MemoryObjectBackend>,
+    request: ForkRequest,
+    source: Context,
+    scope: Scope,
+    stream_provider: ProviderRef,
+    child_private: VolumeRef,
+    provider: ProviderRef,
+    limits: Limits,
+}
+
+async fn published_summary(
+    inputs: [&[u8]; 3],
+    model: Arc<ScriptedModelProvider>,
+) -> Result<(
+    MemoryHarnessStorage,
+    StreamAggregate<MemoryStream>,
+    crate::fork::ForkSeed,
+    Context,
+    Limits,
+)> {
+    let SummaryFixture {
+        storage,
+        mut aggregate,
+        preparer,
+        request,
+        source,
+        scope,
+        stream_provider,
+        child_private,
+        provider,
+        limits,
+    } = summary_preparation(inputs, model).await?;
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
     assert!(
@@ -462,33 +540,9 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
-    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(
-        &[
-            fs_verifier,
-            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
-        ],
-        &mut None,
-    )?);
-    aggregate
-        .execute(
-            Command {
-                operation_id: seed.operation_id,
-                idempotency_key: IdempotencyKey::new("publish-summary-fork")?,
-                expected_revision: aggregate.reducer().revision(),
-                scope,
-                causal_parent: None,
-                action: Action::PublishFork {
-                    seed: Box::new(seed.clone()),
-                },
-            },
-            #[cfg(feature = "filesystem")]
-            None,
-            &mut None,
-        )
-        .await?;
+    aggregate = publish_summary_seed(&storage, aggregate, &seed, scope, &stream_provider).await?;
     assert_eq!(aggregate.reducer().fork(&seed.child), Some(&seed));
-    assert_summary_child_import(&storage, &aggregate, &seed, &captured, limits).await?;
-    Ok(())
+    Ok((storage, aggregate, seed, captured, limits))
 }
 
 #[allow(
@@ -688,7 +742,7 @@ async fn assert_summary_child_import(
         )
         .await?,
     );
-    let model = Arc::new(SummaryModel::default());
+    let model = Arc::new(summary_model(1));
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -700,7 +754,9 @@ async fn assert_summary_child_import(
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_limits(limits);
+    .with_limits(limits)
+    // This fixture checks the frozen prefix before any subsequent child compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = FilesystemExecutionJournal::new(
         storage.stream.clone(),
         storage.host.clone(),
@@ -721,13 +777,24 @@ async fn assert_summary_child_import(
         max_steps: 1,
     };
     let output = executor.execute(input.clone(), &journal).await?;
+    let completed_requests = model.dispatches().len();
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
-    let requests = model
-        .0
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(requests.len(), 1);
-    let request = &requests[0];
+    let mut requests = model.requests();
+    assert_eq!(requests.len(), completed_requests);
+    assert_eq!(model.remaining(), 0);
+    let request = PreparedModelRequest::prepare(
+        requests
+            .pop()
+            .ok_or_else(|| Error::Invalid("child made no model request".into()))?,
+        limits,
+        None,
+    )?;
+    let capacity = model.context_capacity(&request.request().model)?;
+    let input_tokens = model
+        .count_tokens(&request)
+        .await?
+        .validate(&request, &mut None)?;
+    assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
     assert_eq!(
         request.request().messages.get(..captured.messages.len()),
         Some(captured.messages.as_slice())
@@ -741,4 +808,54 @@ async fn assert_summary_child_import(
         Some(&input.input)
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn summary_fork_captures_private_payloads_and_binds_publication() -> Result<()> {
+    let early = "q".repeat(60_000);
+    let late = "r".repeat(60_000);
+    let (storage, parent, seed, captured, limits) = published_summary(
+        [early.as_bytes(), early.as_bytes(), late.as_bytes()],
+        Arc::new(summary_model(5)),
+    )
+    .await?;
+    assert_summary_child_import(&storage, &parent, &seed, &captured, limits).await
+}
+
+#[path = "summary_round_trips.rs"]
+mod summary_round_trips;
+
+async fn publish_summary_seed(
+    storage: &MemoryHarnessStorage,
+    mut aggregate: StreamAggregate<MemoryStream>,
+    seed: &crate::fork::ForkSeed,
+    scope: Scope,
+    stream_provider: &ProviderRef,
+) -> Result<StreamAggregate<MemoryStream>> {
+    let fs_verifier = FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?;
+    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(
+        &[
+            fs_verifier,
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+        ],
+        &mut None,
+    )?);
+    aggregate
+        .execute(
+            Command {
+                operation_id: seed.operation_id,
+                idempotency_key: IdempotencyKey::new("publish-summary-fork")?,
+                expected_revision: aggregate.reducer().revision(),
+                scope,
+                causal_parent: None,
+                action: Action::PublishFork {
+                    seed: Box::new(seed.clone()),
+                },
+            },
+            #[cfg(feature = "filesystem")]
+            None,
+            &mut None,
+        )
+        .await?;
+    Ok(aggregate)
 }

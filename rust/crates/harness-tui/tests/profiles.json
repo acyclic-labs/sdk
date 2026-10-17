@@ -1,0 +1,16 @@
+[
+  {"name":"xterm", "term":"xterm-256color", "identity":"XTerm(398)", "kitty":false, "sixel":true, "rgb":false, "smulx":false, "modes":true, "image":"Sixel", "keyboard":"ModifyOtherKeys", "colour":"Indexed256"},
+  {"name":"kitty", "term":"xterm-kitty", "identity":"kitty(0.43.1)", "kitty":true, "sixel":false, "rgb":true, "smulx":true, "modes":true, "image":"Kitty", "keyboard":"Kitty", "colour":"TrueColour"},
+  {"name":"WezTerm", "term":"xterm-256color", "identity":"WezTerm", "kitty":true, "sixel":true, "rgb":true, "smulx":true, "modes":true, "image":"Kitty", "keyboard":"Kitty", "colour":"TrueColour"},
+  {"name":"Ghostty", "term":"xterm-ghostty", "identity":"ghostty", "grapheme":true, "kitty":true, "sixel":false, "rgb":true, "smulx":true, "modes":true, "image":"Kitty", "keyboard":"Kitty", "colour":"TrueColour"},
+  {"name":"iTerm2", "term":"xterm-256color", "identity":"iTerm2", "kitty":false, "sixel":true, "rgb":true, "smulx":false, "modes":true, "image":"Iterm2", "keyboard":"ModifyOtherKeys", "colour":"TrueColour"},
+  {"name":"Apple Terminal", "term":"xterm-256color", "identity":"Apple_Terminal", "kitty":false, "sixel":false, "rgb":false, "smulx":false, "modes":false, "image":"Placeholder", "keyboard":"Legacy", "colour":"Indexed256"},
+  {"name":"Windows Terminal", "term":"xterm-256color", "identity":"Windows Terminal", "kitty":false, "sixel":true, "rgb":true, "smulx":true, "modes":true, "image":"Sixel", "keyboard":"Legacy", "colour":"TrueColour"},
+  {"name":"conhost legacy", "term":"ansi", "identity":"", "kitty":false, "sixel":false, "rgb":false, "smulx":false, "modes":false, "image":"Placeholder", "keyboard":"Legacy", "colour":"Ansi16"},
+  {"name":"Alacritty", "term":"alacritty", "identity":"alacritty", "kitty":true, "sixel":false, "rgb":true, "smulx":true, "modes":true, "image":"Placeholder", "keyboard":"Kitty", "colour":"TrueColour"},
+  {"name":"foot", "term":"foot", "identity":"foot", "kitty":true, "sixel":true, "rgb":true, "smulx":true, "modes":true, "image":"Sixel", "keyboard":"Kitty", "colour":"TrueColour"},
+  {"name":"VS Code", "term":"xterm-256color", "identity":"vscode", "kitty":false, "sixel":true, "rgb":true, "smulx":true, "modes":true, "image":"Sixel", "keyboard":"Legacy", "colour":"TrueColour"},
+  {"name":"Linux console", "term":"linux", "identity":"", "kitty":false, "sixel":false, "rgb":false, "smulx":false, "modes":false, "image":"Placeholder", "keyboard":"Legacy", "colour":"Ansi16"},
+  {"name":"tmux", "term":"tmux-256color", "identity":"tmux", "kitty":false, "sixel":false, "rgb":true, "smulx":true, "modes":true, "image":"Placeholder", "keyboard":"Legacy", "colour":"TrueColour"},
+  {"name":"screen", "term":"screen-256color", "identity":"screen", "kitty":false, "sixel":false, "rgb":false, "smulx":false, "modes":true, "image":"Placeholder", "keyboard":"Legacy", "colour":"Indexed256"}
+]

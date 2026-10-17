@@ -53,13 +53,13 @@ async fn native_checkpoint_open_preserves_actual_output_and_failed_source_prefix
     .expect("finite test budget");
     assert!(matches!(
         open_native_history(&provider, &denied_copy).await,
-        Err(Error::NativeFilesystem { source, custody: None })
-            if matches!(*source, acyclic_fs::FsError::NativeKernel(
-                NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                    counter: "bytes_copied",
-                    ..
-                })
-            ))
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "bytes_copied",
+                ..
+            }),
+            custody: None,
+        })
     ));
     for narrow in [
         WorkBudget {

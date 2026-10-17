@@ -1,4 +1,5 @@
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
+import { sessionService } from "./session-service-fixture.mjs";
 import assert from "node:assert/strict";
 import { createSecureServer } from "node:http2";
 import { spawn, spawnSync } from "node:child_process";
@@ -19,6 +20,7 @@ const { idempotencyKey, commitId, StreamError } = await import(installed ? pathT
 const { ensureStreamWasm } = await import(new URL("dist/contract.js", packageUrl).href);
 const { WasmStream } = await import(new URL("generated/wasm/acyclic_stream_wasm.js", packageUrl).href);
 const { Codec, ReadResponseSchema, RecordBatchSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
+const sessionWire = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/session/proto")).href : new URL("../generated/proto/stream/v1/session_pb.js", import.meta.url).href);
 
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -29,11 +31,14 @@ async function validateFrames(options, prefix) {
   const provider = new GrpcStreamProvider(options);
   const state = (mode, field) => provider.tail(`frame-state/${prefix}/${mode}/${field}`);
   const waitFor = async (mode, field, minimum = 1n) => {
-    const deadline = Date.now() + 2000;
-    while (await state(mode, field) < minimum) {
-      assert.ok(Date.now() < deadline, `missing ${mode} ${field}`);
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`missing ${mode} ${field}`)), 2000);
+    try {
+      for await (const record of provider.follow(`frame-state/${prefix}/${mode}/${field}`, { from: 0n, signal: controller.signal })) {
+        if (BigInt(new TextDecoder().decode(record.value)) >= minimum) return;
+      }
+      throw controller.signal.reason ?? new Error(`missing ${mode} ${field}`);
+    } finally { clearTimeout(timer); controller.abort(); }
   };
   const first = async iterator => {
     let timer;
@@ -66,7 +71,14 @@ async function validateFrames(options, prefix) {
       ? provider.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 1 })[Symbol.asyncIterator]()
       : open(mode);
     await assert.rejects(iterator.next(), error => error.code === "invalid_response");
-    if (mode !== "count") await assert.rejects(open(mode, provider, true).next(), error => error.code === "invalid_response");
+    if (mode !== "count") {
+      const follow = open(mode, provider, true);
+      // Session frames hold one record; the valid prefix precedes a bad second
+      // record. Read still validates its entire compressed batch atomically.
+      if (mode !== "codec") assert.equal((await follow.next()).value.sequence, 0n);
+      // Follows now share Rust's session validator and its canonical failure.
+      await assert.rejects(follow.next(), error => error instanceof StreamError && error.code === "unavailable");
+    }
   }
   const ordinary = open("ordinary");
   assert.equal((await first(ordinary)).value.sequence, 0n);
@@ -108,6 +120,10 @@ if (process.argv.includes("--client")) {
   let config = "";
   for await (const chunk of process.stdin) config += chunk;
   const options = JSON.parse(config);
+  if (process.argv.includes("--latency")) {
+    await (await import("./session-latency.mjs")).measureLatency(options);
+    process.exit(0);
+  }
   const provider = new GrpcStreamProvider(options);
   const prefix = process.versions.bun ? "bun" : "node";
   const path = `${prefix}/events`;
@@ -170,7 +186,9 @@ if (process.argv.includes("--client")) {
 
 await ensureStreamWasm();
 const memory = new WasmStream();
-const identity = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
+const certificate = process.env.ACYCLIC_CONFORMANCE_CERTIFICATE;
+const identity = spawnSync(certificate ?? "cargo", certificate === undefined ? ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"] : [], { cwd: root, encoding: "utf8" });
+assert.ifError(identity.error);
 assert.equal(identity.status, 0, identity.stderr);
 const tls = JSON.parse(identity.stdout);
 // One Read frame per batch, optionally Zstandard-compressed.
@@ -187,17 +205,78 @@ function canonicalError(error) {
 }
 
 const frameStates = new Map();
+const stateFollowers = new Map();
 const deliveryTokens = new Map();
 function frameState(prefix, mode) {
   const key = `${prefix}/${mode}`;
-  if (!frameStates.has(key)) frameStates.set(key, { started: 0n, cancelled: 0n, attempts: 0n });
+  if (!frameStates.has(key)) frameStates.set(key, new Proxy({ started: 0n, cancelled: 0n, attempts: 0n }, {
+    set(target, field, value) {
+      target[field] = value;
+      for (const push of stateFollowers.get(`${key}/${field}`) ?? []) push(value);
+      return true;
+    },
+  }));
   return frameStates.get(key);
 }
 function aborted(signal) {
   if (signal.aborted) return Promise.resolve();
   return new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
 }
+async function* sessionRecords(subscription, signal) {
+  const { path } = subscription.kind.value;
+  const record = (sequence, value = body("frame")) => ({ sequence, value, commitId: new Uint8Array(32).fill(7), committedAtMicros: 1n });
+  if (path.startsWith("frame-state/")) {
+    const [, prefix, mode, field] = path.split("/");
+    const name = `${prefix}/${mode}/${field}`;
+    const pending = [frameState(prefix, mode)[field]];
+    let wake;
+    const push = value => { pending.push(value); wake?.(); };
+    const followers = stateFollowers.get(name) ?? new Set();
+    stateFollowers.set(name, followers);
+    followers.add(push);
+    const stop = () => wake?.();
+    signal.addEventListener("abort", stop, { once: true });
+    try {
+      let sequence = subscription.resume.next;
+      while (!signal.aborted) {
+        if (pending.length === 0) await new Promise(resolve => { wake = resolve; });
+        if (pending.length > 0) yield { record: record(sequence++, body(String(pending.shift()))) };
+      }
+    } finally { signal.removeEventListener("abort", stop); followers.delete(push); }
+    return;
+  }
+  if (path.startsWith("frame-test/")) {
+    const [, prefix, mode] = path.split("/");
+    const state = frameState(prefix, mode);
+    state.started++;
+    try {
+      for (let index = 0; index < (mode === "pressure" ? 64 : 2); index++) {
+        const item = record(mode === "cursor" && index === 1 ? 9n : BigInt(index));
+        if (mode === "identity" && index === 1) item.commitId = new Uint8Array(31);
+        yield { record: item, invalid: mode === "codec" };
+      }
+      await aborted(signal);
+    } finally { if (signal.aborted) state.cancelled++; }
+    return;
+  }
+  const method = StreamService.methods.find(method => method.localName === "follow");
+  const handle = await memory.open_follow(toBinary(method.input, create(method.input, { path, from: subscription.resume.next })));
+  const close = () => handle.close();
+  signal.addEventListener("abort", close, { once: true });
+  try {
+    while (!signal.aborted) {
+      const bytes = await handle.next();
+      if (bytes === null) return;
+      const response = fromBinary(ReadResponseSchema, bytes);
+      for (const record of fromBinary(RecordBatchSchema, response.data).records) yield { record };
+    }
+  } finally { signal.removeEventListener("abort", close); handle.close(); handle.free(); }
+}
 function createAdapter() { return connectNodeAdapter({ routes(router) {
+  router.service(sessionWire.StreamSessionService, { session(requests, context) {
+    authenticate(context);
+    return sessionService(sessionWire, sessionRecords)(requests, context);
+  } });
   const implementation = {};
   for (const method of StreamService.methods) {
     if (method.methodKind === "server_streaming") {
@@ -283,7 +362,7 @@ try {
   await new Promise(resolve => server.listen(0, "localhost", resolve));
   const runtimes = process.argv.includes("--node-only") ? [process.execPath] : process.argv.includes("--bun-only") ? ["bun"] : [process.execPath, "bun"];
   for (const runtime of runtimes) await new Promise((resolve, reject) => {
-    const flags = ["--client", ...(installed ? ["--installed"] : []), ...(process.argv.includes("--native") ? ["--native"] : [])];
+    const flags = ["--client", ...(installed ? ["--installed"] : []), ...(process.argv.includes("--native") ? ["--native"] : []), ...(process.argv.includes("--latency") ? ["--latency"] : [])];
     const child = spawn(runtime, [file, ...flags], { cwd: installed ? process.cwd() : root, stdio: ["pipe", "inherit", "inherit"], windowsHide: true });
     child.stdin.end(JSON.stringify({ endpoint: `https://localhost:${server.address().port}`, token: "conformance", caCertificate: tls.certificate }));
     child.on("error", reject);

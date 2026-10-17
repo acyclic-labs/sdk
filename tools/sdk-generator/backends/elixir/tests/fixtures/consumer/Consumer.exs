@@ -86,7 +86,7 @@ defmodule InstalledProbe do
       for name <- [method.input_type, method.output_type], do: roundtrip(sample(name, messages, enum_types, 1))
       method.name
     end
-    check(length(methods) == 19, "incomplete RPC inventory")
+    check(length(methods) == 20, "incomplete RPC inventory")
     bytes = <<0, 255>>
     roundtrip(%Acyclic.Actors.V1.CreateActorRequest{code_sha256: bytes})
     wire = roundtrip(%Acyclic.Stream.V1.ReadRequest{from: 18_446_744_073_709_551_615, limit: 4_294_967_295})
@@ -98,7 +98,7 @@ defmodule InstalledProbe do
     roundtrip(%Acyclic.Stream.V1.AppendResponse{outcome: nil})
     reject(%Acyclic.Actors.V1.CreateActorRequest{code_sha256: :invalid_bytes}, "code_sha256")
     reject(%Acyclic.Stream.V1.AppendRequest{if_tail: "invalid integer"}, "if_tail")
-    IO.puts("PASS Elixir Rust message/enum/service descriptors, 19 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections")
+    IO.puts("PASS Elixir Rust message/enum/service descriptors, 20 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections")
   end
 end
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 use crate::executor::{ExecutionProgress, TurnOutput};
 use crate::filesystem::task_runtime::observed::boundary;
 use crate::filesystem::{FilesystemExecutionJournal, PreparationIo};
@@ -34,59 +35,70 @@ where
                 "model command provider is not bound",
             )
         })?;
+        let compaction = if command.summary_source.is_some() {
+            &crate::context::CompactionPolicy::Disabled
+        } else {
+            &binding.compaction
+        };
         let steering = if stock || command.mailbox_operation.is_some() {
-            let journal = 'journal: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                    break 'journal self
-                        .runtime
-                        .workflow_journal_with_native_work(task, fence, work)
-                        .await?;
+            BoundedContentFuture::new(io, || async {
+                let journal = 'journal: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                        break 'journal self
+                            .runtime
+                            .workflow_journal_with_native_work(task, fence, work)
+                            .await?;
+                    }
+                    self.runtime.workflow_journal(task, fence.clone()).await?
+                };
+                let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
+                    boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
+                })?;
+                if !latest.transition.commands.iter().any(|command| {
+                    command.operation_id == turn && command.kind == MODEL_TASK_COMMAND_KIND
+                }) {
+                    return Err(boundary(
+                        io,
+                        ErrorCode::Unauthorized,
+                        "model is outside the committed outbox",
+                    ));
                 }
-                self.runtime.workflow_journal(task, fence.clone()).await?
-            };
-            let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
-                boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
-            })?;
-            if !latest.transition.commands.iter().any(|command| {
-                command.operation_id == turn && command.kind == MODEL_TASK_COMMAND_KIND
-            }) {
-                return Err(boundary(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "model is outside the committed outbox",
-                ));
-            }
-            let recorded = if stock
-                && latest
-                    .transition
-                    .state
-                    .get("mail")
-                    .is_some_and(|mail| !mail.is_null())
-            {
-                Some(
-                    OperationId::deserialize(
-                        latest
-                            .transition
-                            .state
-                            .get("receive")
-                            .and_then(|receive| receive.get("operation_id"))
-                            .unwrap_or(&Value::Null),
+                let recorded = if stock
+                    && latest
+                        .transition
+                        .state
+                        .get("mail")
+                        .is_some_and(|mail| !mail.is_null())
+                {
+                    Some(
+                        OperationId::deserialize(
+                            latest
+                                .transition
+                                .state
+                                .get("receive")
+                                .and_then(|receive| receive.get("operation_id"))
+                                .unwrap_or(&Value::Null),
+                        )
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
                     )
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                )
-            } else {
-                None
-            };
-            command
-                .mailbox_operation
-                .or(recorded)
-                .map(|receive| (latest, receive))
+                } else {
+                    None
+                };
+                Ok(command
+                    .mailbox_operation
+                    .or(recorded)
+                    .map(|receive| (latest, receive)))
+            })?
+            .await?
         } else {
             None
         };
         let (journal, operation) = if io.is_some() || reconciliation_only {
-            let (journal, operation) = self.command_journal(task, fence, turn, io).await?;
+            let (journal, operation) = BoundedContentFuture::new(io, || {
+                self.command_journal(task, fence, turn, &context, io)
+            })?
+            .await?;
             (Some(journal), operation)
         } else {
             (
@@ -111,14 +123,16 @@ where
             return mail::reconciled(io);
         }
         if let Some(steering) = steering {
-            self.steer(
-                &context,
-                fence,
-                &mut command,
-                steering,
-                reconciliation_only,
-                io,
-            )
+            BoundedContentFuture::new(io, || {
+                self.steer(
+                    &context,
+                    fence,
+                    &mut command,
+                    steering,
+                    reconciliation_only,
+                    io,
+                )
+            })?
             .await?;
         }
         if let Some(io) = io {
@@ -127,15 +141,27 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        let (pipeline, tools) = BoundedContentFuture::new(io, || async {
+            if command.summary_source.is_some() {
+                Ok((
+                    crate::context::ContextPipeline::default(),
+                    crate::tool::ToolRegistry::default(),
+                ))
+            } else {
+                self.model_context(command.context_manifest, &context, io)
+                    .await
+            }
+        })?
+        .await?;
         let input = TurnInput {
             operation_id: operation,
             input: command.input,
             selected_context: command.selected_context,
             max_steps: command.max_steps,
         };
-        let result: Result<ExecutionProgress<TurnOutput>> = 'execution: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            return BoundedContentFuture::new(Some(io), || async {
                 let work = io.original_native_work().ok_or_else(|| {
                     boundary(
                         Some(io),
@@ -148,19 +174,23 @@ where
                     None => context,
                 };
                 let journal = require_journal()?;
-                let executor = self.runtime.stock_executor_with_native_work(
-                    task,
-                    fence,
-                    operation,
-                    &context,
-                    &binding.model,
-                    Arc::clone(&binding.provider),
-                    &binding.context,
-                    journal,
-                    work,
-                    &binding.compaction,
-                    command.max_output_tokens,
-                )?;
+                let executor = self
+                    .runtime
+                    .stock_executor_with_native_work(
+                        task,
+                        fence,
+                        operation,
+                        &context,
+                        &binding.model,
+                        Arc::clone(&binding.provider),
+                        &pipeline,
+                        tools,
+                        journal,
+                        work,
+                        compaction,
+                        command.max_output_tokens,
+                    )?
+                    .with_summary_source(command.summary_source);
                 let executor = if reconciliation_only {
                     executor.into_reconciliation()
                 } else {
@@ -176,34 +206,44 @@ where
                 }
                 let (progress, custody) = result?;
                 io.absorb_native_custody(custody)?;
-                break 'execution Ok(progress);
+                Self::model_progress(progress, Some(io))
+            })?
+            .await;
+        }
+        BoundedContentFuture::new(io, || async {
+            let execution = self
+                .runtime
+                .stock_execution(
+                    task,
+                    fence.clone(),
+                    turn,
+                    binding.model.clone(),
+                    Arc::clone(&binding.provider),
+                    pipeline,
+                    tools,
+                    command.selected_output_volume.as_ref(),
+                )
+                .await?
+                .with_compaction_policy(compaction.clone())
+                .with_summary_source(command.summary_source);
+            let execution = match command.max_output_tokens {
+                Some(maximum) => execution.with_max_output_tokens(maximum)?,
+                None => execution,
+            };
+            if reconciliation_only {
+                let result = execution.reconcile_progress(input).await;
+                return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
             }
-            {
-                let execution = self
-                    .runtime
-                    .stock_execution(
-                        task,
-                        fence.clone(),
-                        turn,
-                        binding.model.clone(),
-                        Arc::clone(&binding.provider),
-                        binding.context.clone(),
-                        command.selected_output_volume.as_ref(),
-                    )
-                    .await?
-                    .with_compaction_policy(binding.compaction.clone());
-                let execution = match command.max_output_tokens {
-                    Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                    None => execution,
-                };
-                if reconciliation_only {
-                    let result = execution.reconcile_progress(input).await;
-                    return Self::reconcile_model(result.map(drop), require_journal()?, io).await;
-                }
-                execution.execute_progress(input).await
-            }
-        };
-        match result? {
+            Self::model_progress(execution.execute_progress(input).await?, io)
+        })?
+        .await
+    }
+
+    fn model_progress(
+        progress: ExecutionProgress<TurnOutput>,
+        io: Option<&PreparationIo>,
+    ) -> Result<TaskCommandProgress> {
+        match progress {
             ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             ExecutionProgress::Rejected(reason) => rejected(reason, io),

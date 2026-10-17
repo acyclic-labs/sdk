@@ -4,9 +4,15 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 mod admission;
+mod arrays;
 mod identity;
 mod records;
-pub(crate) use identity::{canonical_json_digest, json_byte_length};
+pub(crate) use identity::{
+    canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,
+};
+
+/// Nesting accepted by saved preparation-record readers.
+pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
 pub(crate) use diagnostics::{
     audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
@@ -15,14 +21,43 @@ pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
 pub(crate) use serialization::count_json_bytes_trusted;
+mod copy;
+mod decode;
 mod schema;
 mod serialization;
 #[cfg(feature = "filesystem")]
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
 pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
-pub(crate) use records::json_value_logical_owned_bytes;
+pub use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
-pub use serialization::{canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded};
+pub use serialization::{
+    canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,
+};
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub(crate) use serialization::{json_digest_bounded, json_write_bounded};
+
+/// Fixed JSON input failures, distinct from exhausted work allowances.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum JsonInputError {
+    /// A closing container has no matching opener.
+    #[error("invalid JSON nesting")]
+    Nesting,
+    /// The source ends inside a string or container.
+    #[error("incomplete JSON document")]
+    Incomplete,
+    /// A value exceeds the fixed nesting limit.
+    #[error("JSON nesting limit exceeded")]
+    Depth,
+}
+
+fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(code) = code {
+        return Error::NativeJsonAdmission { code, kind };
+    }
+    let _ = code;
+    Error::Invalid(kind.to_string())
+}
 
 /// Finite byte, node and nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +84,7 @@ enum Origin {
 pub struct JsonValueShape {
     input_bytes: u64,
     lexical_items: u64,
+    containers: u64,
     virtual_items: u64,
     raw_bytes: u64,
     raw_frames: u64,
@@ -56,6 +92,16 @@ pub struct JsonValueShape {
     origin: Origin,
 }
 impl JsonValueShape {
+    pub(crate) fn is_slice(self) -> bool {
+        self.origin == Origin::Slice
+    }
+    /// Object and array openings when the original source was bytes.
+    pub const fn lexical_containers(self) -> Option<u64> {
+        match self.origin {
+            Origin::Slice => Some(self.containers),
+            _ => None,
+        }
+    }
     /// Bytes inspected on the original source.
     pub const fn input_bytes(self) -> u64 {
         self.input_bytes
@@ -104,6 +150,11 @@ pub enum JsonCodecCharge {
         /// Full requested capacity.
         bytes: u64,
     },
+    /// Atomic conservative node-allocation bound for one complete object.
+    AllocationOperations {
+        /// Maximum number of physical node allocations, from entry count.
+        operations: u64,
+    },
     /// Copy into an admitted buffer.
     Copy {
         /// Copied bytes.
@@ -136,7 +187,7 @@ fn boundary(reason: &'static str, code: Option<crate::wire::ErrorCode>) -> Error
     let _ = code;
     Error::Invalid(reason.into())
 }
-fn checked(value: Option<u64>, reason: &'static str) -> Result<u64> {
+fn checked<T>(value: Option<T>, reason: &'static str) -> Result<T> {
     value.ok_or_else(|| boundary(reason, Some(crate::wire::ErrorCode::Invalid)))
 }
 

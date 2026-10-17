@@ -1,0 +1,4 @@
+{
+  "layouts":[{"visible":[0,1],"prefetch":[1,2]},{"visible":[1,2],"prefetch":[0,1]}],
+  "expect":{"wire":{"content_follows":2,"removed":0,"snapshots":2,"peak_heads":2}}
+}

@@ -1,5 +1,7 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
+autobins = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -9,21 +11,162 @@ repository.workspace = true
 publish.workspace = true
 description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
+
+[[test]]
+name = "tui-config"
+path = "tests/tui_config.rs"
+required-features = ["tui"]
+
+[[test]]
+name = "tui-completion"
+path = "tests/tui_completion.rs"
+required-features = ["tui"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "git_executor"
+path = "tests/git_executor.rs"
+required-features = ["filesystem-local", "native-execution"]
+
+[[test]]
+name = "local-task-files"
+path = "tests/local_task_files.rs"
+required-features = ["filesystem-local", "native-execution", "test-support"]
+
+[[test]]
+name = "default_tools"
+path = "tests/default_tools.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "task_view"
+path = "tests/task_view.rs"
+
+[[test]]
+name = "task-volume"
+path = "tests/task_volume.rs"
+
+[[test]]
+name = "file-query"
+path = "tests/file_query.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "client-model-views"
+path = "tests/client_model_views.rs"
+
+[[test]]
+name = "client-views-parity"
+path = "tests/client_views_parity.rs"
+required-features = ["wasm"]
+
+[[test]]
+name = "mcp-loom"
+path = "tests/mcp_loom.rs"
+
+[[test]]
+name = "memory-accounting-model"
+path = "tests/memory_accounting_model.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "goal-files"
+path = "tests/goal_files.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "local-recursive-fork"
+path = "tests/local_recursive_fork.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
+name = "context-continuation"
+path = "tests/context_continuation.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
+name = "context-discovery"
+path = "tests/context_discovery.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "filesystem_access"
+path = "tests/filesystem_access.rs"
+
+[[test]]
+name = "client_journal_model"
+path = "tests/client_journal_model.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "client_session"
+path = "tests/client_session.rs"
+
+[[test]]
+name = "decoder_properties"
+path = "tests/decoder_properties.rs"
+
+[[test]]
+name = "client_history"
+path = "tests/client_history.rs"
+
+[[test]]
+name = "mcp-durable"
+path = "tests/mcp_durable.rs"
+required-features = ["filesystem-local", "mcp-http"]
+
+[[test]]
+name = "client-commands"
+path = "tests/client_commands.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "client-notifications"
+path = "tests/client_notifications.rs"
+
+[[test]]
+name = "plan-markdown"
+path = "tests/plan_markdown.rs"
+
+[[test]]
+name = "client-interests"
+path = "tests/client_interests.rs"
+
+[[test]]
+name = "client-query"
+path = "tests/client_query.rs"
+
+[[test]]
+name = "client-swarm-views"
+path = "tests/client_swarm_views.rs"
+
+[[test]]
+name = "task-workflow"
+path = "tests/task_workflow.rs"
+required-features = ["filesystem-local"]
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["filesystem-local", "native-execution", "test-support", "grpc"]
+
+[[test]]
+name = "search-http-codec"
+path = "tests/search_http_codec.rs"
+required-features = ["filesystem", "search-http", "test-support"]
+
+[[test]]
+name = "search-request"
+path = "tests/search_request.rs"
+required-features = ["filesystem", "test-support"]
+
 [lib]
 crate-type = ["rlib", "cdylib"]
-
-[[bin]]
-name = "graphcoder"
-path = "src/bin/graphcoder.rs"
-required-features = ["terminal"]
 
 [[example]]
 name = "native-process-approval"
@@ -39,34 +182,39 @@ harness = false
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
-[[bench]]
-name = "harness"
-harness = false
-
-[[bench]]
-name = "client_demand"
-harness = false
-
 [features]
+tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
+test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
+model-checking = ["dep:loom", "dep:same-file"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex"]
+terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local"]
+filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
 # Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount"]
+native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
+# Native lifecycle commands can also be embedded without filesystem mounts.
+hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
-mcp-http = ["dep:reqwest"]
+mcp-http = ["dep:reqwest", "dep:toml"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
+search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
+arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, optional = true }
+acyclic-markdown = { version = "=0.2.0", path = "../markdown", optional = true }
+ratatui = { version = "=0.30.2", default-features = false, optional = true }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
@@ -78,14 +226,18 @@ hex = { workspace = true, optional = true }
 http.workspace = true
 jsonschema.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
+regex-lite = { version = "0.1.9", optional = true }
 js-sys = { workspace = true, optional = true }
 prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.2"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+toml = { workspace = true, optional = true }
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
@@ -98,23 +250,47 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = { workspace = true, optional = true }
+tempfile = { version = "3.27.0", optional = true }
+getrandom = { workspace = true, optional = true }
+loom = { version = "=0.7.2", optional = true }
+same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
-tracing.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
+keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+which = { version = "8.0.6", optional = true }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
+
+[dev-dependencies]
+proptest.workspace = true
+diffy.workspace = true
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
+rcgen = "0.14.10"
+tonic.workspace = true
+serde-saphyr = { version = "=1.3.0", default-features = false, features = ["serialize"] }
+acyclic-test-support = { path = "../test-support" }
+shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
-divan.workspace = true
-proptest.workspace = true
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+loom = "0.7.2"
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rust SDK execution uses the real browser event loop even without exports.
@@ -127,3 +303,22 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "client-diff"
+path = "tests/client_diff.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "client-file-submit"
+path = "tests/client_file_submit.rs"
+
+[[test]]
+name = "client-mailbox-model"
+path = "tests/client_mailbox_model.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "query-model"
+path = "tests/query_model.rs"
+required-features = ["model-checking"]

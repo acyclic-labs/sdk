@@ -16,7 +16,34 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.bounds(path)).await?
     }
 
+    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
+        self.accepted(async {
+            let accepted = self.inner.provider.tail(path.clone()).await?;
+            // Both frame counters are published before publication is released.
+            // Do not borrow the journal: compaction may hold it during device I/O.
+            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let mut tails = self
+                .inner
+                .durable_tails
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            let durable = tails.entry(path).or_default();
+            if synced {
+                *durable = (*durable).max(accepted);
+            }
+            Ok(crate::StreamWatermarks {
+                accepted,
+                durable: *durable,
+            })
+        })
+        .await?
+    }
+
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("append {} {:?}", request.path, request.idempotency_key)
+        });
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.append",
             items = request.records.len(),
@@ -85,63 +112,40 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.follow",
-            rev = from,
-            terminal = Empty,
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            let mut state = FollowState {
-                provider: self.clone(),
-                path,
-                cursor: crate::memory::HistoryCursor::at(from),
-                changed: self.inner.changed.subscribe(),
-                done: false,
-                span: span.clone(),
-            };
-            if let Err(error) = self.tail(state.path.clone()).await {
-                state.failed(&error);
-                return Err(error);
-            }
-            Ok(span
-                .scope(stream::try_unfold(state, |mut state| async move {
-                    let result = async {
-                        loop {
-                            if let Some(record) = state
-                                .provider
-                                .visible(
-                                    state
-                                        .provider
-                                        .inner
-                                        .provider
-                                        .next_follow_record(&state.path, &mut state.cursor),
-                                )
-                                .await??
-                            {
-                                return Ok(record);
-                            }
-                            state
-                                .changed
-                                .changed()
-                                .await
-                                .map_err(|_| StreamError::Unavailable)?;
-                        }
-                    }
-                    .await;
-                    if let Err(error) = &result {
-                        state.failed(error);
-                    }
-                    Ok(Some((result?, state)))
-                }))
-                .boxed())
-        })
-        .await
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: crate::CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await?
+        let changed = self.inner.failed.subscribe();
+        let children = self
+            .accepted(self.inner.provider.children(request))
+            .await??;
+        Ok(stream::try_unfold(
+            (self.clone(), children, changed),
+            |(provider, mut children, mut changed)| async move {
+                let unavailable = Box::pin(LocalInner::unavailable(&mut changed));
+                // No visibility guard is held while either subscription parks.
+                let child = match futures::future::select(unavailable, children.next()).await {
+                    futures::future::Either::Left((error, _)) => return Err(error),
+                    futures::future::Either::Right((child, _)) => child,
+                };
+                let Some(child) = child.transpose()? else {
+                    return Ok(None);
+                };
+                provider.accepted(async {}).await?;
+                Ok(Some((child, (provider, children, changed))))
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(
@@ -153,14 +157,14 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, None).await
+        commit::<true>(self, request, None).await
     }
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, Some(deadline)).await
+        commit::<true>(self, request, Some(deadline)).await
     }
 
     async fn read_commit(
@@ -260,11 +264,13 @@ impl StreamProvider for LocalStream {
     }
 }
 
-async fn commit(
+async fn commit<const ELIDE_REPLAY: bool>(
     stream: &LocalStream,
     request: CommitRequest,
     deadline: Option<u64>,
 ) -> Result<CommitOutcome, StreamError> {
+    #[cfg(feature = "test-support")]
+    describe_commit(&request);
     let span = obs::OperationSpan::new(tracing::info_span!(
         "acyclic.stream.commit",
         items = request.mutations.len(),
@@ -274,16 +280,51 @@ async fn commit(
     span.scope(async {
         stream
             .exclusive(&span, move |stream| async move {
-                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                // The visibility guard covers this lookup and settlement. A
+                // replay still passes through commit_inner for fingerprint and
+                // deadline semantics, then exclusive awaits the original WAL.
+                let replay = ELIDE_REPLAY
+                    && stream
+                        .inner
+                        .provider
+                        .has_replay(&request.idempotency_key)
+                        .await?;
+                let frame = if replay {
+                    None
+                } else {
+                    Some(stream.prepare(&Command::Commit(request.clone()))?)
+                };
                 let (outcome, _claim) = stream
                     .inner
                     .provider
                     .commit_inner(request, deadline)
                     .await?;
-                stream.persist(frame).await?;
+                if let Some(frame) = frame {
+                    stream.persist(frame).await?;
+                } else {
+                    stream.require_accepted::<true>()?;
+                }
                 Ok(outcome)
             })
             .await
     })
     .await
+}
+
+#[cfg(feature = "test-support")]
+fn describe_commit(request: &CommitRequest) {
+    acyclic_native_runtime::testing::describe(|| {
+        format!(
+            "commit {:?}: {:?}",
+            request.idempotency_key,
+            request
+                .mutations
+                .iter()
+                .map(|mutation| match mutation {
+                    crate::CommitMutation::Append { path, .. } => path.as_str(),
+                    crate::CommitMutation::Fork { destination, .. } => destination.as_str(),
+                })
+                .collect::<Vec<_>>()
+        )
+    });
 }

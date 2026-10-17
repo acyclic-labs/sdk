@@ -1,0 +1,2 @@
+{"prompt":"/diff","discovery_limits":{"entries":0,"directories":256,"header_bytes":16384,"instruction_bytes":65536},
+  "expect":{"error":"discovery requires finite positive bounds"}}

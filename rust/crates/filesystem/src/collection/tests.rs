@@ -26,6 +26,40 @@ fn checkout_hold() -> Held {
     }
 }
 
+#[cfg(feature = "native-mount")]
+#[test]
+fn file_table_replacement_rejects_a_missing_checkout_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let collection = Arc::new(Collection::default());
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let Held::Checkout {
+        base,
+        working,
+        config,
+        ..
+    } = checkout_hold()
+    else {
+        unreachable!()
+    };
+    let original = working.file_table;
+    let mut roots = CheckoutRoots::new(
+        Some(&collection),
+        config,
+        base,
+        (working, crate::kernel::ProofDataClaim::default()),
+        &mut accounting,
+        None,
+    )?;
+    let id = roots.hold.as_ref().ok_or("missing registration")?.id;
+    let saved = std::mem::replace(&mut collection.holds().slots[id], Slot::Free(None));
+    let result = roots.set_file_table(object(9));
+    collection.holds().slots[id] = saved;
+    assert!(matches!(result, Err(crate::FsError::InvalidDiff)));
+    assert_eq!(roots.file_table, original);
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()

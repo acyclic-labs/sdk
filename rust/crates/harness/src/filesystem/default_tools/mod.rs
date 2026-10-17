@@ -131,8 +131,8 @@ pub(in crate::filesystem) struct RecursiveMergeToolPlan {
     pub notice: ConversationMessage,
 }
 
-/// Registers shared file tools and the configured durable fork/merge operations.
-pub fn recursive_default_tools<
+/// Registers the configured durable fork and merge operations.
+pub fn recursive_tools<
     P: StreamProvider + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -146,18 +146,12 @@ pub fn recursive_default_tools<
         ));
     }
     let mut tools = ToolRegistry::default();
-    for tool in [
-        crate::tool::files::read_file()?,
-        crate::tool::files::write_file()?,
-        crate::tool::files::edit_file()?,
-    ] {
-        tools.register((tool, None), &mut None, None)?;
-    }
     for (name, source) in [("acyclic.fork", source.clone()), ("acyclic.merge", source)] {
         let definition = definition(name, maximum_request_bytes);
         tools.register(
             (
                 Tool {
+                    hook_names: &[],
                     definition: definition.clone(),
                     executor: Arc::new(RecursiveExecutor {
                         source,

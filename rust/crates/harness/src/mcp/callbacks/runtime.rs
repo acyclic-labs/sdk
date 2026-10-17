@@ -35,7 +35,7 @@ impl McpRuntimeCallbacks {
             ));
         }
         Ok(Self {
-            executor: executor.with_tool_registry(crate::tool::ToolRegistry::default()),
+            executor: executor.without_tool_authority(),
             journal,
             model_name,
             continuation,
@@ -208,12 +208,14 @@ impl McpRuntimeCallbacks {
         for event in events {
             match event {
                 ModelEvent::Content { delta } => text.push_str(&delta),
-                ModelEvent::ToolCall { .. } => {
+                ModelEvent::ToolCall(_) => {
                     return Err(Error::Unsupported(
                         "MCP sampling tools require host-selected tool projection".into(),
                     ));
                 }
-                ModelEvent::Reasoning { .. } | ModelEvent::Completed { .. } => {}
+                ModelEvent::Reasoning { .. }
+                | ModelEvent::ReasoningBlock { .. }
+                | ModelEvent::Completed { .. } => {}
             }
         }
         Ok(

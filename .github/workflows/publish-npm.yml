@@ -111,8 +111,8 @@ jobs:
           cp scripts/assemble-{actors,stream}-native-package.mjs scripts/build-{actors,stream}-native.mjs \
             scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
             scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"
-          mkdir -p "$stage/scripts/generated/native-families"
-          cp scripts/generated/native-families/{actors,stream}.json "$stage/scripts/generated/native-families/"
+          mkdir -p "$stage/compatibility/native-families"
+          cp compatibility/native-families/{actors,stream}.json "$stage/compatibility/native-families/"
           cp release/npm-packages.json "$stage/release/"
           node scripts/assemble-stream-native-package.mjs inventory "$stage/release/stream-native-packages.json" "$SOURCE_SHA"
           node scripts/assemble-actors-native-package.mjs inventory "$stage/release/actors-native-packages.json" "$SOURCE_SHA"

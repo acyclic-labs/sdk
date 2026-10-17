@@ -1,0 +1,4 @@
+data: {"type": "response.output_item.done", "output_index": 0, "item": {"type": "reasoning", "id": "rs_0", "encrypted_content": "opaque0", "summary": []}}
+
+data: {"type":"response.completed","response":{"status":"completed"}}
+

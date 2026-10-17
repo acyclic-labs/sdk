@@ -1,0 +1,3 @@
+{"seed":{"AGENTS.md":"éé"},"discovery":{"limits":{"instruction_bytes":4}},"expect":{"request_files":[["éé"]],
+  "requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{"path":"AGENTS.md"},"policy":
+  "bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}

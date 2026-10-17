@@ -8,14 +8,18 @@ import { buildContractTargets, runContractTarget } from "./contract-targets.mjs"
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
 const modules = [
-  "generate-runtime-routes.mjs",
+  "generate-actors-routes.mjs",
+  "generate-inference-routes.mjs",
   "filesystem-napi-types.mjs",
+  "stream-napi-types.mjs",
+  "actors-napi-types.mjs",
+  "filesystem-descriptor-digest.mjs",
   "generate-filesystem-defaults.mjs",
   "generate-filesystem-hosted-contract.mjs",
   "generate-filesystem-git-compat-contract.mjs",
   "generate-inference-defaults.mjs",
   "generate-inference-terminal-metadata.mjs",
-  "generate-inference-fixed-width-metadata.mjs",
+  "generate-inference-widths.mjs",
   "generate-stream-http-contract.mjs",
   "generate-stream-token-operations.mjs",
   "generate-harness-limits-contract.mjs",
@@ -25,7 +29,11 @@ const modules = [
   "generate-harness-conversation-page-contract.mjs",
   "generate-harness-file-tools-contract.mjs",
   "generate-machines-managed-oci-contract.mjs",
-];
+].filter(name => {
+  const families = process.argv.slice(3);
+  if (!families.length) return true;
+  return families.some(family => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`));
+});
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2] ?? "write";
@@ -59,7 +67,7 @@ try {
   saveReport();
   const generators = await Promise.all(modules.map(name => import(`./${name}`)));
   const targets = generators.flatMap(generator => generator.rust ?? []);
-  const executables = buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport);
+  const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport);
   let targetIndex = 0;
 
   const stale = [];
@@ -75,7 +83,8 @@ try {
     const files = await generator.render(stdout, root);
     for (const [relative, content] of Object.entries(files)) {
       const path = join(root, relative);
-      if (mode === "write") writeFileSync(path, content);
+      const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
+      if (mode === "write" && !baseline) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); }
       else if (!existsSync(path) || !Buffer.from(content).equals(readFileSync(path))) stale.push(relative);
     }
     report.generators.push({ name: modules[index], execute_ms, render_compare_ms: performance.now() - renderStart });

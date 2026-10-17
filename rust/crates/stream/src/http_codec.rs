@@ -57,8 +57,12 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
 fn request_json_append(input: &[u8]) -> Result<Value> {
     let request = wire::AppendRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::append_from_wire(request).map_err(|error| error.code())?;
+    append_json(&request)
+}
+
+fn append_json(request: &crate::AppendRequest) -> Result<Value> {
     crate::request::validate_records(&request.records).map_err(|error| error.code())?;
-    crate::request::validate_append_size(&request).map_err(|error| error.code())?;
+    crate::request::validate_append_size(request).map_err(|error| error.code())?;
     let values: Vec<_> = request
         .records
         .iter()
@@ -97,10 +101,20 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
     crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
+    if request
+        .conditions
+        .iter()
+        .any(|condition| matches!(condition, crate::CommitCondition::Head { .. }))
+    {
+        return Err("unsupported");
+    }
     let conditions: Vec<_> = request
         .conditions
         .iter()
         .map(|condition| match condition {
+            crate::CommitCondition::Head { .. } => {
+                unreachable!("head conditions require a negotiated hosted capability")
+            }
             crate::CommitCondition::Tail { path, expected } => json!({
                 "path": path.to_string(),
                 "ifTail": expected.to_string(),
@@ -259,6 +273,11 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
 
 pub(crate) fn encode(route: &str, input: &[u8]) -> Result<String> {
     serde_json::to_string(&request_json(route, input)?).map_err(|_| "could not encode request")
+}
+
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub(crate) fn encode_append(request: &crate::AppendRequest) -> Result<String> {
+    serde_json::to_string(&append_json(request)?).map_err(|_| "could not encode request")
 }
 
 #[cfg(test)]

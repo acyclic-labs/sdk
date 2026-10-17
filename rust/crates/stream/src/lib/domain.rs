@@ -134,6 +134,15 @@ pub struct StreamBounds {
     pub tail: u64,
 }
 
+/// Accepted visibility and confirmed persistence at one observation cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamWatermarks {
+    /// Next sequence accepted by the stream.
+    pub accepted: u64,
+    /// Next sequence in the confirmed durable prefix; zero makes no persistence claim.
+    pub durable: u64,
+}
+
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
@@ -141,12 +150,12 @@ pub struct Child {
     pub path: StreamPath,
 }
 
-/// Fixed-snapshot direct-child page request.
+/// Live direct-child discovery request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenRequest {
     /// Parent, or `None` for top-level paths.
     pub parent: Option<StreamPath>,
-    /// Nonzero result bound.
+    /// Nonzero bound on each replay fetch; the subscription remains live.
     pub limit: u32,
 }
 
@@ -225,6 +234,15 @@ pub struct CommittedEnvelope {
 /// Exact optimistic condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitCondition {
+    /// Existing tail and the immutable record immediately before it must match.
+    Head {
+        /// Existing nonempty path.
+        path: StreamPath,
+        /// Required exact tail.
+        expected: u64,
+        /// Required identity of the record at `expected - 1`.
+        commit_id: CommitId,
+    },
     /// Existing tail must match.
     Tail {
         /// Existing path.
@@ -310,6 +328,15 @@ impl UnixMillisClock for SystemUnixMillisClock {
 /// Failed exact condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitConflict {
+    /// The tail matched but the preceding record belonged to another history.
+    Head {
+        /// Path.
+        path: StreamPath,
+        /// Required preceding commit.
+        expected: CommitId,
+        /// Observed preceding commit.
+        actual: CommitId,
+    },
     /// Tail differed.
     Tail {
         /// Path.
@@ -360,4 +387,4 @@ pub struct IdempotencyObservation {
 /// Backpressured finite read or long-lived follow.
 pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
 /// Backpressured fixed-snapshot direct-child listing.
-pub type ChildStream = futures::stream::BoxStream<'static, Result<Child, StreamError>>;
+pub type ChildStream = BoxProviderStream<'static, Result<Child, StreamError>>;

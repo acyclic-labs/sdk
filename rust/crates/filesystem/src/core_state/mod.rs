@@ -67,10 +67,11 @@ enum Ownership {
 #[derive(Debug)]
 struct Owner {
     _lock: OwnerLock,
-    /// Every logged record read or committed so far, `None` when absent.
+    /// Cached logged records, `None` when absent. Joinable owners bound this cache.
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
     log: Mutex<Option<CoreLog>>,
+    cache_limit: Option<usize>,
 }
 
 /// One held `owner.lock`, released when dropped.
@@ -173,6 +174,7 @@ impl LocalCoreStateStore {
                 _lock: lock,
                 residents: Arc::default(),
                 log: Mutex::default(),
+                cache_limit: None,
             })),
             deferral: None,
             journal_work: None,
@@ -582,6 +584,7 @@ impl From<crate::NativeTreeMaterializationError> for LocalCoreStateStoreError {
 }
 
 mod contexts;
+mod owners;
 use contexts::*;
 mod values;
 use values::*;

@@ -1,4 +1,11 @@
 use super::*;
+use windows::Wdk::Storage::FileSystem::{
+    FILE_RENAME_IGNORE_READONLY_ATTRIBUTE, FILE_RENAME_POSIX_SEMANTICS,
+    FILE_RENAME_REPLACE_IF_EXISTS,
+};
+
+#[path = "rename_flags.rs"]
+mod rename_flags;
 
 pub(super) fn write_entry(
     projection: Projection<'_>,
@@ -327,15 +334,17 @@ pub(super) fn write_ordinary(
             if has_pending_capture(runtime.post_operation_failure.as_ref(), path) {
                 return Ok(Placed::Retry);
             }
-            match (&mut &*work)
-                .attempt_io(ReadOperations.delta(1), || {
-                    held_while(&runtime.root.join(host), state)
-                })
-                .map_err(NativeMountError::from)
-                .map_err(failed)?
-            {
-                held @ Some(_) => held,
-                None => return Ok(Placed::Nothing),
+            match (&mut &*work).attempt_io(ReadOperations.delta(1), || {
+                held_while(&runtime.root.join(host), state)
+            }) {
+                Ok(held @ Some(_)) => held,
+                Ok(None) => return Ok(Placed::Nothing),
+                Err(crate::NativeTreeMaterializationError::Io(error))
+                    if error.raw_os_error() == Some(SHARING_VIOLATION) =>
+                {
+                    return Ok(Placed::Retry);
+                }
+                Err(error) => return Err(failed(error.into())),
             }
         }
         None => None,
@@ -343,7 +352,15 @@ pub(super) fn write_ordinary(
     match if direct {
         Ok(())
     } else {
-        publish_ordinary_file(from, &temporary, &directory, name, held.as_ref(), work)
+        publish_ordinary_file(
+            &file,
+            from,
+            &temporary,
+            &directory,
+            name,
+            held.as_ref().zip(replacing),
+            work,
+        )
     } {
         Ok(()) => {
             crate::native_host::keep_windows_created_file(&file, &mut &*work)
@@ -398,33 +415,32 @@ fn create_ordinary_file(
 }
 
 fn publish_ordinary_file(
+    file: &std::fs::File,
     from: &cap_std::fs::Dir,
     temporary: &std::ffi::OsStr,
     directory: &cap_std::fs::Dir,
     name: &std::ffi::OsStr,
-    held: Option<&std::fs::File>,
+    held: Option<(&std::fs::File, HostWindowsMetadata)>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), crate::NativeTreeMaterializationError> {
-    if held.is_some() {
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_READONLY;
+
+    if let Some((_, state)) = held {
+        let flags =
+            rename_flags::replacement_flags(state.attributes & FILE_ATTRIBUTE_READONLY.0 != 0);
         crate::native_host::with_wide_path(
-            std::path::Path::new(temporary),
+            std::path::Path::new(name),
             &mut &*work,
-            |from_name, work| {
-                crate::native_host::with_wide_path(
-                    std::path::Path::new(name),
+            |to_name, work| {
+                // The identity guard stays open through replacement. The extended
+                // rename preserves existing readers of that held destination.
+                crate::native_host::set_windows_name(
+                    file,
+                    directory,
+                    to_name,
+                    flags,
+                    windows::Wdk::Storage::FileSystem::FileRenameInformationEx,
                     work,
-                    |to_name, _| {
-                        crate::native_host::rename_held(
-                            from,
-                            from_name,
-                            directory,
-                            to_name,
-                            acyclic_native_runtime::RenameMode::Replace,
-                            None,
-                            &mut crate::NativeMaterializationWork::clone(work),
-                        )
-                        .map_err(crate::materializer::native_materialization_work_error)
-                    },
                 )
             },
         )
@@ -467,3 +483,7 @@ fn publish_ordinary_file(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/ordinary_rename.rs"]
+mod rename_tests;

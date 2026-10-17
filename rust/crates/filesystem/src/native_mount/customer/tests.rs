@@ -4,6 +4,120 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 
 #[tokio::test]
+async fn lifecycle_operations_reuse_the_mount_source_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    let lazy = native_lazy_source(physical.path(), "lifecycle-context", &cancellation).await?;
+    let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
+    let (source, volume_id, _root) = lazy
+        .prepare_authored_mount_source(&MountOptions::read_write(), &work)
+        .await?;
+    let session = Mutex::new(Some(NativeMountSession::new(
+        NativeMountRequest {
+            mount_id: MountId::new(),
+            volume_id,
+            destination: physical.path().join("not-mounted"),
+            writable: true,
+        },
+        None,
+        None,
+    )));
+    let before = work.receipt();
+    with_session_work(&session, source.as_ref(), |_, active| {
+        assert!(active.shares_allocation_context(&work));
+        active.charge(crate::WorkCounters {
+            items_returned: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        Ok(())
+    })?;
+    assert_eq!(work.receipt().items_returned, before.items_returned + 1);
+    // Revalidation must retain the constructor's cancellation as well as its ledger.
+    cancellation.cancel();
+    let error = with_session_work(&session, source.as_ref(), |_, active| {
+        active.admit(crate::WorkCounters::UNCHARGED)?;
+        Ok(())
+    })
+    .expect_err("a fresh context would lose the original cancellation");
+    assert!(matches!(
+        error,
+        MountLifecycleError::Source(MountSourceError::Stale)
+            | MountLifecycleError::Native(NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::Cancelled
+            ))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn lifecycle_operations_retain_the_source_invocation_and_finite_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    let lazy = native_lazy_source(physical.path(), "lifecycle-work", &cancellation).await?;
+    let budget = crate::WorkBudget {
+        source_bytes_read: 0,
+        ..crate::WorkBudget::UNBOUNDED
+    };
+    let work = test_work(budget, &cancellation)?;
+    let options = MountOptions::read_write().publication(MountPublication::Manual);
+    let (source, volume_id, _) = lazy.prepare_authored_mount_source(&options, &work).await?;
+    let original = source
+        .native_original_work()?
+        .ok_or("missing source work")?;
+    let session = Mutex::new(Some(NativeMountSession::new(
+        NativeMountRequest {
+            mount_id: MountId::new(),
+            volume_id,
+            destination: physical.path().join("unused"),
+            writable: true,
+        },
+        None,
+        None,
+    )));
+    let before = work.receipt();
+    for _ in 0..2 {
+        with_session_work(&session, source.as_ref(), |_, current| {
+            assert!(super::super::view_ledger::same_work(&original, current));
+            assert_eq!(current.budget(), budget);
+            current.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            Ok(())
+        })?;
+    }
+    assert_eq!(work.receipt().items_examined, before.items_examined + 2);
+    assert!(
+        with_session_work(&session, source.as_ref(), |_, current| {
+            current.charge(crate::WorkCounters {
+                source_bytes_read: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            Ok(())
+        })
+        .is_err()
+    );
+    work.receipt().verify(budget)?;
+    assert_eq!(work.receipt().source_bytes_read, 0);
+    source.cancel();
+    assert!(
+        with_session_work(&session, source.as_ref(), |_, _| panic!(
+            "stale source admitted"
+        ))
+        .is_err()
+    );
+    session.lock().unwrap().take();
+    with_session_work(&session, source.as_ref(), |_, _| {
+        panic!("retired session admitted")
+    })?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn measured_customer_root_admission_keeps_unselected_source_cold()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();

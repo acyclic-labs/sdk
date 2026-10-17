@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-machines"
 version = "0.2.0"
 edition.workspace = true
@@ -12,11 +13,13 @@ documentation = "https://docs.rs/acyclic-machines"
 keywords = ["machines", "compute", "grpc"]
 categories = ["api-bindings"]
 
+
 [features]
 default = ["grpc"]
 grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 futures.workspace = true
 hex.workspace = true
@@ -34,6 +37,7 @@ tower = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
@@ -47,3 +51,6 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

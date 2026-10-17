@@ -146,7 +146,10 @@ test("tool projection links each result to its exact call, even when provider ca
   const resultIds = [("11111111-1111-1111-1111-111111111111" as ConversationMessageId), ("22222222-2222-2222-2222-222222222222" as ConversationMessageId)];
   let state = conversationState();
   for (let index = 0; index < 2; index++) {
-    const call = await artifact(`tool/call-${index}.json`, { call_id: "reused", name: `tool-${index}`, arguments: { index } });
+    const call = await artifact(`tool/call-${index}.json`, {
+      invocation: { operation_id: callIds[index]!, call_id: "reused", name: `tool-${index}`, arguments: { index } },
+      metadata: null,
+    });
     const result = await artifact(`tool/result-${index}.json`, { value: { index, full: "x".repeat(1024) } });
     const projection = await artifact(`tool/projection-${index}.json`, { kind: "json", value: { index } });
     state = conversationState(...state.messages, { id: callIds[index]!, sequence: BigInt(index * 2 + 1),
@@ -176,7 +179,7 @@ test("tool projection links each result to its exact call, even when provider ca
 });
 
 test("tool linkage and exact JSON numbers fail before owner reads", async () => {
-  const callBytes = new TextEncoder().encode(JSON.stringify({ call_id: "reused", name: "tool", arguments: {} }));
+  const callBytes = new TextEncoder().encode(JSON.stringify({ invocation: { operation_id: "30303030-3030-3030-3030-303030303030", call_id: "reused", name: "tool", arguments: {} }, metadata: null }));
   const call = await reference("tool/preflight-call.json", callBytes, "application/json");
   const resultBytes = new TextEncoder().encode(JSON.stringify({ value: "unused" }));
   const result = await reference("tool/preflight-result.json", resultBytes, "application/json");
@@ -197,7 +200,7 @@ test("tool linkage and exact JSON numbers fail before owner reads", async () => 
   })).rejects.toThrow();
   expect(reads).toBe(0);
 
-  const inexactCallBytes = new TextEncoder().encode('{"call_id":"reused","name":"tool","arguments":{"n":1e20}}');
+  const inexactCallBytes = new TextEncoder().encode('{"invocation":{"operation_id":"30303030-3030-3030-3030-303030303030","call_id":"reused","name":"tool","arguments":{"n":1e20}},"metadata":null}');
   const inexactCall = await reference("tool/inexact-call.json", inexactCallBytes, "application/json");
   const inexactState = conversationState({
     id: callId, sequence: 1n, kind: "tool_call", content: inexactCall,
@@ -210,7 +213,7 @@ test("tool linkage and exact JSON numbers fail before owner reads", async () => 
 
 test("tool JSON artifacts follow the selected rendering budget", async () => {
   const oversizedBytes = new TextEncoder().encode(
-    `{"call_id":"reused","name":"tool","arguments":{"padding":"${"x".repeat(16 * 1024 * 1024)}"}}`,
+    `{"invocation":{"operation_id":"60606060-6060-6060-6060-606060606060","call_id":"reused","name":"tool","arguments":{"padding":"${"x".repeat(16 * 1024 * 1024)}"}},"metadata":null}`,
   );
   const oversized = await reference("tool/oversized.json", oversizedBytes, "application/json");
   const callId = ("60606060-6060-6060-6060-606060606060" as ConversationMessageId);

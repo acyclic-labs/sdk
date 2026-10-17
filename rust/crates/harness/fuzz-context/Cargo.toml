@@ -1,0 +1,30 @@
+[package]
+name = "acyclic-harness-context-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+serde = "1"
+acyclic-harness = { path = "..", features = ["filesystem-local", "native-execution", "terminal", "mcp-http", "test-support"] }
+
+[[bin]]
+name = "context_manifest"
+path = "fuzz_targets/context_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "summary_authorization"
+path = "fuzz_targets/summary_authorization.rs"
+test = false
+doc = false
+bench = false

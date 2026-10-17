@@ -1,0 +1,2 @@
+{"seed":{"AGENTS.md":"ééx"},"discovery":{"limits":{"instruction_bytes":4}},"expect":{"error":
+  "workspace file exceeds the caller's read bound"}}

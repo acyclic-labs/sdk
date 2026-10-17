@@ -70,3 +70,7 @@ test("additional Objects contract module fails closed", () => {
   const inspect = createSourceInspector(root, candidate => candidate === path ? read(path) + "\npub mod v2;\n" : read(candidate));
   assert.throws(() => inspect(ObjectsService, ObjectsService.methods[0]), /one current contract module/);
 });
+
+missing("missing Stream factory delegation removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("const { client, sessions } = streamGrpc(options)", "const { client, sessions } = removed(options)"), "typescriptGrpcNodeBun");
+missing("missing Stream generated client removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("createClient(StreamService, home)", "removed(StreamService, home)"), "typescriptGrpcNodeBun");
+missing("missing Stream transport removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("return createGrpcTransport(", "return removedTransport("), "typescriptGrpcNodeBun");

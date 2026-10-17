@@ -9,7 +9,7 @@ pub(crate) use prepared::PreparedMaterializationRecord;
 pub(super) fn windows_name_packet<W: NativeHostWork>(
     parent: &impl std::os::windows::io::AsRawHandle,
     name: &[u16],
-    replace: bool,
+    flags: u32,
     work: &mut W,
 ) -> Result<(Vec<u64>, W::Allocation, u32), W::Error> {
     use nt::FILE_RENAME_INFORMATION;
@@ -30,7 +30,7 @@ pub(super) fn windows_name_packet<W: NativeHostWork>(
     let information = data.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     // SAFETY: aligned owned storage covers the native header and the bounded UTF-16 tail.
     let tail = unsafe {
-        (*information).Anonymous.ReplaceIfExists = replace;
+        (*information).Anonymous.Flags = flags;
         (*information).RootDirectory = win::HANDLE(parent.as_raw_handle());
         (*information).FileNameLength =
             u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?;

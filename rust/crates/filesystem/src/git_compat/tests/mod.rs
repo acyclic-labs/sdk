@@ -34,6 +34,24 @@ impl TestExecutor {
 impl GitFilesystemExecutor for TestExecutor {
     type Error = TestExecutorError;
 
+    async fn validate_merge_resolution(
+        &self,
+        _operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        self.result
+            .as_ref()
+            .map(|_| GitFilesystemResult::Applied {
+                tree: Some(tree),
+                tracked_paths: match action {
+                    GitFilesystemAction::Join { tracked_paths, .. } => Some(tracked_paths.clone()),
+                    _ => None,
+                },
+            })
+            .map_err(|_| TestExecutorError)
+    }
+
     async fn execute(
         &self,
         operation_id: OperationId,
@@ -286,6 +304,11 @@ mod argv;
 mod capture;
 mod history;
 mod incremental;
+#[cfg(acyclic_fs_loom)]
+mod model;
+#[cfg(acyclic_fs_loom)]
+mod model_store;
+mod properties;
 mod state;
 mod tree;
 mod wire;

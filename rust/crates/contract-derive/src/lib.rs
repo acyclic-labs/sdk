@@ -1,6 +1,7 @@
 //! Derive first-party wire shadows and schema from semantic declarations.
 use proc_macro::TokenStream;
 use syn::parse_macro_input;
+mod authorization;
 mod enumeration;
 mod message;
 mod options;

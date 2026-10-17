@@ -7,6 +7,14 @@ impl PreparationIo {
         self
     }
     pub(super) fn charged(&self, work: WorkCounters) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = self.original_native_work() {
+            // Preserve the original typed denial without boxing an FsError
+            // after its allocation-operation allowance has been exhausted.
+            native.admit(work)?;
+            native.charge(work)?;
+            return Ok(());
+        }
         self.preflight(work)?;
         self.charge(work).map_err(Into::into)
     }

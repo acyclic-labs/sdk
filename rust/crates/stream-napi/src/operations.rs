@@ -39,7 +39,13 @@ pub(super) async fn tail(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&wire::TailResponse { tail: value }, "tail")
+    encode(
+        &wire::TailResponse {
+            tail: value,
+            ..Default::default()
+        },
+        "tail",
+    )
 }
 
 pub(super) async fn bounds(
@@ -59,7 +65,13 @@ pub(super) async fn bounds(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&wire::TailResponse { tail: value.tail }, "bounds")
+    encode(
+        &wire::TailResponse {
+            tail: value.tail,
+            ..Default::default()
+        },
+        "bounds",
+    )
 }
 
 pub(super) async fn append(
@@ -170,7 +182,57 @@ pub(super) async fn open_follow(
     .await?;
     Ok(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(records))),
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            token: cancellation_state(cancellation).unwrap_or_default(),
+            closed: Arc::new(AtomicBool::new(false)),
+        },
+    })
+}
+
+pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFrames {
+    records
+        .map(|record| {
+            record.map(|record| {
+                wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                    .encode_to_vec()
+            })
+        })
+        .boxed()
+}
+
+pub(super) async fn open_children(
+    client: &Arc<grpc::Client>,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
+    let request =
+        wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
+            .map_err(|error| stream_error(&error))?;
+    let children = run_with_cancellation(
+        async {
+            client
+                .children(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    let frames = children
+        .map(|child| {
+            child.map(|child| {
+                wire::ChildrenResponse {
+                    child: Some(wire::Child {
+                        path: child.path.to_string(),
+                    }),
+                }
+                .encode_to_vec()
+            })
+        })
+        .boxed();
+    Ok(NativeStreamFollow {
+        state: FollowState {
+            records: Arc::new(Mutex::new(Some(frames))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -186,10 +248,15 @@ pub(super) async fn children(
         wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
             .map_err(|error| stream_error(&error))?;
     let token = cancellation_state(cancellation);
-    let mut values = run_with_cancellation(
+    let values = run_with_cancellation(
         async {
             client
-                .children(request)
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    parent: request.parent,
+                    limit: request.limit,
+                    after: None,
+                    hierarchy_version: None,
+                })
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -197,18 +264,7 @@ pub(super) async fn children(
     )
     .await?;
     let mut output = Vec::new();
-    while let Some(value) = run_with_cancellation(
-        async {
-            values
-                .next()
-                .await
-                .transpose()
-                .map_err(|error| stream_error(&error))
-        },
-        token.clone(),
-    )
-    .await?
-    {
+    for value in values.children {
         output.push(encode(
             &wire::ChildrenResponse {
                 child: Some(wire::Child {

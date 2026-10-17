@@ -1,13 +1,11 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { blake3 } from "@noble/hashes/blake3.js";
+export const rust = [["acyclic-fs", "example", "filesystem-descriptor-digest"]];
 
-/** Browser-safe digest constant derived from the exact descriptor embedded by Rust. */
-export function filesystemDescriptorDigestSource(root, declaration = false) {
-  const descriptor = readFileSync(join(root, "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin"));
-  const digest = Buffer.from(blake3(descriptor)).toString("hex");
-  return `// Generated from the canonical Rust filesystem descriptor; do not edit.\n` +
-    (declaration
-      ? `export declare const FILESYSTEM_DESCRIPTOR_DIGEST: "${digest}";\n`
-      : `export const FILESYSTEM_DESCRIPTOR_DIGEST = "${digest}";\n`);
+export function render([stdout]) {
+  const digest = stdout.trim();
+  if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error("Rust filesystem descriptor digest is invalid");
+  const header = "// Generated from the Rust filesystem descriptor; do not edit.\n";
+  return {
+    "typescript/packages/filesystem/generated/descriptor-digest.js": `${header}export const FILESYSTEM_DESCRIPTOR_DIGEST = "${digest}";\n`,
+    "typescript/packages/filesystem/generated/descriptor-digest.d.ts": `${header}export declare const FILESYSTEM_DESCRIPTOR_DIGEST: "${digest}";\n`,
+  };
 }

@@ -1,0 +1,11 @@
+[package]
+name='demo-other'
+version='1.0.0'
+build='build.rs'
+[features]
+default=['base']
+base=[]
+extra=[]
+[package.metadata.docs.rs]
+no-default-features=true
+features=['extra']

@@ -30,10 +30,11 @@ jobs:
             const { owner, repo } = context.repo;
 
             // Any file whose name starts with README, including the old name of a renamed README.
+            // A deleted README adds no README text, so deletions need no review.
             const isReadme = path => /^readme/i.test(path.split('/').pop()) && path !== '.github/workflows/readme-guard.yml';
             const printable = path => path.replace(/[\x00-\x1f\x7f]/g, '?');
             const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number });
-            const readmes = files.flatMap(f => [f.filename, f.previous_filename]).filter(p => p && isReadme(p));
+            const readmes = files.filter(f => f.status !== 'removed').flatMap(f => [f.filename, f.previous_filename]).filter(p => p && isReadme(p));
             if (readmes.length === 0) return core.info('No README changes.');
             core.info(`README changes: ${[...new Set(readmes)].map(printable).join(', ')}`);
 

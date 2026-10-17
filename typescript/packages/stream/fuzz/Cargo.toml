@@ -1,0 +1,33 @@
+[package]
+name = "acyclic-stream-typescript-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", path = "../../../../rust/vendor/tonic-web-wasm-client-0.9.2" }
+serde_json = "1.0"
+acyclic-stream = { path = "../../../../rust/crates/stream", default-features = false }
+prost = "0.14.4"
+bytes = "1"
+
+[[bin]]
+name = "native_session"
+path = "fuzz_targets/native_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

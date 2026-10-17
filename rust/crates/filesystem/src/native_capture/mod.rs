@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod accounting;
+#[cfg(all(test, feature = "memory"))]
+mod reserve_tests;
 #[cfg(test)]
 mod capture_policy_tests;
 mod entry;
@@ -26,13 +28,19 @@ mod native_view_baseline_tests;
 use accounting::*;
 #[cfg(windows)]
 mod sparse;
+#[cfg(any(windows, test))]
+mod sparse_scan;
 #[cfg(windows)]
 use sparse::*;
 mod paths;
 use paths::*;
+#[cfg(all(test, feature = "memory"))]
+mod path_error_tests;
 mod names;
 use names::*;
 mod host_walk;
+#[cfg(all(test, feature = "memory"))]
+mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
@@ -50,14 +58,22 @@ mod stage;
 use stage::*;
 mod metadata;
 use metadata::*;
+#[cfg(all(test, feature = "memory"))]
+mod empty_stage_tests;
 #[cfg(test)]
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
+#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+mod owner_allocation_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod reuse_properties;
 #[cfg(all(test, unix, feature = "native-mount"))]
 mod root_capture_regression;
 #[cfg(all(test, unix))]
 mod unix_name_tests;
+#[cfg(all(test, windows, feature = "memory"))]
+mod windows_dense_tests;
 #[cfg(all(test, windows))]
 mod windows_name_tests;
 #[cfg(all(test, windows))]

@@ -1,0 +1,1 @@
+{"prompt":"a\r\nb","maximum_bytes":3,"expect":{"error":"command input exceeds byte bound"}}

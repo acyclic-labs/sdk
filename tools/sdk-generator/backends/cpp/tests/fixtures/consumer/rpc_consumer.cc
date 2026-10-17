@@ -126,6 +126,11 @@ class StreamServiceProbe final : public acyclic::stream::v1::StreamService::Serv
   for (int i=0; i<2; ++i) { acyclic::stream::v1::ReadResponse response; sample(response, 2+i); if (!writer->Write(response)) return grpc::Status(grpc::StatusCode::CANCELLED, "stream write failed"); }
   return grpc::Status::OK;
  }
+ grpc::Status AcknowledgeDelivery(grpc::ServerContext*, const acyclic::stream::v1::AcknowledgeDeliveryRequest* request, acyclic::stream::v1::AcknowledgeDeliveryResponse* response) override {
+  if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
+  sample(*response, 2);
+  return grpc::Status::OK;
+ }
  grpc::Status Children(grpc::ServerContext*, const acyclic::stream::v1::ChildrenRequest* request, grpc::ServerWriter<acyclic::stream::v1::ChildrenResponse>* writer) override {
   if (!request_matches(*request)) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "populated request differs");
   for (int i=0; i<2; ++i) { acyclic::stream::v1::ChildrenResponse response; sample(response, 2+i); if (!writer->Write(response)) return grpc::Status(grpc::StatusCode::CANCELLED, "stream write failed"); }
@@ -352,10 +357,20 @@ int main(int argc, char** argv) { try {
   check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.stream.v1.StreamService/ReadCommit response payload differs");
   ++calls;
  }
+ {
+  acyclic::stream::v1::AcknowledgeDeliveryRequest request; sample(request, 1);
+  acyclic::stream::v1::AcknowledgeDeliveryResponse expected; sample(expected, 2);
+  grpc::ClientContext context; context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+  acyclic::stream::v1::AcknowledgeDeliveryResponse response;
+  auto status = StreamService_client->AcknowledgeDelivery(&context, request, &response);
+  check(status.ok(), "/acyclic.stream.v1.StreamService/AcknowledgeDelivery failed: " + status.error_message());
+  check(google::protobuf::util::MessageDifferencer::Equals(expected, response), "/acyclic.stream.v1.StreamService/AcknowledgeDelivery response payload differs");
+  ++calls;
+ }
  server->Shutdown(); server->Wait();
- check(calls == 19, "incomplete client call inventory");
+ check(calls == 20, "incomplete client call inventory");
  std::lock_guard<std::mutex> lock(audit_mutex);
- check(observed.size()==19, "actual server method path inventory differs");
+ check(observed.size()==20, "actual server method path inventory differs");
  check(observed.count("/acyclic.actors.v1.ActorsService/CreateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/CreateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/CreateActor");
  check(observed.count("/acyclic.actors.v1.ActorsService/UpdateActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/UpdateActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/UpdateActor");
  check(observed.count("/acyclic.actors.v1.ActorsService/InspectActor")==1 && observed.at("/acyclic.actors.v1.ActorsService/InspectActor")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.actors.v1.ActorsService/InspectActor");
@@ -371,11 +386,12 @@ int main(int argc, char** argv) { try {
  check(observed.count("/acyclic.stream.v1.StreamService/Fork")==1 && observed.at("/acyclic.stream.v1.StreamService/Fork")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Fork");
  check(observed.count("/acyclic.stream.v1.StreamService/Read")==1 && observed.at("/acyclic.stream.v1.StreamService/Read")==std::make_pair(RpcType::SERVER_STREAMING, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Read");
  check(observed.count("/acyclic.stream.v1.StreamService/Follow")==1 && observed.at("/acyclic.stream.v1.StreamService/Follow")==std::make_pair(RpcType::SERVER_STREAMING, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Follow");
+ check(observed.count("/acyclic.stream.v1.StreamService/AcknowledgeDelivery")==1 && observed.at("/acyclic.stream.v1.StreamService/AcknowledgeDelivery")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/AcknowledgeDelivery");
  check(observed.count("/acyclic.stream.v1.StreamService/Children")==1 && observed.at("/acyclic.stream.v1.StreamService/Children")==std::make_pair(RpcType::SERVER_STREAMING, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Children");
  check(observed.count("/acyclic.stream.v1.StreamService/ChildrenPage")==1 && observed.at("/acyclic.stream.v1.StreamService/ChildrenPage")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ChildrenPage");
  check(observed.count("/acyclic.stream.v1.StreamService/Commit")==1 && observed.at("/acyclic.stream.v1.StreamService/Commit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/Commit");
  check(observed.count("/acyclic.stream.v1.StreamService/ReadCommit")==1 && observed.at("/acyclic.stream.v1.StreamService/ReadCommit")==std::make_pair(RpcType::UNARY, 1), "actual server path/type/count differs: /acyclic.stream.v1.StreamService/ReadCommit");
- std::cout << "PASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
+ std::cout << "PASS C++ 20 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n";
  return 0;
  } catch (const std::exception& error) { std::cerr << error.what() << "\n"; return 1; }
 }

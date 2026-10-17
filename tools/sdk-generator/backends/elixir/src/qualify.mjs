@@ -1,17 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { sha256, within } from "../../../shared/authority.mjs";
+import { qualificationOutput, sourceInventory, sha256, runCli } from "../../../shared/authority.mjs";
 import { pins as producerPins, readPackage, targets } from "./package.mjs";
 import { verifyRuntime } from "./runtime.mjs";
-import { files, readDependencies, readTools, verifyInstalledDependencies, verifyLock } from "./provenance.mjs";
+import { readDependencies, readTools, verifyInstalledDependencies, verifyLock } from "./provenance.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
-const marker = "PASS Elixir Rust message/enum/service descriptors, 19 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections";
+const marker = "PASS Elixir Rust message/enum/service descriptors, 20 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections";
 const provenanceMarker = "PASS Elixir exact compiled SDK module inventory, source paths and loaded BEAM paths";
 
 // Injection supports offline runner controls; the CLI uses admitted native tools.
@@ -19,12 +18,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   runtimePin = producerPins.runtime["linux-x64"], lockBytes = read("../templates/qualification/mix.lock"), onProgress = () => {} } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Elixir qualification requires Linux x86_64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "tool-inventory", "cache"].map(name => [name, realpathSync(args[name])]));
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [...Object.values(inputs), realpathSync(join(directory, "../../.."))]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
   const admitted = readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "runtime.mjs", "generate.mjs",
@@ -88,10 +82,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   onProgress("Verify post-execution source and runtime provenance");
   const installedDependencies = verifyInstalledDependencies(join(output, "consumer/deps"), dependencies);
   verifyLock(readFileSync(join(output, "consumer/mix.lock")), dependencies, toolchain);
-  if (JSON.stringify(files(join(output, "sdk"))) !== JSON.stringify([...admitted.payload.keys()].sort())) throw new Error("installed SDK file inventory differs");
+  if (JSON.stringify(sourceInventory(join(output, "sdk"))) !== JSON.stringify([...admitted.payload.keys()].sort())) throw new Error("installed SDK file inventory differs");
   for (const [name, bytes] of admitted.payload) if (!readFileSync(join(output, "sdk", name)).equals(bytes)) throw new Error("installed SDK payload changed");
   for (const name of ["mix.exs", "Consumer.exs", "Provenance.exs"]) if (!readFileSync(join(output, "consumer", name)).equals(sourceBytes.get(name === "mix.exs" ? "../templates/qualification/mix.exs" : "../tests/fixtures/consumer/" + name))) throw new Error("consumer source changed");
-  const installedHex = files(join(home, ".mix/archives")).map(name => ".mix/archives/" + name);
+  const installedHex = sourceInventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name);
   if (JSON.stringify(installedHex) !== JSON.stringify([...tools.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("installed Hex code inventory changed");
   for (const [name, bytes] of tools) if (name !== ".hex/cache.ets" && !readFileSync(join(home, name)).equals(bytes)) throw new Error("installed qualification tool changed");
   for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
@@ -106,18 +100,12 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
     runtime_inventory_sha256: sha256(indexBytes), tool_inventory_sha256: sha256(toolIndexBytes),
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
     lock_sha256: sha256(lock), installed_dependencies: installedDependencies, payload_sha256: admitted.receipt.output_sha256,
-    compiled_sdk_sha256: Object.fromEntries(files(join(output, "build/lib/acyclic_sdk_transport/ebin")).map(name => [name, sha256(readFileSync(join(output, "build/lib/acyclic_sdk_transport/ebin", name)))])),
+    compiled_sdk_sha256: Object.fromEntries(sourceInventory(join(output, "build/lib/acyclic_sdk_transport/ebin")).map(name => [name, sha256(readFileSync(join(output, "build/lib/acyclic_sdk_transport/ebin", name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    populated_rpc_message_pairs: 19, runtime_type_rejections: 2, compiled_sdk_provenance: true,
+    populated_rpc_message_pairs: 20, runtime_type_rejections: 2, compiled_sdk_provenance: true,
     native_rpc_calls_executed: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
   put("qualification.json", JSON.stringify(receipt, null, 2) + "\n");
   return receipt;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "tool-inventory", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all installed qualification arguments are required");
-  const result = qualify(values, { onProgress: message => process.stderr.write(message + "\n") });
-  process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-}
+runCli(import.meta.url, values => qualify(values, { onProgress: message => process.stderr.write(message + "\n") }), ["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "tool-inventory", "cache", "output"], "all installed qualification arguments are required");

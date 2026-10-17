@@ -1,0 +1,5 @@
+{
+  "prompt":"Fail before any content.",
+  "turns":[[{"type":"error","error":"provider unavailable"}]],
+  "expect":{"error":"provider unavailable","events":[{"kind":"model_started"}]}
+}

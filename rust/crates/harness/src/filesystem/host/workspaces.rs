@@ -10,6 +10,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("read", maximum_bytes));
         let owned;
         let io = if let Some(io) = io {
             io
@@ -124,6 +126,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &WorkspaceRef,
         reference: &GenerationRef,
     ) -> Result<()> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("retain", 0u64));
         let workspace = self.open(workspace, None).await?;
         let generation = self.generation(&workspace, reference, None).await?;
         let identity = format!(
@@ -168,32 +172,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
     ) -> Result<GenerationRef> {
-        let generation = self
-            .apply_generation(
+        let generation = crate::conversation::BoundedContentFuture::new(None, || {
+            self.apply_generation_unmeasured(
                 workspace,
                 expected_generation,
                 mutations,
-                idempotency_key.clone(),
-                None,
-                None,
+                idempotency_key,
+                true,
             )
-            .await?;
+        })?
+        .await?;
         self.generation_ref_id(generation.id(), None)
     }
 
-    pub(in crate::filesystem) async fn apply_generation_guarded<F, Fut>(
+    async fn apply_generation_unmeasured(
         &self,
         workspace: &WorkspaceRef,
         expected_generation: Option<&GenerationRef>,
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
-        before_publication: &mut F,
-    ) -> Result<Generation<A, O>>
-    where
-        F: FnMut() -> Fut + acyclic_stream::ProviderTask,
-        Fut: std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask,
-    {
-        before_publication().await?;
+        invalidate_metadata: bool,
+    ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let workspace = self.open(workspace, None).await?;
@@ -216,7 +215,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(map_error)?,
         };
         for mutation in mutations {
-            before_publication().await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
                     transaction
@@ -228,7 +226,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction
-                        .write(path, Bytes::copy_from_slice(bytes), budget, &cancellation)
+                        .write(path, bytes.clone(), budget, &cancellation)
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
@@ -243,6 +241,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .map_err(map_error)?;
                 }
             }
+            // Raw mutations do not carry a descriptor or write publication.
+            // Invalidate the old index atomically, including same-byte writes.
+            // The content writer supplies its own metadata in this transaction.
+            if invalidate_metadata
+                && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
+                    mutation
+            {
+                let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                match transaction.remove(&metadata, budget, &cancellation).await {
+                    Ok(_) => {}
+                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                    Err(failure) => return Err(map_error(failure.error)),
+                }
+            }
         }
         let committed = transaction
             .commit(
@@ -250,17 +262,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
-                |_| {
-                    let future = before_publication();
-                    async move {
-                        future
-                            .await
-                            .map(|value| acyclic_fs::OperationReceipt {
-                                value,
-                                work: acyclic_fs::WorkCounters::default(),
-                            })
-                            .map_err(acyclic_fs::OperationFailure::before_work)
-                    }
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::default(),
+                    })
                 },
             )
             .await
@@ -323,6 +329,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }
+        if let Some((bound, workspace)) = &self.workspace_binding
+            && bound == reference
+        {
+            return Ok(workspace.clone());
+        }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
         io.sdk(
@@ -354,18 +365,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .key()
             .try_into()
             .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
+        let generation = GenerationId::new(Digest::from_bytes(key));
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        if let Some((root, store)) = &self.project_family
+            && workspace.id() == *root
+        {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || {
+                self.project_generation(workspace, generation, *root, store, io)
+            })?
+            .await;
+        }
+
         io.sdk(
             workspace
-                .generation(
-                    GenerationId::new(Digest::from_bytes(key)),
-                    io,
-                    io.cancellation(),
-                )
+                .generation(generation, io, io.cancellation())
                 .await,
         )
     }
 
-    pub(in crate::filesystem) async fn apply_generation<'a>(
+    pub(in crate::filesystem) fn apply_generation<'a>(
         &'a self,
         reference: &'a WorkspaceRef,
         expected: Option<&'a GenerationRef>,
@@ -373,116 +391,125 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: IdempotencyKey,
         io: Option<&'a PreparationIo>,
         preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
-    ) -> Result<Generation<A, O>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let Some(io) = io else {
-            return self
-                .apply_generation_guarded(reference, expected, mutations, &key, &mut || {
-                    std::future::ready(Ok(()))
-                })
-                .await;
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                self.apply_generation_unmeasured(reference, expected, mutations, &key, false)
+                    .await
+            });
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut native_before = {
-            let preparation = preparation.cloned();
-            move |work: &acyclic_fs::NativeMaterializationWork| {
-                let preparation = preparation.clone();
-                let work = work.clone();
-                async move {
-                    if let Some(task) = preparation {
-                        let io = PreparationIo::from_native_work(&work)?;
-                        task.verify(false, Some(&io))?.await?;
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut native_before = {
+                let preparation = preparation.cloned();
+                move |work: &acyclic_fs::NativeMaterializationWork| {
+                    let preparation = preparation.clone();
+                    let work = work.clone();
+                    async move {
+                        if let Some(task) = preparation {
+                            let io = PreparationIo::from_native_work(&work)?;
+                            task.verify(false, Some(&io))?.await?;
+                        }
+                        Ok::<(), Error>(())
                     }
-                    Ok::<(), Error>(())
                 }
-            }
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            native_before(work).await?;
-        }
-        let workspace = self.open(reference, Some(io)).await?;
-        let pinned = match expected {
-            Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-        };
-        let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-        let mut transaction = io.sdk(
-            workspace
-                .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
-                .await,
-        )?;
-        for mutation in mutations {
+            };
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
                 native_before(work).await?;
             }
-            match mutation {
-                WorkspaceMutation::CreateDirectory { path } => io.sdk(
-                    transaction
-                        .create_dir_all(path, io, io.cancellation())
-                        .await,
-                )?,
-                WorkspaceMutation::PutFile { path, bytes } => io.sdk(
-                    transaction
-                        .write(path, bytes.clone(), io, io.cancellation())
-                        .await,
-                )?,
-                WorkspaceMutation::Remove { .. } => {
-                    return Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "bounded publication does not remove content",
-                    ));
-                }
-            }
-        }
-        let commit = 'commit: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                break 'commit transaction
-                    .commit_with_native_work(
-                        None,
-                        acyclic_fs::PublicationPermit::Unrestricted,
-                        work,
-                        io.cancellation(),
-                        &mut native_before,
-                    )
-                    .await?;
-            }
-            io.receive(
-                transaction
-                    .commit(
-                        None,
-                        acyclic_fs::PublicationPermit::Unrestricted,
-                        io.remaining()?,
-                        io.cancellation(),
-                        &mut |_| async move {
-                            if let Some(task) = preparation {
-                                task.verify(false, Some(io))
-                                    .map_err(acyclic_fs::OperationFailure::before_work)?
-                                    .await
-                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
-                            }
-                            Ok(acyclic_fs::OperationReceipt {
-                                value: (),
-                                work: acyclic_fs::WorkCounters::default(),
-                            })
-                        },
-                    )
+            let workspace = self.open(reference, Some(io)).await?;
+            let pinned = match expected {
+                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            };
+            let operation = fork_preparer_io::operation_key(&key, Some(io))?;
+            let mut transaction = io.sdk(
+                workspace
+                    .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
                     .await,
-            )?
-        };
-        match commit {
-            TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. }
-            | TransactionCommit::Fenced
-            | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Conflict,
-                "workspace publication conflicted or was fenced",
-            )),
-        }
+            )?;
+            crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                for mutation in mutations {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.original_native_work() {
+                        native_before(work).await?;
+                    }
+                    match mutation {
+                        WorkspaceMutation::CreateDirectory { path } => io.sdk(
+                            transaction
+                                .create_dir_all(path, io, io.cancellation())
+                                .await,
+                        )?,
+                        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
+                            transaction
+                                .write(path, bytes.clone(), io, io.cancellation())
+                                .await,
+                        )?,
+                        WorkspaceMutation::Remove { .. } => {
+                            return Err(stock_boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "bounded publication does not remove content",
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            })?
+            .await?;
+            let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                let commit = 'commit: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.original_native_work() {
+                        break 'commit transaction
+                            .commit_with_native_work(
+                                None,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                work,
+                                io.cancellation(),
+                                &mut native_before,
+                            )
+                            .await?;
+                    }
+                    io.receive(
+                        transaction
+                            .commit(
+                                None,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io.remaining()?,
+                                io.cancellation(),
+                                &mut |_| async move {
+                                    if let Some(task) = preparation {
+                                        task.verify(false, Some(io))
+                                            .map_err(acyclic_fs::OperationFailure::before_work)?
+                                            .await
+                                            .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                    }
+                                    Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    })
+                                },
+                            )
+                            .await,
+                    )?
+                };
+                Ok(commit)
+            })?
+            .await?;
+            match commit {
+                TransactionCommit::Committed(generation)
+                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                TransactionCommit::Conflict { .. }
+                | TransactionCommit::Fenced
+                | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Conflict,
+                    "workspace publication conflicted or was fenced",
+                )),
+            }
+        })
     }
     pub(in crate::filesystem) async fn operation_generation(
         &self,
@@ -506,3 +533,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bytes_tests;

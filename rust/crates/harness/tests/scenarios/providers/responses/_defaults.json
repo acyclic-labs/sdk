@@ -1,0 +1,21 @@
+{
+  "protocol":"responses",
+  "responses":[
+    [
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hé\"}\n\ndata: {\"type\":\"response",
+      ".output_text.delta\",\"delta\":\"🦀\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{",
+      "\"id\":\"run\",\"status\":\"completed\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n",
+      "\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ],
+    "endpoint":"/responses"
+  }
+}

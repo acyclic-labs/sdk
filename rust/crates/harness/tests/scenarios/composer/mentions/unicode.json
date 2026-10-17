@@ -1,0 +1,5 @@
+{
+  "prompt": "λ @λ.txt",
+  "expect":{"mention_files":["unicode"],"result":{"kind":"prompt","text":"λ @λ.txt","mentions":[{"start":3,"end":10,
+    "file":{"path":"project/λ.txt"}}]}}
+}

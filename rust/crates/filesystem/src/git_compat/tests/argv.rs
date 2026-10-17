@@ -128,13 +128,14 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
             .collect::<Vec<_>>();
         let expected: GitCommand = serde_json::from_str(expected).expect("canonical command");
         assert_eq!(
-            parse_argv::<MemoryGitCompatStoreError>(&argv, "default", 10).expect("supported argv"),
+            parse_git_argv::<MemoryGitCompatStoreError>(&argv, "default", 10)
+                .expect("supported argv"),
             expected,
             "argv: {argv:?}"
         );
     }
     assert_eq!(
-        parse_argv::<MemoryGitCompatStoreError>(
+        parse_git_argv::<MemoryGitCompatStoreError>(
             &["add".to_owned(), "--".to_owned(), "--all".to_owned()],
             "default",
             10
@@ -176,7 +177,7 @@ fn argv_rejects_semantically_unrepresentable_and_shell_composed_commands() {
         let argv = vec![command.to_owned()];
         assert!(
             matches!(
-                parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
+                parse_git_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
                 Err(GitCompatError::Unsupported { .. })
             ),
             "command should be explicitly unsupported: {command}"
@@ -190,7 +191,7 @@ fn argv_rejects_semantically_unrepresentable_and_shell_composed_commands() {
     ] {
         let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
         assert!(matches!(
-            parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
+            parse_git_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),
             Err(GitCompatError::Unsupported { reason, .. }) if reason.contains("shell composition")
         ));
     }
@@ -205,6 +206,6 @@ fn argv_rejects_semantically_unrepresentable_and_shell_composed_commands() {
         vec!["clean", "-nd"],
     ] {
         let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert!(parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10).is_err());
+        assert!(parse_git_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10).is_err());
     }
 }

@@ -1,27 +1,14 @@
+import { gzipArchive } from "../../../shared/tests/archive.mjs";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gunzipSync } from "node:zlib";
 import test from "node:test";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 import { qualify } from "../src/qualify.mjs";
-
-// Small inert archive fixtures; production packaging always uses pinned bsdtar.
-function archive(payload) {
-  const blocks = [];
-  for (const [name, body] of Object.entries(payload)) {
-    const bytes = Buffer.from(body), header = Buffer.alloc(512);
-    header.write(name); header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
-    header.write(bytes.length.toString(8).padStart(11, "0") + "\0", 124); header.write("00000000000\0", 136);
-    header.fill(32, 148, 156); header[156] = 48;
-    const checksum = header.reduce((a, b) => a + b, 0); header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-    blocks.push(header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512));
-  }
-  return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
-}
 
 function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "dart-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
@@ -46,7 +33,7 @@ function fixture(t, failure = "") {
     authority_manifest_sha256: sha256(manifestBytes), outputs: Object.keys(payload), output_sha256: Object.fromEntries(Object.entries(payload).map(([name, bytes]) => [name, sha256(bytes)])) };
   put(join(packageRoot, "generation-receipt.json"), JSON.stringify(receipt));
   put(join(runtime, "bin/dart.exe"), "Dart fixture"); put(archiver, "tar fixture");
-  const dependency = archive({ "pubspec.yaml": "name: dependency\nversion: 1.0.0\n", "lib/dependency.dart": "dependency" });
+  const dependency = gzipArchive({ "pubspec.yaml": "name: dependency\nversion: 1.0.0\n", "lib/dependency.dart": "dependency" });
   put(join(cache, "dependency-1.0.0.tar.gz"), dependency); put(join(cache, "untrusted-sdk.tar.gz"), "must not reuse");
   const toolchain = { dart_sdk_version: "fixture", dart_sdk_archive: { url: "fixture", sha256: sha256("SDK archive fixture") },
     runtime_files: { "bin/dart.exe": sha256("Dart fixture") }, archiver: { [`${process.platform}-${process.arch}`]: { sha256: sha256("tar fixture"), version: "bsdtar fixture" } },
@@ -60,7 +47,7 @@ function fixture(t, failure = "") {
       const packed = Object.fromEntries(argv.slice(start + 2).map(name => [name, readFileSync(join(source, name))]));
       if (failure === "build-payload") packed.LICENSE = "drift";
       if (failure === "build-inventory") packed.extra = "extra";
-      const bytes = archive(packed); if (failure === "gzip-time") bytes.writeUInt32LE(123, 4);
+      const bytes = gzipArchive(packed); if (failure === "gzip-time") bytes.writeUInt32LE(123, 4);
       put(argv[argv.indexOf("-czf") + 1], bytes);
     }
     if (argv[0] === "-xzf") {
@@ -139,7 +126,7 @@ test("unsafe or duplicate package outputs and missing bindings fail before comma
 });
 
 test("unsafe dependency archive members fail even when the archive digest is admitted", t => {
-  const f = fixture(t), bytes = archive({ "../escape": "bad", "pubspec.yaml": "name: dependency" });
+  const f = fixture(t), bytes = gzipArchive({ "../escape": "bad", "pubspec.yaml": "name: dependency" });
   f.put(join(f.args.cache, "dependency-1.0.0.tar.gz"), bytes); f.toolchain.dependencies[0].sha256 = sha256(bytes);
   assert.throws(() => qualify(f.args, f), /unsafe/); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false);
 });

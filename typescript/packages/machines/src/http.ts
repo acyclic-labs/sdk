@@ -1,21 +1,45 @@
 import type { CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image, ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy, UsageReceipt, MachinePage, MachineEventPage } from "./index.js";
-import { httpRoutes, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { httpRoutes, validateMaximumResponseBytes, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import type {
   CheckpointOut, EventsOut, MachinesHttpRequest, MachinesHttpResponse, MachinesHttpRoute,
-  MachinesHttpRoutes, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
+  MachinesHttpRoutes, MachinesHttpResponseUnion, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { operationId } from "./index.js";
 import { asPublic, u64Number, usageOut } from "./simulator.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
-export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
+export interface HttpMachinesOptions extends CredentialOptions { readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
 /** Managed-service transport with bounded responses and no implicit mutation retries. */
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
-  readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
-  static fromEnv(environment?: Partial<Pick<HttpMachinesOptions, "endpoint" | "token">>): HttpMachinesProvider { return new HttpMachinesProvider({ endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_MACHINES_ENDPOINT"), token: environment?.token ?? environmentValue("ACYCLIC_MACHINES_TOKEN") }); }
-  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; try { validateTransportOptions(options.token, maximum); } catch (error) { const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined; const code = details?.code; const message = typeof details?.message === "string" ? details.message : "invalid Machines transport option"; if (code === "invalid-token") throw new TypeError(message); if (code === "invalid-maximum") throw new RangeError(message); throw error; } this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; this.#observer = resolveObserver(options.observer); }
+  readonly #endpoint: string; readonly #credential: CredentialProvider; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
+  static fromEnv(environment?: Partial<Pick<HttpMachinesOptions, "endpoint" | "token" | "credential">>): HttpMachinesProvider {
+    const callback = environment?.credential;
+    return new HttpMachinesProvider({
+      endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_MACHINES_ENDPOINT"),
+      ...(callback === undefined
+        ? { token: environment?.token ?? environmentValue("ACYCLIC_MACHINES_TOKEN") }
+        : { credential: callback }),
+    });
+  }
+  constructor(options: HttpMachinesOptions) {
+    const endpoint = new URL(options.endpoint);
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
+    const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
+    this.#credential = credentialProvider(options);
+    try { validateMaximumResponseBytes(maximum); }
+    catch (error) {
+      const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined;
+      if (details?.code === "invalid-maximum") throw new RangeError(typeof details.message === "string" ? details.message : "invalid Machines response bound");
+      throw error;
+    }
+    this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
+    this.#fetcher = options.fetcher ?? fetch;
+    this.#maximum = maximum;
+    this.#observer = resolveObserver(options.observer);
+  }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#call("MACHINES_INSPECT", { machineId }).then(asPublic<ObservationOut, MachineObservation>); }
@@ -43,7 +67,9 @@ export class HttpMachinesProvider implements MachinesProvider {
   async #send<Route extends MachinesHttpRoute>(route: Route, request: MachinesHttpRequest<Route>, sizes?: OperationSizes): Promise<MachinesHttpResponse<Route>> {
     const payload = WasmSimulatedMachines.encodeHttpRequest(request);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
-    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload });
+    const token = await this.#credential();
+    validateTransportOptions(token, this.#maximum);
+    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: payload });
     const bytes = await boundedBytes(response, this.#maximum);
     if (sizes) sizes.responseBytes = bytes.byteLength;
     let body: string;
@@ -54,7 +80,9 @@ export class HttpMachinesProvider implements MachinesProvider {
       // Rust uses null-prototype objects while projecting untrusted JSON.
       // Clone once at the transport boundary to retain the historical plain
       // object API without rebuilding the generated DTO graph in TypeScript.
-      return structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload));
+      return asPublic<MachinesHttpResponseUnion, MachinesHttpResponse<Route>>(
+        structuredClone(WasmSimulatedMachines.decodeHttpResponse(route, body, payload)),
+      );
     } catch (error) {
       throw new MachinesTransportError(`invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status);
     }

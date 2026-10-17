@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "text": {
+      "$ref": "#/$defs/style"
+    },
+    "border": {
+      "$ref": "#/$defs/style"
+    },
+    "editing": {
+      "$ref": "#/$defs/style"
+    },
+    "selection": {
+      "$ref": "#/$defs/style"
+    },
+    "placeholder": {
+      "$ref": "#/$defs/style"
+    },
+    "popup": {
+      "$ref": "#/$defs/style"
+    },
+    "popup_selected": {
+      "$ref": "#/$defs/style"
+    },
+    "diagnostic": {
+      "$ref": "#/$defs/style"
+    },
+    "heading": {
+      "$ref": "#/$defs/style"
+    },
+    "link": {
+      "$ref": "#/$defs/style"
+    },
+    "code": {
+      "$ref": "#/$defs/style"
+    },
+    "quote": {
+      "$ref": "#/$defs/style"
+    },
+    "list": {
+      "$ref": "#/$defs/style"
+    },
+    "rule": {
+      "$ref": "#/$defs/style"
+    },
+    "table": {
+      "$ref": "#/$defs/style"
+    },
+    "added": {
+      "$ref": "#/$defs/style"
+    },
+    "removed": {
+      "$ref": "#/$defs/style"
+    },
+    "$schema": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "foreground": {
+          "type": "string",
+          "format": "ui-color"
+        },
+        "background": {
+          "type": "string",
+          "format": "ui-color"
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "dim": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        },
+        "reverse": {
+          "type": "boolean"
+        },
+        "strikethrough": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

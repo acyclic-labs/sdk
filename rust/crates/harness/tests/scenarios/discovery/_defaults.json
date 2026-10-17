@@ -1,0 +1,4 @@
+{"driver":"executor","prompt":"Inspect files","turns":["done"],"discovery":{"instructions":[{}],"skills":[],"policy":{
+  "instruction_names":["AGENTS.md","CLAUDE.md"],"skill_name":"SKILL.md"},"limits":{"entries":4096,"directories":256,
+  "header_bytes":16384,"instruction_bytes":65536}},"expect":{"text":"done","request_count":1,"reconciliation_count":0}
+  }

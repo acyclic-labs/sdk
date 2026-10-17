@@ -11,26 +11,6 @@ pub(super) struct ProjectedEntry {
     pub(super) _allocation: crate::NativeAllocation,
 }
 
-pub(super) unsafe fn end_directory(
-    _callback_data: *const PRJ_CALLBACK_DATA,
-    _enumeration_id: *const GUID,
-) -> HRESULT {
-    HR_OK
-}
-
-pub(super) unsafe fn get_directory(
-    _callback_data: *const PRJ_CALLBACK_DATA,
-    _enumeration_id: *const GUID,
-    _search_expression: PCWSTR,
-    _buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE,
-) -> HRESULT {
-    HR_OK
-}
-
-pub(super) unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA) -> HRESULT {
-    HR_FILE_NOT_FOUND
-}
-
 pub(super) fn projected_entry(
     projection: Projection<'_>,
     directory: &MountPath,
@@ -279,12 +259,4 @@ pub(super) fn source_listing(
     }
     drop(lease);
     Ok(entries)
-}
-
-pub(super) unsafe fn file_data(
-    _callback_data: *const PRJ_CALLBACK_DATA,
-    _byte_offset: u64,
-    _length: u32,
-) -> HRESULT {
-    HR_UNEXPECTED
 }

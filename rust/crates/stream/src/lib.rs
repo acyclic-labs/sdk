@@ -9,24 +9,37 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod follow_tests;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod head_tests;
 pub mod http_response;
 pub mod persistence;
 pub mod preparation;
 pub mod request;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub mod session;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+mod change;
 #[cfg(any(
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
 mod http_validation;
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_stream_loom))]
+mod interest;
 #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
 mod journal;
 #[cfg(feature = "local")]
@@ -37,12 +50,32 @@ mod memory;
     any(feature = "grpc", feature = "http", feature = "local")
 ))]
 mod obs;
+#[doc(hidden)]
+pub mod query_sync;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmStream;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
+
+#[cfg(all(acyclic_loom, feature = "local"))]
+#[path = "memory/recovery_model.rs"]
+/// Bounded schedule verification of production query concurrency paths.
+pub mod verification;
+#[cfg(all(acyclic_loom, feature = "local"))]
+#[doc(hidden)]
+pub use local::replay_model::{
+    negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
+};
+#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+#[doc(hidden)]
+pub use memory::browser_follow_model as browser_follow_verification;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Bounded models of the real child-discovery providers.
+pub use memory::discovery_model as discovery_verification;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
@@ -61,7 +94,8 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v1/stream_descriptor.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
@@ -127,5 +161,13 @@ pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
+#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+mod test_latency;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "local")
+))]
+mod test_trace;

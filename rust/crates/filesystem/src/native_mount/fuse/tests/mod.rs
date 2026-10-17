@@ -50,7 +50,12 @@ fn projection_core(
     super::ProjectionCore::new(source, root, stamp, true, 0, 0, &work)
 }
 
+#[cfg(acyclic_fs_loom)]
+pub(super) mod model_checking;
+
 mod cache;
+mod folded;
+mod folded_property;
 mod mount;
 mod native;
 

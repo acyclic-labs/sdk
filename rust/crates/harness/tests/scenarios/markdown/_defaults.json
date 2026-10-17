@@ -1,0 +1,3 @@
+{"driver":"executor","prompt":"Stream Markdown exactly.","replay":true,"expect":{"request_count":1,
+  "reconciliation_count":0,"requests":[{"messages":[{"role":"user","content":"Stream Markdown exactly."}],"tools":[]}],
+  "result":{"steps":1,"metadata":null}}}

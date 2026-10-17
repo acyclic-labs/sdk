@@ -24,17 +24,22 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub(crate) use compaction::clone_context;
+pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;
 mod snapshot;
 pub use snapshot::*;
+mod manifest;
+pub use manifest::ContextManifest;
 
 mod checkpoint;
 pub use checkpoint::*;
+pub(crate) mod summary_source;
+pub use summary_source::*;
 mod durable;
 pub use durable::*;
 mod validation;
 pub(crate) use validation::{
-    checked_compaction_budget, restrict_context_limits, validate_compaction,
+    plan_compaction_budget, restrict_context_limits, validate_compaction,
     validate_projected_context,
 };
 mod value;

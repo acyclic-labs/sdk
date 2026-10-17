@@ -1,0 +1,23 @@
+{
+  "agents": 10000,
+  "attention_every": 1000,
+  "turns": [
+    [
+      "a",
+      "b",
+      "c"
+    ],
+    [
+      "d",
+      "e"
+    ]
+  ],
+  "expect": {
+    "text": "abcde",
+    "wire": {
+      "status_follows": 10000,
+      "statuses": 10000,
+      "attention": 20
+    }
+  }
+}

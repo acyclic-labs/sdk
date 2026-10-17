@@ -19,6 +19,51 @@ pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
 }
 
 impl PreparationIo {
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub(crate) fn write_json<T: Serialize>(
+        &self,
+        value: &T,
+        output: &mut Vec<u8>,
+        maximum: u64,
+    ) -> Result<()> {
+        let bounds = self.bounds(maximum, 256)?;
+        let diagnostics = self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
+        let result =
+            crate::executor::json::json_write_bounded(value, output, bounds, &mut |charge| {
+                self.codec_charge(charge, true)
+            });
+        finish_encoding(diagnostics, result)
+    }
+
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    pub(crate) fn digest<T: Serialize>(
+        &self,
+        value: &T,
+        maximum: u64,
+        expected: Option<&[u8]>,
+    ) -> Result<Option<(u64, [u8; 32])>> {
+        let work = self
+            .original_native_work()
+            .ok_or_else(|| self.invalid("native digest lacks original work"))?;
+        let bounds = self.bounds(maximum.min(work.remaining()?.bytes_encoded), 256)?;
+        let diagnostics = self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
+        let result =
+            crate::executor::json::json_digest_bounded(value, expected, bounds, &mut |charge| {
+                if let Charge::Work { bytes, items } = charge {
+                    work.charge(WorkCounters {
+                        bytes_encoded: bytes,
+                        bytes_hashed: bytes,
+                        items_examined: items,
+                        ..Default::default()
+                    })
+                    .map_err(Into::into)
+                } else {
+                    self.codec_charge(charge, true)
+                }
+            });
+        finish_encoding(diagnostics, result)
+    }
+
     fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
             maximum_bytes: bytes,
@@ -166,7 +211,10 @@ impl PreparationIo {
         bytes: &'de [u8],
         code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'a>)> {
-        let bounds = self.bounds(bytes.len() as u64, 128)?;
+        let bounds = self.bounds(
+            bytes.len() as u64,
+            crate::executor::json::RECORD_MAXIMUM_DEPTH,
+        )?;
         let schema = T::json_value_schema();
         let code = self.original_native_work().is_some().then_some(code);
         let mut decoded = self.decode_guarded(
@@ -333,6 +381,10 @@ impl PreparationIo {
             Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),
             Charge::Release { bytes } => return self.release(bytes).map_err(Into::into),
             Charge::AllocationOperation { bytes } => return self.allocation_attempt(bytes),
+            Charge::AllocationOperations { operations } => WorkCounters {
+                allocation_operations: operations,
+                ..Default::default()
+            },
             Charge::CopyAdmission { bytes } => {
                 return self
                     .preflight(WorkCounters {
@@ -363,7 +415,13 @@ impl PreparationIo {
                 ..Default::default()
             },
         };
-        self.charged(next)
+        // Charging admits under the same ledger guard before changing counters.
+        // Keep native denials typed, including at an exhausted allocation limit.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = self.original_native_work() {
+            return native.charge(next).map_err(Into::into);
+        }
+        self.charge(next).map_err(Into::into)
     }
 }
 

@@ -263,6 +263,7 @@ fn records(delta: &Delta) -> impl Iterator<Item = &BodyRecord> {
 pub(super) fn place(
     delta: &mut Delta,
     state: &mut State,
+    mut pending: Option<&mut PendingObject>,
     frame: u64,
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
@@ -305,11 +306,17 @@ pub(super) fn place(
     }
     // Only objects this record changes can have placeholder offsets.
     for change in delta.objects.iter().filter(|change| change.info.is_some()) {
-        let object = state
-            .buckets
-            .get_mut(change.bucket.as_str())
-            .and_then(|bucket| bucket.objects.get_mut(change.key.as_str()))
-            .ok_or(Error::from(Unavailable))?;
+        let object = if let Some(staged) = pending.as_deref_mut().filter(|staged| {
+            staged.bucket.as_str() == change.bucket && staged.key.as_str() == change.key
+        }) {
+            staged.value.as_mut().ok_or(Error::from(Unavailable))?
+        } else {
+            state
+                .buckets
+                .get_mut(change.bucket.as_str())
+                .and_then(|bucket| bucket.objects.get_mut(change.key.as_str()))
+                .ok_or(Error::from(Unavailable))?
+        };
         if let Some(body) = publication.relocated(&object.body, &moves)? {
             object.body = body;
         }

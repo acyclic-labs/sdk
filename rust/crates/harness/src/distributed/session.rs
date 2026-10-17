@@ -167,13 +167,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let retained = request.retained();
         request.transfer();
         let mut key_custody = CodecQuota::from_retained(request.work(), held);
-        let appended = append(
+        let path = origins::event_path(&events[0], key_custody.work())?.ok_or_else(|| {
+            guarded_boundary(
+                key_custody.work(),
+                wire::ErrorCode::Invalid,
+                "session declaration has no origin",
+            )
+        })?;
+        key_custody.adopt(path.as_str().len() as u64)?;
+        let appended = origins::append_origin::<true, _, 2>(
             (&self.stream.0, &self.client),
             records,
             retained,
-            Some(expected_start),
+            expected_start,
             key,
             operation_id,
+            path,
             key_custody.work(),
         )
         .await;

@@ -1,0 +1,1 @@
+[{"name":"greet","description":"A followed file","arguments":"text","action":{"kind":"template","file":{"Input":".claude/commands/greet.md"},"digest":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"body":"hello $ARGUMENTS"}}]

@@ -1,0 +1,6 @@
+{
+  "prompt": "@a.txt",
+  "after_capture": {"project/a.txt":"after"},
+  "expect":{"mention_files":["before"],"files":{"project/a.txt":"after"},"result":{"kind":"prompt","text":"@a.txt",
+    "mentions":[{"file":{"path":"project/a.txt"}}]}}
+}

@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { ClientViews } from "@acyclic-labs/harness/client";
+import { HypothesisClient } from "@acyclic-labs/harness";
 import { clientReadable } from "@acyclic-labs/harness/svelte";
 import { receiveClientSnapshots } from "@acyclic-labs/harness/worker";
 
 test("installed optional exports use the one Rust kernel without installing React", async () => {
   expect(typeof receiveClientSnapshots).toBe("function");
-  await ClientViews.initialize();
-  const client = new ClientViews<number, null, { value: number; revision: string }>({
+  await HypothesisClient.initialize();
+  const client = new HypothesisClient<number, null, { value: number; revision: string }>({
     identity: "1",
     validate: () => ({ bytes: 128, work: 1 }),
     observe: evidence => ({ fact: { key: "a", basis: evidence.revision, value: evidence.value, bytes: 128 }, operation: null, work: 1 }),

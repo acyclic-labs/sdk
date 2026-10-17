@@ -1,0 +1,2 @@
+{"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"before\u0000after"}}},
+  "files":{"plans/a.md":"before\u0000after"}},"seed":{"plans/a.md":"before\u0000after"}}

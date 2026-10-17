@@ -1,0 +1,4 @@
+{"seed":{"skills/inspect/SKILL.md":"---\nname: inspect\ndescription: >-\n  Inspect\n  files\n---\nSECRET BODY"},
+  "expect":{"requests":[{"messages":[{"role":"system","content":{"$json":[{"name":"inspect","description":
+  "Inspect files","source":{"path":"skills/inspect/SKILL.md"}}]}},{"role":"user","content":"Inspect files"}]}],
+  "not_requests":[{"messages":[{"content":{"$contains":"SECRET BODY"}}]}],"request_files":[[]]}}

@@ -124,7 +124,7 @@ pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_
     use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
     for mode in [1, 2] {
         let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 131_072).await?);
-        let provider = Arc::new(SummaryModel::default());
+        let (provider, _counts) = summary_model(5);
         let journal = Arc::new(LostCanonicalAck {
             inner: storage.journal(),
             fail: std::sync::atomic::AtomicBool::new(false),
@@ -198,14 +198,7 @@ pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_
                 .count(),
             1
         );
-        assert_eq!(
-            provider
-                .requests
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len(),
-            3
-        );
+        assert_eq!(provider.requests().len(), 3);
         let previous_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
             storage.journal().as_ref(),
             operation,
@@ -229,6 +222,7 @@ pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_
             &previous_retained,
         )
         .await?;
+        assert_eq!(provider.remaining(), 0);
     }
     Ok(())
 }

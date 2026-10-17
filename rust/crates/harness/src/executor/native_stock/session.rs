@@ -176,6 +176,7 @@ impl StockExecutor {
         StockExecution::ordinary(self)
             .summarize(journal, None, operation, 0, source, instruction)
             .await
+            .map(|(summary, _)| summary)
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(
@@ -186,7 +187,9 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self)
+        let execution = StockExecution::ordinary(self);
+        execution.validate_turn_input(journal, input).await?;
+        execution
             .summarize(
                 journal,
                 Some(input),
@@ -196,6 +199,7 @@ impl StockExecutor {
                 instruction,
             )
             .await
+            .map(|(summary, _)| summary)
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(

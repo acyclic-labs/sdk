@@ -1,0 +1,4 @@
+2data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call","function":{"name":"echo","arguments":"{\"$serde_json::private::RawValue\":\"null\",\"signature\":\"opaque\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

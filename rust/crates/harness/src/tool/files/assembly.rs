@@ -1,4 +1,4 @@
-use super::super::text_files::{ReadInput, ReadResult, SearchInput, SearchResult};
+use super::super::text_files::{SearchInput, SearchResult};
 use super::*;
 use schema::ProjectionMode;
 
@@ -13,33 +13,9 @@ impl FileTool {
             projection_schema,
             projection,
         ) = match self {
-            Self::Read => (
-                "acyclic.read_file",
-                "portable-5",
-                "Read exact bounded UTF-8 from an authorized immutable file",
-                schema::input::<ReadFileInput>()?,
-                schema::output::<String>()?,
-                mode.schema::<String>()?,
-                FileProjection::Read(mode),
-            ),
-            Self::Write => (
-                "acyclic.write_file",
-                "portable-5",
-                "Write bounded UTF-8 through the original owner-bound content publisher",
-                schema::input::<WriteFileInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
-            Self::Edit => (
-                "acyclic.edit_file",
-                "portable-5",
-                "Replace one exact UTF-8 match at an authorized pinned source generation",
-                schema::input::<EditFileInput>()?,
-                schema::output::<FileResult>()?,
-                mode.schema::<FileResult>()?,
-                FileProjection::Publication(mode),
-            ),
+            Self::Read => return crate::tools::catalog::READ.bind_with_projection(mode),
+            Self::Write => return crate::tools::catalog::WRITE.bind_with_projection(mode),
+            Self::Edit => return crate::tools::catalog::EDIT.bind_with_projection(mode),
             Self::Patch { .. } => (
                 "acyclic.patch_file",
                 "portable-patch-4",
@@ -48,15 +24,6 @@ impl FileTool {
                 schema::output::<FileResult>()?,
                 mode.schema::<FileResult>()?,
                 FileProjection::Publication(mode),
-            ),
-            Self::ReadRange { .. } => (
-                "acyclic.read_file_range",
-                "portable-text-1",
-                "Read one exact bounded UTF-8 byte interval from an authorized immutable source",
-                schema::input::<ReadInput>()?,
-                schema::output::<ReadResult>()?,
-                mode.schema::<ReadResult>()?,
-                FileProjection::Range(mode),
             ),
             Self::Search { .. } => (
                 "acyclic.search_file",
@@ -79,6 +46,11 @@ impl FileTool {
         };
         definition.validate(&mut None)?;
         Ok(Tool {
+            hook_names: if matches!(self, Self::Patch { .. }) {
+                &["Edit"]
+            } else {
+                &[]
+            },
             definition,
             executor: Arc::new(self),
             projection: Arc::new(projection),
@@ -93,13 +65,6 @@ impl FileTool {
             } => Some((
                 "x-harness-patch-limits",
                 json!({"maximum_work":maximum_work,"maximum_hunks":maximum_hunks}),
-            )),
-            Self::ReadRange {
-                options,
-                maximum_result_bytes,
-            } => Some((
-                "x-harness-text-configuration",
-                json!({"read":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
             )),
             Self::Search {
                 options,

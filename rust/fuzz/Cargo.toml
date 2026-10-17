@@ -1,0 +1,72 @@
+[package]
+name = "acyclic-sdk-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+memory-paths = ["dep:serde_json"]
+proto-descriptors = ["dep:acyclic-proto-build"]
+default = ["native"]
+native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json"]
+
+[dependencies]
+acyclic-proto-build = { path = "../../compatibility", optional = true }
+acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
+acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
+libfuzzer-sys = "0.4"
+prost = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "git_argv"
+required-features = ["native"]
+path = "fuzz_targets/git_argv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_path"
+required-features = ["native"]
+path = "fuzz_targets/git_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_tool_inputs"
+path = "fuzz_targets/file_tool_inputs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "harness_admission"
+required-features = ["native"]
+path = "fuzz_targets/harness_admission.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_descriptors"
+required-features = ["proto-descriptors"]
+path = "fuzz_targets/proto_descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "harness_memory_paths"
+required-features = ["memory-paths"]
+path = "fuzz_targets/harness_memory_paths.rs"
+test = false
+doc = false
+bench = false

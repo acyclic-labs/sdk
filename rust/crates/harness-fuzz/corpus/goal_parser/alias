@@ -1,0 +1,5 @@
+---
+status: &status active
+reason: *status
+---
+Goal

@@ -1,6 +1,8 @@
 /// Serialization and publication boundary for a canonical checkout.
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
+    publication_fence: tokio::sync::RwLock<()>,
+    file_mutations: StdMutex<FileMutationEntries>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     publishing: AtomicBool,
@@ -47,6 +49,8 @@ impl<A, O> SharedCheckout<A, O> {
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let ledger = Arc::new(ViewLedger::default());
         Self {
+            publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -79,6 +83,8 @@ impl<A, O> SharedCheckout<A, O> {
         let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
         Ok(Arc::new(Self {
+            publication_fence: tokio::sync::RwLock::new(()),
+            file_mutations: StdMutex::new(FileMutationEntries::default()),
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
@@ -160,11 +166,18 @@ impl<A, O> SharedCheckout<A, O> {
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
-    ) -> Result<CheckoutCandidate<A, O>, MountSourceError>
+    ) -> Result<CheckoutCandidate<'_, A, O>, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let publication = await_lock(
+            self.publication_fence.read(),
+            carrier,
+            cancellation,
+            lifetime,
+        )
+        .await?;
         let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
         let epoch = self.view_gate.generation();
         let stamp = self.ledger.stamp();
@@ -179,6 +192,8 @@ impl<A, O> SharedCheckout<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         Ok(CheckoutCandidate {
+            _publication: publication,
+            _file_mutation: None,
             base: state
                 .checkout
                 .private_candidate(

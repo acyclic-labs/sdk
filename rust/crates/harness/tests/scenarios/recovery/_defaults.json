@@ -1,0 +1,10 @@
+{
+  "prompt": "Recover before receiving output.",
+  "resume": [
+    "offline"
+  ],
+  "expect": {
+    "request_count": 1,
+    "reconciliation_count": 1
+  }
+}

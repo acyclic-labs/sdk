@@ -1,46 +1,26 @@
-import { serviceGenerate } from "./generate-actors.mjs";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generatedDescriptors, writeChanged } from "./generated-bindings.mjs";
-import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
+import { generateProto } from "./generate-proto.mjs";
+import { packageClosure } from "./package-closure.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-for (const key of ["actors", "stream"]) {
-  const facts = spawnSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, key], { cwd: root, encoding: "utf8" });
-  if (facts.error) throw facts.error;
-  if (facts.status !== 0) throw new Error(facts.stderr || `native-family ${key} generation failed`);
-  const output = join(root, "scripts/generated/native-families", `${key}.json`);
-  mkdirSync(dirname(output), { recursive: true });
-  writeChanged(output, `${JSON.stringify(JSON.parse(facts.stdout), null, 2)}\n`);
-}
-const buf = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
-const run = (args, capture = false) => {
-  const result = spawnSync(buf, args, { cwd: root, stdio: ["inherit", capture ? "pipe" : "inherit", "inherit"], maxBuffer: 1 << 20 });
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const selected = process.argv[2];
+const packages = packageClosure(root, selected);
+
+function run(command, args) {
+  const result = spawnSync(command, args, { cwd: root, stdio: "inherit" });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
-  return result.stdout;
-};
-
-const actors = spawnSync(process.execPath, [join(root, "scripts/generate-actors.mjs"), "rust"], {
-  cwd: root,
-  stdio: "inherit",
-});
-if (actors.error) throw actors.error;
-if (actors.status !== 0) process.exit(actors.status ?? 1);
-
-run(["generate"]);
-for (const [source, destination] of generatedDescriptors) {
-  mkdirSync(dirname(join(root, destination)), { recursive: true });
-  writeChanged(join(root, destination), run(["build", "--path", source, "-o", "-"], true));
+  if (result.status !== 0) throw new Error(`Generation failed: ${command} ${args.join(" ")}`);
 }
-writeChanged(
-  join(root, "typescript/packages/filesystem/generated/descriptor-digest.js"),
-  filesystemDescriptorDigestSource(root),
-);
-writeChanged(
-  join(root, "typescript/packages/filesystem/generated/descriptor-digest.d.ts"),
-  filesystemDescriptorDigestSource(root, true),
-);
-await import("./sync-generated.mjs");
+
+generateProto(packages);
+if (packages.has("auth")) run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", root]);
+if (packages.has("actors")) run(process.execPath, [join(root, "scripts/generate-actors.mjs"), "write"]);
+if (packages.has("workers")) {
+  const output = join(root, "typescript/packages/workers/src/generated");
+  run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--", output]);
+  run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-manifest", "--example", "deployment-manifest", "--",
+    join(root, "typescript/packages/workers/test/generated"), join(root, "rust/crates/manifest/fuzz/corpus/manifest_json/valid.json"), "production", "agent"]);
+}
+run(process.execPath, [join(root, "scripts/generate-contracts.mjs"), "write", ...packages]);

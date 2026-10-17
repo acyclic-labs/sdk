@@ -16,7 +16,7 @@ export function checkNpmVersions(version,packages,read=file=>JSON.parse(fs.readF
   if(manifest.name!==item.name||manifest.version!==version||manifest.private!==false)throw new Error(file+' does not match coordinated release '+version);
  }
 }
-export function releaseSource(){
+function releaseSource(){
 const output=process.env.GITHUB_OUTPUT;
 if(!output)throw new Error('GITHUB_OUTPUT is required for release source outputs');
 const version=checkReleaseVersion(process.env.RELEASE_VERSION);

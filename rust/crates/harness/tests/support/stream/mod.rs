@@ -5,6 +5,7 @@
 )]
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
+mod hints;
 use controls::COORDINATOR_PATH;
 pub use controls::{ExecutionFaultMode, LostSessionAck};
 mod append;
@@ -208,6 +209,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             .try_collect::<Vec<_>>()
             .await?;
         match fault {
+            7..=9 => return Ok(hints::records(records, fault)),
             1 => {
                 if let Some(record) = records.first_mut() {
                     record.sequence += 1;

@@ -10,6 +10,7 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
 
@@ -57,6 +58,41 @@ test = false
 path = "src/bin/bench_objects.rs"
 required-features = ["local-runner"]
 
+[[bench]]
+name = "filesystem"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "filesystem_alloc"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "objects"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "harness"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "client_demand"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "write_validation"
+harness = false
+required-features = ["local-runner"]
+
+[[bench]]
+name = "native_observation"
+harness = false
+required-features = ["local-runner"]
+
 [[bin]]
 name = "s3-fixture"
 test = false
@@ -87,4 +123,7 @@ test = false
 workspace = true
 
 [dev-dependencies]
+divan.workspace = true
 tempfile = "3.27.0"
+tracing.workspace = true
+tracing-subscriber.workspace = true

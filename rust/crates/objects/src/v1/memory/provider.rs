@@ -190,6 +190,8 @@ impl ObjectsProvider for MemoryObjects {
                                     match journal.commit(
                                         &state,
                                         &mut next,
+                                        None,
+                                        None,
                                         Some(Arc::clone(&meter)),
                                     ) {
                                         Ok(()) => *state = next,
@@ -420,14 +422,22 @@ impl ObjectsProvider for MemoryObjects {
         obs::traced(obs::span!(INFO, "acyclic.objects.delete"), async {
             let name = request::bucket(&query.bucket)?;
             self.mutate(request::delete_digest(&query)?, &query.mutation, |state| {
-                let bucket = state.buckets.get_mut(name).ok_or(Error::from(NotFound))?;
-                check_condition(
-                    &query.preconditions,
-                    bucket.objects.get(query.object_key.as_str()),
-                )?;
-                Ok(wire::DeleteObjectResponse {
-                    existed: bucket.objects.remove(query.object_key.as_str()).is_some(),
-                })
+                let (name, bucket) = state
+                    .buckets
+                    .get_key_value(name)
+                    .ok_or(Error::from(NotFound))?;
+                let current = bucket.objects.get_key_value(query.object_key.as_str());
+                check_condition(&query.preconditions, current.map(|(_, value)| value))?;
+                let existed = current.is_some();
+                if let Some((key, _)) = current {
+                    let change = PendingObject {
+                        bucket: name.clone(),
+                        key: key.clone(),
+                        value: None,
+                    };
+                    state.object = Some(change);
+                }
+                Ok(wire::DeleteObjectResponse { existed })
             })
         })
         .await

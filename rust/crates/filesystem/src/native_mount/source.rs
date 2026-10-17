@@ -426,45 +426,6 @@ pub enum MountAttributeWriteMode {
     Replace,
 }
 
-/// Exact platform-native absolute path used only at the kernel callback edge.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct MountPath {
-    pub(super) components: Vec<Vec<u8>>,
-}
-
-impl MountPath {
-    /// Returns the volume root.
-    #[must_use]
-    pub const fn root() -> Self {
-        Self {
-            components: Vec::new(),
-        }
-    }
-
-    /// Appends one exact platform-native component.
-    #[must_use]
-    pub fn child(&self, component: Vec<u8>) -> Self {
-        let mut components = self.components.clone();
-        components.push(component);
-        Self { components }
-    }
-
-    /// Borrows exact root-to-leaf components.
-    #[must_use]
-    pub fn components(&self) -> &[Vec<u8>] {
-        &self.components
-    }
-
-    /// Returns the containing directory, or `None` at the volume root.
-    #[must_use]
-    pub fn parent(&self) -> Option<Self> {
-        let (_, parent) = self.components.split_last()?;
-        Some(Self {
-            components: parent.to_vec(),
-        })
-    }
-}
-
 /// Errors returned by the canonical checkout callback bridge.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MountSourceError {
@@ -474,6 +435,16 @@ pub enum MountSourceError {
     /// Create-only operation found an existing object.
     #[error("filesystem object already exists")]
     AlreadyExists,
+    /// A directory may not take the place of a non-directory (`ENOTDIR`).
+    #[error("filesystem object is not a directory")]
+    NotDirectory,
+    /// A non-directory may not take the place of a directory (`EISDIR`).
+    #[error("filesystem object is a directory")]
+    IsDirectory,
+    /// The operation would remove or replace a directory that is not empty
+    /// (`ENOTEMPTY`).
+    #[error("directory is not empty")]
+    DirectoryNotEmpty,
     /// Operation is invalid for the resolved kind or profile.
     #[error("invalid filesystem operation: {0}")]
     Invalid(std::borrow::Cow<'static, str>),
@@ -628,6 +599,8 @@ pub(super) fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
         WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => {
             libc::ENOTDIR
         }
+        WorkspaceError::IsDirectory => libc::EISDIR,
+        WorkspaceError::DirectoryNotEmpty => libc::ENOTEMPTY,
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
         | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => libc::ENOMEM,
@@ -669,7 +642,6 @@ pub(crate) fn native_materialization_failure_is_fatal(
         crate::NativeTreeMaterializationError::Work(_)
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
-            | crate::NativeTreeMaterializationError::IndeterminatePreparation
             | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )

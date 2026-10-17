@@ -23,6 +23,14 @@ fn sources(
         profile,
         ..VolumeConfig::portable(Lifecycle::Ephemeral)
     };
+    configured_sources(config, consistency, publication)
+}
+
+fn configured_sources(
+    config: VolumeConfig,
+    consistency: ConsistencyMode,
+    publication: MountPublication,
+) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let cancellation = CancellationToken::new();
@@ -84,7 +92,9 @@ fn mount_source(
 }
 
 include!("runtime.rs");
+mod leases;
 include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");
 include!("source_limits.rs");
+mod concurrent;

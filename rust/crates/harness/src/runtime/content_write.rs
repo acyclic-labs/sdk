@@ -1,4 +1,80 @@
 use super::*;
+
+#[cfg(feature = "filesystem")]
+impl AgentHarness {
+    pub(crate) fn bind_private_output(
+        &mut self,
+        writer: Arc<dyn ContentPublisher>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let reader = self
+            .content
+            .as_ref()
+            .ok_or_else(|| {
+                content_error(
+                    io,
+                    ErrorCode::Unsupported,
+                    "root content reader is not bound",
+                )
+            })?
+            .reader
+            .clone();
+        let binding = ContentBindings {
+            reader,
+            writer: Some(writer),
+        };
+        let volume = bound_content_writer(Some(&binding), &self.scope, io)?.volume();
+        crate::executor::with_history_io(io, |work| {
+            if contains_content_grant_with_work(
+                self.scope.grants(),
+                volume,
+                VolumeOperation::Read.capability_prefix(),
+                work,
+            )? {
+                Ok(())
+            } else {
+                Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task scope cannot read private content",
+                ))
+            }
+        })?;
+        self.artifacts = Some(binding);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) fn output_destination<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Option<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.content
+            .as_ref()
+            .and_then(|binding| binding.writer.as_ref())
+            .and_then(|writer| writer.destination(None, path, None).ok())
+    }
+
+    pub(crate) fn bind_output(
+        &mut self,
+        writer: Arc<dyn crate::conversation::ContentPublisher>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let binding = self.content.as_mut().ok_or_else(|| {
+            content_error(
+                io,
+                ErrorCode::Unsupported,
+                "root content reader is not bound",
+            )
+        })?;
+        let previous = binding.writer.replace(writer);
+        if let Err(error) = bound_content_writer(Some(binding), &self.scope, io) {
+            binding.writer = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
@@ -9,6 +85,46 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    pub(crate) async fn stage_private_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        io: Option<&ContentIo>,
+    ) -> Result<FileRef> {
+        let binding = self
+            .scope
+            .created_private_content()
+            .or(self.harness.artifacts.as_ref())
+            .or_else(|| self.content_binding(None));
+        let writer = bound_content_writer(binding, &self.scope, io)?;
+        if writer.volume().class() != crate::conversation::VolumeClass::AgentPrivate
+            || !matches!(
+                writer.volume().owner(),
+                crate::conversation::VolumeOwner::Agent(_)
+            )
+        {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "private content requires an agent-owned private volume",
+            ));
+        }
+        self.stage_bound_file(
+            binding,
+            operation_id,
+            path,
+            bytes,
+            "text/plain",
+            "summary.txt",
+            ContentPublication::OperationBound,
+            &self.scope,
+            io,
+        )
+        .await
+        .map(|(file, _)| file)
+    }
+
     /// Stages exact bytes through the authenticated writer.
     pub async fn stage_file(
         &self,
@@ -71,17 +187,23 @@ impl TaskContext {
     }
 
     /// Checks the original content destination without reading or publishing bytes.
-    pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
-        let writer = bound_content_writer(
-            self.content_binding(source.map(FileRef::volume)),
-            &self.scope,
-            None,
-        )?;
-        if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::Unauthorized(
-                "source differs from the owner-bound destination".into(),
-            ));
+    pub(crate) fn authorize_content_publication(
+        &self,
+        path: &str,
+        source: Option<&FileRef>,
+        scope: &RuntimeScope,
+        io: Option<&ContentIo>,
+    ) -> Result<()> {
+        if let Some(source) = source {
+            self.authorize_file_read(source, scope, io)?;
         }
+        publication_destination(
+            self.content_binding(source.map(FileRef::volume)),
+            scope,
+            source,
+            path,
+            io,
+        )?;
         Ok(())
     }
 
@@ -115,8 +237,13 @@ impl TaskContext {
         let content = binding.ok_or_else(|| {
             content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
-        let writer = bound_content_writer(Some(content), scope, io)?;
-        if !content.reader.supports_read(writer.volume(), io)? {
+        let source = match publication {
+            ContentPublication::Replacement(source) => Some(source),
+            _ => None,
+        };
+        let (writer, volume, relative) =
+            publication_destination(Some(content), scope, source, path, io)?;
+        if !content.reader.supports_read(volume, io)? {
             return Err(content_error(
                 io,
                 ErrorCode::Unsupported,
@@ -124,11 +251,11 @@ impl TaskContext {
             ));
         }
         writer.supports_stage(io)?;
-        self.scope.verify_created_write(writer.volume(), io).await?;
+        self.scope.verify_created_write(volume, io).await?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
                 self.authorize_file_read(source, scope, io)?;
-                if source.volume() != writer.volume() || source.path() != path {
+                if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,
                         ErrorCode::Unauthorized,
@@ -152,11 +279,11 @@ impl TaskContext {
                     .await?
             }
         };
-        self.scope.verify_created_write(writer.volume(), io).await?;
+        self.scope.verify_created_write(volume, io).await?;
         let file = &output.0;
         crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
-        if file.volume() != writer.volume()
-            || file.path() != path
+        if file.volume() != volume
+            || file.path() != relative.as_ref()
             || file.display_name() != display_name
             || file.descriptor().media_type() != media_type
             || file.descriptor().byte_length() != bytes.len() as u64
@@ -202,6 +329,15 @@ pub(super) fn bound_content_writer<'a>(
     scope: &RuntimeScope,
     io: Option<&ContentIo>,
 ) -> Result<&'a Arc<dyn ContentPublisher>> {
+    let writer = content_writer(binding, io)?;
+    authorize_volume_write(writer.volume(), scope, io)?;
+    Ok(writer)
+}
+
+pub(super) fn content_writer<'a>(
+    binding: Option<&'a ContentBindings>,
+    io: Option<&ContentIo>,
+) -> Result<&'a Arc<dyn ContentPublisher>> {
     let content = binding.ok_or_else(|| {
         content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
     })?;
@@ -212,8 +348,45 @@ pub(super) fn bound_content_writer<'a>(
             "task has no owner-bound content writer",
         )
     })?;
+    Ok(writer)
+}
+
+pub(super) fn publication_destination<'a>(
+    binding: Option<&'a ContentBindings>,
+    scope: &RuntimeScope,
+    source: Option<&FileRef>,
+    path: &'a str,
+    io: Option<&ContentIo>,
+) -> Result<(
+    &'a Arc<dyn ContentPublisher>,
+    &'a VolumeRef,
+    std::borrow::Cow<'a, str>,
+)> {
+    let writer = content_writer(binding, io)?;
+    let (volume, relative) = writer.destination(source.map(FileRef::volume), path, io)?;
+    if source.is_some_and(|source| source.volume() != volume) {
+        return Err(content_error(
+            io,
+            ErrorCode::Unauthorized,
+            "source differs from the owner-bound destination",
+        ));
+    }
+    authorize_volume_write(volume, scope, io)?;
+    Ok((writer, volume, relative))
+}
+
+fn authorize_volume_write(
+    volume: &VolumeRef,
+    scope: &RuntimeScope,
+    io: Option<&ContentIo>,
+) -> Result<()> {
     if !crate::executor::with_history_io(io, |work| {
-        contains_content_grant_with_work(&scope.grants, writer.volume(), "volume:write:", work)
+        contains_content_grant_with_work(
+            &scope.grants,
+            volume,
+            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
+            work,
+        )
     })? {
         return Err(content_error(
             io,
@@ -221,7 +394,7 @@ pub(super) fn bound_content_writer<'a>(
             "task scope cannot write this volume",
         ));
     }
-    Ok(writer)
+    Ok(())
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]

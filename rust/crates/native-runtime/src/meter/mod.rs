@@ -73,6 +73,16 @@ pub trait NativeReadMeter: Send + Sync {
     fn admit_examination(&self, items: u64, bytes_copied: u64) -> io::Result<()>;
     /// Records examination already admitted by the preceding preflight.
     fn record_examination(&self, items: u64, bytes_copied: u64) -> io::Result<()>;
+    /// Withholds index probes before accepting a completion that must survive cancellation.
+    fn reserve_examination(&self, _items: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Refunds unused request-owned index probes.
+    fn cancel_reserved_examination(&self, _items: u64) {}
+    /// Consumes withheld probes without checking cancellation.
+    fn record_reserved_examination(&self, _items: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Retires owned capacity after its actual buffer is freed, even if cancelled.
     fn release(&self, bytes: u64);
     /// Preflights the requested read-byte allowance without reporting completion.

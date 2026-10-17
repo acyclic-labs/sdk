@@ -1,0 +1,53 @@
+[
+  {
+    "name": "stock-private-goal-created-continued-and-completed",
+    "path": ".volumes/scratch/GOAL.md",
+    "writes": [
+      "Finish the objective",
+      "---\nstatus: done\n---\nFinish the objective"
+    ],
+    "tasks": 2,
+    "calls": 4,
+    "final_goal": "---\nstatus: done\n---\nFinish the objective",
+    "panel": [
+      "Status: done | Continuations: 1",
+      "Finish the objective"
+    ]
+  },
+  {
+    "name": "stock-private-goal-continued-and-blocked-with-reason",
+    "initial_goal": "Finish the objective",
+    "path": ".volumes/scratch/GOAL.md",
+    "writes": [
+      null,
+      "---\nstatus: blocked\nreason: waiting for input\n---\nFinish the objective"
+    ],
+    "tasks": 2,
+    "calls": 3,
+    "final_goal": "---\nstatus: blocked\nreason: waiting for input\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 1",
+      "Reason: waiting for input",
+      "Finish the objective"
+    ]
+  },
+  {
+    "name": "stock-private-goal-continues-to-finite-cap",
+    "initial_goal": "Finish the objective",
+    "writes": [
+      null,
+      null,
+      null
+    ],
+    "cap": 2,
+    "tasks": 3,
+    "calls": 3,
+    "final_goal": "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nFinish the objective",
+    "panel": [
+      "Status: blocked | Continuations: 2",
+      "Reason: Maximum goal continuations reached (limit 2).",
+      "Finish the objective"
+    ],
+    "path": "GOAL.md"
+  }
+]

@@ -1,0 +1,4 @@
+{
+  "prompt": "/goal done",
+  "expect": {"error":"accepts no arguments"}
+}

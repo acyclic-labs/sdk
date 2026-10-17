@@ -91,7 +91,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
             IdempotencyKey(stock_string_copy(key.as_str(), io)?),
             io,
             preparation,
-        )
+        )?
         .await;
     drop(hold);
     match result {
@@ -279,7 +279,7 @@ pub(super) async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: Async
     }
 }
 
-pub(super) fn journal_absent(error: &Error) -> bool {
+pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
     match error {
         Error::NotFound(_) => true,
         #[cfg(not(target_arch = "wasm32"))]

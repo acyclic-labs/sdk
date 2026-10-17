@@ -158,9 +158,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<bool, FsError> {
         let _hold = self
             .flush_publication(
-                crate::PublicationScope::Closure {
-                    objects: &publication.objects,
-                    proven_at: publication.proven_at,
+                if self.inner.objects.collection().is_none() {
+                    crate::PublicationScope::Everything
+                } else {
+                    crate::PublicationScope::Closure {
+                        objects: &publication.objects,
+                        proven_at: publication.proven_at,
+                    }
                 },
                 accounting,
                 cancellation,

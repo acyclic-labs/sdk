@@ -40,9 +40,6 @@ func stageSources(authority string, families []family) (string, error) {
 }
 
 func copyModuleFiles(sourceRoot, outputRoot string) error {
-	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
-		return fmt.Errorf("create module output: %w", err)
-	}
 	moduleRoot := filepath.Join(sourceRoot, "go")
 	// Stage package metadata only. A legacy facade must not silently become the
 	// public interface of a newly generated package.

@@ -100,7 +100,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
         )
         .await?;
     let provider = Arc::new(provider);
-    let model = Arc::new(SummaryModel::default());
+    let (model, _counts) = summary_model(2);
     let executor = StockExecutor::new(
         Model::new(
             "synthetic".into(),
@@ -127,24 +127,17 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
     let journal = storage.journal();
     let output = executor.execute(input.clone(), journal.as_ref()).await?;
     {
-        let requests = model.requests.lock().unwrap();
+        let requests = model.requests();
         let request = requests
             .first()
             .ok_or_else(|| Error::Invalid("missing later admission".into()))?;
+        assert_eq!(request.messages.len(), compacted.messages.len() + 1);
         assert_eq!(
-            request.request().messages.len(),
-            compacted.messages.len() + 1
-        );
-        assert_eq!(
-            request.request().messages.get(..compacted.messages.len()),
+            request.messages.get(..compacted.messages.len()),
             Some(compacted.messages.as_slice())
         );
         assert_eq!(
-            request
-                .request()
-                .messages
-                .last()
-                .map(|message| &message.content),
+            request.messages.last().map(|message| &message.content),
             Some(&input.input)
         );
     }
@@ -157,7 +150,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
         )
         .await?;
     assert_eq!(executor.execute(input, journal.as_ref()).await?, output);
-    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert_eq!(model.requests().len(), 1);
     executor
         .execute(
             TurnInput {
@@ -169,12 +162,10 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
             journal.as_ref(),
         )
         .await?;
-    let requests = model.requests.lock().unwrap();
+    let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
-        requests
-            .last()
-            .map(|request| request.request().messages.len()),
+        requests.last().map(|request| request.messages.len()),
         Some(1)
     );
     Ok(())
@@ -189,11 +180,13 @@ pub(super) fn typed_payload_source() -> Context {
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Part(ModelContentPart::ToolCall {
-                    call_id: "previous-call".into(),
-                    name: "echo".into(),
-                    arguments: serde_json::json!({"value":"é🦀"}),
-                }),
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        "previous-call".into(),
+                        "echo".into(),
+                        serde_json::json!({"value":"é🦀"}),
+                    ),
+                )),
             },
             ModelMessage {
                 role: ModelRole::Tool,

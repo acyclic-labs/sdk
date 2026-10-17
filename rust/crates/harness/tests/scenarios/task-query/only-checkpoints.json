@@ -1,0 +1,2 @@
+{"writes":[{"path":"GOAL.md","text":"active"},{"path":".tasks/t/status.json","text":"running"}],"expect":{"files":{},
+  "changes":[null,null]},"folder":"plans"}

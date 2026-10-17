@@ -1,36 +1,21 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
+import { generationOutput, inventory, loadAuthority, sha256, stageDescriptorSets } from "../../../shared/authority.mjs";
 import { verifyRuntime } from "./runtime.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
-function inventory(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
-    if (entry.isDirectory()) return inventory(root, name);
-    if (!entry.isFile()) throw new Error("generated output is not a regular file");
-    return [name];
-  }).sort();
-}
-
 // Command/toolchain injection supports tiny offline fixtures. CLI pins are fixed.
 export function generate(args, { command = spawnSync, toolchain = pinned } = {}) {
   const source = realpathSync(args["source-root"]), authority = realpathSync(args.authority);
   const protoc = realpathSync(args.protoc), plugin = realpathSync(args["elixir-plugin"]);
   const runtime = realpathSync(args["runtime-root"]), runtimeIndex = realpathSync(args["runtime-inventory"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [source, authority, protoc, plugin, runtime, runtimeIndex, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
-  }
+  const output = generationOutput(args.output, [source, authority, protoc, plugin, runtime, runtimeIndex, dirname(directory)]);
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
   const metadata = new Map(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
@@ -59,11 +44,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
     if (run(protoc, ["--version"]) !== toolchain.protoc_version || run(plugin, ["--version"]) !== toolchain.protobuf_version) throw new Error("generation tool version differs");
     const otp = join(runtime, runtimePin.roots[0], "bin/erl");
     if (run(otp, ["-noshell", "-eval", 'io:format("~s~n", [erlang:system_info(otp_release)]), halt().']) !== runtimePin.otp_release) throw new Error("OTP release differs");
-    const descriptors = new Map();
-    for (const family of manifest.families) if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
-    const paths = [...descriptors].sort(([a], [b]) => a.localeCompare(b)).map(([digest, bytes]) => {
-      const target = join(temporary, digest + ".bin"); writeFileSync(target, bytes, { flag: "wx" }); return target;
-    });
+    const paths = stageDescriptorSets(manifest, inputs, temporary);
     const bindings = join(temporary, "bindings"); mkdirSync(bindings);
     const names = manifest.families.map(family => family.source).sort();
     run(protoc, [`--descriptor_set_in=${paths.join(delimiter)}`, `--plugin=protoc-gen-elixir=${plugin}`,

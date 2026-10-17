@@ -1,0 +1,6 @@
+{"folder":".tasks/t/approvals","writes":[{"path":".tasks/t/notifications/a.json","text":"ready"},{"path":
+  ".tasks/t/approvals/a/request.json","text":"binding"},{"path":".tasks/u/approvals/a/request.json","text":"other"},{
+  "path":".tasks/t/approvals/a/decisions/human.json","text":"allow"}],"expect":{"files":{
+  ".tasks/t/approvals/a/request.json":"binding",".tasks/t/approvals/a/decisions/human.json":"allow"},"changes":[null,{
+  "path":".tasks/t/approvals/a/request.json","text":"binding"},null,{"path":".tasks/t/approvals/a/decisions/human.json",
+  "text":"allow"}]}}

@@ -19,6 +19,7 @@ must not forward credentials. No client automatically retries a mutation.
 | objects/get | GetObjectRequest | GetObjectResponse frames |
 | objects/head | HeadObjectRequest | HeadObjectResponse |
 | objects/delete | DeleteObjectRequest | DeleteObjectResponse |
+| objects/restore | RestoreObjectsRequest | RestoreObjectsResponse |
 | objects/list | ListObjectsRequest | ListObjectsResponse |
 | multipart/create | CreateMultipartRequest | MultipartUpload |
 | multipart/upload-part | UploadPartRequest frames | UploadedPart |

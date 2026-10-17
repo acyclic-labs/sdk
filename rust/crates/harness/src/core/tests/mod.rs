@@ -138,8 +138,13 @@ pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityIssuer) -> Re
 }
 
 mod authority;
+mod authority_reducer_properties;
 mod conversation;
 mod effects;
 mod extensions;
 mod fork;
+#[cfg(not(target_arch = "wasm32"))]
+mod interaction_history;
 mod model;
+#[cfg(not(target_arch = "wasm32"))]
+mod model_checking;

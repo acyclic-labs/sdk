@@ -16,12 +16,12 @@ mod views;
 
 /// Browser client using the kernel's transitions, limits and reconciliation.
 #[wasm_bindgen]
-pub struct WasmClientViews {
+pub struct WasmHypothesisClient {
     client: Client<JavaScriptDomain>,
 }
 
 #[wasm_bindgen]
-impl WasmClientViews {
+impl WasmHypothesisClient {
     /// Pure construction; callbacks run only on explicit transitions.
     #[wasm_bindgen(constructor)]
     pub fn new(

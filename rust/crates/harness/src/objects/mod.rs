@@ -31,4 +31,6 @@ pub use store::ObjectContentStore;
 mod mount;
 pub use mount::ObjectContentMountResolver;
 #[cfg(test)]
+mod range_tests;
+#[cfg(test)]
 mod tests;

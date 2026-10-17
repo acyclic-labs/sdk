@@ -1,0 +1,18 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "goal"
+    },
+    "file_values": {
+      "session/layout.json": {
+        "open_view": "goal",
+        "view_input": null,
+        "view_request": "00000000-0000-0000-0000-000000000001",
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
+      }
+    }
+  },
+  "prompt": "/goal"
+}

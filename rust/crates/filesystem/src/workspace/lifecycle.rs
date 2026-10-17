@@ -19,13 +19,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            if permit != crate::PublicationPermit::Unrestricted {
-                return Err(E::from(FsError::Authority(
-                    crate::AuthorityStoreError::RejectedStatic(
-                        "workspace fork does not support a publication reservation",
-                    ),
-                )));
-            }
             let mut frame = None;
             let (mut future, bytes) = crate::heap_future::in_heap_admitted(
                 (&mut accounting, &mut frame),
@@ -208,6 +201,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             source: self.clone(),
             target: target.clone(),
             history: JoinHistory::Merge,
+            git_metadata: false,
             maximum_generations: 4_096,
             maximum_changes: self.volume.config().limits.maximum_paths_per_batch,
             maximum_conflicts: 1_024,

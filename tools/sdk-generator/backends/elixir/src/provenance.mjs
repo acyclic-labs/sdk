@@ -1,20 +1,8 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join, posix } from "node:path";
+import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, sha256 } from "../../../shared/authority.mjs";
-
-export function files(root, prefix = "") {
-  const current = lstatSync(join(root, prefix));
-  if (!current.isDirectory() || current.isSymbolicLink()) throw new Error("source directory kind differs");
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("source inventory contains a link: " + name);
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("source inventory contains a non-file");
-    return [name];
-  }).sort();
-}
+import { canonical, sourceInventory, sha256 } from "../../../shared/authority.mjs";
 
 export function readDependencies(cache, pins) {
   const admitted = new Map();
@@ -53,7 +41,7 @@ export function verifyInstalledDependencies(root, dependencies) {
   for (const [name, admitted] of dependencies) {
     const source = join(root, name), metadata = [".hex", ".fetch", "hex_metadata.config"];
     if (name === "telemetry") metadata.push("_build/prod/lib/.rebar3/rebar_compiler_erl/source.dag");
-    const inventory = files(source), expected = new Set(admitted.payload.keys());
+    const inventory = sourceInventory(source), expected = new Set(admitted.payload.keys());
     if (inventory.some(file => !expected.has(file) && !metadata.includes(file)) || [...expected].some(file => !inventory.includes(file))) throw new Error("unexpected compiled source inventory: " + name);
     for (const [file, bytes] of admitted.payload) if (!readFileSync(join(source, file)).equals(bytes)) throw new Error("compiled dependency source differs: " + name + "/" + file);
     if (inventory.includes("hex_metadata.config") && !readFileSync(join(source, "hex_metadata.config")).equals(admitted.metadata)) throw new Error("installed Hex metadata differs");
@@ -76,6 +64,6 @@ export function readTools(home, inventoryBytes, pins) {
     const bytes = readFileSync(target); if (sha256(bytes) !== digest) throw new Error("qualification tool payload differs: " + name);
     payload.set(name, bytes);
   }
-  if (JSON.stringify(files(join(home, ".mix/archives")).map(name => ".mix/archives/" + name)) !== JSON.stringify([...payload.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("Hex installation inventory differs");
+  if (JSON.stringify(sourceInventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name)) !== JSON.stringify([...payload.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("Hex installation inventory differs");
   return payload;
 }

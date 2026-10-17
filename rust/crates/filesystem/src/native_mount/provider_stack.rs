@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn measured_exchange_denial_never_runs_the_callback_or_leaves_a_tls_claim() {
         on_small_thread(|| {
-            let payload = std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64;
+            let payload = crate::NativeMaterializationWork::accounting_state_bytes();
             let budget = crate::WorkBudget {
                 peak_allocation_bytes: payload,
                 ..crate::WorkBudget::UNBOUNDED
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn measured_new_fiber_releases_actual_controls_and_records_all_four_resource_calls() {
         on_small_thread(|| {
-            let payload = std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64;
+            let payload = crate::NativeMaterializationWork::accounting_state_bytes();
             let exchange = std::mem::size_of::<super::Exchange>() as u64;
             let budget = crate::WorkBudget {
                 backend_write_operations: 4,
@@ -618,7 +618,7 @@ mod tests {
     fn measured_callback_borrows_an_ordinary_cached_fiber_without_claiming_it() {
         on_small_thread(|| {
             run(|| 1).expect("preexisting ordinary fiber");
-            let payload = std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64;
+            let payload = crate::NativeMaterializationWork::accounting_state_bytes();
             let budget = crate::WorkBudget {
                 backend_write_operations: 2,
                 allocation_operations: 1,

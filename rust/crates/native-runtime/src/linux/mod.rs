@@ -65,7 +65,11 @@ pub(super) fn uncertain_completion(error: io::Error) -> io::Error {
 
 pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
     validate_io_range(offset, destination.len())?;
-    read_at_validated(file, offset, destination)
+    read_at_validated(
+        file,
+        offset,
+        crate::file::ReadDestination::Slice(destination),
+    )
 }
 
 #[allow(
@@ -75,16 +79,17 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
 pub(super) fn read_at_validated(
     file: &File,
     offset: u64,
-    destination: &mut [u8],
+    mut destination: crate::file::ReadDestination<'_>,
 ) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
-    let length = destination.len().min(MAX_IO_BYTES);
+    let (pointer, length) = destination.parts()?;
+    let length = length.min(MAX_IO_BYTES);
     // SAFETY: validation precedes this call; the descriptor and writable buffer
     // remain live for the single syscall, which never exceeds the buffer.
     let result = unsafe {
         libc::pread(
             file.as_raw_fd(),
-            destination.as_mut_ptr().cast(),
+            pointer.cast(),
             length,
             libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?,
         )
@@ -92,7 +97,15 @@ pub(super) fn read_at_validated(
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        usize::try_from(result).map_err(|_| io::ErrorKind::InvalidData.into())
+        let count = usize::try_from(result).map_err(|_| io::ErrorKind::InvalidData)?;
+        if count > length {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if let crate::file::ReadDestination::Spare { data, .. } = destination {
+            // SAFETY: pread initialized exactly count bytes in the checked spare slice.
+            unsafe { data.set_len(data.len() + count) };
+        }
+        Ok(count)
     }
 }
 

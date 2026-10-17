@@ -15,6 +15,19 @@ where
         turn: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
+        self.execution_journal_with_native_context(task, fence, turn, work, None)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) async fn execution_journal_with_native_context(
+        &self,
+        task: TaskId,
+        fence: &LeaseFence,
+        turn: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+        context: Option<Arc<crate::runtime::TaskContext>>,
+    ) -> Result<(Arc<FilesystemExecutionJournal<P, A, O>>, OperationId)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
@@ -43,6 +56,22 @@ where
                 io: Some(&io),
             },
         )?;
+        let journal = match context {
+            Some(context) => {
+                if !context.original_task_binding_matches(task, fence)
+                    || !context.native_metadata_matches(work)
+                {
+                    return Err(observed::boundary(
+                        Some(&io),
+                        crate::wire::ErrorCode::Unauthorized,
+                        "journal reader differs from its original task context",
+                    ));
+                }
+                journal.with_input_verifier(context)
+            }
+            None => journal,
+        };
+        let journal = journal.with_task_files(self.task_files.clone());
         let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
@@ -111,6 +140,7 @@ where
                 io: None,
             },
         )?;
+        let journal = journal.with_task_files(self.task_files.clone());
         if admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE)

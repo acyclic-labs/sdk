@@ -2,20 +2,32 @@ use super::*;
 
 impl<K> Default for KeyedLocks<K> {
     fn default() -> Self {
-        Self(Mutex::new(HashMap::new()))
+        Self(RankedMutex::new(HashMap::new()))
     }
 }
 
 pub(super) type FileLocks = KeyedLocks<crate::NativeRootIdentity>;
 
 impl<K: Eq + std::hash::Hash + Clone> KeyedLocks<K> {
+    #[track_caller]
     pub(super) fn with<T>(&self, key: &K, edit: impl FnOnce() -> T) -> T {
-        let lock = Arc::clone(lock_recover(&self.0).entry(key.clone()).or_default());
+        let lock = Arc::clone(
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(key.clone())
+                .or_default(),
+        );
         let result = {
-            let _held = lock_recover(&lock);
+            let _held = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             edit()
         };
-        let mut locks = lock_recover(&self.0);
+        let mut locks = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if Arc::strong_count(&lock) == 2 {
             locks.remove(key);
         }

@@ -1,0 +1,7 @@
+{"folder":".tasks/t/turns/1","writes":[{"path":".tasks/t/turns/0/chunks/0","text":"old","channel":"Text"},{"path":
+  ".tasks/t/turns/1/request.json","text":"retry"},{"path":".tasks/t/turns/1/chunks/0","text":"new","channel":"Text"},{
+  "path":".tasks/t/turns/1/completion.json","text":"done"}],"expect":{"files":{".tasks/t/turns/1/request.json":"retry",
+  ".tasks/t/turns/1/chunks/0":"new",".tasks/t/turns/1/completion.json":"done"},"changes":[null,{"path":
+  ".tasks/t/turns/1/request.json","text":"retry"},{"path":".tasks/t/turns/1/chunks/0","text":"new","channel":"Text"},{
+  "path":".tasks/t/turns/1/completion.json","text":"done"}],"heads":{".tasks/t/turns/1/request.json":"retry",
+  ".tasks/t/turns/1/text.md":"new",".tasks/t/turns/1/completion.json":"done"}}}

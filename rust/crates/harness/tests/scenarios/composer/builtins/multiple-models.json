@@ -1,0 +1,4 @@
+{
+  "prompt": "/model a b",
+  "expect": {"error":"accepts one identifier"}
+}

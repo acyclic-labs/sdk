@@ -1,0 +1,7 @@
+{"max_output_tokens":10,"turns":[[{"type":"event","kind":"content","delta":"partial-"},{"type":"error",
+  "error":"offline"}]],"replay":true,"expect":{"text":"partial-restored","result":{"source_messages":2,"step":0},
+  "reconciliation_count":1,"requests":[{"max_output_tokens":10,"tools":[],"messages":[{"role":"user",
+  "content":"original request"},{"role":"assistant","content":"original response"},{"role":"user",
+  "content":"Summarize this context."}]}],"events":[{"kind":"model_started","purpose":"summary"},{"kind":"model",
+  "purpose":"summary","event":{"kind":"completed"}}]},"recoveries":[{"observed":[{"kind":"content","delta":"partial-"}],
+  "continuation":[{"kind":"content","delta":"restored"},{"kind":"completed","metadata":null}]}],"resume":["offline"]}

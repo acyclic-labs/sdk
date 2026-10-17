@@ -1,0 +1,6 @@
+{
+  "prompt": "Accept exactly the event allowance.",
+  "limits": {"model_events_per_step":2},
+  "turns": ["answer"],
+  "expect": {"text":"answer", "result":{"steps":1}, "events":[{"kind":"model","event":{"kind":"content"}},{"kind":"model","event":{"kind":"completed"}}]}
+}

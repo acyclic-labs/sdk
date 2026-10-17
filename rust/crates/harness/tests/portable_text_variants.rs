@@ -17,8 +17,8 @@ use acyclic_harness::{
         ToolInvocation, ToolRegistry, ToolResult,
         files::{self, EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput},
         schema::ProjectionMode,
-        text::{ReadOptions, SearchOptions, TextRange},
-        text_files::{self, ReadInput, ReadResult, SearchInput, SearchResult},
+        text::{SearchOptions, TextRange},
+        text_files::{self, SearchInput, SearchResult},
     },
 };
 use serde_json::json;
@@ -34,6 +34,38 @@ struct ReaderSpy {
 }
 
 impl ContentResidencyVerifier for ReaderSpy {
+    fn read_range<'a>(
+        &'a self,
+        file: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+    {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.corrupt.load(Ordering::SeqCst) {
+                // Inject a bad descriptor before the authenticated range
+                // boundary; slices cannot be rehashed as complete files.
+                let mut digest = *file.descriptor().sha256();
+                digest[0] ^= 1;
+                let corrupt = FileRef::new(
+                    file.volume().clone(),
+                    file.path().into(),
+                    file.version().into(),
+                    acyclic_harness::conversation::FileDescriptor::new(
+                        digest,
+                        file.descriptor().byte_length(),
+                        file.descriptor().media_type().into(),
+                    )?,
+                    file.display_name().into(),
+                    &mut None,
+                )?;
+                return self.inner.read_range(&corrupt, range, io)?.await;
+            }
+            self.inner.read_range(file, range, io)?.await
+        })
+    }
+
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
@@ -139,14 +171,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
     });
-    let read_tool = text_files::read_file_range(
-        ReadOptions {
-            maximum_input_bytes: 4096,
-            maximum_text_bytes: 32,
-        },
-        4096,
-        ProjectionMode::Reference,
-    )?;
+    let mut read_tool = files::read()?;
+    read_tool.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
+    read_tool.projection = Arc::new(files::FileProjection::Read(ProjectionMode::Reference));
     let search_tool = text_files::search_file(
         SearchOptions {
             maximum_input_bytes: 4096,
@@ -164,9 +191,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let mut tools = ToolRegistry::default();
     tools.register((read_tool, None), &mut None, None)?;
     tools.register((search_tool, None), &mut None, None)?;
-    tools.register((files::read_file()?, None), &mut None, None)?;
-    tools.register((files::write_file()?, None), &mut None, None)?;
-    tools.register((files::edit_file()?, None), &mut None, None)?;
+    tools.register((files::write()?, None), &mut None, None)?;
+    tools.register((files::edit()?, None), &mut None, None)?;
     tools.register((files::patch_file(65_536, 16)?, None), &mut None, None)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
@@ -178,16 +204,13 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         let definition = read_definition.clone();
         let search_projector = search_projector.clone();
         async move {
-            let read = context.tool("acyclic.read_file_range")?;
-            let input = ReadInput {
+            let read = context.tool("read")?;
+            let input = ReadFileInput {
                 file: source.clone(),
-                range: TextRange { start: 5, end: 9 },
+                range: Some(TextRange { start: 5, end: 9 }),
             };
-            let result = context.call::<_, ReadResult>(&read, input.clone()).await?;
-            assert_eq!(result.file, source);
-            assert_eq!(result.selection.text, "🦀");
-            assert_eq!(result.selection.omitted_before, 5);
-            assert_eq!(result.selection.omitted_after, 9);
+            let result = context.call::<_, String>(&read, input.clone()).await?;
+            assert_eq!(result, "🦀");
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(),
                 call_id: "retained-read".into(),
@@ -208,7 +231,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 matches!(parts.get(1),Some(ModelDataPart::File { file,policy:FileProjectionPolicy::Reference }) if file==&source)
             );
             assert!(
-                matches!(parts.first(), Some(ModelDataPart::Text { text }) if !text.is_empty())
+                matches!(parts.first(), Some(ModelDataPart::Text { text }) if text.contains("5 source bytes omitted before and 9 after"))
             );
             assert_eq!(canonical, unchanged);
             let search = context.tool("acyclic.search_file")?;
@@ -235,9 +258,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 search_projector.project(&invocation, &canonical, None)?.0,
                 json!({"kind":"json","value":canonical.value})
             );
-            let write = context.tool("acyclic.write_file")?;
-            let whole = context.tool("acyclic.read_file")?;
-            let edit = context.tool("acyclic.edit_file")?;
+            let write = context.tool("write")?;
+            let whole = context.tool("read")?;
+            let edit = context.tool("edit")?;
             let patch = context.tool("acyclic.patch_file")?;
             let written = context
                 .call::<_, FileResult>(
@@ -255,7 +278,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     .call::<_, String>(
                         &whole,
                         ReadFileInput {
-                            file: written.file.clone()
+                            file: written.file.clone(),
+                            range: None,
                         }
                     )
                     .await?,
@@ -348,25 +372,22 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 before_failed_writes
             );
             let restricted = context.scoped(
-                Capabilities::new([
-                    "tool:call:acyclic.read_file_range",
-                    "tool:call:acyclic.search_file",
-                ]),
+                Capabilities::new(["tool:call:read", "tool:call:acyclic.search_file"]),
                 Limits::default(),
             )?;
             let before = reader.reads.load(Ordering::SeqCst);
             assert!(before >= 2);
             assert!(matches!(
-                restricted.call::<_, ReadResult>(&read, input.clone()).await,
+                restricted.call::<_, String>(&read, input.clone()).await,
                 Err(Error::Unauthorized(_))
             ));
             assert!(
                 context
-                    .call::<_, ReadResult>(
+                    .call::<_, String>(
                         &read,
-                        ReadInput {
+                        ReadFileInput {
                             file: source.clone(),
-                            range: TextRange { start: 0, end: 19 }
+                            range: Some(TextRange { start: 0, end: 19 })
                         }
                     )
                     .await
@@ -406,7 +427,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             }
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
             reader.corrupt.store(true, Ordering::SeqCst);
-            assert!(context.call::<_, ReadResult>(&read, input).await.is_err());
+            assert!(context.call::<_, String>(&read, input).await.is_err());
             assert_eq!(reader.reads.load(Ordering::SeqCst), before + 1);
             reader.corrupt.store(false, Ordering::SeqCst);
             Ok(())
@@ -424,13 +445,12 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     bindings.scope = RuntimeScope::new(
         Capabilities::new([
             "task:spawn:fixture.text_variants@1".to_owned(),
-            "tool:call:acyclic.read_file_range".to_owned(),
             "tool:call:acyclic.search_file".to_owned(),
             read,
             write,
-            "tool:call:acyclic.read_file".to_owned(),
-            "tool:call:acyclic.write_file".to_owned(),
-            "tool:call:acyclic.edit_file".to_owned(),
+            "tool:call:read".to_owned(),
+            "tool:call:write".to_owned(),
+            "tool:call:edit".to_owned(),
             "tool:call:acyclic.patch_file".to_owned(),
         ]),
         Limits::default(),

@@ -5,11 +5,15 @@ use super::{
     NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture,
     ObjectsNativeRequest, ObjectsPutReceipt,
 };
+#[cfg(feature = "test-support")]
+use acyclic_native_runtime::testing::spawn;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(not(feature = "test-support"))]
+use tokio::spawn;
 use tokio::sync::RwLock;
 
 fn spawn_native_read<F>(
@@ -27,7 +31,7 @@ where
     future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
     // Admit the actual private task refcount control, without estimating its layout.
     meter.allocate_refcount_header()?;
-    Ok(tokio::spawn(future))
+    Ok(spawn(future))
 }
 
 use crate::{LocalObjectsGarbageCollection, LocalObjectsLimits};
@@ -190,7 +194,7 @@ impl ObjectsProvider for LocalObjects {
         }
         let core = self.core.clone();
         let body_io = self.body_io.clone();
-        tokio::spawn(tracing::Instrument::in_current_span(async move {
+        spawn(tracing::Instrument::in_current_span(async move {
             let _lease = body_io.read_owned().await;
             core.get_batch(requests).await
         }))
@@ -249,6 +253,8 @@ impl ObjectsProvider for LocalObjects {
         query: wire::PutObjectHeader,
         body: OwnedBytes,
     ) -> Result<wire::ObjectInfo, Error> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| format!("objects put {}", query.object_key));
         self.mutate(move |core| block_on(core.put(query, body)))
             .await
     }
@@ -258,6 +264,10 @@ impl ObjectsProvider for LocalObjects {
         input: ObjectsNativeRequest<(wire::PutObjectHeader, OwnedBytes)>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("objects put {}", input.data().0.object_key)
+        });
         super::native_input_meter(&meter, &input)?;
         super::native_future(&Arc::clone(&meter), async move {
             let input = input;
@@ -273,10 +283,12 @@ impl ObjectsProvider for LocalObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| format!("objects get {}", query.object_key));
         // The detached read retains the store root until physical completion.
         let core = self.core.clone();
         let body_io = self.body_io.clone();
-        tokio::spawn(tracing::Instrument::in_current_span(async move {
+        spawn(tracing::Instrument::in_current_span(async move {
             let _lease = body_io.read_owned().await;
             core.get(query, maximum_bytes).await
         }))
@@ -290,6 +302,10 @@ impl ObjectsProvider for LocalObjects {
         maximum_bytes: u64,
         meter: Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        #[cfg(feature = "test-support")]
+        acyclic_native_runtime::testing::describe(|| {
+            format!("objects get {}", input.data().object_key)
+        });
         super::native_input_meter(&meter, &input)?;
         super::native_future(&Arc::clone(&meter), async move {
             let input = input;

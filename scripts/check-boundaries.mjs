@@ -16,9 +16,9 @@ const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorizat
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
   ["typescript/packages/swarm/test/http.test.mjs", "daa0e6ba7f5f0ec32786a32ebcb5f7abc2903e8b24927c5de9a6c2b44a03f418"],
-  ["typescript/packages/harness/test/client.test.ts", "53e6f5a95522b8f2d97ea02e66858c8e24bc576eed5a98712ff6a7d846bdb5b3"],
-  ["typescript/packages/inference/test/client.test.ts", "91461928c421e7bef5830aab385760662070d269263cbb8b7f5f0bc3d6270b63"],
-  ["typescript/packages/inference/test/idle-kv.test.ts", "7d0a7df8a57880410e548945a2320a04068225fe7ac7755d17a49185d482507a"],
+  ["typescript/packages/stream/test/stream.test.ts", "7dac2ff0fb1055805b058c0237ccb752851f3e680e620f29227f93a681b6b3f2"],
+  ["typescript/packages/inference/test/client.test.ts", "a3ef1f09996032eeb1afd4d6862fef537a61103e479bf0b17234e9a4f89d4f69"],
+  ["typescript/packages/inference/test/idle-kv.test.ts", "6ee7f3e2aaeb15ea681f5de19cd3be5ddfb5a9c9b699d0cd40178ee6e55def58"],
 ]);
 const forbiddenPath = /(?:^|[\\/])(?:proto|rust|typescript)[\\/](?:.*[\\/])?(?:internal|private)(?:[\\/]|$)/i;
 const machinesPath = /(?:^|[\\/])(?:proto[\\/]machines|rust[\\/]crates[\\/]machines|typescript[\\/]packages[\\/]machines|generated[\\/](?:rust|typescript)[\\/](?:acyclic[\\/])?machines)(?:[\\/]|$)/i;
@@ -54,7 +54,7 @@ for (const [path, content] of [
   ["proto/private/admin.proto", "syntax = \"proto3\";"],
   ["example.rs", "use acyclic_" + "internal::scheduler;"],
   ["credential.txt", "-----BEGIN " + "PRIVATE KEY-----"],
-  ["proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
+  ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm.fleet.v1;"],
 ]) {
   const before = failures.length;
   inspect(join(root, path), content);

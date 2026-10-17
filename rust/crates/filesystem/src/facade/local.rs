@@ -41,6 +41,30 @@ pub(super) struct LocalRootRegistration {
 pub(super) type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+async fn canonical_local_root(requested: PathBuf) -> Result<PathBuf, FsError> {
+    acyclic_native_runtime::run_blocking_io(
+        move || {
+            std::fs::create_dir_all(&requested)?;
+            std::fs::canonicalize(requested)
+        },
+        None,
+    )
+    .map_err(FsError::LocalRoot)?
+    .await
+    .map_err(FsError::LocalRoot)?
+    .map_err(FsError::LocalRoot)
+}
+
+#[cfg(all(
+    test,
+    feature = "local",
+    not(target_arch = "wasm32"),
+    not(acyclic_fs_loom)
+))]
+#[path = "local_root_tests.rs"]
+mod local_root_tests;
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) fn prepare_local_root_open(
     registry: &mut LocalRootRegistry,
     root: &Path,
@@ -104,14 +128,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
         (async move {
             static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
-            let requested_root = options.root.clone();
-            let root = tokio::task::spawn_blocking(move || {
-                std::fs::create_dir_all(&requested_root)?;
-                std::fs::canonicalize(requested_root)
-            })
-            .await
-            .map_err(|_| FsError::LocalInitializationWorker)?
-            .map_err(FsError::LocalRoot)?;
+            let root = canonical_local_root(options.root.clone()).await?;
             let mut options = options;
             options.root = root.clone();
             let registry =
@@ -233,6 +250,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 },
                 workspace_namespace: [0; 16],
                 path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+                publication_proof: Mutex::default(),
                 _local_root_lifecycle: lifecycle,
             }),
         })

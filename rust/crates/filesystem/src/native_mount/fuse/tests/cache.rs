@@ -5,18 +5,23 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::fuse::Errno;
     #[derive(Clone, Copy)]
-    struct Reply<'a>(&'a std::cell::Cell<bool>);
+    struct Reply<'a>(&'a std::cell::Cell<u32>);
     impl Reply<'_> {
         fn error(self, error: Errno) {
             assert_eq!(error, Errno::from_i32(libc::EIO));
-            self.0.set(true);
+            self.0.set(self.0.get() + 1);
         }
     }
     let (source, _) = shared_sources(posix_config())?;
+    let cancellation = crate::CancellationToken::new();
+    let core = projection_core(Arc::new(source), FINITE_HANDLER_POLICY, &cancellation)?;
     let mut policy = FINITE_HANDLER_POLICY;
     policy.bytes_copied = 0;
-    let core = projection_core(Arc::new(source), policy, &crate::CancellationToken::new())?;
-    let replied = std::cell::Cell::new(false);
+    let denied =
+        crate::NativeMaterializationWork::new(policy, &cancellation).map_err(|(cause, _)| cause)?;
+    let _active = crate::native_mount::fuse::NativeMountWorkScope::new(&core, &denied)?;
+    let attempted = std::cell::Cell::new(0);
+    let replied = std::cell::Cell::new(0);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {
         respond!(
@@ -24,14 +29,20 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
             reply,
             span,
             work,
-            crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ()),
+            {
+                assert!(work.shares_ledger(&denied));
+                attempted.set(attempted.get() + 1);
+                crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
+            },
             |()| {
                 let _ = reply;
             }
         );
         libc::EIO
     });
-    assert!(replied.get());
+    assert_eq!(attempted.get(), 2);
+    assert_eq!(replied.get(), 2);
+    assert_eq!(denied.receipt().bytes_copied, 0);
     Ok(())
 }
 #[test]
@@ -212,9 +223,12 @@ pub(super) fn cache_work(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
 ) -> crate::NativeMaterializationWork {
-    crate::NativeMaterializationWork::from_meter(Arc::new(crate::demand::NativeDemandReadMeter(
-        Mutex::new(crate::demand::DemandWork::new(budget, cancellation)),
-    )))
+    crate::NativeMaterializationWork::from_meter(Arc::new(
+        crate::demand::NativeDemandReadMeter::new(crate::demand::DemandWork::new(
+            budget,
+            cancellation,
+        )),
+    ))
 }
 
 #[test]
@@ -404,14 +418,31 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
         let invalidator = std::thread::spawn({
             let core = Arc::clone(&core);
             move || {
-                let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-                let (state, waited) = core
-                    .invalidation
-                    .wait_timeout_while(state, std::time::Duration::from_secs(20), |state| {
-                        state.invalidation.deferred.is_empty()
-                    })
-                    .unwrap_or_else(PoisonError::into_inner);
-                (state.invalidation.deferred.len(), waited.timed_out())
+                let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let started = std::time::Instant::now();
+                let mut timed_out = false;
+                while state.invalidation.deferred.is_empty() {
+                    let remaining =
+                        std::time::Duration::from_secs(20).saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        timed_out = true;
+                        break;
+                    }
+                    let (next, timeout, poisoned) =
+                        match core.invalidation.wait_timeout(state, remaining) {
+                            Ok((next, timeout)) => (next, timeout, false),
+                            Err(poisoned) => {
+                                let (next, timeout) = poisoned.into_inner();
+                                (next, timeout, true)
+                            }
+                        };
+                    state = next;
+                    timed_out = timeout.timed_out();
+                    if timed_out || poisoned {
+                        break;
+                    }
+                }
+                (state.invalidation.deferred.len(), timed_out)
             }
         });
         drop(waiting);
@@ -430,6 +461,89 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
         let (deferred, timed_out) = invalidator.join().map_err(|_| "invalidator panicked")?;
         assert_eq!((deferred, timed_out), (1, false), "finishing: {finishing}");
     }
+    Ok(())
+}
+
+#[test]
+pub(super) fn a_refused_kernel_notification_stays_pending_until_a_later_pass_delivers_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::PoisonError;
+    struct RefusesFirst {
+        refused: AtomicBool,
+        sent: Mutex<Vec<(u64, bool)>>,
+    }
+    impl crate::native_mount::fuse::KernelCacheNotifier for RefusesFirst {
+        fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+            let accepted = self.refused.swap(true, Ordering::AcqRel);
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((inode, accepted));
+            if accepted {
+                Ok(())
+            } else {
+                Err(std::io::Error::from_raw_os_error(libc::EIO))
+            }
+        }
+
+        fn inval_entry(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(libc::EINVAL))
+        }
+    }
+    let queued = [
+        KernelCacheItem::Inode(ROOT_INODE),
+        KernelCacheItem::Inode(ROOT_INODE + 1),
+    ];
+    let (source, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(source),
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let notifier = Arc::new(RefusesFirst {
+        refused: AtomicBool::new(false),
+        sent: Mutex::new(Vec::new()),
+    });
+    let work = fuse_fixture_work();
+    // Held until the waiter sleeps, so the waiter sees the refusal happen.
+    let mut state = core.state().map_err(|_| "stopped")?;
+    state.invalidation.deferred.extend([
+        KernelCacheItem::Inode(ROOT_INODE),
+        KernelCacheItem::Inode(ROOT_INODE + 1),
+    ]);
+    let invalidator = std::thread::spawn({
+        let (core, notifier) = (Arc::clone(&core), Arc::clone(&notifier));
+        move || crate::native_mount::fuse::run_invalidator(&core, &*notifier)
+    });
+    let refused = core.wait_for_invalidation(state, None, &work);
+    assert!(
+        matches!(refused, Err(NativeMountError::Lifecycle(_))),
+        "a refused notification settled: {refused:?}"
+    );
+    {
+        let state = core.state().map_err(|_| "stopped")?;
+        assert!(state.invalidation.is_pending(None));
+        assert_eq!(state.invalidation.pending_tail.as_slice(), &queued);
+    }
+    let retried = core.wait_for_invalidation(core.state().map_err(|_| "stopped")?, None, &work);
+    assert!(retried.is_ok(), "the retry failed: {retried:?}");
+    assert!(
+        !core
+            .state()
+            .map_err(|_| "stopped")?
+            .invalidation
+            .is_pending(None)
+    );
+    core.stop();
+    invalidator.join().map_err(|_| "invalidator panicked")?;
+    assert_eq!(
+        *notifier.sent.lock().map_err(|_| "poisoned")?,
+        [
+            (ROOT_INODE, false),
+            (ROOT_INODE, true),
+            (ROOT_INODE + 1, true)
+        ]
+    );
     Ok(())
 }
 

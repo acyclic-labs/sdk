@@ -5,7 +5,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { readDependencies, readTools, verifyInstalledDependencies, verifyLock } from "../src/provenance.mjs";
 import { dependencyFixture } from "./fixtures/dependencies.mjs";
-import { tar } from "./fixtures/package.mjs";
+import { tar } from "../../../shared/tests/archive.mjs";
 
 test("all locked Hex archive source bytes and installed tool files are admitted", t => {
   const f = dependencyFixture(t), admitted = readDependencies(f.cache, f.pins);

@@ -13,7 +13,7 @@ pub struct ContextRoot {
 }
 
 impl ContextRoot {
-    pub(super) fn validate(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -151,30 +151,8 @@ impl ContextDiscovery {
                             generation: pinned.clone(),
                             path: child(&directory, name),
                         };
-                        let prefix = reader
-                            .read_private_prefix(
-                                &scope.root.volume,
-                                &scope.root.directory,
-                                &source.path,
-                                &pinned,
-                                limits.instruction_bytes.checked_add(1).ok_or_else(|| {
-                                    Error::Invalid("instruction bound overflow".into())
-                                })?,
-                                None,
-                            )?
-                            .await?;
-                        if prefix.len() as u64 > limits.instruction_bytes {
-                            return Err(Error::Invalid("instruction exceeds byte bound".into()));
-                        }
-                        let (file, bytes) = source.read(reader).await?;
-                        if bytes.len() as u64 > limits.instruction_bytes
-                            || std::str::from_utf8(&bytes).is_err()
-                            || bytes.contains(&0)
-                        {
-                            return Err(Error::Invalid(
-                                "instruction is oversized or invalid text".into(),
-                            ));
-                        }
+                        let (file, bytes) = source.read(reader, limits.instruction_bytes).await?;
+                        limits.validate_instruction(&bytes)?;
                         result.instructions.push(file);
                     }
                 }
@@ -207,7 +185,7 @@ impl ContextDiscovery {
 impl Default for ContextDiscoveryPolicy {
     fn default() -> Self {
         Self {
-            instruction_names: vec!["AGENTS.md".into()],
+            instruction_names: vec!["AGENTS.md".into(), "CLAUDE.md".into()],
             skill_name: Some("SKILL.md".into()),
         }
     }
@@ -228,8 +206,33 @@ pub struct ContextDiscoveryLimits {
     pub instruction_bytes: u64,
 }
 
+impl Default for ContextDiscoveryLimits {
+    fn default() -> Self {
+        Self {
+            entries: 4_096,
+            directories: 256,
+            header_bytes: 16_384,
+            instruction_bytes: 65_536,
+        }
+    }
+}
+
 impl ContextDiscoveryLimits {
-    pub(super) fn validate(self) -> Result<()> {
+    /// Rejects oversized, non-UTF-8 or NUL-containing instruction bodies.
+    pub fn validate_instruction(self, bytes: &[u8]) -> Result<()> {
+        self.validate()?;
+        if bytes.len() as u64 > self.instruction_bytes
+            || std::str::from_utf8(bytes).is_err()
+            || bytes.contains(&0)
+        {
+            return Err(Error::Invalid(
+                "instruction is oversized or invalid text".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate(self) -> Result<()> {
         if self.entries == 0
             || self.directories == 0
             || self.header_bytes == 0
@@ -261,7 +264,7 @@ pub struct PinnedContextPath {
 }
 
 impl PinnedContextPath {
-    pub(super) fn validate(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -289,19 +292,43 @@ impl PinnedContextPath {
     pub async fn read(
         &self,
         reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        if maximum_bytes == 0 {
+            return Err(Error::Invalid(
+                "context body requires a finite positive byte bound".into(),
+            ));
+        }
+        self.read_remaining(reader, maximum_bytes).await
+    }
+
+    // A consumed aggregate budget can still admit an empty file. Keep the public
+    // positive-bound contract while passing the exact remaining bound to the owner.
+    pub(crate) async fn read_remaining(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
+        if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+            return Err(Error::Invalid(
+                "context byte bound exceeds protocol precision".into(),
+            ));
+        }
         let (file, bytes, _hold) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                maximum_bytes,
                 None,
             )?
             .await?;
-        if file.volume() != &self.root.volume || file.path() != self.path {
+        if file.volume() != &self.root.volume
+            || file.path() != self.path
+            || bytes.len() as u64 > maximum_bytes
+        {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),
             ));

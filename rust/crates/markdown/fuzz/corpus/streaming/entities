@@ -1,0 +1,5 @@
+before&NewLine;after
+
+before&#13;&#10;after
+
+&copy; &amp; &#42; &#9;

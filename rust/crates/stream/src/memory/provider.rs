@@ -6,8 +6,8 @@ impl StreamProvider for MemoryStream {
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         let state = self.state.read().await;
-        Ok(state
-            .replay(idempotency_key.as_bytes())
+        Ok(self
+            .replay(&state, idempotency_key.as_bytes())?
             .map(|replay| IdempotencyObservation {
                 idempotency_key,
                 request_digest: replay.digest,
@@ -37,10 +37,16 @@ impl StreamProvider for MemoryStream {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let digest = fork_digest(&request)?;
         let mut state = self.state.write().await;
-        if let Some(result) = replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
+        if let Some(result) = self.replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
             return Ok(result);
         }
         admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        let mut probes = self.reserve_replay_probes(
+            request
+                .idempotency_key
+                .as_ref()
+                .map_or(0, |_| u64::from(state.replay_height(state.replay_root))),
+        )?;
         let forked_at = crate::preparation::fork_cut(
             &request,
             state.paths.get(&request.source).map(|path| path.tail),
@@ -74,6 +80,7 @@ impl StreamProvider for MemoryStream {
         state.decision = decision;
         retain(
             &mut state,
+            &mut || self.record_replay_probe(&mut probes),
             Some(envelope),
             request.idempotency_key,
             digest,
@@ -93,64 +100,62 @@ impl StreamProvider for MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        let mut cursor = HistoryCursor::new(path.history.as_ref(), path.tail, request.from);
+        let end = path
+            .tail
+            .min(request.from.saturating_add(u64::from(request.limit)));
+        let mut cursor = HistoryCursor::new(path, end, request.from);
         Ok(stream::iter(
             std::iter::from_fn(move || cursor.next_record())
-                .take(request.limit as usize)
+                .take((end - request.from) as usize)
                 .map(Ok),
         )
         .boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let (receiver, cursor) = {
-            let state = self.state.read().await;
-            let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-            if from > stream.tail {
-                return Err(StreamError::OutOfRange);
-            }
-            (
-                stream.changed.subscribe(),
-                HistoryCursor::new(stream.history.as_ref(), stream.tail, from),
-            )
-        };
-        let provider = self.clone();
-        Ok(stream::unfold(
-            (provider, path, receiver, cursor),
-            |(provider, path, mut receiver, mut cursor)| async move {
+        self.follow_from(path, from, None).await
+    }
+
+    async fn follow_checked(
+        &self,
+        path: StreamPath,
+        from: u64,
+        preceding: CommitId,
+    ) -> Result<RecordStream, StreamError> {
+        self.follow_from(path, from, Some(preceding)).await
+    }
+
+    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        validate_limit(request.limit)?;
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        Ok(stream::try_unfold(
+            (self.clone(), request.parent, changed, None),
+            |(provider, parent, mut changed, mut previous)| async move {
                 loop {
-                    let record = provider.next_follow_record(&path, &mut cursor).await;
-                    let Some(record) = (match record {
-                        Ok(record) => record,
-                        Err(error) => {
-                            return Some((Err(error), (provider, path, receiver, cursor)));
+                    let next = {
+                        let state = provider.state.read().await;
+                        // Switch from the creation wakeup to this parent's own index.
+                        if let Some(index) = state.child_index(parent.as_ref()) {
+                            changed = index.changed.subscribe();
                         }
-                    }) else {
-                        if receiver.changed().await.is_err() {
-                            return Some((
-                                Err(StreamError::Unavailable),
-                                (provider, path, receiver, cursor),
-                            ));
-                        }
-                        continue;
+                        changed.borrow_and_update();
+                        state.next_child(parent.as_ref(), previous.as_ref())?
                     };
-                    return Some((Ok(record), (provider, path, receiver, cursor)));
+                    if let Some(path) = next {
+                        previous = Some(path.clone());
+                        return Ok(Some((
+                            Child { path },
+                            (provider, parent, changed, previous),
+                        )));
+                    }
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| StreamError::Unavailable)?;
                 }
             },
         )
         .boxed())
-    }
-
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self
-            .children_page(ChildrenPageRequest {
-                parent: request.parent,
-                limit: request.limit,
-                after: None,
-                hierarchy_version: None,
-            })
-            .await?;
-        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
     }
 
     async fn children_page(
@@ -271,15 +276,22 @@ impl StreamProvider for MemoryStream {
             let end = path
                 .tail
                 .min(request.from.saturating_add(u64::from(request.limit)));
-            let mut history = HistoryWalk::new(path.history.as_ref(), end, request.from);
-            while history.next.is_some() && history.ceiling > request.from {
+            if let Some(window) = path.prefix_window(request.from, end) {
                 meter.admit_examination(1, 0)?;
-                if let Some((History::Batch { records, .. }, ceiling)) = history.next()
-                    && let Some(window) = history_window(Arc::clone(records), ceiling, request.from)
-                {
-                    windows.push(window);
-                }
+                windows.push(window);
                 meter.record_examination(1, 0)?;
+            } else {
+                let mut history = HistoryWalk::new(path.history.as_ref(), end, request.from);
+                while history.next.is_some() && history.ceiling > request.from {
+                    meter.admit_examination(1, 0)?;
+                    if let Some((History::Batch { records, .. }, ceiling)) = history.next()
+                        && let Some(window) =
+                            history_window(Arc::clone(records), ceiling, request.from)
+                    {
+                        windows.push(window);
+                    }
+                    meter.record_examination(1, 0)?;
+                }
             }
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
@@ -378,7 +390,9 @@ impl StreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
             let state = self.state.read().await;
-            let replay = inspect(&meter, || state.replay(key.as_bytes()))?;
+            let replay = inspect(&meter, || {
+                state.replay(key.as_bytes(), || meter.examine(1, 0))
+            })??;
             let output = match replay {
                 Some(replay) => {
                     crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {
@@ -428,7 +442,10 @@ impl StreamProvider for MemoryStream {
                 loop {
                     {
                         let state = provider.state.read().await;
-                        if let Some(replay) = state.replay(request.idempotency_key.as_bytes()) {
+                        if let Some(replay) = provider
+                            .replay(&state, request.idempotency_key.as_bytes())
+                            .map_err(E::from)?
+                        {
                             if replay.digest != digest {
                                 return Err(E::from(StreamError::IdempotencyMismatch));
                             }
@@ -443,7 +460,11 @@ impl StreamProvider for MemoryStream {
                         drop(provider.state.write().await);
                         continue;
                     };
-                    if state.replay(request.idempotency_key.as_bytes()).is_none() {
+                    if provider
+                        .replay(&state, request.idempotency_key.as_bytes())
+                        .map_err(E::from)?
+                        .is_none()
+                    {
                         let bytes = request
                             .mutations
                             .iter()
@@ -514,7 +535,11 @@ impl StreamProvider for MemoryStream {
             let provider = self.with_context(Arc::clone(&work));
             let existing = match &request.idempotency_key {
                 Some(key) => provider.has_replay(key).await,
-                None => false,
+                None => Ok(false),
+            };
+            let existing = match existing {
+                Ok(existing) => existing,
+                Err(error) => return work.finish(Err(error)),
             };
             if !existing
                 && let Err(error) = work.reserve_write(request.records.iter().map(Bytes::len).sum())

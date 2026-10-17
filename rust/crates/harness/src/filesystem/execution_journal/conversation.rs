@@ -1,12 +1,18 @@
 //! The canonical conversation loop, shared by memory and durable bindings.
 
+mod tools;
+
 use super::*;
 use crate::{
-    conversation::{Attachment, ConversationMessage, MessageKind, ReferencedAttachments},
+    conversation::{
+        Attachment, ConversationMessage, MessageKind, ReferencedAttachments, assistant_message_id,
+        derived_operation_id,
+    },
     core::{Action, Command},
     executor::{TurnInput, TurnOutput},
     filesystem::InternalContentClass,
 };
+use serde_json::Value;
 use uuid::Uuid;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
@@ -353,8 +359,8 @@ where
             attachment.validate(&mut None)?;
             limits.validate_file(&attachment.file, &mut None)?;
         }
-        let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
-        let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
+        let assistant_id = assistant_message_id(operation_id);
+        let assistant_operation = OperationId::from_bytes(*assistant_id.as_bytes());
         let content = self
             .stage_conversation(
                 operation_id,
@@ -362,17 +368,6 @@ where
                 output.text.as_bytes(),
                 "text/plain",
                 "assistant.txt",
-            )
-            .await?;
-        let metadata = serde_json::to_vec(&output.metadata)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        let metadata = self
-            .stage_conversation(
-                operation_id,
-                &format!("turns/{operation_id}/metadata.json"),
-                &metadata,
-                "application/json",
-                "metadata.json",
             )
             .await?;
         let attachments = if output.attachments.len() <= 128 {
@@ -412,7 +407,19 @@ where
             }
         };
         let mut aggregate = self.conversation_projection(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
+        let usage = self
+            .append_turn_history(&mut aggregate, operation_id, user_id, limits)
+            .await?;
+        let metadata =
+            serde_json::to_vec(&usage).map_err(|error| Error::Invalid(error.to_string()))?;
+        let metadata = self
+            .stage_conversation(
+                operation_id,
+                &format!("turns/{operation_id}/metadata.json"),
+                &metadata,
+                "application/json",
+                "metadata.json",
+            )
             .await?;
         let mut extensions = BTreeMap::new();
         extensions.insert("acyclic.model.metadata".to_owned(), metadata);
@@ -452,119 +459,6 @@ where
         )
         .await
     }
-
-    async fn append_tool_history(
-        &self,
-        aggregate: &mut StreamAggregate<P>,
-        operation_id: OperationId,
-        user_id: Uuid,
-        limits: Limits,
-    ) -> Result<()> {
-        let mut calls = BTreeMap::new();
-        let mut replay = crate::executor::ExecutionReplay::new(operation_id);
-        while let Some(page) = replay.next_page(self, None).await? {
-            for record in page {
-                let (kind, content, attachments, reply_to, call_id, step) = match record.event {
-                    ExecutionEvent::ToolStarted {
-                        step,
-                        call_id,
-                        invocation,
-                    } => (
-                        MessageKind::ToolCall,
-                        invocation,
-                        ReferencedAttachments::Inline { items: Vec::new() },
-                        Some(user_id),
-                        call_id,
-                        step,
-                    ),
-                    ExecutionEvent::ToolCompleted {
-                        step,
-                        call_id,
-                        result,
-                        projection,
-                    } => {
-                        let call =
-                            calls
-                                .get(&(step, call_id.clone()))
-                                .copied()
-                                .ok_or_else(|| {
-                                    Error::Storage("tool result has no durable start".into())
-                                })?;
-                        (
-                            MessageKind::ToolResult,
-                            result,
-                            ReferencedAttachments::Inline {
-                                items: vec![Attachment {
-                                    file: projection,
-                                    label: Some("model_projection".into()),
-                                }],
-                            },
-                            Some(call),
-                            call_id,
-                            step,
-                        )
-                    }
-                    _ => continue,
-                };
-                let publication = derived_operation_id(
-                    operation_id,
-                    format!("conversation-tool:{}", record.sequence).as_bytes(),
-                );
-                let id = Uuid::from_bytes(publication.into_bytes());
-                if kind == MessageKind::ToolCall
-                    && calls.insert((step, call_id.clone()), id).is_some()
-                {
-                    return Err(Error::Storage(
-                        "duplicate durable tool call identity".into(),
-                    ));
-                }
-                let existing = self
-                    .indexed_conversation_message(aggregate, id, limits)
-                    .await?;
-                if let Some(existing) = existing {
-                    if existing.kind != kind
-                        || existing.content != content
-                        || existing.attachments != attachments
-                        || existing.reply_to != reply_to
-                        || existing.tool_call_id.as_deref() != Some(call_id.as_str())
-                    {
-                        return Err(Error::Conflict(
-                            "tool publication identity belongs to another message".into(),
-                        ));
-                    }
-                    continue;
-                }
-                let message = ConversationMessage {
-                    id,
-                    sequence: Self::next_conversation_sequence(aggregate)?,
-                    kind,
-                    content,
-                    attachments,
-                    reply_to,
-                    tool_call_id: Some(call_id),
-                    extensions: BTreeMap::new(),
-                };
-                self.append_conversation(
-                    aggregate,
-                    publication,
-                    "tool",
-                    Action::AppendConversationMessage {
-                        message: Box::new(message),
-                    },
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-}
-fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(domain);
-    hasher.update(&turn.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
 }
 
 #[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]

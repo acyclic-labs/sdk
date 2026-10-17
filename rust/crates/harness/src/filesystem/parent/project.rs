@@ -188,7 +188,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         && !io.contains_capability(
                             self.scope.capabilities(),
                             source,
-                            "volume:read:",
+                            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                         )?)
                 {
                     return Err(stock_boundary(
@@ -343,7 +343,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         || !io.contains_capability(
                             owner.1.capabilities(),
                             &owner.2,
-                            "volume:write:",
+                            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
                         )?
                     {
                         return Err(Error::NativeBoundary {

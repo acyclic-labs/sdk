@@ -48,10 +48,10 @@ cd "$root"
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 package_target="$work/package-target"
 cargo package --locked --all-features --no-verify --allow-dirty --target-dir "$package_target" \
-  -p acyclic-native-runtime -p acyclic-grpc-observability -p acyclic-objects -p acyclic-stream -p acyclic-fs
+  -p acyclic-proto-build -p acyclic-native-runtime -p acyclic-grpc-observability -p acyclic-objects -p acyclic-stream -p acyclic-fs
 archives="$(printf '%s' "$metadata" | bun -e '
 const metadata = await Bun.stdin.json();
-for (const name of ["acyclic-native-runtime", "acyclic-grpc-observability", "acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
+for (const name of ["acyclic-proto-build", "acyclic-native-runtime", "acyclic-grpc-observability", "acyclic-objects", "acyclic-stream", "acyclic-fs"]) {
   const packages = metadata.packages.filter(item => item.name === name);
   if (packages.length !== 1) throw new Error(`ambiguous package ${name}`);
   console.log(`${name}-${packages[0].version}.crate`);
@@ -66,11 +66,13 @@ while IFS= read -r archive; do
   tar -xf "$package_target/package/$archive" -C "$work/crates"
 done <<< "$archives"
 mkdir -p "$work/crates/.cargo"
+proto_build_path="$work/crates/acyclic-proto-build-$fs_version"
 runtime_path="$work/crates/acyclic-native-runtime-$runtime_version"
 observability_path="$work/crates/acyclic-grpc-observability-$observability_version"
 objects_path="$work/crates/acyclic-objects-$objects_version"
 stream_path="$work/crates/acyclic-stream-$stream_version"
 if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
+  proto_build_path="$(bash "$root/scripts/native-tool-path.sh" "$proto_build_path")"
   runtime_path="$(bash "$root/scripts/native-tool-path.sh" "$runtime_path")"
   observability_path="$(bash "$root/scripts/native-tool-path.sh" "$observability_path")"
   objects_path="$(bash "$root/scripts/native-tool-path.sh" "$objects_path")"
@@ -78,6 +80,7 @@ if [[ "$(bun -e 'process.stdout.write(process.platform)')" == "win32" ]]; then
 fi
 cat >"$work/crates/.cargo/config.toml" <<EOF
 [patch.crates-io]
+acyclic-proto-build = { path = "$proto_build_path" }
 acyclic-native-runtime = { path = "$runtime_path" }
 acyclic-grpc-observability = { path = "$observability_path" }
 acyclic-objects = { path = "$objects_path" }

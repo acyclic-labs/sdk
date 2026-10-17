@@ -1,4 +1,5 @@
 //! Positional I/O on a held Windows handle.
+use crate::file::ReadDestination;
 use crate::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
     OwnedRead, OwnedWrite,
@@ -235,35 +236,32 @@ pub(crate) fn with_overlapped<T>(
 fn read_once(
     file: &File,
     offset: u64,
-    destination: &mut [u8],
+    mut destination: ReadDestination<'_>,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<usize> {
-    let length = overlapped_range(offset, destination.len())?;
+    let (pointer, maximum) = destination.parts()?;
+    let length = overlapped_range(offset, maximum)?;
     if length == 0 {
         return Ok(0);
     }
     if let Some(meter) = meter {
-        meter.admit_bytes(destination.len())?;
+        meter.admit_bytes(maximum)?;
     }
     let count = transfer_in_place(
         file,
         offset,
         |handle, overlapped| {
             // SAFETY: destination is writable for length bytes until the request settles.
-            unsafe {
-                ReadFile(
-                    handle,
-                    destination.as_mut_ptr(),
-                    length,
-                    std::ptr::null_mut(),
-                    overlapped,
-                )
-            }
+            unsafe { ReadFile(handle, pointer, length, std::ptr::null_mut(), overlapped) }
         },
         meter.map(|meter| (meter, NativeOperationKind::Read, Some(length as usize))),
     )?;
-    if count > destination.len() {
+    if count > maximum {
         return Err(io::Error::other("read completion exceeded buffer"));
+    }
+    if let ReadDestination::Spare { data, .. } = destination {
+        // SAFETY: terminal ReadFile completion initialized count bytes in the checked spare slice.
+        unsafe { data.set_len(data.len() + count) };
     }
     Ok(count)
 }
@@ -274,7 +272,7 @@ pub(crate) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
         return Ok(0);
     }
     with_overlapped(file, FILE_GENERIC_READ, false, None, |file| {
-        read_once(file, offset, destination, None)
+        read_once(file, offset, ReadDestination::Slice(destination), None)
     })
 }
 
@@ -284,7 +282,27 @@ pub(crate) fn read_at_known_overlapped(
     destination: &mut [u8],
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
-    read_once(file, offset, destination, Some(meter))
+    read_once(
+        file,
+        offset,
+        ReadDestination::Slice(destination),
+        Some(meter),
+    )
+}
+
+pub(crate) fn read_spare_known_overlapped(
+    file: &File,
+    offset: u64,
+    data: &mut Vec<u8>,
+    length: usize,
+    meter: &dyn NativeReadMeter,
+) -> io::Result<usize> {
+    read_once(
+        file,
+        offset,
+        ReadDestination::Spare { data, length },
+        Some(meter),
+    )
 }
 
 pub(crate) fn read_batch_in_place(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {

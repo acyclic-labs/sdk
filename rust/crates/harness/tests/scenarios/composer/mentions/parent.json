@@ -1,0 +1,4 @@
+{
+  "prompt": "@../a.txt",
+  "expect": {"error":"path"}
+}

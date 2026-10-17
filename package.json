@@ -6,18 +6,19 @@
     "typescript/packages/*"
   ],
   "scripts": {
+    "bench:clients": "node scripts/bench-client-requests.mjs",
     "build:wasm": "bun scripts/build-wasm.mjs",
-    "build": "bun run build:wasm && tsc -b --force",
-    "check": "bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs",
-    "check:types": "tsc -p typescript/packages/filesystem/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/harness/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/inference/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/pi/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/swarm/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/workers/tsconfig.type-tests.json --pretty false",
-    "test:contracts": "tsc -b typescript/packages/actors typescript/packages/objects typescript/packages/workers typescript/packages/stream typescript/packages/filesystem && node --test typescript/packages/workers/test/cloud-contract.test.mjs && node scripts/generate-public-rpc-matrix.mjs complete && node --test scripts/public-rpc-source.test.mjs && node --test typescript/packages/actors/test/fixture-server.test.mjs && node typescript/packages/actors/test/grpc-conformance.mjs && node typescript/packages/stream/test/grpc-provider-conformance.mjs && node typescript/packages/stream/test/http-provider-conformance.mjs && node --test typescript/packages/objects/test/v1-conformance.mjs && bun test ./typescript/packages/objects/test/v1-conformance.mjs && node typescript/packages/objects/test/v1-grpc-conformance.mjs && node --test typescript/packages/filesystem/test/cloud-contract.test.mjs",
-    "generate": "bun scripts/generate.mjs && bun scripts/generate-contracts.mjs write",
-    "check:generated": "node --test scripts/wasm-size-artifacts.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs && bun scripts/check-generated.mjs && bun scripts/generate-contracts.mjs check",
+    "build": "bun run generate && bun run build:wasm && tsc -b --force",
+    "check": "bun run generate && bun run build:wasm && tsc -b --force --pretty false && tsc -p scripts --pretty false && bun run check:docs",
+    "check:types": "tsc -p typescript/packages/actors/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/filesystem/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/harness/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/inference/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/pi/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/swarm/tsconfig.type-tests.json --pretty false && tsc -p typescript/packages/workers/tsconfig.type-tests.json --pretty false",
+    "test:contracts": "tsc -b typescript/packages/actors typescript/packages/objects typescript/packages/workers typescript/packages/stream typescript/packages/filesystem && node --test typescript/packages/workers/test/cloud-contract.test.mjs && node scripts/generate-public-rpc-matrix.mjs complete && node --test scripts/public-rpc-source.test.mjs && node --test typescript/packages/actors/test/fixture-server.test.mjs && node typescript/packages/actors/test/grpc-conformance.mjs && node typescript/packages/stream/test/grpc-provider-conformance.mjs && node typescript/packages/stream/test/http-provider-conformance.mjs && node --test typescript/packages/objects/test/v1-conformance.mjs && bun test ./typescript/packages/objects/test/v1-conformance.mjs && node typescript/packages/objects/test/v1-grpc-conformance.mjs && node typescript/packages/objects/test/v1-grpc-conformance.mjs --restore-only && node --test typescript/packages/filesystem/test/cloud-contract.test.mjs",
+    "generate": "bun scripts/generate.mjs",
     "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
     "test": "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts",
     "test:contracts:browser": "bun run --filter '@acyclic-labs/actors' build:wasm && bun run --filter '@acyclic-labs/objects' build:wasm && bun run --filter '@acyclic-labs/stream' build:wasm && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",
     "licenses": "bun scripts/check-js-licenses.mjs",
-    "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/check-sdk-readmes.mjs"
+    "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/check-sdk-readmes.mjs",
+    "check:baselines": "node --test scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs && bun scripts/check-baselines.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.73.0",
@@ -34,7 +35,6 @@
     "@connectrpc/connect-node": "2.2.0"
   },
   "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and TypeScript packages.",
-  "main": "index.js",
   "directories": {
     "doc": "docs",
     "example": "examples"

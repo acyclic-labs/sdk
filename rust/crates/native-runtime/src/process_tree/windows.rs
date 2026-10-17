@@ -21,6 +21,12 @@ use windows_sys::Win32::System::Threading::{
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
 
+#[path = "windows_wait.rs"]
+pub(super) mod wait;
+pub(super) use wait::wait_for_exit;
+#[cfg(test)]
+pub(super) use wait::wait_for_exit_coarse;
+
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
     bytes: &[u8],
@@ -44,8 +50,14 @@ pub(super) fn write_pipe(
                 Ok(())
             }
         })?;
+    if let Err(error) = changed {
+        if error.kind() == io::ErrorKind::BrokenPipe {
+            return Ok((Some(0), recorded));
+        }
+        recorded?;
+        return Err(error);
+    }
     recorded?;
-    changed?;
     let mut candidate = bytes;
     loop {
         let mut actual = 0;
@@ -81,6 +93,9 @@ pub(super) fn write_pipe(
             Ok(0) => return Ok((None, recorded)),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 return Ok((None, recorded));
+            }
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                return Ok((Some(0), recorded));
             }
             Err(error) => {
                 recorded?;

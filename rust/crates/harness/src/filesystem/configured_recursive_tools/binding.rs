@@ -64,12 +64,15 @@ where
             let granted = match io {
                 Some(io) => {
                     crate::model::charge_items(Some(io), 1)?;
-                    io.contains_capability(context.scope().grants(), volume, "volume:read:")?
-                        && io.contains_capability(
-                            context.effective_scope().grants(),
-                            volume,
-                            "volume:read:",
-                        )?
+                    io.contains_capability(
+                        context.scope().grants(),
+                        volume,
+                        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                    )? && io.contains_capability(
+                        context.effective_scope().grants(),
+                        volume,
+                        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                    )?
                 }
                 None => context
                     .scope()

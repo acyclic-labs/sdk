@@ -1,5 +1,5 @@
 import { type OperationId, type TaskId, type Scope } from "./index.js";
-import { type AgentInput, type ModelContent, type ToolDefinition, type ToolRef, type ToolInvocation, type RuntimeAgentInput, type ModelMessage, type ModelEvent, type ToolJsonSchema, type ModelToolDefinition } from "./model.js";
+import { type AgentInput, type ModelContent, type ModelContentPart, type ToolDefinition, type ToolRef, type ToolInvocation, type RuntimeAgentInput, type ModelMessage, type ModelEvent, type ToolJsonSchema, type ModelToolDefinition } from "./model.js";
 import { type SelectedModelContext, publicModelContent } from "./projection.js";
 import { type TaskDefinition, Task, durableMachineDigest, nativeLimits, nativeRunLimits, freezeSchema, type HostTaskAttachment, componentKey, type Admission, observeAdmittedTask, validatedHostTask, pinnedOutputSchema, AdmissionUncertainError, type GroupId, type Outcome, type TaskChildrenPage } from "./task.js";
 import { type RegisteredTool, type AgentHarnessComponents, harnessConstruction } from "./harness-builder.js";
@@ -30,7 +30,8 @@ export class TerminalModelTurnError extends Error {
   }
 }
 export type RunReceipt =
-  | { readonly kind: "tool"; readonly step: number; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
+  | { readonly kind: "tool"; readonly step: number; readonly operationId: ToolInvocation["operationId"]; readonly metadata: unknown; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
+  | (Extract<ModelEvent, { kind: "reasoning_block" }> & { readonly step: number })
   | { readonly kind: "model-completed"; readonly metadata: unknown };
 export interface RunOutput { readonly text: string; readonly attachments?: readonly Attachment[]; readonly taskId: TaskId; readonly receipts: readonly RunReceipt[] }
 export type SelectedAgentInput =
@@ -581,6 +582,7 @@ export class AgentHarness {
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.components.limits.model_steps, this.components.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
+        const assistantParts: ModelContentPart[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), ...(this.components.modelOutputTokens === undefined ? {} : { maxOutputTokens: this.components.modelOutputTokens }) });
         const inventories = request.messages.map(message =>
@@ -621,23 +623,31 @@ export class AgentHarness {
           ...(wire.max_output_tokens == null ? {} : { maxOutputTokens: wire.max_output_tokens }),
           signal: context.signal,
         };
-        for await (const event of model.provider.generate(admittedRequest)) {
-          const admitted = this.contracts.admitModelEvent(event, this.components.limits, admission);
-          admission = admitted.state;
-          const admittedEvent = admitted.event;
-          if (admittedEvent.kind === "content") {
-            text += admittedEvent.delta;
-          }
-          else if (admittedEvent.kind === "tool_call") {
-            calls.push(admittedEvent);
-          }
-          else if (admittedEvent.kind === "completed") {
-            receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
+        {
+          using prepared = await model.provider.prepare(admittedRequest);
+          for await (const event of prepared.generate({ operationId: id, step })) {
+            const admitted = this.contracts.admitModelEvent(event, this.components.limits, admission);
+            admission = admitted.state;
+            const admittedEvent = admitted.event;
+            if (admittedEvent.kind === "content") {
+              text += admittedEvent.delta;
+            }
+            else if (admittedEvent.kind === "tool_call") {
+              calls.push(admittedEvent);
+              assistantParts.push(admittedEvent);
+            }
+            else if (admittedEvent.kind === "reasoning_block") {
+              assistantParts.push({ kind: "reasoning", block: admittedEvent.block });
+            }
+            else if (admittedEvent.kind === "completed") {
+              receipts.push({ kind: "model-completed", metadata: admittedEvent.metadata });
+            }
           }
         }
         if (!admission.completed) throw new Error("model attempt ended without completion");
         previousAdmission = admission;
-        if (calls.length === 0) return { text };
+        if (assistantParts.length !== 0) messages.push({ role: "assistant", content: assistantParts });
+        const outcomes: Extract<RunReceipt, { kind: "tool" }>[] = [];
         for (const call of calls) {
           const toolOperationId = this.contracts.idFromDigest(this.contracts.digestCanonicalJson({
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
@@ -653,9 +663,17 @@ export class AgentHarness {
           this.contracts.validateToolProjection(registered.definition, projection, this.components.limits);
           const result = { kind: "tool_result" as const, callId: call.callId, name: call.name, content: projection };
           validateModelContent(result, this.components.limits);
-          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
-          messages.push({ role: "assistant", content: call }, { role: "tool", content: result });
+          outcomes.push({ kind: "tool", step, operationId: invocation.operationId,
+            callId: call.callId, name: call.name, arguments: call.arguments,
+            metadata: call.metadata ?? null, value, projection });
+          messages.push({ role: "tool", content: result });
         }
+        let callIndex = 0;
+        for (const part of assistantParts) {
+          if (part.kind === "tool_call") receipts.push(outcomes[callIndex++]!);
+          else if (part.kind === "reasoning") receipts.push({ kind: "reasoning_block", step, block: part.block });
+        }
+        if (calls.length === 0) return { text };
       }
       throw new Error(`agent loop exceeded ${maxSteps} model steps`);
     });

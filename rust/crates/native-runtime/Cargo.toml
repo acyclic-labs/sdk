@@ -11,8 +11,12 @@ documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
+[features]
+test-support = ["dep:tokio"]
+
 [dependencies]
 bytes.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }
@@ -35,24 +39,24 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_IO",
   "Win32_System_JobObjects",
   "Win32_System_Pipes",
+  "Win32_System_Power",
   "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
-divan.workspace = true
-
-[[bench]]
-name = "write_validation"
-harness = false
+loom = "=0.7.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 futures-core = "0.3.31"
 pin-project-lite = "0.2.17"
 tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+proptest.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

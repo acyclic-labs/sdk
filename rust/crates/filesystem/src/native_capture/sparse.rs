@@ -1,8 +1,57 @@
 use super::*;
 
+pub(super) fn dense_attributes(attributes: u32) -> bool {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SYSTEM,
+        FILE_ATTRIBUTE_TEMPORARY,
+    };
+    // Unknown, sparse, compressed, reparse and recall attributes retain the native query.
+    let ordinary = FILE_ATTRIBUTE_ARCHIVE.0
+        | FILE_ATTRIBUTE_HIDDEN.0
+        | FILE_ATTRIBUTE_NORMAL.0
+        | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0
+        | FILE_ATTRIBUTE_READONLY.0
+        | FILE_ATTRIBUTE_SYSTEM.0
+        | FILE_ATTRIBUTE_TEMPORARY.0;
+    attributes & !ordinary == 0
+}
+
+pub(super) fn regular_data_ranges(
+    file: &std::fs::File,
+    metadata: &HostStat,
+    maximum_ranges: u32,
+    meter: &NativeMaterializationWork,
+) -> Result<Option<Vec<HostDataRange>>, CaptureError> {
+    let dense = dense_attributes(metadata.raw.FileAttributes);
+    #[cfg(all(test, feature = "memory"))]
+    let dense = dense && !super::windows_dense_tests::force_query();
+    if !dense || metadata.len() == 0 {
+        return allocated_data_ranges(file, 0, metadata.len(), maximum_ranges, &mut meter.clone())
+            .map(Some)
+            .map_err(capture_demand_error);
+    }
+    meter.clone().check().map_err(capture_demand_error)?;
+    if maximum_ranges == 0 || i64::try_from(metadata.len()).is_err() {
+        return Err(capture_demand_error(DemandError::InvalidRequest));
+    }
+    // FSCTL_QUERY_ALLOCATED_RANGES returns precisely this range for ordinary files.
+    // The caller still proves the held file and final path unchanged after reading.
+    capture_charge(
+        meter,
+        WorkCounters {
+            items_examined: 1,
+            bytes_copied: std::mem::size_of::<HostDataRange>() as u64,
+            ..WorkCounters::UNCHARGED
+        },
+    )?;
+    // None lets staging keep the single full-file range on its stack.
+    Ok(None)
+}
+
 /// Settles sparse allocation reports against bounded reads of their content.
 pub(super) async fn settled_sparse_ranges(
-    native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
+    native: &acyclic_native_runtime::NativeFile,
     metadata: &HostStat,
     reported: Vec<HostDataRange>,
     maximum_ranges: u32,
@@ -16,11 +65,8 @@ pub(super) async fn settled_sparse_ranges(
     }
     let mut settled: Vec<HostDataRange> = Vec::new();
     for range in &reported {
-        let mut reader = acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(native),
-            range.offset,
-            range.length,
-        );
+        let mut reader =
+            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length);
         let end = range
             .offset
             .checked_add(range.length)
@@ -60,17 +106,7 @@ pub(super) async fn settled_sparse_ranges(
                 let last =
                     usize::try_from(block_end - position).map_err(|_| WorkError::Overflow)?;
                 let block = chunk.0.get(first..last).ok_or(WorkError::Overflow)?;
-                let mut nonzero = false;
-                for byte in block {
-                    capture_charge(
-                        meter,
-                        crate::materializer::NativeResourceCredit::Items.delta(1),
-                    )?;
-                    if *byte != 0 {
-                        nonzero = true;
-                        break;
-                    }
-                }
+                let nonzero = sparse_scan::block_has_data(block, meter)?;
                 if nonzero {
                     if let Some(last) = settled.last_mut()
                         && last.offset.checked_add(last.length) == Some(start)

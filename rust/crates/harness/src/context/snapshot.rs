@@ -44,7 +44,7 @@ impl PinnedContextStage {
                 "context snapshot still marks a historical input as active".into(),
             ));
         }
-        if crate::contract::canonical_json_bytes(&context)?.as_slice() != bytes.as_ref() {
+        if !crate::contract::canonical_json_matches(&context, bytes.as_ref())? {
             return Err(Error::Invalid("context snapshot is not canonical".into()));
         }
         super::validate_context_refs(&context, reader.as_ref(), limits, None).await?;

@@ -179,7 +179,7 @@ func TestDuplicateFamilyInput(t *testing.T) {
 func TestRejectEscapedInput(t *testing.T) {
 	_, authority, request, _ := fixture(t)
 	for _, path := range []string{"../request.json", "sub/../request.json", request, ".", "..", ""} {
-		if err := validateInput(authority, path, "unused"); err == nil {
+		if _, err := readInput(authority, path, "unused"); err == nil {
 			t.Errorf("admitted %q", path)
 		}
 	}
@@ -211,7 +211,7 @@ func TestRejectSymlinkEscapedInput(t *testing.T) {
 	if err := os.Symlink(request, link); err != nil {
 		t.Skipf("symlink privilege unavailable: %v", err)
 	}
-	if err := validateInput(authority, "alias.proto", "unused"); err == nil {
+	if _, err := readInput(authority, "alias.proto", "unused"); err == nil {
 		t.Fatal("admitted symlink escaping authority")
 	}
 }

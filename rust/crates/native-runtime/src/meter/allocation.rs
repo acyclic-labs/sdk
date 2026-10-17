@@ -26,6 +26,14 @@ impl ReadAllocationReservation {
         allocation.bytes = bytes;
         Ok(allocation)
     }
+
+    /// Consumes only a reservation for this exact allocation footprint.
+    pub fn allocate_exact(self, bytes: usize) -> io::Result<ReadAllocation> {
+        if self.bytes != Some(bytes as u64) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.allocate()
+    }
 }
 
 impl Drop for ReadAllocationReservation {

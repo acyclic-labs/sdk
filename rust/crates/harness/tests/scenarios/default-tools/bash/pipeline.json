@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf changed | cat > plans/a.md; printf pipe"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"content":{"value":{"stdout":"pipe"}}}}}}

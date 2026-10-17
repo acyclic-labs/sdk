@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Mutex;
+use crate::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::task::Wake;
 

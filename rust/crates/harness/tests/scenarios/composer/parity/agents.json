@@ -1,0 +1,16 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "tree"
+    },
+    "file_values": {
+      "session/layout.json": {
+        "tree": true,
+        "retained": "layout",
+        "selected_task": "00000000-0000-0000-0000-000000000005"
+      }
+    }
+  },
+  "prompt": "/agents"
+}

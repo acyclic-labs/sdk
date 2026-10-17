@@ -77,238 +77,251 @@ where
         {
             return TaskWorkerAttempt::Unresolved { lease, error };
         }
-        match deadline::observe(maximum_wait_millis, async {
-            let lease = &lease;
-            let operation = lease.operation.operation_id;
-            let task = TaskId::from_bytes(operation.into_bytes());
-            let fence = observed::lease_fence(lease, io)?;
-            self.owner_observed(task, &fence, true, io).await?;
-            let admission = self.admission_observed(task, io).await?;
-            if admission
-                .run_limits
-                .deadline_epoch_ms
-                .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
-            {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| {
-                        observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native reconciliation requires original work",
-                        )
-                    })?;
-                    self.host
-                        .expire_task_deadline(
-                            task,
-                            Some(&fence),
-                            &mut Some(&mut crate::store::HistoryWork::new(
-                                crate::filesystem::PreparationIo::from_native_work(work)?,
-                            )),
-                        )
-                        .await?;
-                } else {
+        match deadline::observe(
+            maximum_wait_millis,
+            || async {
+                let lease = &lease;
+                let operation = lease.operation.operation_id;
+                let task = TaskId::from_bytes(operation.into_bytes());
+                let fence = observed::lease_fence(lease, io)?;
+                self.owner_observed(task, &fence, true, io).await?;
+                let admission = self.admission_observed(task, io).await?;
+                if admission
+                    .run_limits
+                    .deadline_epoch_ms
+                    .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(io) = io {
+                        let work = io.original_native_work().ok_or_else(|| {
+                            observed::boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "native reconciliation requires original work",
+                            )
+                        })?;
+                        self.host
+                            .expire_task_deadline(
+                                task,
+                                Some(&fence),
+                                &mut Some(&mut crate::store::HistoryWork::new(
+                                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                                )),
+                            )
+                            .await?;
+                    } else {
+                        self.host
+                            .expire_task_deadline(task, Some(&fence), &mut None)
+                            .await?;
+                    }
+                    #[cfg(target_arch = "wasm32")]
                     self.host
                         .expire_task_deadline(task, Some(&fence), &mut None)
                         .await?;
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                let journal = if let Some(io) = io {
+                    self.workflow_journal_with_native_work(
+                        task,
+                        &fence,
+                        io.original_native_work().ok_or_else(|| {
+                            observed::boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "native reconciliation requires original work",
+                            )
+                        })?,
+                    )
+                    .await?
+                } else {
+                    self.workflow_journal(task, fence.clone()).await?
+                };
                 #[cfg(target_arch = "wasm32")]
-                self.host
-                    .expire_task_deadline(task, Some(&fence), &mut None)
-                    .await?;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            let journal = if let Some(io) = io {
-                self.workflow_journal_with_native_work(
-                    task,
-                    &fence,
+                let journal = self.workflow_journal(task, fence.clone()).await?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let present = if let Some(io) = io {
                     io.original_native_work().ok_or_else(|| {
                         observed::boundary(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
-                            "native reconciliation requires original work",
+                            "native journal requires original work",
                         )
-                    })?,
-                )
-                .await?
-            } else {
-                self.workflow_journal(task, fence.clone()).await?
-            };
-            #[cfg(target_arch = "wasm32")]
-            let journal = self.workflow_journal(task, fence.clone()).await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let present = if let Some(io) = io {
-                io.original_native_work().ok_or_else(|| {
-                    observed::boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "native journal requires original work",
-                    )
-                })?;
-                let admission = journal.admission(Some(io))?.await?;
-                let present = admission.0.is_some();
-                drop(admission);
-                present
-            } else {
-                journal.admission(None)?.await?.0.is_some()
-            };
-            #[cfg(target_arch = "wasm32")]
-            let present = journal.admission(None)?.await?.0.is_some();
-            if !present {
-                return self.finish_known_reconciliation(task, &fence, io).await;
-            }
-            let transition = journal
-                .observe_latest_record(io)
-                .await?
-                .map(|record| record.transition);
-            let Some(transition) = transition else {
-                return self.finish_known_reconciliation(task, &fence, io).await;
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let context = if let Some(io) = io {
-                let work = io.original_native_work().ok_or_else(|| {
-                    observed::boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unsupported,
-                        "native context requires original work",
-                    )
-                })?;
-                WorkerContext::Native(
-                    self.task_context_for_original_owner_with_native_work(task, &fence, true, work)
-                        .await?,
-                )
-            } else {
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?)
-            };
-            #[cfg(target_arch = "wasm32")]
-            let context =
-                WorkerContext::Ordinary(self.harness.durable_context(task, operation, None).await?);
-            for command in transition.commands.iter().take(maximum_commands as usize) {
-                self.owner_observed(task, &fence, true, io).await?;
+                    })?;
+                    let admission = journal.admission(Some(io))?.await?;
+                    let present = admission.0.is_some();
+                    drop(admission);
+                    present
+                } else {
+                    journal.admission(None)?.await?.0.is_some()
+                };
+                #[cfg(target_arch = "wasm32")]
+                let present = journal.admission(None)?.await?.0.is_some();
+                if !present {
+                    return self.finish_known_reconciliation(task, &fence, io).await;
+                }
+                let transition = journal
+                    .observe_latest_record(io)
+                    .await?
+                    .map(|record| record.transition);
+                let Some(transition) = transition else {
+                    return self.finish_known_reconciliation(task, &fence, io).await;
+                };
                 #[cfg(not(target_arch = "wasm32"))]
-                let progress = if let Some(io) = io {
+                let context = if let Some(io) = io {
                     let work = io.original_native_work().ok_or_else(|| {
                         observed::boundary(
                             Some(io),
                             crate::wire::ErrorCode::Unsupported,
-                            "native command requires original work",
+                            "native context requires original work",
                         )
                     })?;
-                    let WorkerContext::Native(shared) = &context else {
-                        return Err(observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unsupported,
-                            "native command has no issued context",
-                        ));
-                    };
-                    if !shared.as_ref().original_task_binding_matches(task, &fence) {
-                        return Err(observed::boundary(
-                            Some(io),
-                            crate::wire::ErrorCode::Unauthorized,
-                            "native reconciliation differs from original task binding",
-                        ));
-                    }
-                    let body = shared
-                        .as_ref()
-                        .read_file(
-                            &command.payload,
-                            Some(&crate::executor::PreparationIo::from_native_work(work)?),
+                    WorkerContext::Native(
+                        self.task_context_for_original_owner_with_native_work(
+                            task, &fence, true, work,
                         )
-                        .await?;
-                    let payload = crate::filesystem::retain_decoded(io.decode(
-                        std::marker::PhantomData::<serde_json::Value>,
-                        &body,
-                        crate::wire::ErrorCode::Storage,
-                    )?)?;
-                    drop(body);
-                    commands
-                        .reconcile_with_native_work(
-                            std::sync::Arc::clone(shared),
-                            crate::executor::with_history_io(Some(io), |work| {
-                                fence.clone_with_work(work)
-                            })?,
-                            observed::clone_command(command, Some(io))?,
-                            payload,
-                            work,
-                        )?
-                        .await?
-                } else {
-                    let payload = crate::contract::json_from_slice(
-                        &context.context().read_file(&command.payload, None).await?,
+                        .await?,
                     )
-                    .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
-                    commands
-                        .reconcile(
-                            context.context().clone(),
-                            fence.clone(),
-                            command.clone(),
-                            payload,
-                        )
-                        .await?
+                } else {
+                    WorkerContext::Ordinary(
+                        self.harness.durable_context(task, operation, None).await?,
+                    )
                 };
                 #[cfg(target_arch = "wasm32")]
-                let progress = {
-                    let payload = crate::contract::json_from_slice(
-                        &context.context().read_file(&command.payload, None).await?,
-                    )
-                    .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
-                    commands
-                        .reconcile(
-                            context.context().clone(),
-                            fence.clone(),
-                            command.clone(),
-                            payload,
-                        )
-                        .await?
-                };
-                match &progress {
-                    TaskCommandProgress::Ready(_) if io.is_some() => {
-                        return Err(observed::boundary(
-                            io,
-                            crate::wire::ErrorCode::Unsupported,
-                            "native reconciliation returned an ordinary value",
-                        ));
-                    }
-                    TaskCommandProgress::Ready(_) => {}
+                let context = WorkerContext::Ordinary(
+                    self.harness.durable_context(task, operation, None).await?,
+                );
+                for command in transition.commands.iter().take(maximum_commands as usize) {
+                    self.owner_observed(task, &fence, true, io).await?;
                     #[cfg(not(target_arch = "wasm32"))]
-                    TaskCommandProgress::ReadyWithNativeCustody { custody, .. } => {
-                        if let Some(io) = io {
-                            let work = io.original_native_work().ok_or_else(|| {
-                                observed::boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Unsupported,
-                                    "native result requires original work",
-                                )
-                            })?;
-                            if !work.shares_ledger(custody.work()) {
-                                return Err(observed::boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Unauthorized,
-                                    "native result differs from original work",
-                                ));
-                            }
-                            self.owner_observed(
-                                task,
-                                &fence,
-                                true,
-                                Some(&crate::filesystem::PreparationIo::from_native_work(
-                                    custody.work(),
-                                )?),
+                    let progress = if let Some(io) = io {
+                        let work = io.original_native_work().ok_or_else(|| {
+                            observed::boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "native command requires original work",
+                            )
+                        })?;
+                        let WorkerContext::Native(shared) = &context else {
+                            return Err(observed::boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unsupported,
+                                "native command has no issued context",
+                            ));
+                        };
+                        if !shared.as_ref().original_task_binding_matches(task, &fence) {
+                            return Err(observed::boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Unauthorized,
+                                "native reconciliation differs from original task binding",
+                            ));
+                        }
+                        let body = shared
+                            .as_ref()
+                            .read_file(
+                                &command.payload,
+                                Some(&crate::executor::PreparationIo::from_native_work(work)?),
                             )
                             .await?;
+                        let payload = crate::filesystem::retain_decoded(io.decode(
+                            std::marker::PhantomData::<serde_json::Value>,
+                            &body,
+                            crate::wire::ErrorCode::Storage,
+                        )?)?;
+                        drop(body);
+                        commands
+                            .reconcile_with_native_work(
+                                std::sync::Arc::clone(shared),
+                                crate::executor::with_history_io(Some(io), |work| {
+                                    fence.clone_with_work(work)
+                                })?,
+                                observed::clone_command(command, Some(io))?,
+                                payload,
+                                work,
+                            )?
+                            .await?
+                    } else {
+                        let payload = crate::contract::json_from_slice(
+                            &context.context().read_file(&command.payload, None).await?,
+                        )
+                        .map_err(|error| {
+                            Error::Invalid(format!("invalid command JSON: {error}"))
+                        })?;
+                        commands
+                            .reconcile(
+                                context.context().clone(),
+                                fence.clone(),
+                                command.clone(),
+                                payload,
+                            )
+                            .await?
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let progress = {
+                        let payload = crate::contract::json_from_slice(
+                            &context.context().read_file(&command.payload, None).await?,
+                        )
+                        .map_err(|error| {
+                            Error::Invalid(format!("invalid command JSON: {error}"))
+                        })?;
+                        commands
+                            .reconcile(
+                                context.context().clone(),
+                                fence.clone(),
+                                command.clone(),
+                                payload,
+                            )
+                            .await?
+                    };
+                    match &progress {
+                        TaskCommandProgress::Ready(_) if io.is_some() => {
+                            return Err(observed::boundary(
+                                io,
+                                crate::wire::ErrorCode::Unsupported,
+                                "native reconciliation returned an ordinary value",
+                            ));
+                        }
+                        TaskCommandProgress::Ready(_) => {}
+                        #[cfg(not(target_arch = "wasm32"))]
+                        TaskCommandProgress::ReadyWithNativeCustody { custody, .. } => {
+                            if let Some(io) = io {
+                                let work = io.original_native_work().ok_or_else(|| {
+                                    observed::boundary(
+                                        Some(io),
+                                        crate::wire::ErrorCode::Unsupported,
+                                        "native result requires original work",
+                                    )
+                                })?;
+                                if !work.shares_ledger(custody.work()) {
+                                    return Err(observed::boundary(
+                                        Some(io),
+                                        crate::wire::ErrorCode::Unauthorized,
+                                        "native result differs from original work",
+                                    ));
+                                }
+                                self.owner_observed(
+                                    task,
+                                    &fence,
+                                    true,
+                                    Some(&crate::filesystem::PreparationIo::from_native_work(
+                                        custody.work(),
+                                    )?),
+                                )
+                                .await?;
+                            }
+                        }
+                        TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => {
+                            return Ok(WorkerTurn::Reconciling);
                         }
                     }
-                    TaskCommandProgress::Pending | TaskCommandProgress::Indeterminate => {
-                        return Ok(WorkerTurn::Reconciling);
-                    }
+                    drop(progress);
                 }
-                drop(progress);
-            }
-            if transition.commands.len() > maximum_commands as usize {
-                return Ok(WorkerTurn::Reconciling);
-            }
-            self.finish_known_reconciliation(task, &fence, io).await
-        })
+                if transition.commands.len() > maximum_commands as usize {
+                    return Ok(WorkerTurn::Reconciling);
+                }
+                self.finish_known_reconciliation(task, &fence, io).await
+            },
+            io,
+        )
         .await
         {
             Ok(Some(progress)) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),

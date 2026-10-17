@@ -4,14 +4,82 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
+    let basis = {
+        let creating = runtime
+            .creating_name
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let (path, Some(basis)) = &*creating {
+            // SAFETY: ProjFS retains this NUL-terminated path throughout the callback.
+            let name = if data.FilePathName.is_null() {
+                &[]
+            } else {
+                data.FilePathName.as_wide()
+            };
+            callback_name_matches(path, name).then_some(*basis)
+        } else {
+            None
+        }
+    };
+    // Release the slot before calling the source: a concurrent creator may
+    // need its write lock to return, and source calls can cause more callbacks.
+    let admitted = if let Some((file_id, basis)) = basis {
+        let work = match runtime.native_work(false) {
+            Ok(work) => work,
+            Err(error) => return native_hresult(&error),
+        };
+        match creating_name_is_current(runtime.source.as_ref(), file_id, basis, &work) {
+            Ok(true) => return HR_OK,
+            Ok(false) => Some(work),
+            Err(error) => return source_hresult(&error),
+        }
+    } else {
+        None
+    };
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
-    let work = match runtime.native_work(false) {
-        Ok(work) => work,
-        Err(error) => return native_hresult(&error),
+    let work = match admitted {
+        Some(work) => work,
+        None => match runtime.native_work(false) {
+            Ok(work) => work,
+            Err(error) => return native_hresult(&error),
+        },
     };
-    match runtime.source.lookup_with_meter(&path, &work) {
+    lookup_name(runtime.source.as_ref(), &path, &work)
+}
+
+fn creating_name_is_current(
+    source: &dyn MountFilesystem,
+    file_id: FileId,
+    basis: ReadBasis,
+    work: &crate::NativeMaterializationWork,
+) -> Result<bool, MountSourceError> {
+    // Scalar facts can only reject this shortcut. Admitting a hit still needs
+    // the metered lease and checks below; rejected facts take the old lookup.
+    if !source.reports_changes_to(file_id)
+        || source.binding_epoch() != Some(basis.binding)
+        || source.view_stamp() != Some(basis.stamp)
+    {
+        return Ok(false);
+    }
+    let _lease = match source.acquire_binding_lease_with_meter(Some(basis.binding), work) {
+        Ok(lease) => lease,
+        Err(MountSourceError::Stale) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(source.view_is_stable_with_meter(work)?
+        && source.binding_epoch_with_meter(work)? == Some(basis.binding)
+        && source.reports_changes_to(file_id)
+        && source.view_stamp_with_meter(work)? == Some(basis.stamp))
+}
+
+fn lookup_name(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    work: &crate::NativeMaterializationWork,
+) -> HRESULT {
+    match source.lookup_with_meter(path, work) {
         Ok(Some(_)) => HR_OK,
         Ok(None) => HR_FILE_NOT_FOUND,
         Err(error) => source_hresult(&error),
@@ -31,6 +99,7 @@ pub(super) fn record_post_operation_failure(
             | PRJ_NOTIFICATION_FILE_OVERWRITTEN
             | PRJ_NOTIFICATION_FILE_RENAMED
             | PRJ_NOTIFICATION_HARDLINK_CREATED
+            | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
     ) {
@@ -39,10 +108,15 @@ pub(super) fn record_post_operation_failure(
     let mut failure = lock_recover(failure);
     match (retry_path, result) {
         (_, Ok(())) => {}
-        (Some(retry_path), Err(error)) => {
+        (None, Err(_)) if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION => {}
+        (Some(retry_path), Err(error))
+            if notification != PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION =>
+        {
             failure.queue_capture(retry_path.clone(), error.to_string());
         }
-        (None, Err(error)) => {
+        (_, Err(error)) => {
+            // A metadata-only failure cannot be replayed as a full-file capture:
+            // doing so could replace a concurrent source content change.
             if failure.unreplayable.is_none() {
                 failure.unreplayable = Some(format!("{notification:?} at {path:?}: {error}"));
             }
@@ -81,7 +155,9 @@ pub(super) unsafe fn notification(
             notification,
             PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
         )
-        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path)
+        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path, |active, path| {
+            matches!(projfs_path_suffix(active, path), Some([]))
+        })
     {
         return HR_OK;
     }
@@ -214,59 +290,81 @@ pub(super) unsafe fn notification(
             if has_pending_capture(operation_failures.as_ref(), &path) {
                 return Ok(());
             }
-            let capture_path = path.clone();
             let Some(baseline) = baseline else {
-                defer_host_capture(operation_failures.as_ref(), capture_path);
+                defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             };
-            *retry_path.borrow_mut() = Some(capture_path.clone());
             let host =
-                probe_host_windows_metadata(metadata_root, &capture_path, metadata_probes, &work)?;
+                probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
             if baseline.identity != host.identity
                 || baseline.links != host.links
                 || baseline.size != host.size
             {
-                lock_recover(projection).remove(&capture_path);
-                defer_host_capture(operation_failures.as_ref(), capture_path);
+                lock_recover(projection).remove(&path);
+                defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             }
-            let cached_binding = lock_recover(projection).get(&capture_path).copied();
-            if !metadata_changed_since_open(baseline, host)
-                && !has_pending_capture(operation_failures.as_ref(), &capture_path)
-                && let Some(binding) = cached_binding
-                && binding.host == host
-                && host.links == Some(1)
-                && let Ok(_view_lease) = source.acquire_view_lease()
-                && binding.basis.still_describes(
-                    source.as_ref(),
-                    &capture_path,
-                    Some(binding.file_id),
-                )
+            let metadata_changed = metadata_changed_since_open(baseline, host);
+            if metadata_changed {
+                *retry_path.borrow_mut() = Some(path.clone());
+            }
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path)
             {
-                return Ok(());
+                match crate::native_mount::cached_binding::cached_binding_matches(
+                    projection,
+                    |bindings| {
+                        bindings
+                            .get(&path)
+                            .copied()
+                            .filter(|binding| binding.host == host && host.links == Some(1))
+                    },
+                    || source.acquire_binding_lease_with_meter(None, &work),
+                    |binding| {
+                        source.reports_changes_to(binding.file_id)
+                            && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
+                    },
+                    |binding| {
+                        binding.basis.still_describes(
+                            source.as_ref(),
+                            &path,
+                            Some(binding.file_id),
+                        )
+                    },
+                ) {
+                    Ok(true) => return Ok(()),
+                    Err(error)
+                        if matches!(
+                            error.semantic_error(),
+                            MountSourceError::Work(_)
+                                | MountSourceError::NativeWork(_)
+                                | MountSourceError::Cancelled
+                        ) =>
+                    {
+                        return Err(error);
+                    }
+                    Ok(false) | Err(_) => {}
+                }
             }
             let basis = ReadBasis::sample(source.as_ref());
-            let lookup = source.lookup(&capture_path);
+            let lookup = source.lookup(&path);
             match lookup {
-                Ok(Some(_)) if metadata_changed_since_open(baseline, host) => {
-                    metadata_edits.with(&host.identity, || {
-                        let Some(lookup) = source.lookup(&capture_path)? else {
-                            defer_host_capture(operation_failures.as_ref(), capture_path);
-                            return Ok(());
-                        };
-                        capture_changed_windows_metadata(
-                            source.as_ref(),
-                            &capture_path,
-                            lookup.metadata,
-                            baseline,
-                            host,
-                            &work,
-                        )
-                    })
-                }
+                Ok(Some(_)) if metadata_changed => metadata_edits.with(&host.identity, || {
+                    let Some(lookup) = source.lookup(&path)? else {
+                        defer_host_capture(operation_failures.as_ref(), path.clone());
+                        return Ok(());
+                    };
+                    capture_changed_windows_metadata(
+                        source.as_ref(),
+                        &path,
+                        lookup.metadata,
+                        baseline,
+                        host,
+                        &work,
+                    )
+                }),
                 Ok(Some(lookup)) => {
                     if let Some(basis) = basis
-                        && !has_pending_capture(operation_failures.as_ref(), &capture_path)
+                        && !has_pending_capture(operation_failures.as_ref(), &path)
                         && host.links == Some(1)
                     {
                         let mut bindings = lock_recover(projection);
@@ -274,7 +372,7 @@ pub(super) unsafe fn notification(
                             bindings.clear();
                         }
                         bindings.insert(
-                            capture_path,
+                            path.clone(),
                             ReadOnlyBinding {
                                 host,
                                 file_id: lookup.node.file_id,
@@ -285,8 +383,8 @@ pub(super) unsafe fn notification(
                     Ok(())
                 }
                 Ok(None) => {
-                    lock_recover(projection).remove(&capture_path);
-                    defer_host_capture(operation_failures.as_ref(), capture_path);
+                    lock_recover(projection).remove(&path);
+                    defer_host_capture(operation_failures.as_ref(), path.clone());
                     Ok(())
                 }
                 Err(error) => Err(error),
@@ -423,16 +521,15 @@ pub(super) fn handle_rename_source(
 
 unsafe extern "system" fn cancel(_callback_data: *const PRJ_CALLBACK_DATA) {}
 
-macro_rules! on_provider_stack {
-    ($level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*)) => {{
+macro_rules! on_callback {
+    ($stack:ident, $level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*)) => {{
         unsafe extern "system" fn entry($data: $data_type $(, $argument: $type)*) -> HRESULT {
             // SAFETY: the SDK retains its installed instance context through this callback.
             let Some((_, runtime)) = (unsafe { runtime($data) }) else { return HR_UNEXPECTED; };
             let Some(_active) = runtime.callbacks.enter() else { return HR_FILE_INVALID; };
             let span = callback_span!($level, $callback);
             // SAFETY: `ProjFS` passes the arguments its callback contract
-            let result = provider_stack::run(|| unsafe { $callback($data $(, $argument)*) })
-                .unwrap_or_else(|error| error.code());
+            let result = on_callback!(@run $stack, $callback($data $(, $argument)*));
             if result.is_err() {
                 span.record("errno", result.0);
             }
@@ -440,36 +537,42 @@ macro_rules! on_provider_stack {
         }
         entry
     }};
+    (@run provider, $call:expr) => {
+        provider_stack::run(|| unsafe { $call }).unwrap_or_else(|error| error.code())
+    };
+    // Only constant-return callbacks use the caller's stack; they neither
+    // inspect their arguments nor invoke a source operation.
+    (@run caller, $call:expr) => { unsafe { $call } };
 }
 
 pub(super) fn callbacks() -> PRJ_CALLBACKS {
     PRJ_CALLBACKS {
-        StartDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, start_directory(
+        StartDirectoryEnumerationCallback: Some(on_callback!(provider, TRACE, start_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        EndDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, end_directory(
+        EndDirectoryEnumerationCallback: Some(on_callback!(caller, TRACE, end_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID
         ))),
-        GetDirectoryEnumerationCallback: Some(on_provider_stack!(TRACE, get_directory(
+        GetDirectoryEnumerationCallback: Some(on_callback!(caller, TRACE, get_directory(
             callback_data: *const PRJ_CALLBACK_DATA,
             enumeration_id: *const GUID,
             search_expression: PCWSTR,
             buffer: PRJ_DIR_ENTRY_BUFFER_HANDLE
         ))),
-        GetPlaceholderInfoCallback: Some(on_provider_stack!(TRACE, placeholder(
+        GetPlaceholderInfoCallback: Some(on_callback!(caller, TRACE, placeholder(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        GetFileDataCallback: Some(on_provider_stack!(TRACE, file_data(
+        GetFileDataCallback: Some(on_callback!(caller, TRACE, file_data(
             callback_data: *const PRJ_CALLBACK_DATA,
             byte_offset: u64,
             length: u32
         ))),
-        QueryFileNameCallback: Some(on_provider_stack!(TRACE, query_name(
+        QueryFileNameCallback: Some(on_callback!(provider, TRACE, query_name(
             callback_data: *const PRJ_CALLBACK_DATA
         ))),
-        NotificationCallback: Some(on_provider_stack!(DEBUG, notification(
+        NotificationCallback: Some(on_callback!(provider, DEBUG, notification(
             callback_data: *const PRJ_CALLBACK_DATA,
             is_directory: bool,
             kind: PRJ_NOTIFICATION,

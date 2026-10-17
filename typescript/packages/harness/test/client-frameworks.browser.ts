@@ -4,7 +4,7 @@ import { renderToString } from "react-dom/server";
 import { flushSync } from "react-dom";
 import { mount, unmount, tick } from "svelte";
 import Component from "./client-frameworks.svelte";
-import { ClientViews, type ClientDomain, type ClientObservation } from "@acyclic-labs/harness/client";
+import { HypothesisClient, type ClientDomain, type ClientObservation } from "@acyclic-labs/harness";
 import { useClientSnapshot } from "@acyclic-labs/harness/react";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -18,13 +18,13 @@ const domain: ClientDomain<Value, null, Evidence> = {
   observe: evidence => evidence,
   corresponds: (predicted, canonical) => ({ matches: predicted.count === canonical.count, work: 1 }),
 };
-let client: ClientViews<Value, null, Evidence> | undefined;
+let client: HypothesisClient<Value, null, Evidence> | undefined;
 let root: ReturnType<typeof createRoot> | undefined;
 let hydrated: ReturnType<typeof hydrateRoot> | undefined;
 let svelte: ReturnType<typeof mount> | undefined;
 try {
-  await ClientViews.initialize();
-  client = new ClientViews(domain, "9", 0n, { records: 2, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 });
+  await HypothesisClient.initialize();
+  client = new HypothesisClient(domain, "9", 0n, { records: 2, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 });
   client.observe("a", { fact: { key: "a", basis: "0", value: value(0), bytes: 512 }, operation: null, work: 1 });
   client.observe("b", { fact: { key: "b", basis: "0", value: value(0), bytes: 512 }, operation: null, work: 1 });
   const branch = client.begin({ key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n });

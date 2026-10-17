@@ -3,15 +3,11 @@ import type { FileRef } from "./conversation.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { WasmMachineIdentityWire } from "./native-contracts.js";
 import type {
-  ModelContextCapacity as ModelContextCapacityWire,
-  ModelTokenCount as ModelTokenCountWire,
   ModelContentPart as ModelContentPartWire,
   ModelDataPart as ModelDataPartWire,
   ToolResultContent as ToolResultContentWire,
-  ModelEvent as ModelEventWire,
   ModelRequest as ModelRequestWire,
   ToolDefinition as ToolDefinitionWire,
-  Model as ModelWire,
   ModelDispatch as ModelDispatchWire,
   ModelRole,
   WasmToolJsonSchema as ToolJsonSchema,
@@ -23,7 +19,7 @@ import { validateComponentLabel } from "./rust-policy.js";
 export { validateComponentLabel } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary. */
-export type Model = Readonly<Omit<ModelWire, "options"> & { options: unknown }>;
+export type Model = import("../generated/wasm/acyclic_harness_wasm.js").PublicModel;
 
 type PublicModelDataPart<Part extends ModelDataPartWire> =
   Part extends Readonly<{ kind: "file" }>
@@ -88,13 +84,7 @@ export type ModelRequest =
     maxOutputTokens?: number;
     signal?: AbortSignal;
   }>;
-type PublicModelEvent<Event extends ModelEventWire> =
-  Event extends Readonly<{ kind: "tool_call" }>
-    ? Readonly<Omit<Event, "call_id" | "arguments"> & { callId: string; arguments: unknown }>
-    : Event extends Readonly<{ kind: "completed" }>
-      ? Readonly<Omit<Event, "metadata"> & { metadata: unknown }>
-      : Readonly<Event>;
-export type ModelEvent = PublicModelEvent<ModelEventWire>;
+export type ModelEvent = import("../generated/wasm/acyclic_harness_wasm.js").PublicModelEvent;
 export type ModelAttempt =
   Readonly<Omit<ModelDispatchWire, "operation_id" | "request_digest"> & {
     operationId: string;
@@ -102,22 +92,17 @@ export type ModelAttempt =
     observed: readonly ModelEvent[];
   }>;
 /** Provider capacity for the exact immutable model, derived from the Rust proof. */
-export type ModelContextCapacity = Readonly<Omit<ModelContextCapacityWire, "context_tokens" | "output_tokens"> & {
-  contextTokens: ModelContextCapacityWire["context_tokens"];
-  outputTokens: ModelContextCapacityWire["output_tokens"];
-}>;
-/** Additive upper bounds bound to the exact prepared bytes and ordered messages. */
-export type ModelTokenCount = Readonly<Omit<ModelTokenCountWire, "request_digest" | "fixed_tokens" | "message_tokens"> & {
-  requestDigest: Uint8Array;
-  fixedTokens: ModelTokenCountWire["fixed_tokens"];
-  messageTokens: readonly ModelTokenCountWire["message_tokens"][number][];
-}>;
+export type ModelContextCapacity = import("../generated/wasm/acyclic_harness_wasm.js").PublicModelCapacity;
+export type ModelTokenCount = import("../generated/wasm/acyclic_harness_wasm.js").PublicModelTokenCount;
+export type ModelGeneration = import("../generated/wasm/acyclic_harness_wasm.js").PublicModelGeneration;
+/** One immutable projection shared by admission counting and generation. */
+export interface PreparedModelRequest extends Disposable {
+  countTokens(): Promise<ModelTokenCount>;
+  generate(dispatch: ModelGeneration): AsyncIterable<ModelEvent>;
+}
 export interface ModelProvider {
-  /** Synchronous, without dispatch effects; unsupported models must reject explicitly. */
   contextCapacity(model: Model): ModelContextCapacity;
-  /** Synchronous; serializedInput is a defensive copy of the exact canonical request. */
-  countTokens(request: ModelRequest & { readonly serializedInput: Uint8Array }): ModelTokenCount;
-  generate(request: ModelRequest & { readonly serializedInput: Uint8Array }): AsyncIterable<ModelEvent>;
+  prepare(request: ModelRequest & { readonly serializedInput: Uint8Array }): Promise<PreparedModelRequest>;
   reconcile(attempt: ModelAttempt): Promise<readonly ModelEvent[] | undefined>;
 }
 

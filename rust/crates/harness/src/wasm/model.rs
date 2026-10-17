@@ -245,7 +245,8 @@ pub fn admit_model_event(
             .checked_add(delta.len() as u64)
             .ok_or_else(|| JsValue::from_str("model output size overflow"))?,
         ModelEvent::Reasoning { .. }
-        | ModelEvent::ToolCall { .. }
+        | ModelEvent::ReasoningBlock { .. }
+        | ModelEvent::ToolCall(_)
         | ModelEvent::Completed { .. } => prior_text_bytes,
     };
     if text_bytes > limits.file_bytes {

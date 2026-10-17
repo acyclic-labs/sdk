@@ -1,0 +1,3 @@
+{"records":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"Ready"}],"expect":{"applied":[true],
+ "presented":1,"output":"\u001b]777;notify;Task failed;task-1: Ready\u0007",
+ "view":{"latest":{"task-1":{"sequence":1,"event":"task_failed"}}}}}

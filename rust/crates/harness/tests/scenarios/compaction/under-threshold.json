@@ -1,0 +1,6 @@
+{"context":[{"role":"system","content":"keep instructions"},{"role":"user","content":"old request"}],
+  "compaction":{"config":{"response_reserve_tokens":10,"recent_tokens":30,"retention":{"roles":["system"],
+  "native_media":true}}},"turns":["answer"],"replay":true,"expect":{"text":"answer","request_count":1,
+  "requests":[{"max_output_tokens":10,"messages":[{"role":"system","content":"keep instructions"},{"role":"user",
+  "content":"old request"},{"role":"user","content":"current request"}]}],"not_events":[{"kind":"context_compacted"},
+  {"kind":"model_started","purpose":"summary"}]}}

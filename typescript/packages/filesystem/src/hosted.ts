@@ -1,3 +1,4 @@
+import { credentialProvider, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { type HostedFsOptions, type HostedFsEngine, type HostedFsCapabilities } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
@@ -20,8 +21,14 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (!options.bearerToken.trim() || new TextEncoder().encode(options.bearerToken).byteLength > MAX_BEARER_TOKEN_BYTES || /[\r\n\0]/.test(options.bearerToken)) {
-    throw new RangeError("bearer token must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
+  const callback = options.credential;
+  const token = callback === undefined ? options.bearerToken : undefined;
+  let credential: CredentialProvider;
+  try {
+    credential = credentialProvider(callback === undefined ? (token === undefined ? {} : { token }) : { credential: callback });
+  } catch (error) {
+    if (callback === undefined && error instanceof TypeError) throw new RangeError("invalid hosted filesystem bearer credential");
+    throw error;
   }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
@@ -35,7 +42,7 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   if (send === undefined) throw new TypeError("this runtime does not provide fetch");
   let negotiatedMaximumRequestBytes: bigint | undefined;
   const authorize: Interceptor = (next) => async (request) => {
-    request.header.set("authorization", `Bearer ${options.bearerToken}`);
+    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
   const boundRequest: Interceptor = (next) => async (request) => {

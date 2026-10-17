@@ -128,6 +128,37 @@ where
         })
     }
 
+    fn read_range<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.verify_creation(reference.volume(), Some(reference), io)
+                .await?;
+            if reference.descriptor().byte_length() > self.maximum_bytes {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "range source exceeds provider limit",
+                ));
+            }
+            if self.exact_file.is_none() {
+                let owned;
+                let authority_io = if let Some(io) = io {
+                    io
+                } else {
+                    self.verifier.verify(&self.scope, &mut None)?;
+                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &owned
+                };
+                require_file_read(&self.scope, reference, authority_io)?;
+            }
+            self.host.read_pinned_range(reference, range, io).await
+        })
+    }
+
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
@@ -315,7 +346,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    async fn verify_creation(
+    pub(in crate::filesystem) async fn verify_creation(
         &self,
         volume: &VolumeRef,
         file: Option<&FileRef>,
@@ -545,12 +576,12 @@ where
                         let directory = io.contains_capability(
                             context.scope().grants(),
                             &(volume, granted_prefix),
-                            "directory:read:",
+                            acyclic_fs::access::DIRECTORY_READ_PREFIX,
                         )?;
                         let whole_volume = io.contains_capability(
                             context.scope().grants(),
                             volume,
-                            "volume:read:",
+                            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                         )?;
                         if !directory && !whole_volume {
                             return Err(Error::NativeBoundary {
@@ -588,7 +619,11 @@ pub(in crate::filesystem) fn require_file_read(
             "internal storage file is not public content",
         ));
     }
-    if io.contains_capability(scope.capabilities(), reference.volume(), "volume:read:")? {
+    if io.contains_capability(
+        scope.capabilities(),
+        reference.volume(),
+        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+    )? {
         return Ok(());
     }
     if internal_owner {
@@ -598,7 +633,11 @@ pub(in crate::filesystem) fn require_file_read(
             "volume operation is not granted",
         ));
     }
-    if io.contains_capability(scope.capabilities(), reference, "file:read:")? {
+    if io.contains_capability(
+        scope.capabilities(),
+        reference,
+        acyclic_fs::access::FILE_READ_PREFIX,
+    )? {
         return Ok(());
     }
     if !internal
@@ -608,7 +647,7 @@ pub(in crate::filesystem) fn require_file_read(
         if io.contains_capability(
             scope.capabilities(),
             &(reference.volume(), ""),
-            "directory:read:",
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
         )? {
             return Ok(());
         }
@@ -620,7 +659,7 @@ pub(in crate::filesystem) fn require_file_read(
             if io.contains_capability(
                 scope.capabilities(),
                 &(reference.volume(), prefix),
-                "directory:read:",
+                acyclic_fs::access::DIRECTORY_READ_PREFIX,
             )? {
                 return Ok(());
             }

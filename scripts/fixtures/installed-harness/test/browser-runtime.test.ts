@@ -27,11 +27,11 @@ test("installed browser entry executes the ordinary registered runtime", async (
       run_limits: { concurrency: 1n, max_steps: 4n, deadline_epoch_ms: null },
       session_limits: { active_tasks: 1n, total_tasks: 3n, depth: 1, model_steps: 4n }, concurrency: 1,
     };
-    const scope = owner.issueScopeForAgent(agent, "owner", [
+    const scope = owner.issueScope("owner", [
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake", "task:spawn:installed.complete@1",
-      "task:spawn:acyclic.stock_turn@1", "model:generate",
+      "task:spawn:acyclic.stock_turn@1", "model:generate", "mail:read",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
-    ]);
+    ], agent);
     expect(scope.agent).toBe(agent);
     expect(scope.parent_proof).toBeNull();
     const outputSchema: BrowserWorkLease["operation"]["entrypoint"]["result_schema"] = {
@@ -74,18 +74,28 @@ test("installed browser entry executes the ordinary registered runtime", async (
         return { context_tokens: 128, output_tokens: 16 };
       }, (bytes, request_digest) => {
         const request = JSON.parse(new TextDecoder().decode(bytes));
+        expect(JSON.stringify(request.messages)).toContain("installed pinned context");
         return { request_digest, fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
       }, { kind: "disabled" });
     const command = crypto.randomUUID();
-    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ input: "hello", max_steps: 1 })));
+    const context_manifest = await runtime.stage(crypto.randomUUID(), "stock-context", new TextEncoder().encode(JSON.stringify({
+      conventions: ["installed pinned context"], discovery: { instructions: [], skills: [] }, selected_skills: [], tools: [],
+    })));
+    const payload = await runtime.stage(command, "stock-model", new TextEncoder().encode(JSON.stringify({ context_manifest, input: "hello", max_steps: 1 })));
     const operation = crypto.randomUUID();
-    const input = { operation_id: command, kind: "acyclic.model.v1", payload };
+    const receiveOperation = crypto.randomUUID();
+    const receivePayload = await runtime.stage(receiveOperation, "stock-receive", new TextEncoder().encode(JSON.stringify({ after: 0 })));
+    const input = {
+      receive: { operation_id: receiveOperation, kind: "acyclic.mail.receive.v1", payload: receivePayload },
+      model: { operation_id: command, kind: "acyclic.model.v1", payload },
+    };
     const stock = await runtime.admit(operation, "acyclic.stock_turn", "1", input);
     expect(stock.kind).toBe("accepted");
     if (stock.kind !== "accepted") throw new Error(`stock admission ${stock.kind}`);
     expect(await runtime.admit(operation, "acyclic.stock_turn", "1", input)).toEqual(stock);
-    await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, operation_id: crypto.randomUUID() })).rejects.toThrow();
-    expect((await runtime.runOperation(worker, stock.task_id, 4))?.kind).toBe("completed");
+    await expect(runtime.admit(operation, "acyclic.stock_turn", "1", { ...input, model: { ...input.model, operation_id: crypto.randomUUID() } })).rejects.toThrow();
+    const work = await runtime.runOperation(worker, stock.task_id, 4);
+    expect({ kind: work?.kind, modelCalls: generations }).toEqual({ kind: "completed", modelCalls: 1 });
     expect(await runtime.outcome(stock.task_id)).toEqual({ Succeeded: { text: "stock result", metadata: {}, attachments: [], steps: 1n } });
     expect(generations).toBe(1);
     expect(await runtime.runOperation(worker, stock.task_id, 4)).toBeNull();

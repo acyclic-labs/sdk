@@ -1,0 +1,18 @@
+{
+  "expect": {
+    "result": {
+      "kind": "submit",
+      "request": {
+        "scope": "all",
+        "kind": "resume"
+      }
+    },
+    "file_values": {
+      "session/requests/00000000-0000-0000-0000-000000000001.json": {
+        "scope": "all",
+        "kind": "resume"
+      }
+    }
+  },
+  "prompt": "/resumeall"
+}

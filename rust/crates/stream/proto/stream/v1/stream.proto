@@ -2,6 +2,8 @@
 syntax = "proto3";
 package acyclic.stream.v1;
 
+import "validation/v1/options.proto";
+
 option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
 
 // Canonical bounds shared by Rust and generated TypeScript clients.
@@ -48,9 +50,15 @@ message AppendResponse {
 
 message TailRequest {
   string path = 1;
+  // Observe accepted visibility without waiting for persistence. False retains
+  // the provider's ordinary tail behavior.
+  bool accepted = 2;
 }
 message TailResponse {
   uint64 tail = 1;
+  // Present for an accepted observation: confirmed durable prefix at the same
+  // cut, bounded by tail. Absent means the peer does not support that observation.
+  optional uint64 durable = 3;
   reserved 2;
   reserved "trim_point";
 }
@@ -156,7 +164,14 @@ message CommitCondition {
   oneof condition {
     TailCondition tail = 1;
     AbsentCondition absent = 2;
+    HeadCondition head = 3;
   }
+}
+
+message HeadCondition {
+  string path = 1;
+  uint64 expected = 2;
+  bytes commit_id = 3;
 }
 
 message AppendMutation {
@@ -234,7 +249,14 @@ message CommitConflict {
   oneof conflict {
     TailCommitConflict tail = 1;
     ExistsCommitConflict exists = 2;
+    HeadCommitConflict head = 4;
   }
+}
+
+message HeadCommitConflict {
+  string path = 1;
+  bytes expected = 2;
+  bytes actual = 3;
 }
 
 message CommitConflicts {
@@ -287,15 +309,15 @@ message CreateTokenRequest {
 }
 
 service StreamService {
-  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse);
-  rpc Append(AppendRequest) returns (AppendResponse);
-  rpc Tail(TailRequest) returns (TailResponse);
-  rpc Fork(ForkRequest) returns (ForkReceipt);
-  rpc Read(ReadRequest) returns (stream ReadResponse);
-  rpc Follow(FollowRequest) returns (stream ReadResponse);
-  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse);
-  rpc Children(ChildrenRequest) returns (stream ChildrenResponse);
-  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse);
-  rpc Commit(CommitRequest) returns (CommitResponse);
-  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope);
+  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.idempotency-resources" }; }
+  rpc Append(AppendRequest) returns (AppendResponse) { option (acyclic.validation.v1.auth) = { action: "streams/append" resource: "streams:/{path}" }; }
+  rpc Tail(TailRequest) returns (TailResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
+  rpc Fork(ForkRequest) returns (ForkReceipt) { option (acyclic.validation.v1.auth) = { action: "streams/fork" resource: "streams:/{source}" }; option (acyclic.validation.v1.auth) = { action: "streams/create" resource: "streams:/{destination}" }; }
+  rpc Read(ReadRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
+  rpc Follow(FollowRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" resource: "streams:/{path}" }; }
+  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" extractor: "streams.delivery-resource" }; }
+  rpc Children(ChildrenRequest) returns (stream ChildrenResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
+  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
+  rpc Commit(CommitRequest) returns (CommitResponse) { option (acyclic.validation.v1.auth) = { extractor: "streams.transaction" }; }
+  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.commit-resources" }; }
 }

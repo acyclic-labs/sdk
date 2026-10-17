@@ -1,0 +1,5 @@
+{
+  "prompt":"Reason then answer.",
+  "turns":[[{"type":"event","kind":"reasoning","delta":"private reasoning"},{"type":"event","kind":"content","delta":"answer"},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"text":"answer","events":[{"kind":"model","event":{"kind":"reasoning","delta":"private reasoning"}},{"kind":"model","event":{"kind":"content","delta":"answer"}}]}
+}

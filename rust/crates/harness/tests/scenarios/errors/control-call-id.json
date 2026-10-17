@@ -1,0 +1,5 @@
+{
+  "prompt":"Call IDs must not contain controls.",
+  "turns":[[{"type":"event","kind":"tool_call","call_id":"a\nb","name":"read","arguments":{}},{"type":"event","kind":"completed","metadata":null}]],
+  "expect":{"error":"tool call identity is invalid","not_events":[{"kind":"tool_started"}]}
+}

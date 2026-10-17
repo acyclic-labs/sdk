@@ -17,6 +17,82 @@ pub struct SkillMetadata {
 }
 
 impl SkillMetadata {
+    /// Loads the selected skill at its discovered generation under a finite body limit.
+    pub async fn invoke(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<ModelMessage> {
+        self.invoke_observed(reader, maximum_bytes, None).await
+    }
+
+    pub(crate) async fn invoke_observed(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ModelMessage> {
+        use crate::{executor::stock_boundary, wire::ErrorCode};
+        crate::executor::with_history_io(io, |work| self.validate(work))?;
+        if maximum_bytes == 0 || maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Invalid,
+                "invalid skill byte bound",
+            ));
+        }
+        #[cfg(feature = "filesystem")]
+        let content_io = io;
+        #[cfg(not(feature = "filesystem"))]
+        let content_io = None;
+        let source = &self.source;
+        let (file, bytes, hold) = reader
+            .read_private_path(
+                &source.root.volume,
+                &source.root.directory,
+                &source.path,
+                Some(&source.generation),
+                maximum_bytes,
+                content_io,
+            )?
+            .await?;
+        if file.volume() != &source.root.volume
+            || file.path() != source.path
+            || bytes.len() as u64 > maximum_bytes
+        {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Storage,
+                "pinned skill reader returned another file",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+        crate::model::charge_items(io, bytes.len() as u64)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?;
+        if text.contains('\0') {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Invalid,
+                "skill body is invalid text",
+            ));
+        }
+        let text = if io.is_some() {
+            crate::executor::stock_string_copy(text, io)?
+        } else {
+            let bytes = bytes
+                .try_into_ordinary_vec()
+                .unwrap_or_else(|bytes| bytes.to_vec());
+            String::from_utf8(bytes)
+                .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
+        };
+        drop(hold);
+        Ok(ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(text),
+        })
+    }
+
     /// Validates restored metadata without performing reads.
     pub fn validate(
         &self,
@@ -79,48 +155,7 @@ struct Frontmatter {
 /// Parses a bounded prefix.
 pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<SkillMetadata> {
     source.validate(&mut None)?;
-    let mut offset = 0;
-    let mut header_start = None;
-    let mut header_end = None;
-    for line in prefix.split_inclusive(|byte| *byte == b'\n') {
-        let delimiter = line.strip_suffix(b"\n").unwrap_or(line);
-        let delimiter = delimiter.strip_suffix(b"\r").unwrap_or(delimiter);
-        if offset == 0 {
-            if delimiter != b"---" || !line.ends_with(b"\n") {
-                return Err(Error::Invalid(
-                    "skill requires opening frontmatter delimiter".into(),
-                ));
-            }
-            header_start = Some(line.len());
-        } else if delimiter == b"---" && line.ends_with(b"\n") {
-            header_end = Some(offset);
-            break;
-        }
-        offset += line.len();
-    }
-    let (Some(start), Some(end)) = (header_start, header_end) else {
-        return Err(Error::Invalid(
-            "skill frontmatter is missing or exceeds prefix bound".into(),
-        ));
-    };
-    let header = prefix
-        .get(start..end)
-        .ok_or_else(|| Error::Invalid("invalid skill header".into()))?;
-    let options = serde_saphyr::options! {
-        budget: serde_saphyr::budget! {
-            max_events: usize::MAX, max_nodes: usize::MAX, max_depth: usize::MAX,
-            flow_nesting_limit: usize::MAX, max_documents: 1,
-            max_aliases: 0, max_anchors: 0, max_merge_keys: 0,
-            max_total_scalar_bytes: usize::MAX,
-        },
-        duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
-        merge_keys: serde_saphyr::MergeKeyPolicy::Error,
-        reject_unsupported_tags: true,
-        emit_comments: false,
-        with_snippet: false,
-    };
-    let metadata: Frontmatter = serde_saphyr::from_slice_with_options(header, options)
-        .map_err(|error| Error::Invalid(format!("invalid skill frontmatter: {error}")))?;
+    let metadata: Frontmatter = parse_frontmatter(prefix)?;
     let metadata = SkillMetadata {
         name: metadata.name,
         description: metadata.description,
@@ -131,7 +166,7 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
     Ok(metadata)
 }
 
-pub(super) async fn discover_skills(
+pub(crate) async fn discover_skills(
     reader: &dyn ContentResidencyVerifier,
     skills: &[ContextRoot],
     name: &str,

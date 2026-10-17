@@ -1,5 +1,34 @@
 use super::*;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Property: sampling removes all fresh tool grants, preserves every other
+    // grant and leaves the exact manifest catalog/admitted revisions intact.
+    proptest! {
+        #[test]
+        fn sampling_attenuation_keeps_the_pinned_catalog(grants in prop::collection::vec(
+            prop_oneof!["tool:call:[a-z]{0,16}", "other:[a-z]{0,16}", Just("model:generate".into()), Just("tool:callback".into())], 0..16,
+        )) {
+            let mut tools = ToolRegistry::default();
+            tools.register((crate::tool::files::write()?, None), &mut None, None)?;
+            let before = tools.definitions(None)?;
+            let expected = crate::Capabilities::new(grants.iter().filter(|grant| !grant.starts_with("tool:call:")).cloned());
+            let executor = StockExecutor::new(
+                Model::new("test".into(), "sampling".into(), "1".into(), Value::Null)?,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ContextPipeline::default(), tools,
+            ).with_tool_authority(RuntimeScope::new(crate::Capabilities::new(grants), Limits::default())?, None)?
+                .without_tool_authority();
+            prop_assert_eq!(executor.tool_scope.grants(), &expected);
+            prop_assert_eq!(executor.tools.definitions(None)?, before);
+            prop_assert!(stock_tool_definitions(&executor.tools, &executor.tool_scope, None)?.is_empty());
+        }
+    }
+}
+
 impl StockExecutor {
     /// Creates the stock loop without installing hidden stages or tools.
     #[must_use]
@@ -11,6 +40,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            summary_source: None,
             max_output_tokens: None,
             provider,
             context,
@@ -36,6 +66,14 @@ impl StockExecutor {
         Ok(self)
     }
 
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        if source.is_some() {
+            self.compaction = crate::context::CompactionPolicy::Disabled;
+        }
+        self.summary_source = source;
+        self
+    }
+
     /// Replaces or disables the ordinary threshold policy without starting effects.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
@@ -47,15 +85,44 @@ impl StockExecutor {
         mut self,
         stage: Arc<dyn crate::context::ContextStage>,
     ) -> Result<Self> {
+        if stage.name() == "context-manifest" && self.context.contains_stage(stage.name()) {
+            return Err(Error::Conflict(
+                "executor already has a context manifest".into(),
+            ));
+        }
         stage.validate(None)?;
         self.context = self.context.with(stage);
         Ok(self)
     }
 
-    /// Replaces the selected tools without changing their admission machinery.
-    #[must_use]
-    pub fn with_tool_registry(mut self, tools: ToolRegistry) -> Self {
+    /// Binds request assembly and tool selection to one authenticated immutable manifest.
+    pub async fn with_context_manifest(
+        mut self,
+        reference: FileRef,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    ) -> Result<Self> {
+        if self.context.contains_stage("context-manifest") {
+            return Err(Error::Conflict(
+                "executor already has a context manifest".into(),
+            ));
+        }
+        let (tools, stage) = crate::context::ContextManifest::bind(
+            reference,
+            reader.as_ref(),
+            self.tools,
+            self.limits,
+        )
+        .await?;
         self.tools = tools;
+        self.with_context_stage(stage)
+    }
+
+    /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.
+    pub(crate) fn without_tool_authority(mut self) -> Self {
+        self.tool_scope
+            .grants
+            .0
+            .retain(|grant| !grant.starts_with("tool:call:"));
         self
     }
 }

@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "kind": "select",
+      "query": "reasoning"
+    },
+    "file_values": {
+      "config/settings.json": {
+        "diff_modes": [
+          "auto",
+          "unified",
+          "split"
+        ],
+        "diff_mode": "auto",
+        "reasoning": true,
+        "retained": "settings"
+      }
+    }
+  },
+  "prompt": "/reasoning"
+}

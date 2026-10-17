@@ -1,0 +1,5 @@
+{"folder":".tasks","writes":[{"path":"workspace/layout.json","text":"{}"},{"path":".tasks/t/status.json","text":
+  "running"},{"path":".tasks/u/status.json","text":"done"},{"path":"plans/p.md","text":"plan"},{"path":
+  ".volumes/agents/a","text":"mount"}],"expect":{"files":{".tasks/t/status.json":"running",".tasks/u/status.json":"done"
+  },"changes":[null,{"path":".tasks/t/status.json","text":"running"},{"path":".tasks/u/status.json","text":"done"},null
+  ,null]}}

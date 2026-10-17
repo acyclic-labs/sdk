@@ -1,0 +1,3 @@
+{"records":[{"task":"名","sequence":1,"event":"task_failed","detail":"こんにちは🔔"}],"expect":{"applied":[true],
+ "presented":1,"output":"\u001b]9;Task failed: 名: こんにちは🔔\u0007","view":{"latest":{"名":{"task":"名","sequence":1,
+ "event":"task_failed","detail":"こんにちは🔔"}}}}}

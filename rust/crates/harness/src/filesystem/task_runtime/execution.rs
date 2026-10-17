@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::FileRef;
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
@@ -16,6 +17,7 @@ where
         model: &Model,
         provider: Arc<dyn ModelProvider>,
         pipeline: &ContextPipeline,
+        tools: ToolRegistry,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
         compaction: &crate::context::CompactionPolicy,
@@ -32,7 +34,7 @@ where
         crate::executor::NativeStockExecutor::new(
             (model, provider),
             pipeline,
-            &self.tools,
+            tools,
             (
                 Arc::clone(context),
                 operation,
@@ -48,7 +50,7 @@ where
         )
     }
 
-    /// Constructs stock execution with the task-owned journal and optional output volume.
+    /// Constructs stock execution with the task-owned journal, selected tools and output volume.
     pub async fn stock_execution(
         &self,
         task: TaskId,
@@ -57,6 +59,7 @@ where
         model: Model,
         provider: Arc<dyn ModelProvider>,
         context: ContextPipeline,
+        tools: ToolRegistry,
         output: Option<&VolumeRef>,
     ) -> Result<FilesystemTaskExecution<P, A, O>> {
         let admission = self.host.observe_admission(task).await?;
@@ -81,8 +84,9 @@ where
         let operation_id = execution_operation(task, turn, None)?;
         let journal = self
             .open_execution_journal(task, fence.clone(), turn, &admission)
-            .await?;
-        let executor = StockExecutor::new(model, provider, context, self.tools.clone())
+            .await?
+            .with_input_verifier(task_context.clone());
+        let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
             .with_durable_task(self.host.clone(), task, fence.clone())
@@ -135,6 +139,11 @@ where
         Ok(self)
     }
 
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        self.executor = self.executor.with_summary_source(source);
+        self
+    }
+
     /// Executes or reconciles using the bound journal and existing stock loop.
     pub async fn execute(&self, input: TurnInput) -> Result<TurnOutput> {
         self.execute_progress(input).await?.into_output()
@@ -151,7 +160,7 @@ where
             Some(&self.fence),
             self.run_limits.deadline_epoch_ms,
             self.operation_id,
-            self.executor.execute_progress(input, &self.journal),
+            || self.executor.execute_progress(input, &self.journal),
             None,
             |_| false,
         )
@@ -159,39 +168,53 @@ where
     }
 
     /// Observes retained model/tool attempts without starting another step.
-    pub async fn reconcile(
+    pub fn reconcile(
         self,
         input: TurnInput,
         maximum_wait_millis: u32,
-    ) -> Result<Option<TurnOutput>> {
-        if maximum_wait_millis == 0 {
-            return Err(Error::Invalid("invalid reconciliation allowance".into()));
+    ) -> impl std::future::Future<Output = Result<Option<TurnOutput>>> {
+        let progress = if maximum_wait_millis == 0 {
+            Err(Error::Invalid("invalid reconciliation allowance".into()))
+        } else {
+            Ok(self.reconcile_progress(input))
+        };
+        async move {
+            use futures::future::{Either, select};
+            use std::pin::pin;
+            let progress = pin!(progress?);
+            let timer = pin!(crate::live::sleep_millis(u64::from(maximum_wait_millis)));
+            match select(timer, progress).await {
+                Either::Left((elapsed, _)) => {
+                    elapsed?;
+                    Ok(None)
+                }
+                Either::Right((result, _)) => result?.into_output().map(Some),
+            }
         }
-        deadline::observe(maximum_wait_millis, async {
-            self.reconcile_progress(input).await?.into_output()
-        })
-        .await
     }
 
-    pub(crate) async fn reconcile_progress(
+    pub(crate) fn reconcile_progress(
         mut self,
         input: TurnInput,
-    ) -> Result<ExecutionProgress<TurnOutput>> {
-        self.validate_input(&input)?;
-        self.host
-            .verify_execution_owner(self.task, &self.fence, None)?
-            .await?;
-        if self
-            .run_limits
-            .deadline_epoch_ms
-            .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
-        {
+    ) -> impl std::future::Future<Output = Result<ExecutionProgress<TurnOutput>>> {
+        let future = crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.validate_input(&input)?;
             self.host
-                .expire_task_deadline(self.task, Some(&self.fence), &mut None)
+                .verify_execution_owner(self.task, &self.fence, None)?
                 .await?;
-        }
-        self.executor = self.executor.into_reconciliation();
-        self.executor.execute_progress(input, &self.journal).await
+            if self
+                .run_limits
+                .deadline_epoch_ms
+                .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
+            {
+                self.host
+                    .expire_task_deadline(self.task, Some(&self.fence), &mut None)
+                    .await?;
+            }
+            self.executor = self.executor.into_reconciliation();
+            self.executor.execute_progress(input, &self.journal).await
+        });
+        async move { future?.await }
     }
 
     pub(super) fn validate_input(&self, input: &TurnInput) -> Result<()> {

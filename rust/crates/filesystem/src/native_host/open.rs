@@ -85,11 +85,20 @@ pub(crate) fn directory_path<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
+    #[cfg(unix)]
     let mut current = clone_directory(parent, work)?;
     #[cfg(unix)]
     let components = path.components();
     #[cfg(windows)]
-    let components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    let mut components = path.split(|unit| *unit == 92).filter(|_| !path.is_empty());
+    #[cfg(windows)]
+    let mut current = {
+        let Some(name) = components.next() else {
+            return clone_directory(parent, work);
+        };
+        work.started_io(ITEM)?;
+        open_windows_directory(parent, name, create, work)?.0
+    };
     for component in components {
         work.started_io(ITEM)?;
         #[cfg(unix)]
@@ -322,9 +331,18 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     );
     #[cfg(windows)]
     let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-    let parent = directory_path(root, parent, false, work)?;
     #[cfg(unix)]
-    return unix_name(leaf, work, |leaf, work| operation(&parent, leaf, work));
+    let empty = parent.as_os_str().is_empty();
     #[cfg(windows)]
-    operation(&parent, leaf, work)
+    let empty = parent.is_empty();
+    let held = if empty {
+        None
+    } else {
+        Some(directory_path(root, parent, false, work)?)
+    };
+    let parent = held.as_ref().unwrap_or(root);
+    #[cfg(unix)]
+    return unix_name(leaf, work, |leaf, work| operation(parent, leaf, work));
+    #[cfg(windows)]
+    operation(parent, leaf, work)
 }

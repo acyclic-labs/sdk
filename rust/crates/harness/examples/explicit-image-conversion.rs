@@ -50,10 +50,11 @@ pub fn conversion_tool() -> Result<Tool> {
         .ok_or_else(|| Error::Invalid("conversion schema is not an object".into()))?
         .insert("x-fixture-maximum-bytes".into(), json!(MAXIMUM_BYTES));
     let adapter = Arc::new(ImageConversion {
-        read: files::read_file()?.executor,
-        write: files::write_file()?.executor,
+        read: files::read()?.executor,
+        write: files::write()?.executor,
     });
     Ok(Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: "example.convert_image".into(),
             revision: "img1-xor-1".into(),

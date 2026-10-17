@@ -1,0 +1,50 @@
+{
+  "text": {},
+  "border": {},
+  "editing": {
+    "foreground": "yellow"
+  },
+  "selection": {
+    "reverse": true
+  },
+  "placeholder": {
+    "dim": true
+  },
+  "popup": {},
+  "popup_selected": {
+    "reverse": true
+  },
+  "diagnostic": {
+    "foreground": "#e06c75",
+    "bold": true
+  },
+  "heading": {
+    "foreground": "#61afef",
+    "bold": true
+  },
+  "link": {
+    "foreground": "#61afef",
+    "underline": true
+  },
+  "code": {
+    "foreground": "#e5c07b"
+  },
+  "quote": {
+    "dim": true
+  },
+  "list": {
+    "foreground": "#56b6c2"
+  },
+  "rule": {
+    "dim": true
+  },
+  "table": {
+    "foreground": "#c678dd"
+  },
+  "added": {
+    "foreground": "#98c379"
+  },
+  "removed": {
+    "foreground": "#e06c75"
+  }
+}

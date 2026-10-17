@@ -12,8 +12,11 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
+use crate::lock_order::{
+    Condvar as RankedCondvar, FILE, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION,
+    VIEW,
+};
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use crate::model::AccessMode;
 use fuser::{
     BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
     FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,
@@ -27,10 +30,8 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{
-    Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
-};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]

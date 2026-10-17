@@ -28,37 +28,44 @@ impl StockExecution<'_> {
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
         let mut request = crate::model::clone_request(prepared.request(), self.io)?;
-        let mut calls = Vec::new();
-        for event in retained.events {
-            if let ModelEvent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } = event
-            {
-                let invocation = ToolInvocation::for_model_call(
-                    input.operation_id,
-                    step,
-                    call_id,
-                    name,
-                    arguments,
-                    self.native_work(),
-                )?;
-                stock_vec_push(&mut calls, invocation, self.io)?;
-            }
-        }
         if !retained.admission.completed
-            || calls.is_empty()
-            || through_call.is_some_and(|id| !calls.iter().any(|call| call.call_id == id))
+            || retained.admission.calls.is_empty()
+            || through_call
+                .is_some_and(|id| !retained.admission.calls.iter().any(|call| call == id))
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        for invocation in calls {
+        let mut results = Vec::new();
+        for event in retained.events {
+            let (invocation, metadata) = match event {
+                ModelEvent::ReasoningBlock { block } => {
+                    self.append_assistant_part(
+                        &mut request.messages,
+                        ModelContentPart::Reasoning { block },
+                    )?;
+                    continue;
+                }
+                ModelEvent::ToolCall(call) => (
+                    ToolInvocation::for_model_call(
+                        input.operation_id,
+                        step,
+                        call.call_id,
+                        call.name,
+                        call.arguments,
+                        self.native_work(),
+                    )?,
+                    call.metadata,
+                ),
+                _ => continue,
+            };
             let projection = completed_tool_projection(
                 journal,
                 &records,
                 step,
-                &invocation,
+                crate::tool::RecordedInvocation {
+                    invocation: &invocation,
+                    metadata: &metadata,
+                },
                 &request.tools,
                 self.stock.limits,
                 self.io,
@@ -68,16 +75,19 @@ impl StockExecution<'_> {
                 &mut request.messages,
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Part(ModelContentPart::ToolCall {
-                        call_id: stock_string_copy(&invocation.call_id, self.io)?,
-                        name: stock_string_copy(&invocation.name, self.io)?,
-                        arguments: invocation.arguments,
-                    }),
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        crate::model::ToolCall::new(
+                            stock_string_copy(&invocation.call_id, self.io)?,
+                            stock_string_copy(&invocation.name, self.io)?,
+                            invocation.arguments,
+                        )
+                        .with_metadata(metadata),
+                    )),
                 },
                 self.io,
             )?;
             stock_vec_push(
-                &mut request.messages,
+                &mut results,
                 ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -91,6 +101,9 @@ impl StockExecution<'_> {
             if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }
+        }
+        for result in results {
+            stock_vec_push(&mut request.messages, result, self.io)?;
         }
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;

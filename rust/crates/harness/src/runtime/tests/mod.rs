@@ -89,46 +89,6 @@ pub(super) fn file_fixture(path: &str, media_type: &str) -> Result<FileRef> {
     Ok(file)
 }
 
-pub(super) struct CompletedModel {
-    pub(super) requests: std::sync::Mutex<Vec<ModelRequest>>,
-}
-
-impl ModelProvider for CompletedModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        Ok(crate::context::ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: u32::try_from(request.bytes().len())
-                .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
-            message_tokens: vec![0; request.request().messages.len()],
-        })
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.request_digest());
-        self.requests
-            .lock()
-            .expect("model fixture")
-            .push(request.request().clone());
-        Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
-            metadata: Value::Null,
-        })]))
-    }
-}
-
 #[derive(Clone)]
 pub(super) struct FixedPolicy {
     pub(super) identity: ComponentIdentity,

@@ -1,0 +1,145 @@
+// Multiplexed platform session shared by clients and node-to-node subscriptions.
+syntax = "proto3";
+package acyclic.stream.v1;
+
+import "validation/v1/options.proto";
+
+import "stream/v1/stream.proto";
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
+
+message SessionFrame {
+  uint64 channel_id = 1;
+  uint64 generation = 2;
+  oneof body {
+    SessionHello hello = 10;
+    SessionWelcome welcome = 11;
+    SessionInterest interest = 12;
+    SessionInterestApplied interest_applied = 13;
+    SessionOpened opened = 14;
+    SessionData data = 15;
+    SessionAck ack = 16;
+    SessionWindow window = 17;
+    SessionClosed closed = 18;
+    SessionMoved moved = 19;
+    SessionWatermark watermark = 20;
+  }
+}
+message SessionHello {
+  uint32 version = 1; // exactly 1
+  bytes client_id = 2; // stable logical client identity, not authorization
+  string destination_node = 3;
+  uint64 receive_bytes = 4; // finite aggregate payload credit
+  uint32 receive_frames = 5; // finite aggregate frame credit
+}
+message SessionWelcome {
+  uint32 version = 1;
+  string node_id = 2;
+  uint64 receive_bytes = 3;
+  uint32 receive_frames = 4;
+}
+message SessionChannel {
+  uint64 channel_id = 1;
+  uint64 generation = 2;
+}
+message SessionInterest {
+  uint64 revision = 1;
+  repeated SessionSubscription upsert = 2;
+  repeated SessionChannel remove = 3;
+}
+message SessionInterestApplied {
+  uint64 revision = 1;
+}
+message SessionSubscription {
+  SessionChannel channel = 1;
+  SessionCursor resume = 2;
+  oneof kind {
+    SessionFollow follow = 10;
+    ChildrenRequest children = 11;
+    bytes fs_publications = 12; // encoded versioned platform fs subscription
+    bytes actor_socket = 13; // RESERVED FOR actor-sockets: encoded Actors message
+    bytes actor_call = 14; // RESERVED FOR actor-sockets: encoded Actors message
+  }
+}
+enum SessionDelivery {
+  SESSION_DELIVERY_UNSPECIFIED = 0; // rejected
+  SESSION_DELIVERY_ALL = 1;
+  SESSION_DELIVERY_LATEST = 2;
+}
+message SessionFollow {
+  string path = 1;
+  SessionDelivery delivery = 2;
+  // Optional 32-byte commit at resume.next - 1; requires ALL and next > 0.
+  // The provider must check this anchor and register the follow atomically,
+  // reject an absent/changed anchor without waiting for future appends, and
+  // reject history replacement during delivery. No read-then-follow fallback.
+  bytes preceding_commit_id = 3;
+}
+message SessionCursor {
+  uint64 next = 1; // exclusive, next record / actor frame offset
+  bytes opaque = 2; // provider-owned cursor for children/fs
+}
+message SessionOpened {
+  SessionCursor resume = 1;
+  // Echo only after the provider has enforced SessionFollow.preceding_commit_id.
+  // A checked client must match this confirmation before granting data credit.
+  // Empty/mismatched confirmation means Unsupported for that logical channel;
+  // an older peer must never silently downgrade a checked follow to unchecked.
+  bytes preceding_commit_id = 2;
+}
+message SessionData {
+  SessionCursor after = 1;
+  uint64 accepted = 2;
+  uint64 durable = 3;
+  oneof item {
+    Record record = 10;
+    Child child = 11;
+    bytes fs_publication = 12;
+    bytes actor_socket = 13;
+    bytes actor_call = 14;
+    SessionLatestValue latest_value = 15;
+  }
+}
+message SessionAck {
+  SessionCursor applied = 1;
+}
+// Additive receive-credit grant, never a replacement for remaining credit.
+// Each data frame consumes one frame and its entire encoded SessionFrame byte
+// length (excluding transport framing). Both balances must suffice before send.
+// Channel 0 is control-only. All control frames, including opened, closed, moved
+// and window, are exempt from data credit; they remain separately admission-bounded.
+// A channel-0 grant replenishes aggregate session credit. A nonzero-channel grant
+// replenishes that channel's additional credit; data must satisfy both windows.
+// Each opened generation starts with zero channel credit; its receiver grants
+// the initial window after opened. Replaced generations do not inherit credit.
+// Overflow is a protocol error, with neither balance changed.
+message SessionWindow {
+  uint64 bytes = 1;
+  uint32 frames = 2;
+}
+message SessionClosed {
+  string code = 1;
+  string message = 2;
+}
+message SessionNode {
+  string node_id = 1;
+  string endpoint = 2;
+  uint64 placement_epoch = 3;
+}
+message SessionMoved {
+  SessionNode node = 1;
+  SessionCursor resume = 2;
+}
+message SessionWatermark {
+  uint64 accepted = 1;
+  uint64 durable = 2;
+}
+message SessionLatestValue {
+  bytes key = 1;
+  bytes value = 2;
+  bool attention = 3;
+}
+
+service StreamSessionService {
+  rpc Session(stream SessionFrame) returns (stream SessionFrame) { option (acyclic.validation.v1.auth) = { extractor: "streams.session-channels" }; }
+}

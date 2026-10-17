@@ -5,7 +5,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
 -> Result<()> {
     use acyclic_harness::filesystem::StockTurnMachine;
     for queued in [true, false] {
-        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let directory = workspace()?;
         let fs_options = LocalOptions::new(directory.path().join("filesystem"));
         let stream_root = directory.path().join("streams");
         let provider = ProviderRef::new(
@@ -72,14 +72,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             "1".into(),
             Value::Null,
         )?;
-        let provider_model = Arc::new(InterruptedModel {
-            requests: Mutex::new(Vec::new()),
-            approval_tool: false,
-            observed_events: 1,
-            output_tokens: AtomicU64::new(0),
-            generated: AtomicUsize::new(0),
-            reconciled: AtomicUsize::new(0),
-        });
+        let provider_model = interrupted_model(1);
         let worker = Worker {
             id: "stock-mail".into(),
             available: ResourceRequest::default(),
@@ -140,7 +133,6 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let commands = runtime.commands().with_model(
                 &model.clone(),
                 provider_model.clone(),
-                &ContextPipeline::default(),
                 &acyclic_harness::context::CompactionPolicy::Disabled,
                 None,
             )?;
@@ -150,6 +142,19 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                         operation,
                         "model",
                         &serde_json::to_vec(&ModelTaskCommand {
+                            summary_source: None,
+                            context_manifest: acyclic_harness::context::ContextManifest::new(
+                                Default::default(),
+                                Vec::new(),
+                                &ToolRegistry::default(),
+                            )?
+                            .publish(
+                                payloads.as_ref(),
+                                OperationId::new(),
+                                "manifest.json",
+                                Limits::default(),
+                            )
+                            .await?,
                             input: ModelContent::Text("original prompt".into()),
                             selected_context: None,
                             max_steps: 1,
@@ -268,9 +273,10 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                 }
             }
             if phase == 2 && queued {
-                let request: acyclic_harness::model::ModelRequest =
-                    serde_json::from_slice(&provider_model.requests.lock().unwrap()[0])
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                let requests = provider_model.requests();
+                let request = requests
+                    .first()
+                    .ok_or_else(|| Error::NotFound("model request".into()))?;
                 let parcel_path = format!("mailbox/{receive_operation}/parcel");
                 let parcel = request
                     .messages
@@ -301,8 +307,8 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                 assert_eq!(value["text"], "partial-restored");
             }
         }
-        assert_eq!(provider_model.generated.load(Ordering::SeqCst), 1);
-        assert_eq!(provider_model.reconciled.load(Ordering::SeqCst), 1);
+        assert_eq!(provider_model.dispatches().len(), 1);
+        assert_eq!(provider_model.reconciliations().len(), 1);
     }
     Ok(())
 }

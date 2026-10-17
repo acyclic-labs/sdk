@@ -1,0 +1,10 @@
+{
+  "writes": [
+    {"path":"plans/release.md","text":"# Release\n\n- [ ] Design\n- [ ] Ship\n"},
+    {"path":"plans/release.md","text":"# Release\n\n- [x] Design\n- [~] Ship\n"},
+    {"path":"plans/release.md","text":"# Release\n\n- [x] Design\n- [x] Ship\n"}
+  ],
+  "expect": {
+    "plans/release.md": {"markdown":"# Release\n\n- [x] Design\n- [x] Ship\n","tasks":[{"state":"[x]","text":"Design"},{"state":"[x]","text":"Ship"}]}
+  }
+}

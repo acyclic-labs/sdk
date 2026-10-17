@@ -1,5 +1,28 @@
 use super::*;
 
+/// A borrowed chunk from one captured process pipe.
+#[derive(Clone, Copy, Debug)]
+pub enum ProcessOutput<'a> {
+    /// Bytes newly read from standard output.
+    Stdout(&'a [u8]),
+    /// Bytes newly read from standard error.
+    Stderr(&'a [u8]),
+}
+
+pub(super) fn observe_output(
+    chunk: ProcessOutput<'_>,
+    observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+) -> io::Result<()> {
+    let action = observe(chunk)?;
+    if !action.bytes.is_empty() || action.complete {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "process input requires an active exchange",
+        ));
+    }
+    Ok(())
+}
+
 /// A stopped capture, retaining its bounded output and observed cleanup state.
 #[derive(Debug)]
 pub struct ProcessCaptureFailure {
@@ -132,8 +155,15 @@ impl<'a> PendingStdin<'a> {
             self.written += actual;
             progressed |= actual != 0;
             recorded_bytes?;
-            let (_, recorded_operation) = transfer?;
+            let (written, recorded_operation) = transfer?;
             recorded_operation?;
+            if written == Some(0) {
+                if self.terminate_on_completion {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                self.written = self.bytes.len();
+                self.complete = true;
+            }
             if let Some(meter) = meter {
                 meter.check()?;
             }

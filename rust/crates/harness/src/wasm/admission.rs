@@ -217,8 +217,8 @@ pub fn task_identity_digest_wasm(
     requirements: JsValue,
     machine_digest: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
-    let input_schema: serde_json::Value = from_js(input_schema)?;
-    let output_schema: serde_json::Value = from_js(output_schema)?;
+    let input_schema = js_json_value(&input_schema)?;
+    let output_schema = js_json_value(&output_schema)?;
     let requirements: Vec<String> = from_js(requirements)?;
     let machine_digest: Option<[u8; 32]> = match machine_digest {
         [] => None,

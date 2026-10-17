@@ -349,18 +349,20 @@ export class NativeContracts {
     });
   }
 
-  /** Runs the bounded canonical Rust projection over owner-captured bytes. */
+  /** Runs the bounded canonical Rust projection over owner-authenticated reads. */
   selectModelContext(
     conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
     selection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }>,
-    files: ReadonlyMap<string, Uint8Array>,
+    read: (file: FileRef, maximumBytes: number) => Promise<Uint8Array>,
     maximumMessages: number,
     maximumAttachments: number,
     maximumRenderBytes: number,
     maximumProjectedAttachments: number,
   ): Promise<NativeSelectedModelContext> {
     return wasm.selectModelContext(
-      conversation, selection, files, maximumMessages, maximumAttachments, maximumRenderBytes,
+      // Rust reads only FileRefs from the admitted conversation/attachment manifests.
+      conversation, selection, read,
+      maximumMessages, maximumAttachments, maximumRenderBytes,
       maximumProjectedAttachments,
     ).then(value => normalizeNativeValue(value) as NativeSelectedModelContext);
   }

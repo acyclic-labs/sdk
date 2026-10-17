@@ -1,20 +1,20 @@
-//! Generates transport from the committed descriptor and builds the Darwin bridge.
+//! Generates transport from the packaged protocol and builds the Darwin bridge.
 
-use prost::Message;
+#[path = "build/case_fold.rs"]
+mod case_fold;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(kani)");
-    let descriptors = prost_types::FileDescriptorSet::decode(
-        include_bytes!("src/generated/acyclic-filesystem-v2.bin").as_slice(),
+    println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
+    println!("cargo:rustc-check-cfg=cfg(fuzzing)");
+    case_fold::generate()?;
+    let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32";
+    acyclic_proto_build::compile(
+        acyclic_proto_build::config()?,
+        acyclic_proto_build::services(native_transport),
+        &["proto/filesystem/v2/filesystem.proto"],
+        "acyclic-filesystem-v2.bin",
     )?;
-    let prost = tonic_prost_build::Config::new();
-    let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")?.as_str() != "wasm32";
-    tonic_prost_build::configure()
-        .build_client(native_transport)
-        .build_server(native_transport)
-        .compile_fds_with_config(descriptors, prost)?;
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/generated/acyclic-filesystem-v2.bin");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
     if std::env::var_os("CARGO_FEATURE_NAPI_TYPES").is_some() {
         // napi-derive emits the shared enums into this external directory.

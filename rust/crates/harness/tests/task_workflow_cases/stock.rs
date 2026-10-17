@@ -7,26 +7,30 @@ async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() ->
 
 #[tokio::test]
 async fn stock_model_publication_faults_reconcile_after_provider_reopen() -> Result<()> {
-    for mode in [
-        ExecutionFaultMode::Before,
-        ExecutionFaultMode::AfterVisible,
-        ExecutionFaultMode::AfterHidden,
-    ] {
-        stock_restart_with_publication_fault(Some(mode), false, false).await?;
-    }
+    futures::future::try_join_all(
+        [
+            ExecutionFaultMode::Before,
+            ExecutionFaultMode::AfterVisible,
+            ExecutionFaultMode::AfterHidden,
+        ]
+        .map(|mode| stock_restart_with_publication_fault(Some(mode), false, false)),
+    )
+    .await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn cancelled_uncertain_model_retains_ownership_until_fenced_release_after_reopen()
 -> Result<()> {
-    for mode in [
-        ExecutionFaultMode::Before,
-        ExecutionFaultMode::AfterVisible,
-        ExecutionFaultMode::AfterHidden,
-    ] {
-        stock_restart_with_publication_fault(Some(mode), true, false).await?;
-    }
+    futures::future::try_join_all(
+        [
+            ExecutionFaultMode::Before,
+            ExecutionFaultMode::AfterVisible,
+            ExecutionFaultMode::AfterHidden,
+        ]
+        .map(|mode| stock_restart_with_publication_fault(Some(mode), true, false)),
+    )
+    .await?;
     Ok(())
 }
 
@@ -39,7 +43,7 @@ pub(super) async fn stock_restart_with_publication_fault(
     cancel_after_failure: bool,
     direct_executor: bool,
 ) -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let directory = workspace()?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new(
@@ -118,14 +122,7 @@ pub(super) async fn stock_restart_with_publication_fault(
         labels: BTreeMap::new(),
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
-    let model = Arc::new(InterruptedModel {
-        requests: Mutex::new(Vec::new()),
-        approval_tool: false,
-        observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
-        output_tokens: AtomicU64::new(0),
-        generated: AtomicUsize::new(0),
-        reconciled: AtomicUsize::new(0),
-    });
+    let model = interrupted_model(usize::from(fault != Some(ExecutionFaultMode::Before)));
     let session_limits = SessionLimits {
         active_tasks: 1,
         total_tasks: 2,
@@ -333,6 +330,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                 Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(),
+                ToolRegistry::default(),
                 None,
             )
             .await?
@@ -375,6 +373,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                         Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
+                        ToolRegistry::default(),
                         None,
                     )
                     .await?
@@ -384,8 +383,8 @@ pub(super) async fn stock_restart_with_publication_fault(
                     Err(Error::Conflict(message))
                         if message == "execution identity is bound to another request or configuration"
                 ));
-                assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+                assert_eq!(model.dispatches().len(), 1);
+                assert_eq!(model.reconciliations().len(), 0);
             }
             let restored = execution.execute(turn.clone()).await?;
             assert_eq!(
@@ -397,10 +396,16 @@ pub(super) async fn stock_restart_with_publication_fault(
                 }
             );
             assert_eq!(execution.execute(turn).await?, restored);
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 1);
             if fault.is_none() {
-                assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+                assert_eq!(
+                    model
+                        .requests()
+                        .last()
+                        .and_then(|request| request.max_output_tokens),
+                    Some(8_192)
+                );
             }
             let another = runtime
                 .stock_execution(
@@ -410,6 +415,7 @@ pub(super) async fn stock_restart_with_publication_fault(
                     Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
                     ContextPipeline::default(),
+                    ToolRegistry::default(),
                     None,
                 )
                 .await?;
@@ -431,8 +437,8 @@ pub(super) async fn stock_restart_with_publication_fault(
             } else {
                 assert!(rejected.is_err());
             }
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 1);
         } else {
             if let Some(mode) = fault {
                 stream_provider.arm_execution(3, mode);
@@ -479,8 +485,8 @@ pub(super) async fn stock_restart_with_publication_fault(
                 stream_provider.execution_faults.load(Ordering::SeqCst),
                 usize::from(fault.is_some())
             );
-            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
-            assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+            assert_eq!(model.dispatches().len(), 1);
+            assert_eq!(model.reconciliations().len(), 0);
             coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()

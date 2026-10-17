@@ -1,0 +1,1 @@
+{"prompt":"hello","maximum_bytes":5,"expect":{"result":{"kind":"prompt","text":"hello","source":null,"mentions":[]}}}

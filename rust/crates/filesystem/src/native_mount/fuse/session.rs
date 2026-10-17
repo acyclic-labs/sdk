@@ -212,7 +212,6 @@ impl FuseSession {
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
                 skips_opendir: false,
-                skips_open: false,
             };
             let mut session = fuser::Session::new(filesystem, &request.destination, &config)
                 .map_err(|error| {
@@ -322,14 +321,17 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
     if let Some(notifier) = notifier {
         run_invalidator(&core, &notifier);
     } else {
-        drop(
-            core.invalidation
-                .wait_while(
-                    core.state.lock().unwrap_or_else(PoisonError::into_inner),
-                    |_| !core.stopping.load(Ordering::Acquire),
-                )
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let mut projection = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while !core.stopping.load(Ordering::Acquire) {
+            match core.invalidation.wait(projection) {
+                Ok(next) => projection = next,
+                Err(poisoned) => {
+                    projection = poisoned.into_inner();
+                    break;
+                }
+            }
+        }
+        drop(projection);
     }
     let mut retiring = state.lock().unwrap_or_else(PoisonError::into_inner);
     if let Err(error) = retiring.stop(&core, None) {

@@ -27,10 +27,11 @@ schema!(CONTROL_RESPONSE => ControlResponse, "", [], ["result" => ROOT : 0], [])
 schema!(EVENT_PAYLOAD => EventPayload, "kind", ["interaction_resolved" => 1, "fork_published" => 2, "project_merge_published" => 4], ["resolution" => RESOLUTION : 1, "seed" => FORK_SEED : 2, "receipt" => PROJECT_MERGE_RECEIPT : 4], []);
 schema!(SNAPSHOT => Snapshot, "", [], ["events" => EVENTS : 0, "projection" => PROJECTION : 0], []);
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
+schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
 schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0], []);
-schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 2], []);
+schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
 schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
-schema!(MODEL_CONTENT_PART => ModelContentPart, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
+schema!(MODEL_CONTENT_PART => ModelContentPart, "kind", ["tool_call" => 1, "tool_result" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 1, "content" => TOOL_RESULT_CONTENT : 2], []);
 schema!(TOOL_RESULT_CONTENT => ToolResultContent, "kind", ["json" => 1], ["value" => ROOT : 1], []);
 schema!(WORKFLOW_RECORD => WorkflowRecord, "", [], ["input" => ROOT : 0, "prior" => STATE_RECORD : 0, "transition" => TRANSITION : 0], []);
 schema!(WORKFLOW_ADMISSION => WorkflowAdmission, "", [], ["initial" => STATE_RECORD : 0], []);
@@ -49,6 +50,10 @@ schema!(PROJECT_MERGE_RECEIPT => ProjectMergeReceipt, "", [], ["provider_proof" 
 schema!(TOOL_TASK_COMMAND => ToolTaskCommand, "", [], ["arguments" => ROOT : 0], []);
 schema!(TASK_ADMIT_COMMAND => TaskAdmitCommand, "", [], ["input" => ROOT : 0], []);
 schema!(PREPARED_TASK_ADMIT_COMMAND => PreparedTaskAdmitCommand, "", [], ["admission" => TASK_ADMISSION_RECORD : 0], []);
+schema!(CONTEXT_MANIFEST => ContextManifest, "", [], ["discovery" => DISCOVERED_CONTEXT : 0, "tools" => TOOLS : 0], []);
+schema!(DISCOVERED_CONTEXT, "", [], ["skills" => SKILLS : 0], []);
+schema!(SKILLS, "", [], [], [SKILL]);
+schema!(SKILL, "", [], ["fields" => ROOT : 0], []);
 schema!(MODEL_TASK_COMMAND => ModelTaskCommand, "", [], ["input" => MODEL_CONTENT : 0, "selected_context" => CONTEXT : 0], []);
 schema!(NATIVE_PROCESS_REQUEST => NativeProcessRequest, "", [], ["mcp_stdio" => MCP_STDIO_REQUEST : 0], []);
 schema!(PROJECT_SOURCE_AUTHORIZATION => ProjectSourceAuthorization, "", [], ["native_snapshot" => ROOT : 0], []);

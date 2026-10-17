@@ -1,0 +1,6 @@
+{"seed":{"plans/a.md":"αβ🦀z\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit",
+  "arguments":{"file":"plans/a.md","old_text":"β🦀","new_text":"日本語"}},{"type":"event","kind":"completed",
+  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":"α日本語z\n"},"results":{"call":{"name":"edit",
+  "content":{"kind":"json","value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":13,"sha256":[184,
+  205,51,181,78,82,104,39,205,167,125,248,124,65,32,197,188,121,104,52,195,251,177,60,101,189,108,214,40,
+  158,193,239],"media_type":"text/plain"},"display_name":"a.md"}}}}}}}

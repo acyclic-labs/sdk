@@ -1,0 +1,4 @@
+{"folder":".volumes/agents","writes":[{"path":"plans/a.md","text":"plan"},{"path":".volumes/agents/a","text":"child-a"},
+  {"path":".tasks/t/status.json","text":"running"},{"path":".volumes/agents/b","text":"child-b"}],"expect":{"files":{
+  ".volumes/agents/a":"child-a",".volumes/agents/b":"child-b"},"changes":[null,{"path":".volumes/agents/a","text":
+  "child-a"},null,{"path":".volumes/agents/b","text":"child-b"}]}}

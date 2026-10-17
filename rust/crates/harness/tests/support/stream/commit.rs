@@ -16,6 +16,12 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
             return Err(StreamError::Unavailable);
         }
+        if request.mutations.iter().any(|mutation| matches!(mutation,
+            acyclic_stream::CommitMutation::Append { path, .. } if path.as_str() == COORDINATOR_PATH))
+            && self.location_fault.compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+        {
+            return Err(StreamError::Unavailable);
+        }
         if self.execution_race.swap(false, Ordering::SeqCst) {
             let (path, tail) = request
                 .conditions

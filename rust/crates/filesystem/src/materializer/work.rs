@@ -29,9 +29,28 @@ macro_rules! demand_calls {
     )*};
 }
 impl NativeMaterializationWork {
-    /// Bytes retained by the original shared ledger.
+    /// Registers a cancellation waiter funded by this original ledger.
+    pub fn cancellation_wait(
+        &self,
+    ) -> Result<crate::Cancelled<'static>, NativeTreeMaterializationError> {
+        self.cancellation
+            .prepare_cancelled_with_native_work(self)
+            .map_err(|cause| match cause {
+                crate::cancellation::CancellationWaitError::Work(cause) => cause.into(),
+                crate::cancellation::CancellationWaitError::Native(cause) => cause,
+            })
+    }
+
+    /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
-        std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64
+        const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                crate::demand::NativeDemandReadMeter,
+            >()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("original ledger Arc layout overflow"),
+            }
+        }
     }
     /// Admits the original ledger before sharing it.
     pub fn new(
@@ -53,9 +72,7 @@ impl NativeMaterializationWork {
             })?;
         Ok(Self {
             cancellation: cancellation.clone(),
-            state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-                state,
-            ))),
+            state: Arc::new(crate::demand::NativeDemandReadMeter::new(state)),
             resource: None,
             recheck_items: false,
             capture_origin: None,
@@ -84,7 +101,9 @@ impl NativeMaterializationWork {
             .as_ref()
             .map_or(&self.cancellation, |view| &view.cancellation)
     }
-    pub(super) fn state<T>(
+    // The leaf stays locked through operation. Do not re-enter demand or drop
+    // owners whose destruction releases through this leaf.
+    pub(crate) fn state<T>(
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
@@ -226,24 +245,24 @@ impl NativeMaterializationWork {
     }
     /// Admits work before dispatch.
     pub fn admit(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
-        self.state(|state| state.admit(self.item_charge(delta)))
+        self.state(|state| state.admit(delta))
             .map_err(native_materialization_work_error)
     }
     /// Charges work starting now.
     pub fn charge(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
-        self.state(|state| state.charge(self.item_charge(delta)))
+        self.state(|state| state.charge(delta))
             .map_err(native_materialization_work_error)
     }
     /// Records work completed by a nested operation.
     pub fn spent(&self, delta: WorkCounters) -> Result<(), NativeTreeMaterializationError> {
-        self.state(|state| state.spent(self.item_charge(delta)))
+        self.state(|state| state.spent(delta))
             .map_err(native_materialization_work_error)
     }
     pub(crate) fn record_admitted(
         &self,
         delta: WorkCounters,
     ) -> Result<(), NativeTreeMaterializationError> {
-        self.state(|state| state.record(self.item_charge(delta)))
+        self.state(|state| state.record(delta))
             .map_err(native_materialization_work_error)
     }
     demand_calls! {
@@ -257,7 +276,7 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_allocation(bytes, operations, self.item_charge(delta)))
+        self.state(|state| state.claim_allocation(bytes, operations, delta))
             .map_err(native_materialization_work_error)?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),
@@ -326,3 +345,7 @@ impl NativeMaterializationWork {
     /// Maximum complete builtin payload.
     pub const MAXIMUM_BUILTIN_BYTES: usize = 262_144;
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "work_normalization_tests.rs"]
+mod tests;

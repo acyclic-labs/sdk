@@ -1,3 +1,4 @@
+import { sharedDescriptorAuthority } from "../../../shared/tests/package-fixture.mjs";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,14 +11,7 @@ function fixture(t, language = "kotlin", failure = "") {
   const root = mkdtempSync(join(tmpdir(), "jvm-consumer-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
-    put(join(authority, source), source);
-    return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
-  });
-  families.push({ source: "import.proto", source_sha256: sha256("import") });
-  put(join(authority, "import.proto"), "import"); put(join(authority, "shared.bin"), "descriptors");
-  const manifest = Buffer.from(JSON.stringify({ schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families }));
-  put(join(authority, "rust-authority.json"), manifest);
+  const manifest = sharedDescriptorAuthority(authority);
   const installation = join(root, "java-qualified"); const cache = join(root, "cache");
   const dependency = join(cache, "sdk-runtime.jar"); put(dependency, "SDK runtime fixture");
   put(join(installation, "installed/sdk-java-transport-0.2.0-alpha.1.jar"), "SDK JAR fixture");

@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
-import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
-import { ProjectionStore, type ClientEvent } from "../src/client.js";
-import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
+import { HypothesisClient, type ClientDomain, type ClientObservation, type HypothesisLimits } from "../src/hypotheses.js";
+import { WasmHypothesisClient } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Value = Readonly<{ count: number }>;
-const limits: ClientViewLimits = { records: 4, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 };
+const limits: HypothesisLimits = { records: 4, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 };
 const value = (count: number): Value => Object.freeze({ count });
 const evidence = (key: string, revision: number, projected: Value, operation: ClientObservation<Value>["operation"] = null): ClientObservation<Value> => ({
   fact: { key, basis: String(revision), value: projected, bytes: 512 }, operation, work: 1,
@@ -20,7 +19,7 @@ const domain: ClientDomain<Value, null, ClientObservation<Value>> = {
   corresponds: (predicted, canonical) => ({ matches: predicted.count === canonical.count, work: 1 }),
 };
 
-await ClientViews.initialize();
+await HypothesisClient.initialize();
 
 test("restored hypotheses retain dependencies and require trusted outcome receipts", () => {
   const receipt = evidence("a", 1, value(1), ["op", "Completed"]);
@@ -37,7 +36,7 @@ test("restored hypotheses retain dependencies and require trusted outcome receip
       throw new Error("no trusted recovery receipt");
     },
   };
-  const source = new ClientViews(recovering, "71", 0n, limits);
+  const source = new HypothesisClient(recovering, "71", 0n, limits);
   source.observe("a", evidence("a", 0, value(0)));
   const parent = source.begin({ key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n });
   source.observe("a", receipt);
@@ -45,7 +44,7 @@ test("restored hypotheses retain dependencies and require trusted outcome receip
     dependencies: [{ branch: parent, requirement: "Confirmed" }], expires: 5n });
   const savedParent = source.checkpoint(parent);
   const savedChild = source.checkpoint(child);
-  const restored = new ClientViews(recovering, "71", source.sequence(), limits);
+  const restored = new HypothesisClient(recovering, "71", source.sequence(), limits);
   restored.observe("a", receipt);
   const before = restored.residency();
   expect(() => restored.restore(savedChild)).toThrow();
@@ -60,14 +59,14 @@ test("restored hypotheses retain dependencies and require trusted outcome receip
   const next = restored.begin({ key: "a", basis: "1", operation: null, predicted: value(3), assumption: null,
     dependencies: [], expires: 5n });
   expect([parent, child]).not.toContain(next);
-  const unsupported = new ClientViews(domain, "71", source.sequence(), limits);
+  const unsupported = new HypothesisClient(domain, "71", source.sequence(), limits);
   unsupported.observe("a", receipt);
   expect(() => unsupported.restore(savedParent)).toThrow();
   source.dispose(); restored.dispose(); unsupported.dispose();
 });
 
 test("Rust binding keeps stable immutable references, narrow notifications, honest outcome and provenance", () => {
-  const client = new ClientViews(domain, "7", 0n, limits);
+  const client = new HypothesisClient(domain, "7", 0n, limits);
   const canonical = value(0);
   client.observe("a", evidence("a", 0, canonical));
   client.observe("b", evidence("b", 0, value(2)));
@@ -121,10 +120,10 @@ test("Rust binding keeps stable immutable references, narrow notifications, hone
 });
 
 test("raw generated WASM rejects negative/overflow/precision-losing ticks and costs", () => {
-  const raw = new WasmClientViews("1", "2", 0n, limits, domain.validate, domain.observe, domain.corresponds);
+  const raw = new WasmHypothesisClient("1", "2", 0n, limits, domain.validate, domain.observe, domain.corresponds);
   try {
     for (const sequence of [-1n, 1n << 64n, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(() => new WasmClientViews("1", "2", sequence as bigint, limits, domain.validate, domain.observe, domain.corresponds)).toThrow();
+      expect(() => new WasmHypothesisClient("1", "2", sequence as bigint, limits, domain.validate, domain.observe, domain.corresponds)).toThrow();
       expect(() => raw.advance(sequence as bigint)).toThrow();
     }
     for (const work of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
@@ -149,7 +148,7 @@ test("raw generated WASM rejects negative/overflow/precision-losing ticks and co
 });
 
 test("binding failure atomicity, ambiguity, dependencies, retention and finite selection capacity", () => {
-  const client = new ClientViews(domain, "8", 0n, { ...limits, records: 1, branches: 2 });
+  const client = new HypothesisClient(domain, "8", 0n, { ...limits, records: 1, branches: 2 });
   client.observe("a", evidence("a", 0, value(0)));
   const request = { key: "a", basis: "0", operation: "op", predicted: value(1), assumption: null, dependencies: [], expires: 5n } as const;
   try {
@@ -184,36 +183,11 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
   } finally { client.dispose(); }
 });
 
-test("ProjectionStore explicitly starts before delivery and retains updates across subscriber churn", () => {
-  const listeners = new Set<(event: ClientEvent<number>) => void>();
-  const client = { subscribe(listener: (event: ClientEvent<number>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
-  const store = new ProjectionStore(client, 0, (state, event) => state + event.event);
-  expect(listeners.size).toBe(0);
-  store.start(); store.start();
-  expect(listeners.size).toBe(1);
-  let calls = 0;
-  const stop = store.subscribe(() => calls++);
-  const emit = (event: number): void => {
-    for (const listener of listeners) listener({ authority: { kind: "conversation", id: "a" }, operationId: "op", revision: 1n, event } as ClientEvent<number>);
-  };
-  emit(0);
-  expect(calls).toBe(0);
-  emit(1);
-  expect(calls).toBe(1);
-  stop(); emit(2);
-  expect(store.getSnapshot()).toBe(3);
-  expect(calls).toBe(1);
-  store.dispose(); store.dispose(); emit(4);
-  expect(listeners.size).toBe(0);
-  expect(store.getSnapshot()).toBe(3);
-  expect(() => store.start()).toThrow();
-});
-
 test("bounded reordered/duplicate/partial outcomes preserve unrelated authoritative values", () => {
   const outcomes = ["Admitted", "Indeterminate", "Completed", "Rejected", "Cancelled"] as const;
   let explored = 0;
   for (const first of outcomes) for (const second of outcomes) for (const repeated of [false, true]) {
-    const client = new ClientViews(domain, "10", 0n, limits);
+    const client = new HypothesisClient(domain, "10", 0n, limits);
     const unrelated = value(42);
     client.observe("a", evidence("a", 0, value(0)));
     client.observe("b", evidence("b", 0, unrelated));

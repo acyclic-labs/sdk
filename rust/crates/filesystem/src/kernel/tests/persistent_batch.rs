@@ -143,3 +143,7 @@ fn native_batch_denial_keeps_its_actual_constructor_prefix()
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "persistent_batch_cached.rs"]
+mod cached;

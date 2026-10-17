@@ -1,0 +1,6 @@
+{"seed":{"skills/z/SKILL.md":"---\nname: last\ndescription: Inspect files\n---\nSECRET BODY","skills/a/SKILL.md":
+  "---\nname: first\ndescription: Inspect files\n---\nSECRET BODY"},"expect":{"requests":[{"messages":[{"role":
+  "system","content":{"$json":[{"name":"first","description":"Inspect files","source":{"path":"skills/a/SKILL.md"}},{
+  "name":"last","description":"Inspect files","source":{"path":"skills/z/SKILL.md"}}]}},{"role":"user","content":
+  "Inspect files"}]}],"not_requests":[{"messages":[{"content":{"$contains":"SECRET BODY"}}]},{"messages":[{"content":{
+  "$contains":"SECRET BODY"}}]}],"request_files":[[]]}}

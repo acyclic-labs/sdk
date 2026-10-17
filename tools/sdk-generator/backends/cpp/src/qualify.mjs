@@ -1,30 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { sha256, within } from "../../../shared/authority.mjs";
+import { qualificationOutput, sourceInventory, sha256, within, runCli } from "../../../shared/authority.mjs";
 import { readPackage, targets } from "./package.mjs";
-import { files, verifyCompiledSources, verifyHost, verifyPrefixes, verifyRuntime } from "./provenance.mjs";
+import { verifyCompiledSources, verifyHost, verifyPrefixes, verifyRuntime } from "./provenance.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
 const negatives = { InvalidActorBytes: ["C2665", "set_code_sha256"], InvalidOptionalInteger: ["C2664", "set_if_tail"] };
 const controls = ["CMakeLists.txt", "message_consumer.cc", "rpc_consumer.cc", "PositiveTypes.cc", ...Object.keys(negatives).map(name => name + ".cc")];
-const markers = ["PASS C++ complete file descriptors, 19 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls",
-  "PASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types"];
+const markers = ["PASS C++ complete file descriptors, 20 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls",
+  "PASS C++ 20 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types"];
 
 // Native command and pin injection is limited to offline runner controls.
 export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
   if (command === spawnSync && (process.platform !== "win32" || process.arch !== "x64")) throw new Error("C++ installed qualification requires Windows x64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "host-inventory"].map(name => [name, realpathSync(args[name])]));
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [...Object.values(inputs), realpathSync(join(directory, "../../.."))]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
   const admitted = readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "generate.mjs", "../toolchains/qualification.json", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake",
@@ -80,7 +74,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   verifyCompiledSources(sdkBuild, [...admitted.payload.keys()].filter(name => name.startsWith("src/")).map(name => join(sdk, name)));
   verifyCompiledSources(build, ["rpc_consumer.cc", "PositiveTypes.cc", ...Object.keys(negatives).map(name => name + ".cc")].map(name => join(consumer, name)));
   verifyPrefixes(sdkBuild, runtimeRoot); verifyPrefixes(build, runtimeRoot, installed);
-  if (JSON.stringify(files(sdk)) !== JSON.stringify([...admitted.payload.keys()].sort()) || JSON.stringify(files(consumer)) !== JSON.stringify(controls.toSorted())) throw new Error("compiled source file inventory differs");
+  if (JSON.stringify(sourceInventory(sdk)) !== JSON.stringify([...admitted.payload.keys()].sort()) || JSON.stringify(sourceInventory(consumer)) !== JSON.stringify(controls.toSorted())) throw new Error("compiled source file inventory differs");
   for (const [name, bytes] of admitted.payload) {
     if (!readFileSync(join(sdk, name)).equals(bytes)) throw new Error("SDK source changed");
     const destination = name.startsWith("include/") ? join(installed, name) : ["LICENSE", "NOTICE"].includes(name) || name.startsWith("authority/") ? join(installed, "share/acyclic-sdk-transport", name) : undefined;
@@ -99,13 +93,9 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     compiled_sdk_inventory_sha256: sha256(readFileSync(join(sdkBuild, "compile_commands.json"))), compiled_consumer_inventory_sha256: sha256(readFileSync(join(build, "compile_commands.json"))),
     installed_library_sha256: sha256(readFileSync(join(installed, "lib/acyclic_sdk_transport.lib"))), consumer_executable_sha256: sha256(readFileSync(join(build, "RpcConsumer.exe"))),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    populated_rpc_message_pairs: 19, native_rpc_method_calls: 19, independent_negative_compiles: 2,
+    populated_rpc_message_pairs: 20, native_rpc_method_calls: 20, independent_negative_compiles: 2,
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
   put("qualification.json", JSON.stringify(receipt, null, 2) + "\n"); return receipt;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "host-inventory", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options }); if (Object.keys(options).some(name => !values[name])) throw new Error("all installed qualification arguments are required");
-  const receipt = qualify(values, { onProgress: message => process.stderr.write(message + "\n") }); process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
-}
+runCli(import.meta.url, values => qualify(values, { onProgress: message => process.stderr.write(message + "\n") }), ["package", "sha256", "receipt", "authority", "runtime-root", "runtime-inventory", "host-inventory", "output"], "all installed qualification arguments are required");

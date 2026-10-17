@@ -133,14 +133,33 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let observation = self
+            .checkout
+            .observe(
+                ViewGate::callback_owner()?,
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
+        let file = self
+            .lookup_in(&observation, path, inputs.carrier)
+            .await?
+            .ok_or(MountSourceError::NotFound)?
+            .node
+            .file_id;
+        drop(observation);
         let mut candidate = self
             .checkout
-            .candidate(None, inputs.carrier, cancellation, Some(&self.cancellation))
+            .file_candidate(file, inputs.carrier, cancellation, Some(&self.cancellation))
             .await?;
         let lookup = self
             .lookup_in(&candidate.checkout, path, inputs.carrier)
             .await?
             .ok_or(MountSourceError::NotFound)?;
+        if lookup.node.file_id != file {
+            return Err(MountSourceError::Stale);
+        }
         candidate
             .checkout
             .change_named_attribute(lookup.node.file_id, &name, value, work, cancellation)
@@ -266,6 +285,11 @@ impl<A, O> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        if self.folds_names() {
+            let _ = self
+                .require_unique_folded_path(checkout, path, false, &work, cancellation)
+                .await?;
+        }
         let value = checkout
             .lookup_no_follow_with_metadata(path, &work, cancellation)
             .await?;
@@ -408,6 +432,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     config.profile,
                     FilesystemProfile::Portable | FilesystemProfile::Browser
                 ),
+            folded_directories: folded_cache::FoldedDirectoryCache::new(),
             cancellation: CancellationToken::new(),
             capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
             capture_quiesced: Arc::new(std::sync::Condvar::new()),
@@ -589,56 +614,14 @@ where
         change: ContentChange<F>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        invoke(&self.runtime, work, || async {
-            let mut carrier = NativeDemandCarrier::Native(work);
-            let mut candidate = self
-                .checkout
-                .candidate(
-                    None,
-                    &mut carrier,
-                    work.cancellation(),
-                    Some(&self.cancellation),
-                )
-                .await?;
-            let node = match file.address() {
-                crate::facade::ContentAddress::File(id) => id,
-                crate::facade::ContentAddress::Path(path) => {
-                    candidate
-                        .checkout
-                        .inspector(
-                            &mut crate::kernel::allocation::KernelAccounting::native(
-                                work,
-                                work.cancellation(),
-                            ),
-                            work.cancellation(),
-                        )?
-                        .lookup_no_follow(path, work, work.cancellation())
-                        .await?
-                        .record
-                        .ok_or(MountSourceError::NotFound)?
-                        .file_id
-                }
-            };
-            candidate
-                .checkout
-                .change_content(
-                    file,
-                    change,
-                    ContentTimes::Stamp(content_change_time()?),
-                    work,
-                    work.cancellation(),
-                )
-                .await?;
-            self.checkout
-                .install_change(
-                    candidate,
-                    ViewChange::Node(node),
-                    work,
-                    &self.cancellation,
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-            Ok(())
+        invoke(&self.runtime, work, || {
+            self.checkout.change_file_content(
+                file,
+                change,
+                work,
+                &self.cancellation,
+                self.native_callback_guard.clone(),
+            )
         })
     }
 }

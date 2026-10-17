@@ -12,6 +12,9 @@ use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions, ObjectCacheStats};
 use acyclic_stream::OwnedBytes;
 
+#[path = "persistent_io/owned.rs"]
+mod owned;
+
 async fn put_tree_page(
     store: &MemoryObjectStore,
     name: &[u8],

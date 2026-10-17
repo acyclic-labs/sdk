@@ -2,23 +2,17 @@ use super::*;
 use crate::conversation::ContentGrant;
 use crate::{
     Outcome,
-    model::{Model, ModelEvent, ModelProvider, ModelRequest},
+    model::{Model, ModelEvent},
     runtime::{TaskDefinition, TaskRegistry},
 };
-use acyclic_stream::{BoxProviderFuture as BoxFuture, BoxProviderStream as BoxStream};
-use futures::stream;
 use serde_json::Value;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
 
 const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(100_000, 16_000_000);
 
-mod content;
+use crate::test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn};
 
-struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
+mod content;
 
 fn synthetic_token_count(
     request: &crate::model::PreparedModelRequest,
@@ -41,45 +35,19 @@ fn synthetic_token_count(
         })
         .collect::<Result<Vec<_>>>()?;
     let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
-    Ok(crate::context::ModelTokenCount {
-        request_digest: request.request_digest(),
-        fixed_tokens: u32::try_from(fixed)
-            .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+        request.request_digest(),
+        u32::try_from(fixed).map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
         message_tokens,
-    })
+    ))
 }
 
-impl ModelProvider for TextModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        synthetic_token_count(request)
-    }
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        _dispatch: crate::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request.request().clone());
-        Box::pin(stream::iter(vec![
-            Ok(ModelEvent::Content {
-                delta: "local response".into(),
-            }),
-            Ok(ModelEvent::Completed {
-                metadata: Value::Null,
-            }),
-        ]))
-    }
+fn text_model(turns: usize) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(std::iter::repeat_n(
+        ScriptedTurn::Text("local response".into()),
+        turns,
+    ))
+    .with_token_counter(synthetic_token_count)
 }
 
 async fn run_admitted_file_case<F, Fut>(
@@ -98,9 +66,9 @@ where
             storage.read_capability.clone(),
             storage.write_capability.clone(),
             "task:spawn:file_tool_case@1".into(),
-            "tool:call:acyclic.read_file".into(),
-            "tool:call:acyclic.write_file".into(),
-            "tool:call:acyclic.edit_file".into(),
+            "tool:call:read".into(),
+            "tool:call:write".into(),
+            "tool:call:edit".into(),
             "tool:call:acyclic.list_files".into(),
             "tool:call:acyclic.fork".into(),
             "tool:call:acyclic.merge".into(),
@@ -125,29 +93,10 @@ where
     Ok(())
 }
 
-struct ModelWithoutAccounting(TextModel);
-
-impl ModelProvider for ModelWithoutAccounting {
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        dispatch: crate::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.0.generate(request, dispatch)
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: crate::model::ModelDispatch,
-        observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        self.0.reconcile(dispatch, observed)
-    }
-}
-
 #[tokio::test]
 async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
-    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(text_model(1));
+    let unaccounted = Arc::new(text_model(1).without_accounting());
     let policy = crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
         response_reserve_tokens: 1_024,
         recent_tokens: 2_048,
@@ -158,12 +107,12 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
         .builder()
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
+            provider.clone(),
         )
-        .tools(storage.default_tools(Limits::default(), None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
+        .tool(storage.list_files_tool(Limits::default())?)
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .grant("tool:call:acyclic.list_files")
         .grant(capability::MODEL_GENERATE)
         .compaction(policy)
@@ -181,7 +130,7 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
         .builder()
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))),
+            unaccounted.clone(),
         )
         .grant(capability::MODEL_GENERATE)
         .compaction(crate::context::CompactionPolicy::Disabled)
@@ -193,9 +142,11 @@ async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
             .text,
         "local response"
     );
-    let requests = requests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let requests = provider
+        .requests()
+        .into_iter()
+        .chain(unaccounted.requests())
+        .collect::<Vec<_>>();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].max_output_tokens, Some(1_024));
     assert_eq!(requests[1].max_output_tokens, None);
@@ -209,7 +160,13 @@ async fn default_recursive_tools_are_present_and_unbound_routes_are_unavailable(
         file_bytes: 65536,
         ..Default::default()
     };
-    let tools = storage.default_tools(limits, None)?;
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
+        MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >(None, limits.file_bytes)?)?;
+    tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = tools.get(name, None, None)?.unwrap().clone();
         run_admitted_file_case(&storage, limits, move |task| {
@@ -266,15 +223,14 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         render_bytes,
         ..Limits::default()
     };
-    let tool = owner
-        .default_tools(limits, None)?
-        .get("acyclic.read_file", None, None)?
+    let tool = crate::tools::defaults()?
+        .get("read", None, None)?
         .ok_or_else(|| Error::NotFound("read tool".into()))?
         .clone();
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "read-1".into(),
-        name: "acyclic.read_file".into(),
+        name: "read".into(),
         arguments: json!({"file":file}),
     };
     let own_tool = tool.clone();
@@ -366,16 +322,15 @@ async fn default_write_reconciles_original_receipt_and_rejects_changed_retry() -
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let tool = storage
-        .default_tools(limits, None)?
-        .get("acyclic.write_file", None, None)?
+    let tool = crate::tools::defaults()?
+        .get("write", None, None)?
         .ok_or_else(|| Error::NotFound("write tool".into()))?
         .clone();
     run_admitted_file_case(&storage, limits, move |task| {
         let tool = tool.clone();
         async move {
             let invocation = ToolInvocation {
-                operation_id: OperationId::new(), call_id: "write-1".into(), name: "acyclic.write_file".into(),
+                operation_id: OperationId::new(), call_id: "write-1".into(), name: "write".into(),
                 arguments: json!({"path":"notes/one.txt","text":"saved text","media_type":"text/plain","display_name":"one.txt"}),
             };
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id, None)?;
@@ -455,11 +410,7 @@ async fn owner_private_directory_is_lazy_paged_and_generation_pinned() -> Result
         render_bytes: 1_024,
         ..Limits::default()
     };
-    let tool = storage
-        .default_tools(limits, None)?
-        .get("acyclic.list_files", None, None)?
-        .ok_or_else(|| Error::NotFound("default list tool".into()))?
-        .clone();
+    let tool = storage.list_files_tool(limits)?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "list-1".into(),
@@ -531,7 +482,13 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         render_bytes: 4_096,
         ..Limits::default()
     };
-    let tools = storage.default_tools(limits, None)?;
+    let mut tools = crate::tools::defaults()?;
+    tools.extend(crate::filesystem::recursive_tools::<
+        MemoryStream,
+        MemoryAuthorityBackend,
+        MemoryObjectBackend,
+    >(None, limits.file_bytes)?)?;
+    tools.register((storage.list_files_tool(limits)?, None), &mut None, None)?;
     let file = storage
         .stage(
             OperationId::new(),
@@ -545,12 +502,12 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
         let tools = tools.clone(); let file = file.clone();
         async move {
             let task = task.scoped(Capabilities::new([
-                "tool:call:acyclic.read_file", "tool:call:acyclic.write_file", "tool:call:acyclic.edit_file", "tool:call:acyclic.list_files",
+                "tool:call:read", "tool:call:write", "tool:call:edit", "tool:call:acyclic.list_files",
             ]), limits)?;
             for (name, arguments) in [
-                ("acyclic.read_file", json!({"file":file})),
-                ("acyclic.write_file", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
-                ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
+                ("read", json!({"file":file})),
+                ("write", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
+                ("edit", json!({"file":file,"old_text":"one","new_text":"two"})),
             ] {
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
                 let tool = tools.get(name, None, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
@@ -564,102 +521,10 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
     }).await
 }
 
-struct ReadFileModel {
-    file: Arc<Mutex<Option<FileRef>>>,
-    calls: AtomicUsize,
-}
-
-impl ModelProvider for ReadFileModel {
-    fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-        Ok(crate::context::ModelContextCapacity {
-            context_tokens: 131_072,
-            output_tokens: 4_096,
-        })
-    }
-    fn count_tokens(
-        &self,
-        request: &crate::model::PreparedModelRequest,
-    ) -> Result<crate::context::ModelTokenCount> {
-        synthetic_token_count(request)
-    }
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::PreparedModelRequest,
-        _dispatch: crate::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        let request = request.request();
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            let Some(file) = self
-                .file
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-            else {
-                return Box::pin(stream::iter(vec![Err(Error::Invalid(
-                    "file was not staged before model generation".into(),
-                ))]));
-            };
-            assert!(
-                request
-                    .tools
-                    .iter()
-                    .any(|tool| tool.name == "acyclic.read_file")
-            );
-            Box::pin(stream::iter(vec![
-                Ok(ModelEvent::ToolCall {
-                    call_id: "read".into(),
-                    name: "acyclic.read_file".into(),
-                    arguments: json!({"file": file}),
-                }),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]))
-        } else {
-            assert!(request.messages.iter().any(|message| {
-                matches!(
-                    &message.content,
-                    crate::model::ModelContent::Part(
-                        crate::model::ModelContentPart::ToolResult { .. }
-                    )
-                )
-            }));
-            Box::pin(stream::iter(vec![
-                Ok(ModelEvent::Content {
-                    delta: "read complete".into(),
-                }),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]))
-        }
-    }
-}
-
 #[tokio::test]
 async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()> {
-    let file = Arc::new(Mutex::new(None));
-    let model = Arc::new(ReadFileModel {
-        file: file.clone(),
-        calls: AtomicUsize::new(0),
-    });
     let limits = Limits::default();
     let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
-    let bundle = storage
-        .builder()
-        .model(
-            Model::new("test".into(), "file".into(), "1".into(), Value::Null)?,
-            model.clone(),
-        )
-        .grant(capability::MODEL_GENERATE)
-        .tools(storage.default_tools(limits, None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
-        .grant("tool:call:acyclic.list_files")
-        .compaction(crate::context::CompactionPolicy::default())
-        .limits(limits)
-        .build()?;
     let staged = storage
         .stage(
             OperationId::new(),
@@ -669,9 +534,37 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             "read.txt",
         )
         .await?;
-    *file
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(staged);
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "read".into(),
+                    "read".into(),
+                    json!({"file": staged}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Text("read complete".into()),
+        ])
+        .with_token_counter(synthetic_token_count),
+    );
+    let bundle = storage
+        .builder()
+        .model(
+            Model::new("test".into(), "file".into(), "1".into(), Value::Null)?,
+            model.clone(),
+        )
+        .grant(capability::MODEL_GENERATE)
+        .tool(storage.list_files_tool(limits)?)
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
+        .grant("tool:call:acyclic.list_files")
+        .compaction(crate::context::CompactionPolicy::default())
+        .limits(limits)
+        .build()?;
     assert_eq!(
         storage
             .run_prompt(&bundle, "read the file", Vec::new())
@@ -679,24 +572,30 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
             .text,
         "read complete"
     );
-    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "read"));
+    assert!(requests[1].messages.iter().any(|message| matches!(
+        &message.content,
+        crate::model::ModelContent::Part(crate::model::ModelContentPart::ToolResult { .. })
+    )));
     Ok(())
 }
 
 #[tokio::test]
 async fn memory_prompt_runs_with_attachments() -> Result<()> {
-    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(text_model(2));
     let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
     let bundle = storage
         .builder()
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
+            provider.clone(),
         )
-        .tools(storage.default_tools(Limits::default(), None)?)
-        .grant("tool:call:acyclic.read_file")
-        .grant("tool:call:acyclic.write_file")
-        .grant("tool:call:acyclic.edit_file")
+        .tool(storage.list_files_tool(Limits::default())?)
+        .grant("tool:call:read")
+        .grant("tool:call:write")
+        .grant("tool:call:edit")
         .grant("tool:call:acyclic.list_files")
         .grant(capability::MODEL_GENERATE)
         .compaction(crate::context::CompactionPolicy::default())
@@ -723,13 +622,7 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
         )
         .await?;
     assert_eq!(output.text, "local response");
-    assert_eq!(
-        requests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len(),
-        2
-    );
+    assert_eq!(provider.requests().len(), 2);
     assert!(matches!(storage.volume().owner(), VolumeOwner::Agent(_)));
     Ok(())
 }
@@ -737,13 +630,14 @@ async fn memory_prompt_runs_with_attachments() -> Result<()> {
 #[tokio::test]
 async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::from_bytes([81; 16]), 4_096).await?;
-    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(text_model(2));
     let bundle = storage
         .builder()
+        .without_default_tools()
         .compaction(crate::context::CompactionPolicy::Disabled)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
+            provider.clone(),
         )
         .grant("model:generate")
         .build()?;
@@ -943,10 +837,9 @@ async fn local_builder_runs_through_ref_only_storage() -> Result<()> {
             .await?,
         output
     );
-    let requests = requests
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let requests = provider.requests();
     assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.tools.is_empty()));
     assert_eq!(requests[0].messages.len(), 1);
     assert_eq!(requests[1].messages.len(), 3);
     Ok(())
@@ -995,7 +888,7 @@ async fn typed_tasks_stage_and_resolve_only_with_owner_bound_grants() -> Result<
         .tasks(tasks)
         .model(
             Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
-            Arc::new(TextModel(Arc::new(Mutex::new(Vec::new())))),
+            Arc::new(text_model(1)),
         )
         .grant("model:generate")
         .build()?;

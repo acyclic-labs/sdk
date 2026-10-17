@@ -60,12 +60,23 @@ struct MailLocation {
 
 const MAX_MAIL_LOCATION_BYTES: usize = 1024;
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TimerEvent {
-    task_id: TaskId,
-    operation_id: OperationId,
-    deadline_unix_ms: u64,
+type TimerEvent = acyclic_actors::timers::TimerRecord<TaskId, OperationId>;
+
+#[test]
+fn sdk_and_native_timer_bytes_match() -> Result<()> {
+    let record = acyclic_actors::timers::TimerRecord::new(
+        "01010101-0101-0101-0101-010101010101".into(),
+        "02020202-0202-0202-0202-020202020202".into(),
+        u64::MAX,
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let bytes = record
+        .encode()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let event: TimerEvent = crate::contract::json_from_slice(&bytes)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(crate::contract::canonical_json_bytes(&event)?, bytes);
+    Ok(())
 }
 
 #[derive(Eq, PartialEq, Serialize, Deserialize)]

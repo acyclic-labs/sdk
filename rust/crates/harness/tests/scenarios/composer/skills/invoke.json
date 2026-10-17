@@ -1,0 +1,4 @@
+{
+  "prompt": "/audit files",
+  "expect": {"result":{"kind":"prompt","text":"Inspect files","mentions":[],"source":{"path":"skills/audit/SKILL.md"}}}
+}

@@ -14,6 +14,44 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         self.read_current(path, None, maximum, SourceNodeKind::RegularFile, ctx)
             .await
     }
+
+    /// Reads the current authored/shadow file or freshly observed source version.
+    /// Does not update the view's retained observations or enumerate directories.
+    pub async fn read_latest(
+        &self,
+        path: &str,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let mut checkout = self
+            .checkout(crate::model::GenerationSelector::Head, ctx)
+            .await?;
+        let inspected = self
+            .inspect_unauthored(
+                &mut checkout.value,
+                path,
+                None,
+                InspectBasis {
+                    unobserved: true,
+                    ..InspectBasis::default()
+                },
+                ctx,
+            )
+            .await;
+        checkout.retire(ctx)?;
+        let (lookup, _, guard) = inspected?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Err(LazyWorkspaceError::NotFound);
+        };
+        let result = if lookup.stat().kind == SourceNodeKind::RegularFile {
+            self.read_resolved(&lookup, path, None, maximum, ctx).await
+        } else {
+            Err(LazyWorkspaceError::NotRegularFile)
+        };
+        self.retire_lookup((lookup, guard), ctx)?;
+        result
+    }
     /// Reads one exact regular-file range.
     pub async fn read_range(
         &self,

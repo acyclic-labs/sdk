@@ -1,0 +1,4 @@
+{"seed":{"AGENTS.md":"Agent rules","CLAUDE.md":"Claude rules"},"expect":{"request_files":[["Agent rules",
+  "Claude rules"]],"requests":[{"messages":[{"role":"system","content":{"kind":"file","file":{"path":"AGENTS.md"},
+  "policy":"bounded_full"}},{"role":"system","content":{"kind":"file","file":{"path":"CLAUDE.md"},"policy":
+  "bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}

@@ -1,23 +1,11 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, posix } from "node:path";
-import { canonical, sha256, within } from "../../../shared/authority.mjs";
-
-export function files(root, prefix = "") {
-  const directory = join(root, prefix), kind = lstatSync(directory);
-  if (!kind.isDirectory() || kind.isSymbolicLink()) throw new Error("inventory directory kind differs");
-  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("inventory contains a non-file");
-    return [name];
-  }).sort();
-}
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { canonical, sourceInventory, sha256, within } from "../../../shared/authority.mjs";
 
 function verifyFiles(root, expected) {
   if (!expected || Object.keys(expected).some(name => !canonical(name) || !/^[a-f0-9]{64}$/.test(expected[name]))) throw new Error("unsafe inventory member");
   if (new Set(Object.keys(expected).map(name => name.toLowerCase())).size !== Object.keys(expected).length) throw new Error("inventory has case aliases");
-  if (JSON.stringify(files(root)) !== JSON.stringify(Object.keys(expected).sort())) throw new Error("file inventory differs");
+  if (JSON.stringify(sourceInventory(root)) !== JSON.stringify(Object.keys(expected).sort())) throw new Error("file inventory differs");
   for (const [name, digest] of Object.entries(expected)) {
     if (!within(root, realpathSync(join(root, name))) || sha256(readFileSync(join(root, name))) !== digest) throw new Error("inventory file differs: " + name);
   }

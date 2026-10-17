@@ -28,7 +28,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     };
     let executor = StockExecutor::new(
         Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
-        Arc::new(ScriptedModel::default()),
+        Arc::new(scripted_model()),
         ContextPipeline::default(),
         tools,
     )
@@ -36,10 +36,18 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     .with_limits(narrow);
     assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
     let journal = Journal::default();
-    let mut messages = Vec::new();
+    let mut messages = vec![call_message(&invocation)];
+    let before = messages.clone();
     assert!(matches!(
         StockExecution::ordinary(&executor)
-            .settle_tool_call(&journal, OperationId::new(), 0, invocation, &mut messages)
+            .settle_tool_call(
+                &journal,
+                OperationId::new(),
+                0,
+                invocation,
+                0,
+                &mut messages
+            )
             .await,
         Err(Error::Invalid(_))
     ));
@@ -48,6 +56,6 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(journal.0.lock().unwrap().is_empty());
     assert!(journal.1.lock().unwrap().is_empty());
-    assert!(messages.is_empty());
+    assert_eq!(messages, before);
     Ok(())
 }

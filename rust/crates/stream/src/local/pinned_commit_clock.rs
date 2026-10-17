@@ -1,6 +1,7 @@
 /// Records the wall-clock sample in a frame and supplies that same sample on replay.
 struct PinnedCommitClock {
     source: Arc<dyn UnixMillisClock>,
+    // Lock order: visibility -> provider state -> pinned clock; never acquires another lock.
     pinned: Mutex<Option<u64>>,
 }
 

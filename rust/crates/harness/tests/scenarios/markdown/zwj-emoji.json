@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"content","delta":"👩"},{"type":"event","kind":"content","delta":"‍"}
+  ,{"type":"event","kind":"content","delta":"💻"},{"type":"event","kind":"completed","metadata":null}
+  ]],"expect":{"text":"👩‍💻","model_events":[{"kind":"content","delta":"👩"},{"kind":"content","delta":
+  "‍"},{"kind":"content","delta":"💻"},{"kind":"completed","metadata":null}]}}

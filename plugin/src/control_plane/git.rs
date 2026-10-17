@@ -79,28 +79,17 @@ impl ControlPlane {
             )
             .await
             .map_err(display)?;
-        let preparation: Result<_, String> = async {
-            self.mounts
-                .get(agent_id)
-                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-                .sync()
-                .await
-                .map_err(display)?;
-            let apply_patch = git_apply_patch(&lazy_workspace, &route_path, &argv).await?;
-            let (ignore, merge_drivers) = git_policy(&lazy_workspace).await?;
-            let head_tree =
-                git_workspace_tree(&lazy_workspace, &argv, Some(lease.publication_permit()))
-                    .await?;
-            Ok((apply_patch, ignore, merge_drivers, head_tree))
+        if let Err(error) = self
+            .mounts
+            .get(agent_id)
+            .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+            .sync()
+            .await
+            .map_err(display)
+        {
+            let _ = operations.finish(&lease, now).await;
+            return Err(error);
         }
-        .await;
-        let (apply_patch, ignore, merge_drivers, head_tree) = match preparation {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = operations.finish(&lease, now).await;
-                return Err(error);
-            }
-        };
         let renewal_now = now_millis();
         let lease = match async {
             let expiry = git_lease_renewal_expiry(renewal_now, lease.expires_at_millis)?;
@@ -117,30 +106,23 @@ impl ControlPlane {
                 return Err(error);
             }
         };
-        let executor = PluginGitExecutor {
-            fs: &self.fs,
-            store: &self.store,
-            current: workspace.clone(),
-            lazy_current: &lazy_workspace,
-            repository_id,
-            ignore,
-            permit: lease.publication_permit(),
-            lease: Some(lease.clone()),
-            merge_drivers,
-            merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
-            switched: Mutex::new(None),
-        };
-        let repository = GitCompatRepository::new(repository_id, self.store.clone());
-        let command = run_git_command(
-            &repository,
+        let author = self.author_for_argv(&argv, agent_id)?;
+        let command = acyclic_harness::tools::git::run(
+            acyclic_harness::tools::git::Workspace {
+                filesystem: &self.fs,
+                store: &self.store,
+                view: (&lazy_workspace).into(),
+                root: &route_path,
+                repository: repository_id,
+                lease: Some(lease.clone()),
+                checkout: None,
+                author: &author,
+                authored_at_seconds: i64::try_from(now / 1_000).unwrap_or(i64::MAX),
+            },
             &argv,
-            head_tree,
-            apply_patch.as_deref(),
-            &self.author_for_argv(&argv, agent_id)?,
-            i64::try_from(now / 1_000).unwrap_or(i64::MAX),
-            &executor,
         )
-        .await;
+        .await
+        .map_err(display);
         let parent_head = parent
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -192,15 +174,15 @@ impl ControlPlane {
             }
         }
         observed?;
-        let switched = executor.switched_workspace().map_err(display)?;
-        drop(executor);
+        // A failed merge can still publish conflict markers the agent must edit.
         self.mounts
             .get(agent_id)
             .ok_or_else(|| "subagent mount is unavailable".to_owned())?
             .advance_to_head()
             .await
             .map_err(display)?;
-        if let Some(switched) = switched {
+        let command = command?;
+        if let Some(switched) = command.switched {
             self.unmount_agent(agent_id).await?;
             WorkspaceContextRegistry::new(self.store.clone())
                 .set_workspace(
@@ -226,7 +208,7 @@ impl ControlPlane {
             let mount = self.mount_route(&current).await?;
             self.mounts.insert(agent_id.to_owned(), mount);
         }
-        let Some(output) = command? else {
+        let Some(output) = command.command else {
             self.persist()?;
             return Err("recovered a pending Git transition; retry the current command".to_owned());
         };
@@ -251,45 +233,30 @@ impl ControlPlane {
             .cloned()
             .ok_or_else(|| "root binding is unavailable".to_owned())?;
         let workspace = lazy_workspace.workspace().clone();
-        let before_tree = git_workspace_tree(lazy_workspace, &argv, None).await?;
-        let apply_patch = git_apply_patch(lazy_workspace, &root_binding.path, &argv).await?;
         let repository_id = repository_id(
             workspace.id().into_bytes(),
             root_binding.created()?.repository_workspace_id,
         );
-        let (ignore, merge_drivers) = git_policy(lazy_workspace).await?;
-        let executor = RootMaterializingGitExecutor {
-            inner: PluginGitExecutor {
-                fs: &self.fs,
+        let author = self.author_for_argv(&argv, &self.state.root_agent_id)?;
+        let output = acyclic_harness::tools::git::run(
+            acyclic_harness::tools::git::Workspace {
+                filesystem: &self.fs,
                 store: &self.store,
-                current: workspace.clone(),
-                lazy_current: lazy_workspace,
-                repository_id,
-                ignore,
-                permit: PublicationPermit::Unrestricted,
+                view: lazy_workspace.into(),
+                root: &root_binding.path,
+                repository: repository_id,
                 lease: None,
-                merge_drivers,
-                merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
-                switched: Mutex::new(None),
+                checkout: Some(acyclic_fs::NativeRootIdentity::from_bytes(
+                    root_binding.created()?.native_root_identity,
+                )),
+                author: &author,
+                authored_at_seconds: i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
             },
-            root: &root_binding.path,
-            source_root_identity: acyclic_fs::NativeRootIdentity::from_bytes(
-                root_binding.created()?.native_root_identity,
-            ),
-        };
-        let repository = GitCompatRepository::new(repository_id, self.store.clone());
-        let output = run_git_command(
-            &repository,
             &argv,
-            before_tree,
-            apply_patch.as_deref(),
-            &self.author_for_argv(&argv, &self.state.root_agent_id)?,
-            i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
-            &executor,
         )
-        .await?;
-        let switched = executor.inner.switched_workspace().map_err(display)?;
-        drop(executor);
+        .await
+        .map_err(display)?;
+        let switched = output.switched;
         if let Some(switched) = switched {
             WorkspaceContextRegistry::new(self.store.clone())
                 .set_workspace(
@@ -301,10 +268,13 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-            self.roots.insert(root_key(root_id), switched);
+            self.roots.insert(
+                root_key(root_id),
+                switched.into_checkout().map_err(display)?,
+            );
         }
         self.persist()?;
-        let Some(output) = output else {
+        let Some(output) = output.command else {
             return Err("recovered a pending Git transition; retry the current command".to_owned());
         };
         serde_json::to_value(output).map_err(display)

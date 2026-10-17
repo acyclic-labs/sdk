@@ -1,4 +1,5 @@
 [package]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +10,14 @@ publish.workspace = true
 description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
+
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+uuid.workspace = true
+bytes = { workspace = true, features = ["serde"] }
+futures.workspace = true
+http.workspace = true
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 http-body = "1.1.0"
 prost.workspace = true
@@ -22,37 +30,38 @@ thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
 tokio-util = { version = "=0.7.19", features = ["rt"] }
 tonic-prost.workspace = true
+tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
-tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring"] }
 tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
-tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+async-trait.workspace = true
+acyclic-test-support = { path = "../test-support" }
+loom = "0.7"
+proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 tokio.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
+[target.'cfg(acyclic_loom)'.dev-dependencies]
+loom = { version = "0.7.2", features = ["futures"] }
+
 [build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-prost = "=0.14.4"
 protoc-bin-vendored = "=3.3.0"
-tonic-prost-build = "=0.14.6"
-ts-rs = "=12.0.1"
-thiserror.workspace = true
 
 [lints]
 workspace = true

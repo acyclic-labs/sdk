@@ -1,12 +1,16 @@
+use super::ownership::accounting as mount_accounting;
 use super::*;
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::{
     ProofDataCustody,
     allocation::{AllocationLedger, LogicalVecCapacity},
 };
-use std::sync::{Arc, Weak};
+use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
+use std::sync::Arc;
 
-type Observer = (Arc<ProofDataCustody>, u64, Option<u128>);
+#[path = "admissions_accounting.rs"]
+mod accounting;
+pub(crate) use accounting::NativeProofAccounting;
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
@@ -41,50 +45,34 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
-    observers: (Vec<Observer>, LogicalVecCapacity),
-    pub(super) native_mount_admissions: (
-        Vec<(Weak<NativeMountAllocationCustody>, u64)>,
-        LogicalVecCapacity,
-    ),
+    proof_accounting: Option<Arc<NativeProofAccounting>>,
+    paid_non_native: u64,
+    pub(super) native_mount_admission_pending: bool,
+    pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
+    pub(super) native_mount_admissions: (Vec<(Arc<AtomicU64>, u64)>, LogicalVecCapacity),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
-fn observer_bytes(entry: &Observer) -> u64 {
-    if entry.2.is_some() {
-        entry.0.non_native_retained_payload_bytes()
-    } else {
-        entry.0.retained_payload_bytes()
-    }
-}
-fn native_retired(entry: &Observer) -> u64 {
-    entry.2.map_or(0, |previous| {
-        let retired = entry
-            .0
-            .native_control_events()
-            .1
-            .checked_sub(previous)
-            .expect("monotonic retirement");
-        u64::try_from(retired).expect("bounded live native bytes")
-    })
-}
-fn mount_bytes(entry: &(Weak<NativeMountAllocationCustody>, u64)) -> u64 {
-    entry.0.upgrade().map_or(0, |owner| owner.retained_bytes())
+fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
+    // The registry retains only this inert gauge. Upgrading custody here could
+    // drop its last owner under the leaf and re-enter it through metadata Drop.
+    mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
-        let backing = self
-            .observers
-            .0
+        let mounts = if self
+            .native_mount_dirty
+            .as_ref()
+            .is_some_and(|dirty| dirty.load(Ordering::Acquire))
+        {
+            self.native_mount_admissions.0.as_slice()
+        } else {
+            &[]
+        };
+        let (released, unrecorded) = mounts
             .iter()
-            .map(|entry| (entry.1, observer_bytes(entry)))
-            .chain(
-                self.native_mount_admissions
-                    .0
-                    .iter()
-                    .map(|entry| (entry.1, mount_bytes(entry))),
-            );
-        let (released, unrecorded) =
-            backing.fold((0u64, 0u64), |(released, unrecorded), (paid, actual)| {
+            .map(|entry| (entry.1, mount_bytes(entry)))
+            .fold((0u64, 0u64), |(released, unrecorded), (paid, actual)| {
                 (
                     released
                         .checked_add(paid.saturating_sub(actual))
@@ -94,13 +82,22 @@ impl Admissions {
                         .expect("bounded live bytes"),
                 )
             });
-        let released = self
-            .observers
-            .0
-            .iter()
-            .map(native_retired)
-            .try_fold(released, u64::checked_add)
-            .expect("balanced retirement");
+        let (released, unrecorded) = if let Some(shared) = &self.proof_accounting {
+            let actual = shared.non_native.load(Ordering::Acquire);
+            (
+                released
+                    .checked_add(shared.retired.load(Ordering::Acquire))
+                    .and_then(|bytes| {
+                        bytes.checked_add(self.paid_non_native.saturating_sub(actual))
+                    })
+                    .expect("balanced retirement"),
+                unrecorded
+                    .checked_add(actual.saturating_sub(self.paid_non_native))
+                    .expect("bounded live bytes"),
+            )
+        } else {
+            (released, unrecorded)
+        };
         #[cfg(feature = "native-mount")]
         let released = released
             .checked_add(self.view_gates.freed_bytes())
@@ -124,75 +121,48 @@ impl DemandWork {
         ))
     }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
-        for entry in &mut self.roots.observers.0 {
-            if entry.2.is_some() {
-                let (born, retired) = entry.0.native_control_events();
-                if retired > born {
-                    return Err(crate::WorkError::Overflow);
-                }
-                self.allocations
-                    .release(native_retired(entry))
-                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-                entry.2 = Some(retired);
-            }
+        let Some(shared) = &self.roots.proof_accounting else {
+            return Ok(());
+        };
+        let retired = shared.take_retired();
+        if let Err(error) = self.allocations.release(retired) {
+            shared.retire_native(retired);
+            return Err(error.into_work_or(crate::WorkError::Overflow));
         }
-        let mut index = 0;
-        while index < self.roots.observers.0.len() {
-            let entry = &self.roots.observers.0[index];
-            if entry.2.is_some()
-                && Arc::strong_count(&entry.0) == 1
-                && entry.0.retained_payload_bytes() == 0
-            {
-                let entry = self.roots.observers.0.swap_remove(index);
-                let bytes = entry.0.logical_owned_bytes() + entry.1;
-                drop(entry);
-                self.allocations
-                    .release(bytes)
-                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-            } else {
-                index += 1;
-            }
-        }
-        if self.roots.observers.0.is_empty() {
-            let (backing, capacity) = std::mem::take(&mut self.roots.observers);
-            drop(backing);
+        if accounting::acquire_final_owner(Arc::strong_count(shared)) {
+            let bytes = NativeProofAccounting::ALLOCATION_BYTES
+                .checked_add(self.roots.paid_non_native)
+                .and_then(|bytes| bytes.checked_add(shared.take_retired()))
+                .ok_or(crate::WorkError::Overflow)?;
+            drop(self.roots.proof_accounting.take());
+            self.roots.paid_non_native = 0;
             self.allocations
-                .release(capacity.logical_bytes())
+                .release(bytes)
                 .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         }
         Ok(())
     }
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
         self.reconcile_native_controls()?;
-        let observers = self.roots.observers.0.iter_mut().map(|entry| {
-            let actual = observer_bytes(entry);
-            (&mut entry.1, actual)
-        });
-        let mounts = self
-            .roots
-            .native_mount_admissions
-            .0
-            .iter_mut()
-            .map(|entry| {
-                let actual = mount_bytes(entry);
-                (&mut entry.1, actual)
-            });
         let mut failure = None;
-        for (paid, actual) in observers.chain(mounts) {
-            if actual < *paid {
+        if let Some(shared) = &self.roots.proof_accounting {
+            let actual = shared.non_native.load(Ordering::Acquire);
+            let paid = self.roots.paid_non_native;
+            if actual < paid {
                 self.allocations
-                    .release(*paid - actual)
+                    .release(paid - actual)
                     .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-            } else if actual > *paid {
+            } else if actual > paid {
                 self.allocations
-                    .record_owned_bytes(actual - *paid, &mut self.work)
+                    .record_owned_bytes(actual - paid, &mut self.work)
                     .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
                 if let Err(error) = self.work.verify(self.budget) {
                     failure.get_or_insert(error);
                 }
             }
-            *paid = actual;
+            self.roots.paid_non_native = actual;
         }
+        self.reconcile_native_mounts(&mut failure)?;
         #[cfg(feature = "native-mount")]
         {
             self.roots.view_gates.reconcile(&mut self.allocations)?;
@@ -202,31 +172,134 @@ impl DemandWork {
         }
         failure.map_or(Ok(()), Err)
     }
-    fn retain_observer(
+    fn reconcile_native_mounts(
         &mut self,
-        token: Arc<ProofDataCustody>,
-    ) -> Result<Option<usize>, DemandError> {
-        for entry in &self.roots.observers.0 {
-            self.work.charge(&SCAN, &self.budget)?;
-            if Arc::ptr_eq(&entry.0, &token) {
-                return Ok(None);
+        failure: &mut Option<crate::WorkError>,
+    ) -> Result<(), crate::WorkError> {
+        let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
+            return self.prune_native_mount_admissions();
+        };
+        if !mount_accounting::take_dirty(dirty) {
+            return Ok(());
+        }
+        let mut empty = true;
+        let mut retired_mount = false;
+        for entry in &mut self.roots.native_mount_admissions.0 {
+            let actual = mount_bytes(entry);
+            let recorded = if actual < entry.1 {
+                self.allocations
+                    .release(entry.1 - actual)
+                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
+            } else if actual > entry.1 {
+                self.allocations
+                    .record_owned_bytes(actual - entry.1, &mut self.work)
+                    .map_err(|error| error.into_work_or(crate::WorkError::Overflow))
+            } else {
+                Ok(())
+            };
+            if let Err(error) = recorded {
+                mount_accounting::publish(dirty);
+                return Err(error);
+            }
+            if actual > entry.1
+                && let Err(error) = self.work.verify(self.budget)
+            {
+                failure.get_or_insert(error);
+            }
+            entry.1 = actual;
+            empty &= actual == 0;
+            retired_mount |= actual == 0;
+        }
+        if retired_mount {
+            self.prune_native_mount_admissions()?;
+        }
+        if empty && self.roots.native_mount_admission_pending {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                mount_accounting::publish(dirty);
+            }
+        } else if empty {
+            drop(self.roots.native_mount_dirty.take());
+            self.allocations
+                .release(std::mem::size_of::<AtomicBool>() as u64)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        }
+        Ok(())
+    }
+    fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
+        if self.roots.native_mount_admission_pending {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                mount_accounting::publish(dirty);
+            }
+            return Ok(());
+        }
+        if self.roots.native_mount_admissions.0.is_empty() {
+            return Ok(());
+        }
+        let owners = &self.roots.native_mount_admissions.0;
+        let live = owners.iter().filter(|entry| entry.1 != 0).count();
+        let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
+        let copied = WorkCounters {
+            bytes_copied: (moved * std::mem::size_of::<(Arc<AtomicU64>, u64)>()) as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        // Retirement is unconditional. Moving survivors requires the current
+        // cancellation, invocation, resource and original-ledger admission.
+        let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
+        let (owners, capacity) = &mut self.roots.native_mount_admissions;
+        let mut released = 0;
+        while owners.last().is_some_and(|entry| entry.1 == 0) {
+            owners.pop();
+            released += super::ownership::GAUGE_ALLOCATION_BYTES;
+        }
+        if deferred {
+            if let Some(dirty) = &self.roots.native_mount_dirty {
+                mount_accounting::publish(dirty);
+            }
+            return self
+                .allocations
+                .release(released)
+                .map_err(|error| error.into_work_or(crate::WorkError::Overflow));
+        }
+        let mut index = 0;
+        while index < owners.len() {
+            if owners[index].1 == 0 {
+                owners.swap_remove(index);
+                released += super::ownership::GAUGE_ALLOCATION_BYTES;
+                while owners.last().is_some_and(|entry| entry.1 == 0) {
+                    owners.pop();
+                    released += super::ownership::GAUGE_ALLOCATION_BYTES;
+                }
+            } else {
+                index += 1;
             }
         }
-        insert(
-            &mut self.roots.observers,
-            (token, 0, None),
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        )
-        .map(Some)
+        if owners.is_empty() {
+            let backing = std::mem::take(owners);
+            released += std::mem::take(capacity).logical_bytes();
+            drop(backing);
+        }
+        self.allocations
+            .release(released)
+            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        Ok(())
+    }
+    fn proof_accounting(&mut self) -> Result<Arc<NativeProofAccounting>, DemandError> {
+        if let Some(shared) = &self.roots.proof_accounting {
+            return Ok(shared.clone());
+        }
+        let bytes = NativeProofAccounting::ALLOCATION_BYTES;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        let bytes = metadata_tests::admitted_bytes(bytes);
+        self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+        let shared = Arc::new(NativeProofAccounting::default());
+        self.roots.proof_accounting = Some(shared.clone());
+        Ok(shared)
     }
     pub(crate) fn owns_native_checkout_token(&self, token: &Arc<ProofDataCustody>) -> bool {
         self.roots
-            .observers
-            .0
-            .iter()
-            .any(|entry| entry.2.is_some() && Arc::ptr_eq(&entry.0, token))
+            .proof_accounting
+            .as_ref()
+            .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
     pub(crate) fn prepare_cancelled(
         &mut self,
@@ -264,7 +337,7 @@ impl NativeDemandReadMeter {
         use crate::NativeTreeMaterializationError as Error;
         if !header.is_checkout_header_for(self)
             || token.retained_payload_bytes() != 0
-            || token.native_control_events() != (0, 0)
+            || token.has_native_control_events()
         {
             return Err(Error::InvalidLayout);
         }
@@ -275,20 +348,33 @@ impl NativeDemandReadMeter {
             |work| work.check(),
         )
         .map_err(crate::materializer::native_materialization_work_error)?;
-        if work.owns_native_checkout_token(token) || !token.bind_native_original(self) {
+        if work.owns_native_checkout_token(token) || !token.accepts_native_original(self) {
             return Err(Error::InvalidLayout);
         }
-        let index = work
-            .retain_observer(token.clone())
-            .map_err(crate::materializer::native_materialization_work_error)?
-            .ok_or(Error::InvalidLayout)?;
+        let shared = work
+            .proof_accounting()
+            .map_err(crate::materializer::native_materialization_work_error)?;
+        if !token.bind_native_original(self, &shared) {
+            return Err(Error::InvalidLayout);
+        }
         header.transfer_checkout_metadata(self, token.logical_owned_bytes())?;
-        work.roots
-            .observers
-            .0
-            .get_mut(index)
-            .ok_or(Error::InvalidLayout)?
-            .2 = Some(0);
+        token.register_native_accounting(&shared)?;
         Ok(token.clone())
     }
 }
+
+#[cfg(all(test, feature = "native-watch"))]
+#[path = "admissions_registry_tests.rs"]
+mod registry_tests;
+
+#[cfg(all(test, feature = "memory"))]
+#[path = "admissions_tests.rs"]
+mod tests;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "admissions_loom_tests.rs"]
+mod loom_tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "admissions_metadata_tests.rs"]
+mod metadata_tests;

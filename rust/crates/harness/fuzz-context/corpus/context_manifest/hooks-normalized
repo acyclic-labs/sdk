@@ -1,0 +1,1 @@
+[{"on":"PreToolUse","matcher":"Bash|Write","hooks":[{"run":{"kind":"executable","executable":"guard","argv":["one argument"]},"timeout_ms":1000,"failure":"block"}]}]

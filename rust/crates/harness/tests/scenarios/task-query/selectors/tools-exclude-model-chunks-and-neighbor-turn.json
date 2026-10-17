@@ -1,0 +1,6 @@
+{"folder":".tasks/t/turns/1/tools","writes":[{"path":".tasks/t/turns/1/chunks/0","text":"assistant","channel":"Text"},{
+  "path":".tasks/t/turns/1/tools/c/request.json","text":"read"},{"path":".tasks/t/turns/2/tools/c/result.json","text":
+  "later"},{"path":".tasks/t/turns/1/tools/d/result.json","text":"ok"}],"expect":{"files":{
+  ".tasks/t/turns/1/tools/c/request.json":"read",".tasks/t/turns/1/tools/d/result.json":"ok"},"changes":[null,{"path":
+  ".tasks/t/turns/1/tools/c/request.json","text":"read"},null,{"path":".tasks/t/turns/1/tools/d/result.json","text":"ok"
+  }]}}

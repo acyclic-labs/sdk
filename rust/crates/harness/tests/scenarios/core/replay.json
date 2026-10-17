@@ -1,0 +1,6 @@
+{
+  "prompt": "Answer once.",
+  "turns": ["once"],
+  "replay": true,
+  "expect": {"text":"once", "requests":[{"messages":[{"role":"user","content":"Answer once."}]}]}
+}

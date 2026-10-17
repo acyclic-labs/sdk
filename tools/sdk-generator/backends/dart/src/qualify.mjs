@@ -1,11 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
@@ -23,16 +22,6 @@ const negatives = { InvalidActorBytes: "List<int>?", InvalidOptionalInteger: "In
 const marker = "PASS: installed Dart descriptors, bytes, unsigned bits, optional presence, oneof and gRPC shapes";
 const packageName = "acyclic_sdk_transport-0.2.0-alpha.1.tar.gz";
 
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) throw new Error("inventory contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("inventory contains a non-file");
-    return [name];
-  }).sort();
-}
-
 function archivePayload(bytes) {
   if (bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
   const entries = tarEntries(gunzipSync(bytes, { maxOutputLength: 256 * 1024 * 1024 }));
@@ -46,11 +35,6 @@ function archivePayload(bytes) {
   }
   if (payload.size === 0) throw new Error("empty archive payload");
   return payload;
-}
-
-function verifyPayload(root, payload) {
-  if (JSON.stringify(files(root)) !== JSON.stringify([...payload.keys()].sort())) throw new Error("installed payload inventory differs");
-  for (const [name, bytes] of payload) readInput(root, name, sha256(bytes));
 }
 
 // This adapter enumerates maintained reflection variables and message factories;
@@ -90,12 +74,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   if (process.platform !== "win32" && command === spawnSync) throw new Error("installed Dart qualification currently requires the admitted Windows runtime");
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["dart-home"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [packageRoot, authorityRoot, runtime, archiver, cache, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("qualification output overlaps an input");
-  }
+  const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, archiver, cache, dirname(directory)]);
   const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json")), receipt = JSON.parse(receiptBytes);
   if (receipt.schema !== "acyclic.sdk.dart-producer-receipt.v1" || receipt.target !== "dart" || receipt.authority !== "rust"
     || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
@@ -114,7 +93,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   }
   const adapter = reflection(payload);
   if (!toolchain.runtime_files || Object.keys(toolchain.runtime_files).length === 0) throw new Error("runtime pins missing");
-  if (JSON.stringify(files(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory differs");
+  if (JSON.stringify(inventory(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory differs");
   for (const [name, digest] of Object.entries(toolchain.runtime_files)) readInput(runtime, name, digest);
   const dart = realpathSync(join(runtime, "bin/dart.exe"));
   const archiverPin = toolchain.archiver[`${process.platform}-${process.arch}`];
@@ -163,11 +142,11 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   if (archive.readUInt32LE(4) !== 0 || JSON.stringify([...builtPayload.keys()].sort()) !== JSON.stringify([...payload.keys()].sort())) throw new Error("built archive metadata or inventory differs");
   for (const [name, bytes] of payload) if (sha256(builtPayload.get(name)) !== sha256(bytes)) throw new Error("built package payload differs");
   const installed = join(output, "sdk"); mkdirSync(installed);
-  run("install-sdk", archiver, ["-xzf", built, "-C", installed]); verifyPayload(installed, payload);
+  run("install-sdk", archiver, ["-xzf", built, "-C", installed]); verifyInstalledPayload(installed, payload);
   for (const { pin, filename, contents } of dependencies) {
     const feed = put(`feed/${filename}`, archives.get(filename));
     const root = join(env.PUB_CACHE, "hosted/pub.dev", `${pin.name}-${pin.version}`); mkdirSync(root, { recursive: true });
-    run(`install-${pin.name}`, archiver, ["-xzf", feed, "-C", root]); verifyPayload(root, contents);
+    run(`install-${pin.name}`, archiver, ["-xzf", feed, "-C", root]); verifyInstalledPayload(root, contents);
   }
   const project = join(output, "project");
   run("resolve-offline", dart, ["pub", "get", "--offline", "--enforce-lockfile"], project);
@@ -189,9 +168,9 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     const lines = text.trim().split(/\r?\n/);
     if (lines.length !== 1 || !lines[0].startsWith("ERROR|COMPILE_TIME_ERROR|ARGUMENT_TYPE_NOT_ASSIGNABLE|") || !lines[0].includes(`${name}.dart|2|`) || !lines[0].includes(`parameter type '${type}'`)) throw new Error(`${name} did not reject the intended assignment`);
   }
-  verifyPayload(installed, payload);
-  for (const { pin, contents } of dependencies) verifyPayload(join(env.PUB_CACHE, "hosted/pub.dev", `${pin.name}-${pin.version}`), contents);
-  if (JSON.stringify(files(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory changed during qualification");
+  verifyInstalledPayload(installed, payload);
+  for (const { pin, contents } of dependencies) verifyInstalledPayload(join(env.PUB_CACHE, "hosted/pub.dev", `${pin.name}-${pin.version}`), contents);
+  if (JSON.stringify(inventory(runtime)) !== JSON.stringify(Object.keys(toolchain.runtime_files).sort())) throw new Error("runtime inventory changed during qualification");
   for (const [name, digest] of Object.entries(toolchain.runtime_files)) readInput(runtime, name, digest);
   const result = {
     schema: "acyclic.sdk.dart.installed-qualification.v1", scope: "installed-dart-transport-bindings",
@@ -200,10 +179,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     archive_sha256: sha256(archive), archiver_sha256: archiverPin.sha256, archive_options: archiveOptions,
     package_payload_sha256: Object.fromEntries([...payload].map(([name, bytes]) => [name, sha256(bytes)])),
     dependency_archive_sha256: Object.fromEntries([...archives].map(([name, bytes]) => [name, sha256(bytes)])),
-    installed_dependency_file_sha256: Object.fromEntries(files(env.PUB_CACHE).map(name => [name, sha256(readFileSync(join(env.PUB_CACHE, name)))])),
+    installed_dependency_file_sha256: Object.fromEntries(inventory(env.PUB_CACHE).map(name => [name, sha256(readFileSync(join(env.PUB_CACHE, name)))])),
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(read("../../../shared/authority.mjs")),
     archive_reader_sha256: sha256(read("../../../../../scripts/archive-utils.mjs")), toolchain_sha256: sha256(JSON.stringify(toolchain)),
-    project_sha256: Object.fromEntries(files(project).map(name => [name, sha256(readFileSync(join(project, name)))])),
+    project_sha256: Object.fromEntries(inventory(project).map(name => [name, sha256(readFileSync(join(project, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     positive_controls_passed: true, independent_negative_static_type_controls_rejected: 2, complete_file_descriptor_comparison: false,
     descriptor_scope: "message/enum descriptors including nested contents, and gRPC method/message/streaming shapes",
@@ -212,9 +191,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "authority", "dart-home", "archiver", "cache", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--package, --authority, --dart-home, --archiver, --cache and --output are required");
-  const result = qualify(values); console.log(JSON.stringify({ scope: result.scope, archive_sha256: result.archive_sha256, qualification: resolve(values.output, "qualification.json") }, null, 2));
-}
+runCli(import.meta.url, values => {
+  const result = qualify(values);
+  return { scope: result.scope, archive_sha256: result.archive_sha256, qualification: resolve(values.output, "qualification.json") };
+}, ["package", "authority", "dart-home", "archiver", "cache", "output"]);

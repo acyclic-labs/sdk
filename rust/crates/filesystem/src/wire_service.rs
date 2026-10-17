@@ -2722,6 +2722,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::InvalidMergeResolution
         | WorkspaceError::NotRegularFile
         | WorkspaceError::NotDirectory
+        | WorkspaceError::IsDirectory
         | WorkspaceError::EmptyContentSet
         | WorkspaceError::ContentLengthOverflow => Status::invalid_argument(error.to_string()),
         WorkspaceError::ForeignGeneration
@@ -2736,6 +2737,7 @@ fn status(error: &WorkspaceError) -> Status {
         | WorkspaceError::JoinLimit
         | WorkspaceError::StaleTarget
         | WorkspaceError::ChangedPathLimit
+        | WorkspaceError::DirectoryNotEmpty
         | WorkspaceError::NotFork => Status::failed_precondition(error.to_string()),
         WorkspaceError::Cancelled(_) => Status::cancelled(error.to_string()),
         WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => {

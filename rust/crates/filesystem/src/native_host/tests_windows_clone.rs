@@ -542,3 +542,105 @@ fn sparse_range_query_grows_only_when_ranges_require_it() -> std::io::Result<()>
     assert_eq!(ranges[9].offset, 18 * 1024 * 1024);
     Ok(())
 }
+
+fn directory_read_admission(
+    depth: usize,
+    limit: u64,
+    succeeded: bool,
+    charged: u64,
+) -> proptest::test_runner::TestCaseResult {
+    // Returning the root itself needs one owned duplicate. Every nonempty
+    // component needs its open and existing reparse/identity validation.
+    let required = if depth == 0 { 1 } else { 2 * depth as u64 };
+    prop_assert_eq!(succeeded, limit >= required);
+    prop_assert_eq!(charged, limit.min(required));
+    Ok(())
+}
+
+#[test]
+fn directory_walk_borrows_root_and_preserves_identity_at_every_read_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    let root = test_root(temporary.path())?;
+    let mut identities = [vec![root.identity()], vec![root.identity()]];
+    for (index, name) in ["nested", "nést"].into_iter().enumerate() {
+        let mut parent = temporary.path().to_path_buf();
+        for _ in 0..3 {
+            parent.push(name);
+            std::fs::create_dir(&parent)?;
+            identities[index].push(test_root(&parent)?.identity());
+        }
+    }
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    });
+    // For every generated depth/name/case/read bound, the production walk must
+    // retain the same directory authority and charge exactly its attempted I/O.
+    runner.run(
+        &(0_usize..4, any::<bool>(), any::<bool>(), 0_u64..10),
+        |(depth, unicode, uppercase, limit)| {
+            let name = if unicode { "nést" } else { "nested" };
+            let relative = vec![name; depth].join("\\");
+            let relative = if uppercase {
+                relative.to_uppercase()
+            } else {
+                relative
+            };
+            let path = test_path(&relative);
+            for reads in [limit, u64::MAX] {
+                let budget = WorkBudget {
+                    backend_read_operations: reads,
+                    ..WorkBudget::UNBOUNDED
+                };
+                let work = NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
+                    .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
+                let result = directory_path(&root.directory, &path, false, &mut &work);
+                directory_read_admission(
+                    depth,
+                    reads,
+                    result.is_ok(),
+                    work.receipt().backend_read_operations,
+                )?;
+                work.receipt()
+                    .verify(budget)
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                if let Ok(held) = result {
+                    let identity = directory_identity(&held, &mut ordinary_work())
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    prop_assert_eq!(identity, identities[usize::from(unicode)][depth]);
+                }
+            }
+            let cancellation = crate::CancellationToken::new();
+            let cancelled = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
+            cancellation.cancel();
+            prop_assert!(directory_path(&root.directory, &path, false, &mut &cancelled).is_err());
+            prop_assert_eq!(cancelled.receipt().backend_read_operations, 0);
+            if depth > 0 {
+                // Negative control recreates the old root duplicate before the
+                // same production traversal. The exact-read oracle must reject it.
+                let legacy = NativeMaterializationWork::new(
+                    WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
+                let duplicate = clone_directory(&root.directory, &mut &legacy)
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let result = directory_path(&duplicate, &path, false, &mut &legacy);
+                prop_assert!(
+                    directory_read_admission(
+                        depth,
+                        u64::MAX,
+                        result.is_ok(),
+                        legacy.receipt().backend_read_operations,
+                    )
+                    .is_err()
+                );
+            }
+            Ok(())
+        },
+    )?;
+    Ok(())
+}

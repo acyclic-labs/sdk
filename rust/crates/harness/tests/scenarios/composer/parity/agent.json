@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "tool": "spawn",
+      "kind": "tool",
+      "input": {
+        "task": "echo @missing.txt"
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "tool": "spawn",
+        "kind": "tool",
+        "input": {
+          "task": "echo @missing.txt"
+        }
+      }
+    }
+  },
+  "prompt": "/agent echo @missing.txt"
+}

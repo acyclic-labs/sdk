@@ -13,75 +13,68 @@ export const packagedTypeScriptBindings = [
   ["harness/v2/harness_pb", ["harness"]],
   ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
   // inference_pb imports the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["inference"]],
+  ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"]],
+  ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v1/stream_pb", ["stream"]],
+  ["stream/v1/session_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],
 ];
 
 export const compatibilityArtifacts = {
+  auth: {
+    schemaDigest: "rust/crates/auth/proto/auth/v1/auth.proto",
+    descriptorDigest: "compatibility/descriptors/auth-v1.bin",
+  },
   harness: {
-    schemaDigest: "proto/harness/v2/harness.proto",
+    schemaDigest: "rust/crates/harness/proto/harness/v2/harness.proto",
     conformanceDigest: "conformance/vectors/core.json",
   },
   filesystem: {
-    schemaDigest: "proto/filesystem/v2/filesystem.proto",
-    descriptorDigest: "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+    schemaDigest: "rust/crates/filesystem/proto/filesystem/v2/filesystem.proto",
+    descriptorDigest: "compatibility/descriptors/filesystem-v2.bin",
     conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
   },
   stream: {
     schemaDigest: "rust/crates/stream/proto/stream/v1/stream.proto",
-    descriptorDigest: "rust/crates/stream/proto/stream/v1/stream_descriptor.bin",
+    descriptorDigest: "compatibility/descriptors/stream-v1.bin",
     conformanceDigest: "conformance/vectors/stream.json",
   },
   objects: {
-    schemaDigest: "proto/objects/v1/objects.proto",
-    descriptorDigest: "rust/crates/objects/src/generated/acyclic-objects-v1.bin",
+    schemaDigest: "rust/crates/objects/proto/objects/v1/objects.proto",
+    descriptorDigest: "compatibility/descriptors/objects-v1.bin",
     conformanceDigest: "conformance/vectors/objects-v1.json",
   },
   machines: {
-    schemaDigest: "proto/machines/v1/machines.proto",
-    descriptorDigest: "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+    schemaDigest: "rust/crates/machines/proto/machines/v1/machines.proto",
+    descriptorDigest: "compatibility/descriptors/machines-v1.bin",
     conformanceDigest: "conformance/vectors/machines.json",
   },
   inference: {
-    schemaDigest: "proto/inference/v1/inference.proto",
-    descriptorDigest: "rust/crates/inference/inference_descriptor.bin",
+    schemaDigest: "rust/crates/inference/proto/inference/v1/inference.proto",
+    descriptorDigest: "compatibility/descriptors/inference-v1.bin",
     conformanceDigest: "conformance/vectors/inference.json",
   },
   actors: {
-    schemaDigest: "proto/actors/v1/actors.proto",
+    schemaDigest: "rust/crates/actors/proto/actors/v1/actors.proto",
     descriptorDigest: "compatibility/descriptors/actors-v1.bin",
   },
 };
 
-export const generatedDescriptors = [
-  ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
-  ["proto/objects/v1", "rust/crates/objects/src/generated/acyclic-objects-v1.bin"],
-  ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
-  ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
-  ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
-  ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
-];
-
-export const packagedRustBindings = [
-  ["acyclic/objects/v1/acyclic.objects.v1.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.rs"],
-  ["acyclic/objects/v1/acyclic.objects.v1.tonic.rs", "rust/crates/objects/src/generated/acyclic.objects.v1.tonic.rs"],
-  ["acyclic/machines/v1/acyclic.machines.v1.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.rs"],
-  ["acyclic/machines/v1/acyclic.machines.v1.tonic.rs", "rust/crates/machines/src/generated/acyclic.machines.v1.tonic.rs"],
-];
-
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
+  ...["actors-v1.bin", "actors-buf-v1.bin"].map(name => [compatibilityArtifacts.actors.descriptorDigest, `rust/crates/actors/tests/fixtures/actors/v1/${name}`]),
+  ...["actors", "filesystem", "inference", "machines", "objects", "stream"].map(crate => [
+    "rust/crates/contract-derive/proto/validation/v1/options.proto", `rust/crates/${crate}/proto/validation/v1/options.proto`,
+  ]),
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant", "execution-placement", "task-admission", "workflow-admission",
     "interaction-resolution", "resolution-receipt", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
-  [compatibilityArtifacts.harness.schemaDigest, "rust/crates/harness/proto/harness/v2/harness.proto"],
-  ["proto/protocol/v1/protocol.proto", "rust/crates/harness/proto/protocol/v1/protocol.proto"],
+  ["rust/crates/harness/proto/protocol/v1/protocol.proto", "rust/crates/filesystem/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
@@ -91,19 +84,3 @@ export const packagedSourceCopies = [
   ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
-
-// Objects and Machines compile their tonic glue only under the `grpc` feature.
-/** @type {Record<string, string | undefined>} */
-const grpcGatedRust = {
-  "acyclic/objects/v1/acyclic.objects.v1.rs": 'include!("acyclic.objects.v1.tonic.rs");',
-  "acyclic/machines/v1/acyclic.machines.v1.rs": 'include!("acyclic.machines.v1.tonic.rs");',
-};
-export const normalizeGeneratedRust = (relative, source) => {
-  const normalized = `${source.trimEnd()}\n`;
-  const include = grpcGatedRust[relative];
-  const gate = relative.startsWith("acyclic/objects/")
-    ? 'all(feature = "grpc", not(target_arch = "wasm32"))' : 'feature = "grpc"';
-  return include ? normalized.replace(include, `#[cfg(${gate})]\n${include}`) : normalized;
-};
-
-export const normalizeGeneratedTypeScript = source => `${source.trimEnd()}\n`;

@@ -94,6 +94,7 @@ where
         selected: &SelectedModelContext,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:begin");
         self.require_operation(operation_id, io)?;
         let turn_operation = self.turn_operation(operation_id);
         {
@@ -109,6 +110,7 @@ where
             drop(association_hold);
         }
         let _query_hold;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:association");
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let verifier = self.input_verifier.as_ref().ok_or_else(|| {
             crate::filesystem::interaction_host::interaction_boundary(
@@ -151,6 +153,7 @@ where
                 "turn has no committed model-context selection",
             )
         })?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:selection");
         let crate::core::EventPayload::ModelContextSelected {
             selection: committed,
         } = event.payload
@@ -212,6 +215,7 @@ where
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut work,
         )?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:messages");
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (
                 crate::conversation::MAX_PORTABLE_COUNT,
@@ -264,6 +268,7 @@ where
                 crate::conversation::ReferencedAttachments::Manifest { .. } => {}
             }
         }
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:files");
         let projected = crate::projection::select_model_context(
             &historical,
             committed.conversation_revision,
@@ -291,6 +296,7 @@ where
         }
         drop(projected);
         drop(historical);
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:end");
         Ok(())
     }
 

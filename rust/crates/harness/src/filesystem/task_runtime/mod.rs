@@ -257,6 +257,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
     recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
+    task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -277,6 +278,27 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TaskContext {
+    pub(crate) fn ordinary_journal_owner<P: StreamProvider + 'static>(
+        &self,
+    ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
+        if self.preparation_io()?.is_some() {
+            return Err(Error::Unsupported(
+                "ordinary task files require ordinary ownership".into(),
+            ));
+        }
+        let mailbox = self
+            .owned_mailbox
+            .as_ref()
+            .and_then(|mailbox| {
+                (mailbox.as_ref() as &dyn std::any::Any).downcast_ref::<TaskJournalMailbox<P>>()
+            })
+            .ok_or_else(|| {
+                Error::Unauthorized("task files require the original journal owner".into())
+            })?;
+        mailbox.owner.require_task_context_binding(self, None)?;
+        Ok(Arc::clone(&mailbox.owner))
+    }
+
     /// Reuses the original journal owner under its issued ledger and current fence.
     pub fn journal_owner<P: StreamProvider + 'static>(
         &self,
@@ -400,6 +422,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
 }
 
+mod content;
 mod context;
 mod dispatch;
 mod execution;
@@ -457,7 +480,7 @@ where
             })
     }
 
-    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+    pub(crate) fn tool_registry(&self) -> &ToolRegistry {
         &self.tools
     }
 

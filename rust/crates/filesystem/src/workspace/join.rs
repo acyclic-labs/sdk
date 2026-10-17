@@ -19,6 +19,7 @@ pub struct JoinBuilder<A, O> {
     pub(super) source: Workspace<A, O>,
     pub(super) target: Workspace<A, O>,
     pub(super) history: JoinHistory,
+    pub(super) git_metadata: bool,
     pub(super) maximum_generations: u32,
     pub(super) maximum_changes: u32,
     pub(super) maximum_conflicts: u32,
@@ -81,6 +82,13 @@ impl<A, O> JoinBuilder<A, O> {
     /// Selects the immutable ancestry shape of a successful join.
     pub const fn history(mut self, history: JoinHistory) -> Self {
         self.history = history;
+        self
+    }
+
+    /// Merges regular-file contents and executable bits with Git semantics.
+    /// Other native metadata is taken deterministically from the target.
+    pub const fn git_metadata(mut self) -> Self {
+        self.git_metadata = true;
         self
     }
 
@@ -282,6 +290,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             target_authority_head,
             base,
             history: self.history,
+            git_metadata: self.git_metadata,
             maximum_generations: self.maximum_generations,
             maximum_changes: self.maximum_changes,
             maximum_conflicts: self.maximum_conflicts,
@@ -298,6 +307,7 @@ pub struct JoinPlan<A, O> {
     pub(super) target_authority_head: crate::Head,
     pub(crate) base: crate::facade::WorkspaceCommonAncestor,
     pub(super) history: JoinHistory,
+    pub(super) git_metadata: bool,
     pub(super) maximum_generations: u32,
     pub(super) maximum_changes: u32,
     pub(super) maximum_conflicts: u32,
@@ -312,6 +322,11 @@ impl<A, O> JoinPlan<A, O> {
     /// Target generation observed while planning.
     pub const fn target_head(&self) -> GenerationId {
         self.target_head.id
+    }
+
+    /// Workspace owning the immutable common ancestor, including repeat joins.
+    pub const fn common_ancestor_workspace_id(&self) -> WorkspaceId {
+        WorkspaceId::from_bytes(self.base.volume_id.into_bytes())
     }
 
     /// Exact discovered common ancestor.

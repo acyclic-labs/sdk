@@ -1,0 +1,3 @@
+{"seed":{"plans/a.md":"αβ🦀z\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call",
+  "name":"read","arguments":{"file":"plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],
+  "done"],"expect":{"wire":[],"files":{"plans/a.md":"αβ🦀z\n","plans/missing.md":null}}}

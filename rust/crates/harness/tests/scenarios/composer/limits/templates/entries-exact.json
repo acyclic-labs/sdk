@@ -1,0 +1,3 @@
+{"prompt":"/x","seed":{".claude/commands/x.md":"body"},"discovery_limits":{"entries":3,"directories":256,"header_bytes":
+  16384,"instruction_bytes":65536},"expect":{"result":{"kind":"prompt","text":"body","source":{"path":
+  ".claude/commands/x.md"},"mentions":[]},"files":{".claude/commands/x.md":"body"}}}

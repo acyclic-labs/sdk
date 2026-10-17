@@ -1,3 +1,20 @@
+/// Canonical Rust failure vocabulary for JavaScript gRPC platform I/O.
+#[wasm_bindgen(js_name = grpcErrorCode)]
+pub fn grpc_error_code(code: i32, message: &str) -> String {
+    wire_codec::status(&tonic::Status::new(tonic::Code::from_i32(code), message))
+        .code()
+        .to_owned()
+}
+
+/// Complete Rust-owned code inventory; adapters must not maintain another list.
+#[wasm_bindgen(js_name = streamErrorCodes)]
+pub fn stream_error_codes() -> Vec<String> {
+    StreamError::ALL
+        .iter()
+        .map(|error| error.code().to_owned())
+        .collect()
+}
+
 /// Project a hosted HTTP error code onto the public Stream error vocabulary.
 #[wasm_bindgen(js_name = publicHttpErrorCode)]
 pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {

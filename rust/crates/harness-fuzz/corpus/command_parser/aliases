@@ -1,0 +1,5 @@
+---
+a: &anchor value
+b: *anchor
+---
+body

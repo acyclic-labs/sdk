@@ -34,7 +34,7 @@ impl FuseProjection {
         Ok(target)
     }
 
-    pub(super) fn read_through(
+    pub(super) fn read_handle(
         &self,
         inode: u64,
         handle: u64,
@@ -42,39 +42,19 @@ impl FuseProjection {
         size: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
-        let read = |opened| -> Result<_, NativeMountError> {
-            let file = self
-                .core
-                .state()?
-                .file_handle(inode, opened)?
-                .open_file
-                .clone();
-            let bytes = fuse_owned_source_chunk(
-                file.file(work)?.read_up_to_with_meter(offset, size, work)?,
-                work,
-            )?;
-            if self.core.stopping.load(Ordering::Acquire) {
-                return Err(libc::ENODEV.into());
-            }
-            Ok(bytes)
-        };
-        match self.with_handle(inode, handle, AccessMode::ReadOnly, read, work) {
-            Err(error)
-                if handle == 0
-                    && self.skips_open
-                    && (matches!(&error, NativeMountError::Source(MountSourceError::Stale))
-                        || matches!(&error, NativeMountError::Io(error) if error.raw_os_error() == Some(libc::ESTALE))) =>
-            {
-                let Some(stale) = self.core.state()?.implicit.get(&inode).map(|held| held.0) else {
-                    return Err(libc::ESTALE.into());
-                };
-                let reopened = {
-                    let _names = self.core.names()?;
-                    self.reopen_implicit(inode, Some(stale), AccessMode::ReadOnly, work)?
-                };
-                read(reopened)
-            }
-            result => result,
+        let file = self
+            .core
+            .state()?
+            .file_handle(inode, handle)?
+            .open_file
+            .clone();
+        let bytes = fuse_owned_source_chunk(
+            file.file(work)?.read_up_to_with_meter(offset, size, work)?,
+            work,
+        )?;
+        if self.core.stopping.load(Ordering::Acquire) {
+            return Err(libc::ENODEV.into());
         }
+        Ok(bytes)
     }
 }

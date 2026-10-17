@@ -29,8 +29,7 @@ use acyclic_harness::filesystem::{
     TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider,
-    PreparedModelRequest,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
 };
 use acyclic_harness::registry::ComponentIdentity;
 use acyclic_harness::resources::ProviderRef;
@@ -40,8 +39,11 @@ use acyclic_harness::runtime::{
     ToolPolicy, ToolPolicyDecision,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceRequest, SchedulerEvent, SessionLimits};
+use acyclic_harness::test_support::{
+    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+};
 use acyclic_harness::tool::{
-    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
+    Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult,
 };
 use acyclic_harness::workflow::{
     MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, MemoryWorkflowJournal,
@@ -53,22 +55,10 @@ use acyclic_harness::{
 use acyclic_stream::{
     LocalStream, LocalStreamLimits, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
-use futures::{future::BoxFuture, stream::BoxStream};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
-
-struct InterruptedModel {
-    requests: Mutex<Vec<Vec<u8>>>,
-    approval_tool: bool,
-    observed_events: usize,
-    output_tokens: AtomicU64,
-    generated: AtomicUsize,
-    reconciled: AtomicUsize,
-}
+use std::{collections::BTreeMap, sync::Arc};
 
 async fn discover_wakes<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>,
@@ -187,140 +177,83 @@ impl ToolExecutor for InterruptedTool {
     }
 }
 
-impl ToolProjection for InterruptedTool {
-    fn project(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
-        self.supports_native_projection(work)?;
-        Ok((
-            serde_json::json!({"kind":"json","value":result.value}),
-            None,
-        ))
-    }
-}
-
-impl ModelProvider for InterruptedModel {
-    fn context_capacity(
-        &self,
-        _: &Model,
-    ) -> Result<acyclic_harness::context::ModelContextCapacity> {
-        Ok(acyclic_harness::context::ModelContextCapacity {
+fn task_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedModelProvider {
+    ScriptedModelProvider::new(turns)
+        .with_context_capacity(acyclic_harness::context::ModelContextCapacity {
             context_tokens: 131_072,
             output_tokens: 16_384,
         })
-    }
-
-    fn count_tokens(
-        &self,
-        request: &PreparedModelRequest,
-    ) -> Result<acyclic_harness::context::ModelTokenCount> {
-        let message_tokens = request
-            .request()
-            .messages
-            .iter()
-            .map(|message| {
-                let bytes = message.content.file_refs().try_fold(
-                    serde_json::to_vec(message)
-                        .map_err(|error| Error::Invalid(error.to_string()))?
-                        .len() as u64,
-                    |total, file| {
-                        total
-                            .checked_add(file.descriptor().byte_length())
-                            .ok_or_else(|| Error::Invalid("synthetic token count overflows".into()))
-                    },
-                )?;
-                u32::try_from(bytes)
-                    .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let fixed = serde_json::to_vec(&request.request().tools)
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .len();
-        Ok(acyclic_harness::context::ModelTokenCount {
-            request_digest: request.request_digest(),
-            fixed_tokens: u32::try_from(fixed)
-                .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
-            message_tokens,
-        })
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: PreparedModelRequest,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.requests.lock().unwrap().push(request.bytes().to_vec());
-        self.output_tokens.store(
-            u64::from(request.request().max_output_tokens.unwrap_or(0)),
-            Ordering::SeqCst,
-        );
-        let attempt = self.generated.fetch_add(1, Ordering::SeqCst);
-        if self.approval_tool {
-            let Some(file) = request
+        .with_token_counter(|request| {
+            let message_tokens = request
                 .request()
                 .messages
                 .iter()
-                .flat_map(|message| message.content.file_refs())
-                .next()
-            else {
-                return Box::pin(futures::stream::iter([Err(Error::Invalid(
-                    "approval tool requires the original input file".into(),
-                ))]));
-            };
-            return Box::pin(futures::stream::iter([
-                Ok(if attempt == 0 {
-                    ModelEvent::ToolCall {
-                        call_id: "provider-call".into(),
-                        name: "test.restore".into(),
-                        arguments: json!({"file":file,"approval":true}),
-                    }
-                } else {
-                    ModelEvent::Content {
-                        delta: "partial-restored".into(),
-                    }
-                }),
-                Ok(ModelEvent::Completed {
-                    metadata: Value::Null,
-                }),
-            ]));
-        }
-        Box::pin(futures::stream::iter([
-            Ok(ModelEvent::Content {
+                .map(|message| {
+                    let bytes = message.content.file_refs().try_fold(
+                        serde_json::to_vec(message)
+                            .map_err(|error| Error::Invalid(error.to_string()))?
+                            .len() as u64,
+                        |total, file| {
+                            total
+                                .checked_add(file.descriptor().byte_length())
+                                .ok_or_else(|| {
+                                    Error::Invalid("synthetic token count overflows".into())
+                                })
+                        },
+                    )?;
+                    u32::try_from(bytes)
+                        .map_err(|_| Error::Invalid("synthetic token count exceeds u32".into()))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let fixed = serde_json::to_vec(&request.request().tools)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .len();
+            Ok(
+                acyclic_harness::context::ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    u32::try_from(fixed)
+                        .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
+                    message_tokens,
+                ),
+            )
+        })
+}
+
+fn interrupted_model(observed_events: usize) -> Arc<ScriptedModelProvider> {
+    Arc::new(
+        task_model([ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
                 delta: "partial-".into(),
             }),
-            Err(Error::Storage("forced model interruption".into())),
-        ]))
-    }
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: acyclic_harness::model::ModelDispatch,
-        observed: &'a [acyclic_harness::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async move {
-            assert_eq!(
-                observed,
-                if self.observed_events == 0 {
-                    Vec::new()
-                } else {
-                    vec![ModelEvent::Content {
-                        delta: "partial-".into(),
-                    }]
-                }
-            );
-            self.reconciled.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(vec![
+            ScriptedEvent::Error {
+                error: "forced model interruption".into(),
+            },
+        ])])
+        .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
+            observed: if observed_events == 0 {
+                vec![]
+            } else {
+                vec![ModelEvent::Content {
+                    delta: "partial-".into(),
+                }]
+            },
+            continuation: Some(vec![
                 ModelEvent::Content {
                     delta: "restored".into(),
                 },
                 ModelEvent::Completed {
                     metadata: Value::Null,
                 },
-            ]))
-        })
-    }
+            ]),
+        }]),
+    )
+}
+
+fn workspace() -> Result<tempfile::TempDir> {
+    let root = env!("CARGO_TARGET_TMPDIR");
+    std::fs::create_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+    tempfile::tempdir_in(root).map_err(|error| Error::Storage(error.to_string()))
 }
 
 struct TaskMachine {
@@ -812,8 +745,10 @@ impl ResumableMachine for TaskMachine {
     }
 }
 
-use crate::stream_fixture as fault_stream;
+#[path = "support/stream/mod.rs"]
+mod stream_fixture;
 use fault_stream::{ExecutionFaultMode, LostSessionAck};
+use stream_fixture as fault_stream;
 
 #[tokio::test]
 async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<()> {
@@ -822,7 +757,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 
 fn assert_completed_dispatches(
     command: WorkerCommand,
-    model: &InterruptedModel,
+    model: &ScriptedModelProvider,
     tool: &InterruptedTool,
 ) {
     if command == WorkerCommand::Wait {
@@ -848,10 +783,16 @@ fn assert_completed_dispatches(
             | WorkerCommand::ApprovalWaitModel
             | WorkerCommand::ApprovalDeclinedModel
     ) {
-        assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+        assert_eq!(
+            model
+                .requests()
+                .last()
+                .and_then(|request| request.max_output_tokens),
+            Some(8_192)
+        );
     }
     assert_eq!(
-        model.generated.load(Ordering::SeqCst),
+        model.dispatches().len(),
         if with_model_approval {
             if declined { 1 } else { 2 }
         } else {
@@ -866,7 +807,7 @@ fn assert_completed_dispatches(
         usize::from(with_tool && !declined)
     );
     assert_eq!(
-        model.reconciled.load(Ordering::SeqCst),
+        model.reconciliations().len(),
         usize::from(matches!(
             command,
             WorkerCommand::Model | WorkerCommand::PolicyModel
@@ -891,19 +832,19 @@ mod mail;
 
 fn assert_pending_dispatches(
     command: WorkerCommand,
-    model: &InterruptedModel,
+    model: &ScriptedModelProvider,
     tool: &InterruptedTool,
     with_tool: bool,
 ) {
     assert_eq!(
-        model.generated.load(Ordering::SeqCst),
+        model.dispatches().len(),
         usize::from(matches!(
             command,
             WorkerCommand::Model | WorkerCommand::PolicyModel
         ))
     );
     assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
-    assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+    assert_eq!(model.reconciliations().len(), 0);
 }
 
 fn assert_policy_dispatches(policy: &RestartPolicy, tool: &InterruptedTool, declined: bool) {

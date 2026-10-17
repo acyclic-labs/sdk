@@ -63,12 +63,6 @@ impl ControlPlane {
             if child_root.parent_workspace_id != Some(parent_root.workspace_id) {
                 return Err("child root is not forked from its direct parent root".to_owned());
             }
-            let source = acyclic_fs::WorkspaceResolver::resolve(
-                &(self.fs.clone(), WorkspaceGraph::new(self.store.clone())),
-                child_root.workspace_id,
-            )
-            .await
-            .map_err(display)?;
             let target = acyclic_fs::WorkspaceResolver::resolve(
                 &(self.fs.clone(), WorkspaceGraph::new(self.store.clone())),
                 parent_root.workspace_id,
@@ -76,79 +70,18 @@ impl ControlPlane {
             .await
             .map_err(display)?;
             let lazy_source = self.lazy_workspace_root(&route, root_id).await?;
-            // The child's generation holds exactly what it authored; what it
-            // only reads from the physical root is no change of its own, as
-            // the parent's generations hold only what the parent authored.
-            // Source paths the child deleted travel as source deletions.
-            let plan = source
-                .join_into(&target)
-                .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| display(failure.error))?;
-            let target_head = plan.target_head();
-            let parent_repository_id = self.parent_repository_id(caller, root_id, target.id())?;
-            let tracked = GitCompatRepository::new(parent_repository_id, self.store.clone())
-                .tracked_paths()
-                .await
-                .map_err(display)?;
-            let base = target
-                .generation(
-                    plan.common_ancestor(),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(display)?;
-            let source_head = source
-                .generation(
-                    plan.source_head(),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(display)?;
-            let changed = base
-                .diff_to(
-                    &source_head,
-                    u32::MAX,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| failure.error)
-                .map_err(display)?
-                .changed_paths(
-                    u32::MAX,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| failure.error)
-                .map_err(display)?;
-            let child_wins_bindings = git_ignore_policy(&lazy_source)
-                .await?
-                .newly_ignored_paths_at(&source_head, &changed, &tracked)
-                .await
-                .map_err(display)?;
-            roots.insert(
-                root_id,
-                MultiRootMergeRoot {
-                    source_workspace_id: source.id(),
-                    merge_workspace_id: None,
-                    source_generation: plan.source_head(),
-                    target_workspace_id: target.id(),
-                    target_generation: target_head,
-                    base_generation: plan.common_ancestor(),
-                    child_wins_bindings,
-                },
-            );
+            let repository = self.parent_repository_id(caller, root_id, target.id())?;
+            let root = acyclic_harness::filesystem::plan_agent_merge(
+                &self.fs,
+                &self.store,
+                &lazy_source,
+                &target,
+                repository,
+            )
+            .await
+            .map_err(display)?;
+            let target_head = root.target_generation;
+            roots.insert(root_id, root);
             resolutions.insert(root_id, BTreeMap::new());
             target_heads.insert(root_id, target_head);
         }

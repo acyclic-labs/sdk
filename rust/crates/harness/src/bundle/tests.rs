@@ -283,36 +283,6 @@ impl Executor for RecordingExecutor {
 }
 
 #[derive(Default)]
-struct ForbiddenStockModel(std::sync::atomic::AtomicUsize);
-
-impl ModelProvider for ForbiddenStockModel {
-    fn generate<'a>(
-        &'a self,
-        _: crate::model::PreparedModelRequest,
-        _: crate::model::ModelDispatch,
-    ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Box::pin(futures::stream::once(async {
-            Err(Error::Unsupported("stock model dispatch forbidden".into()))
-        }))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        _dispatch: crate::model::ModelDispatch,
-        _observed: &'a [crate::model::ModelEvent],
-    ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        async {
-            Err(Error::Unsupported(
-                "stock model reconciliation forbidden".into(),
-            ))
-        }
-        .boxed()
-    }
-}
-
-#[derive(Default)]
 struct ForbiddenStockTools(std::sync::atomic::AtomicUsize);
 
 impl ToolExecutor for ForbiddenStockTools {
@@ -428,7 +398,7 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
         received: std::sync::Mutex::new(Vec::new()),
     });
     let journal = Arc::new(RecordingTurnJournal::default());
-    let model = Arc::new(ForbiddenStockModel::default());
+    let model = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
     let tools = Arc::new(ForbiddenStockTools::default());
     let bundle = HarnessBuilder::new()
         .model(
@@ -436,10 +406,11 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
             model.clone(),
         )
         .tool(Tool {
+            hook_names: &[],
             definition: example_tool().definition,
             executor: tools.clone(),
             projection: tools.clone(),
-        })?
+        })
         .grant("model:generate")
         .journal(journal.clone())
         .executor(executor.clone())
@@ -467,7 +438,8 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
             .map_err(|_| Error::Storage("journal lock poisoned".into()))?
             .is_empty()
     );
-    assert_eq!(model.0.load(Ordering::SeqCst), 0);
+    assert!(model.requests().is_empty());
+    assert!(model.reconciliations().is_empty());
     assert_eq!(tools.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -476,19 +448,12 @@ async fn custom_executor_owns_complete_turn_input_output_without_stock_events() 
 async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
     assert!(HarnessBuilder::new().build().is_err());
     let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
-    struct Provider;
-    impl ModelProvider for Provider {
-        fn generate<'a>(
-            &'a self,
-            _: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>> {
-            Box::pin(futures::stream::empty())
-        }
-    }
     let bundle = HarnessBuilder::new()
         .name("test")
-        .model(model.clone(), Arc::new(Provider))
+        .model(
+            model.clone(),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()),
+        )
         .journal(Arc::new(RecordingTurnJournal::default()))
         .grant("model:generate")
         .build()?;
@@ -507,7 +472,7 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
             max_steps: 1,
         }).await, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"));
     assert!(matches!(HarnessBuilder::new()
-            .model(model.clone(), Arc::new(Provider))
+            .model(model.clone(), Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()))
             .journal(Arc::new(RecordingTurnJournal::default()))
             .grant("model:generate")
             .task(TaskDefinition::live("acyclic.stock_turn", "2", |_context, _input: TurnInput| async {
@@ -583,14 +548,17 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
             .is_err()
     );
     HarnessBuilder::new()
-        .model(model, Arc::new(Provider))
+        .model(
+            model,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()),
+        )
         .journal(Arc::new(RecordingTurnJournal::default()))
         .executor(Arc::clone(&stock_executor))
         .build()?;
     let custom = HarnessBuilder::new()
         .executor(Arc::clone(&stock_executor))
         .journal(Arc::new(RecordingTurnJournal::default()))
-        .tool(example_tool())?
+        .tool(example_tool())
         .build()?;
     assert!(matches!(
         custom
@@ -692,6 +660,7 @@ impl ToolProjection for EchoProjection {
 
 fn example_tool() -> Tool {
     Tool {
+        hook_names: &[],
         definition: ToolDefinition {
             name: "example.echo".into(),
             revision: "1".into(),

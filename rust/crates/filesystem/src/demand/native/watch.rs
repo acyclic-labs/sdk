@@ -74,6 +74,14 @@ impl NativeDemandSource {
         )?);
         #[cfg(any(target_os = "linux", windows))]
         {
+            // This list belongs to the shared source, even when another view
+            // starts a watch using a different original native ledger.
+            let mut original = self
+                .inner
+                ._ownership
+                .original_work()
+                .map(|work| CallbackWork::Original(work.clone()));
+            let context = original.as_mut().unwrap_or(context);
             let mut watches = self
                 .inner
                 .watches
@@ -233,7 +241,18 @@ impl NativeChanges {
                                 native = Some(incoming);
                             }
                         }
-                        let metadata = { #[cfg(unix)] { inner.root.stat(relative, work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, work, |path, work| inner.root.stat(path, work)) } };
+                        let metadata = {
+                            #[cfg(unix)]
+                            {
+                                inner.root.stat(relative, work)
+                            }
+                            #[cfg(windows)]
+                            {
+                                crate::native_host::with_wide_path(relative, work, |path, work| {
+                                    inner.root.stat(path, work)
+                                })
+                            }
+                        };
                         let node = match metadata {
                             Ok(metadata) => Some(file_identity(&metadata)),
                             Err(DemandError::Io(error))
@@ -266,7 +285,11 @@ impl NativeChanges {
             }
             for batch in reported
                 .chunk_by(|a, b| self.excluded.visible(a) == self.excluded.visible(b))
-                .filter(|batch| batch.first().is_some_and(|change| self.excluded.visible(change)))
+                .filter(|batch| {
+                    batch
+                        .first()
+                        .is_some_and(|change| self.excluded.visible(change))
+                })
             {
                 account_source(work, |accounting, _| {
                     self.sink.source_changed(batch, accounting)

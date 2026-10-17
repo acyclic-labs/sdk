@@ -11,22 +11,34 @@
   },
   "type": "module",
   "exports": {
+    "./manifest.schema.json": "./src/generated/manifest.schema.json",
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "default": "./dist/manifest.js"
+    },
+    "./manifest.wasm": "./generated/wasm/acyclic_manifest_bg.wasm"
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "CHANGELOG.md"
+    "src/generated/manifest.schema.json",
+    "CHANGELOG.md",
+    "generated/wasm"
   ],
   "scripts": {
-    "build": "tsc -b",
-    "test": "tsc -b --pretty false",
+    "build": "bun run generate && bun run --cwd ../actors build && bun run --cwd ../objects build && bun run build:wasm && tsc -b",
+    "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
     "pack:dry": "bun pm pack --dry-run",
-    "test:cloud": "tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/cloud-contract.test.mjs",
-    "check:types": "tsc -p tsconfig.type-tests.json --pretty false"
+    "test:cloud": "bun run generate && bun run build:wasm && tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/cloud-contract.test.mjs",
+    "check:types": "tsc -p tsconfig.type-tests.json --pretty false",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs manifest",
+    "test:manifest": "bun run build:wasm && node --test test/manifest-wasm.test.mjs",
+    "generate": "bun ../../../scripts/generate.mjs workers",
+    "prepack": "bun run generate"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",

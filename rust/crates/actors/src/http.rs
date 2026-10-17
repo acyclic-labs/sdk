@@ -1,5 +1,6 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
+pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
@@ -13,6 +14,9 @@ pub enum Error {
     /// Invalid endpoint, credential, bound, or request path.
     #[error("invalid HTTP client configuration or request")]
     InvalidArgument,
+    /// The current callback failed; a fixed credential is never substituted.
+    #[error("Actors credential renewal failed")]
+    Credential(#[from] acyclic_auth::credential::CredentialError),
     /// Network failure.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -40,6 +44,7 @@ impl Error {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::InvalidArgument => "invalid_argument",
+            Self::Credential(_) => "unauthenticated",
             Self::Transport(_) => "transport",
             Self::ResponseTooLarge => "response_too_large",
             Self::MalformedResponse => "malformed_response",
@@ -48,12 +53,22 @@ impl Error {
     }
 }
 
+fn credential_header(token: &str) -> Result<HeaderValue, Error> {
+    if !crate::valid_token(token) {
+        return Err(Error::InvalidArgument);
+    }
+    let mut value =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
 /// Configures bounded authenticated HTTP without redirects.
 fn configure(
     endpoint: &str,
-    token: &str,
+    token: Option<&str>,
     maximum: usize,
-) -> Result<(Transport, Url, HeaderValue), Error> {
+) -> Result<(Transport, Url, Option<HeaderValue>), Error> {
     let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
     let loopback = endpoint.host_str().is_some_and(|host| {
         host == "localhost"
@@ -68,14 +83,11 @@ fn configure(
         || endpoint.password().is_some()
         || endpoint.query().is_some()
         || endpoint.fragment().is_some()
-        || !crate::valid_token(token)
         || maximum == 0
     {
         return Err(Error::InvalidArgument);
     }
-    let mut authorization =
-        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
-    authorization.set_sensitive(true);
+    let authorization = token.map(credential_header).transpose()?;
     if !endpoint.path().ends_with('/') {
         endpoint.set_path(&format!("{}/", endpoint.path()));
     }
@@ -141,10 +153,14 @@ async fn response_body(
 pub struct Client {
     transport: Transport,
     endpoint: Url,
-    authorization: HeaderValue,
+    authorization: Option<HeaderValue>,
+    credential: Option<CredentialProvider>,
     maximum: usize,
     descriptors: DescriptorPool,
 }
+
+#[cfg(test)]
+mod credential_tests;
 
 macro_rules! operations {
     ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
@@ -164,16 +180,44 @@ macro_rules! operations {
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
+        Self::build(endpoint, Some(token), None, maximum_response_bytes)
+    }
+
+    /// Resolve the current callback before each operation without caching its result.
+    pub fn with_credential_provider(
+        endpoint: &str,
+        credential: CredentialProvider,
+        maximum: usize,
+    ) -> Result<Self, Error> {
+        Self::build(endpoint, None, Some(credential), maximum)
+    }
+
+    fn build(
+        endpoint: &str,
+        token: Option<&str>,
+        credential: Option<CredentialProvider>,
+        maximum_response_bytes: usize,
+    ) -> Result<Self, Error> {
         let (transport, endpoint, authorization) =
             configure(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
             transport,
             endpoint,
             authorization,
+            credential,
             maximum: maximum_response_bytes,
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
         })
+    }
+
+    async fn authorization(&self) -> Result<HeaderValue, Error> {
+        if let Some(provider) = &self.credential {
+            let token = provider.resolve().await?;
+            credential_header(&token)
+        } else {
+            self.authorization.clone().ok_or(Error::InvalidArgument)
+        }
     }
 
     #[tracing::instrument(
@@ -203,7 +247,7 @@ impl Client {
                         .join(route)
                         .map_err(|_| Error::InvalidArgument)?,
                 )
-                .header(AUTHORIZATION, self.authorization.clone())
+                .header(AUTHORIZATION, self.authorization().await?)
                 .header("content-type", "application/json")
                 .body(body)
                 .send()

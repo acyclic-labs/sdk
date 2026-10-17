@@ -18,6 +18,7 @@ impl Scheduler {
         }
         self.apply_event(event.clone_with_work(work)?, work)
     }
+    #[inline(never)]
     fn apply_event(
         &mut self,
         event: SchedulerEvent,
@@ -243,6 +244,7 @@ impl Scheduler {
         }
         Ok(())
     }
+    #[inline(never)]
     fn apply_projected_event(
         &mut self,
         event: SchedulerEvent,

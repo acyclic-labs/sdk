@@ -1,0 +1,21 @@
+{
+  "expect": {
+    "result": {
+      "tool": "bash",
+      "kind": "tool",
+      "input": {
+        "command": "echo @missing.txt"
+      }
+    },
+    "file_values": {
+      "task/requests/00000000-0000-0000-0000-000000000001.json": {
+        "tool": "bash",
+        "kind": "tool",
+        "input": {
+          "command": "echo @missing.txt"
+        }
+      }
+    }
+  },
+  "prompt": "/sh echo @missing.txt"
+}

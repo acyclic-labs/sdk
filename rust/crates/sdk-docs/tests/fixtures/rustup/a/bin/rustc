@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  -vV) printf 'host: fixture-a\n' ;;
+  --print) printf 'feature="fixture_a"\n' ;;
+  *) exit 1 ;;
+esac

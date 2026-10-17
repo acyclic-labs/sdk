@@ -1,0 +1,8 @@
+{"writes":[{"path":".tasks/t/turns/0/chunks/0","text":"consider ","channel":"Reasoning"},{"path":
+  ".tasks/t/turns/0/chunks/1","text":"**an","channel":"Text"},{"path":".tasks/t/turns/0/chunks/2","text":"carefully",
+  "channel":"Reasoning"},{"path":".tasks/t/turns/0/chunks/3","text":"swer**","channel":"Text"}],"expect":{"files":{
+  ".tasks/t/turns/0/chunks/0":"consider ",".tasks/t/turns/0/chunks/1":"**an",".tasks/t/turns/0/chunks/2":"carefully",
+  ".tasks/t/turns/0/chunks/3":"swer**"},"changes":[{"path":".tasks/t/turns/0/chunks/0","text":"consider ","channel":
+  "Reasoning"},{"path":".tasks/t/turns/0/chunks/1","text":"**an","channel":"Text"},{"path":".tasks/t/turns/0/chunks/2",
+  "text":"carefully","channel":"Reasoning"},{"path":".tasks/t/turns/0/chunks/3","text":"swer**","channel":"Text"}],
+  "heads":{".tasks/t/turns/0/text.md":"**answer**",".tasks/t/turns/0/reasoning.md":"consider carefully"}}}

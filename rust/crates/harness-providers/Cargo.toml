@@ -1,0 +1,60 @@
+[package]
+name = "acyclic-harness-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Streaming model providers for the acyclic harness"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+browser = ["acyclic-harness/browser", "dep:tsify", "dep:serde-wasm-bindgen"]
+fuzzing = []
+
+[dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false }
+acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
+async-stream = "0.3.6"
+bytes.workspace = true
+blake3.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url = "2.5.7"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["filesystem"] }
+acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
+blake3.workspace = true
+base64 = "=0.22.1"
+reqwest.workspace = true
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+tempfile = "3.27.0"
+time = { workspace = true, features = ["formatting", "parsing"] }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+serde-wasm-bindgen = { workspace = true, optional = true }
+tsify = { workspace = true, optional = true }
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
+tokio.workspace = true
+tempfile = "3.27.0"
+loom = "0.7.2"
+proptest.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+proptest.workspace = true
+
+[lints]
+workspace = true

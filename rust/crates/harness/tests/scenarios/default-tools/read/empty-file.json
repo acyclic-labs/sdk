@@ -1,0 +1,2 @@
+{"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":""}}},"files":{"plans/a.md":""}},
+  "seed":{"plans/a.md":""}}

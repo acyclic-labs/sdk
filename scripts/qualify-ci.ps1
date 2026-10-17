@@ -183,15 +183,12 @@ bun run --filter '@acyclic-labs/fs' test:composition
 # The installed host creates the real local provider scenario; pipes here are
 # process E2E evidence, not a claim that an interactive PTY was exercised.
 $GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
-$GraphcoderScenario = Join-Path $env:SDK_TEMP_DIR ("graphcoder-" + [Guid]::NewGuid().ToString('N'))
-cargo install --path rust/crates/harness --locked `
-    --features terminal,filesystem-local,native-execution --bin graphcoder `
-    --root $GraphcoderInstall --target-dir "$CargoTargetDir-release"
-node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
-    --full $GraphcoderScenario
-node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe') `
-    --fresh "$GraphcoderScenario-pty" --evidence "$GraphcoderScenario-pty-output"
-
+cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
+    --root $GraphcoderInstall --target-dir $CargoTargetDir
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
+node --test scripts/graphcoder-pty/screen.test.mjs
+node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
+node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 # Exact external-host lockfile inputs; every test uses this source-built CLI.
 $PiHosts = (Resolve-Path 'plugin/tests/hosts').Path
 cargo build -p acyclic-plugin --bin acyclic --locked

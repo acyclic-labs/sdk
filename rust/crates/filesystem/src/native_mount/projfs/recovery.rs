@@ -162,4 +162,6 @@ pub(super) fn driver_error(error: &windows::core::Error) -> NativeMountError {
     NativeMountError::Driver(error.to_string())
 }
 
-pub(super) struct KeyedLocks<K>(pub(super) Mutex<HashMap<K, Arc<Mutex<()>>>>);
+pub(super) struct KeyedLocks<K>(
+    pub(super) RankedMutex<HashMap<K, Arc<RankedMutex<(), OPERATION>>>, VIEW>,
+);

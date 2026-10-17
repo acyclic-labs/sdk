@@ -18,12 +18,13 @@ use crate::performance::WorkCounters;
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
 };
+use crate::sync::{Mutex, MutexGuard};
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
 use std::pin::pin;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use thiserror::Error;
 
@@ -155,6 +156,7 @@ impl Default for CacheState {
 
 struct Shared {
     options: ObjectCacheOptions,
+    // Cache/view precedes any retained payload custody; never held over provider I/O.
     state: Mutex<CacheState>,
 }
 
@@ -366,13 +368,21 @@ impl<S: Clone> Clone for CachedObjectStore<S> {
 impl<S> CachedObjectStore<S> {
     /// Wraps one backend with an independently bounded disposable cache.
     pub fn new(inner: S, options: ObjectCacheOptions) -> Result<Self, ObjectCacheConfigError> {
-        Ok(Self {
+        Ok(Self::with_options(inner, options.validate()?))
+    }
+
+    fn with_options(inner: S, options: ObjectCacheOptions) -> Self {
+        Self {
             inner,
             shared: Arc::new(Shared {
-                options: options.validate()?,
+                options,
                 state: Mutex::new(CacheState::default()),
             }),
-        })
+        }
+    }
+
+    pub(crate) fn with_default_options(inner: S) -> Self {
+        Self::with_options(inner, ObjectCacheOptions::default())
     }
 
     /// Returns the wrapped correctness backend.
@@ -537,13 +547,27 @@ impl<S> CachedObjectStore<S> {
         Ok(true)
     }
 
-    fn decoded_get(
+    pub(crate) fn decoded_get(
+        &self,
+        key: DecodedCacheKey,
+    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        self.decoded_get_matching::<true>(key)
+    }
+
+    fn decoded_get_matching<const MATCH_IDENTITY: bool>(
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
-        let Some(entry) = state.decoded.get_mut(&key) else {
+        let selected = if MATCH_IDENTITY {
+            Some(key)
+        } else {
+            state.decoded.keys().next().copied()
+        };
+        let Some((key, entry)) =
+            selected.and_then(|key| state.decoded.get_mut(&key).map(|entry| (key, entry)))
+        else {
             return Ok(None);
         };
         let prior = entry.touched;
@@ -556,7 +580,15 @@ impl<S> CachedObjectStore<S> {
         Ok(Some(value))
     }
 
-    fn decoded_admit(
+    pub(crate) fn decoded_admit(
+        &self,
+        key: DecodedCacheKey,
+        value: DecodedCacheValue,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        self.decoded_admit_bounded::<true>(key, value)
+    }
+
+    fn decoded_admit_bounded<const ENFORCE: bool>(
         &self,
         key: DecodedCacheKey,
         value: DecodedCacheValue,
@@ -568,12 +600,13 @@ impl<S> CachedObjectStore<S> {
         if let Some(existing) = state.decoded.get(&key) {
             return Ok(DecodedCacheAdmission::Shared(existing.value.clone()));
         }
-        while state.entries.len().saturating_add(state.decoded.len())
-            >= usize::try_from(self.shared.options.maximum_entries).unwrap_or(usize::MAX)
-            || state
-                .resident_bytes
-                .checked_add(value.logical_bytes)
-                .is_none_or(|total| total > self.shared.options.maximum_bytes)
+        while ENFORCE
+            && (state.entries.len().saturating_add(state.decoded.len())
+                >= usize::try_from(self.shared.options.maximum_entries).unwrap_or(usize::MAX)
+                || state
+                    .resident_bytes
+                    .checked_add(value.logical_bytes)
+                    .is_none_or(|total| total > self.shared.options.maximum_bytes))
         {
             evict_oldest(&mut state)?;
         }
@@ -707,414 +740,17 @@ fn shared_read(bytes: OwnedBytes, maximum: u64) -> Result<ObjectRead, ObjectStor
     })
 }
 
-impl<S: AsyncObjectStore> CachedObjectStore<S> {
-    async fn load_leader(
-        &self,
-        object_id: ObjectId,
-        maximum: u64,
-        flight: Arc<Flight>,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        let guard = ActiveFlightGuard {
-            store: self,
-            object_id,
-            flight,
-        };
-        let read = match self.inner.read(object_id, maximum, work).await {
-            Ok(read) => read,
-            Err(error) => {
-                guard.finish(None)?;
-                return Err(error);
-            }
-        };
-        let bytes = read.bytes.clone();
-        if self.insert(object_id, bytes.clone())? {
-            guard.finish(Some(bytes.clone()))?;
-            return shared_read(bytes, maximum);
-        }
-        guard.finish(None)?;
-        Ok(read)
-    }
+mod reads;
 
-    fn prepare_batch(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<PreparedBatch, ObjectStoreError> {
-        work.accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
-        if requests.is_empty() {
-            return Err(ObjectStoreError::Rejected(
-                "object read batch is empty".to_owned(),
-            ));
-        }
-        let count = requests.len() as u64;
-        work.accounting()
-            .admit(WorkCounters {
-                items_returned: count,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(crate::async_storage::object_error)?;
-        work.accounting()
-            .charge(WorkCounters {
-                object_probes: count,
-                items_examined: count,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(crate::async_storage::object_error)?;
-        let slots = Owned::allocate(requests.len(), &mut work.accounting())
-            .map_err(crate::async_storage::object_error)?;
-        let leaders = Owned::allocate(requests.len(), &mut work.accounting())
-            .map_err(crate::async_storage::object_error)?;
-        let mut prepared = PreparedBatch {
-            slots,
-            leaders,
-            shared: self.shared.clone(),
-        };
-        let mut local_leaders = BTreeMap::<ObjectId, usize>::new();
-        for request in requests {
-            let slot = match self.read_plan(
-                request.object_id,
-                #[cfg(not(target_arch = "wasm32"))]
-                work.original,
-            )? {
-                ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
-                ReadPlan::Leader(flight) => {
-                    let index = prepared.leaders.value.len();
-                    prepared.leaders.value.push(BatchLeader {
-                        object_id: request.object_id,
-                        maximum_bytes: request.maximum_bytes,
-                        flight,
-                    });
-                    local_leaders.insert(request.object_id, index);
-                    BatchSlot::LocalLeader(index)
-                }
-                ReadPlan::Follower(flight) => {
-                    if let Some(&index) = local_leaders.get(&request.object_id)
-                        && let Some(leader) = prepared.leaders.value.get_mut(index)
-                        && Arc::ptr_eq(&leader.flight, &flight)
-                    {
-                        leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
-                        BatchSlot::LocalLeader(index)
-                    } else {
-                        BatchSlot::ExternalFollower(flight)
-                    }
-                }
-            };
-            prepared.slots.value.push(slot);
-        }
-        Ok(prepared)
-    }
-
-    async fn load_batch_leaders(
-        &self,
-        prepared: &PreparedBatch,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        if prepared.leaders.value.is_empty() {
-            return Ok((Vec::new(), None));
-        }
-        let count = prepared.leaders.value.len();
-        let delta = WorkCounters {
-            bytes_copied: count
-                .checked_mul(size_of::<ObjectReadRequest>())
-                .ok_or(crate::WorkError::Overflow)? as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        work.accounting()
-            .admit(delta)
-            .map_err(crate::async_storage::object_error)?;
-        let mut requests = Owned::allocate(count, &mut work.accounting())
-            .map_err(crate::async_storage::object_error)?;
-        requests.value.extend(
-            prepared
-                .leaders
-                .value
-                .iter()
-                .map(|leader| ObjectReadRequest {
-                    object_id: leader.object_id,
-                    maximum_bytes: leader.maximum_bytes,
-                }),
-        );
-        work.accounting()
-            .record_completed(delta)
-            .map_err(crate::async_storage::object_error)?;
-        let result = self.inner.read_many(&requests.value, work).await;
-        requests
-            .retire(&mut work.accounting())
-            .map_err(crate::async_storage::object_error)?;
-        let mut reads = result?;
-        if reads.0.len() != count {
-            return Err(ObjectStoreError::Corrupt);
-        }
-        for (leader, read) in prepared.leaders.value.iter().zip(&mut reads.0) {
-            let bytes = read.bytes.clone();
-            let retained = self.insert(leader.object_id, bytes.clone())?;
-            if retained {
-                read.retention = ObjectReadRetention::Shared;
-            }
-            leader.flight.finish(retained.then_some(bytes));
-            self.remove_flight(leader.object_id, &leader.flight)?;
-        }
-        Ok(reads)
-    }
-
-    async fn resolve_batch_slot(
-        &self,
-        request: &ObjectReadRequest,
-        slot: BatchSlot,
-        leaders: &[ObjectRead],
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        let bytes = match slot {
-            BatchSlot::Hit(bytes) => bytes,
-            BatchSlot::LocalLeader(index) => leaders
-                .get(index)
-                .ok_or(ObjectStoreError::Corrupt)?
-                .bytes
-                .clone(),
-            BatchSlot::ExternalFollower(flight) => {
-                let result = wait_for_flight(
-                    &flight,
-                    work.cancellation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    work.original,
-                )
-                .await?;
-                self.record_coalesced()?;
-                if let Some(bytes) = result {
-                    bytes
-                } else {
-                    self.remove_flight(request.object_id, &flight)?;
-                    return self
-                        .read(request.object_id, request.maximum_bytes, work)
-                        .await;
-                }
-            }
-        };
-        shared_read(bytes, request.maximum_bytes)
-    }
-}
-
-impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
-    fn decoded_cache_get(
-        &self,
-        key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        self.decoded_get(key)
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded_admit(key, value)
-    }
-
-    fn collection(&self) -> Option<&Arc<crate::Collection>> {
-        self.inner.collection()
-    }
-
-    fn collection_sweeps(&self) -> u64 {
-        self.inner.collection_sweeps()
-    }
-
-    async fn historical_generation_evidence(
-        &self,
-        authority_id: crate::AuthorityId,
-        record: &crate::DurableCommit,
-        maximum_bytes: u64,
-        maximum_objects: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(ObjectStoreError::NativeUnavailable);
-        }
-        self.inner
-            .historical_generation_evidence(
-                authority_id,
-                record,
-                maximum_bytes,
-                maximum_objects,
-                context,
-            )
-            .await
-    }
-
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        context
-            .accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
-        let retained = bytes.clone();
-        self.inner.put(object_id, bytes, context).await?;
-        self.insert(object_id, retained)?;
-        Ok(())
-    }
-
-    async fn put_hashed(
-        &self,
-        object: crate::storage::HashedObject,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        context
-            .accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
-        let object_id = object.object_id();
-        let retained = object.bytes().clone();
-        self.inner.put_hashed(object, context).await?;
-        self.insert(object_id, retained)?;
-        Ok(())
-    }
-
-    async fn flush_before_publish(
-        &self,
-        scope: crate::async_storage::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        self.inner.flush_before_publish(scope, context).await
-    }
-
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        context
-            .accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
-        self.inner.put_many(writes, context).await?;
-        for write in writes {
-            self.insert(write.object_id, write.bytes.clone())?;
-        }
-        Ok(())
-    }
-
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        let mut work = crate::AuthorityWork::new(context.read_budget()?, context.cancellation);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            work.original = context.original;
-        }
-        let result = async {
-            loop {
-                work.accounting()
-                    .charge(cache_probe_work())
-                    .map_err(crate::async_storage::object_error)?;
-                match self.read_plan(
-                    object_id,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    work.original,
-                )? {
-                    ReadPlan::Hit(bytes) => return shared_read(bytes, maximum_bytes),
-                    ReadPlan::Leader(flight) => {
-                        return self
-                            .load_leader(object_id, maximum_bytes, flight, &mut work)
-                            .await;
-                    }
-                    ReadPlan::Follower(flight) => {
-                        let result = wait_for_flight(
-                            &flight,
-                            work.cancellation,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            work.original,
-                        )
-                        .await?;
-                        self.record_coalesced()?;
-                        if let Some(bytes) = result {
-                            return shared_read(bytes, maximum_bytes);
-                        }
-                        self.remove_flight(object_id, &flight)?;
-                    }
-                }
-            }
-        }
-        .await;
-        context.accept(work.receipt(result))
-    }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let mut work = crate::AuthorityWork::new(
-            context.work.remaining(context.budget)?,
-            context.cancellation,
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            work.original = context.original;
-        }
-        let result = async {
-            let mut prepared = self.prepare_batch(requests, &mut work)?;
-            let leaders = self.load_batch_leaders(&prepared, &mut work).await?;
-            let mut values = Owned::allocate(requests.len(), &mut work.accounting())
-                .map_err(crate::async_storage::object_error)?;
-            for (request, slot) in requests
-                .iter()
-                .zip(std::mem::take(&mut prepared.slots.value))
-            {
-                work.accounting()
-                    .check()
-                    .map_err(crate::async_storage::object_error)?;
-                let read = self
-                    .resolve_batch_slot(request, slot, &leaders.0, &mut work)
-                    .await?;
-                values.value.push(read);
-                work.accounting()
-                    .record_completed(WorkCounters {
-                        items_returned: 1,
-                        ..WorkCounters::UNCHARGED
-                    })
-                    .map_err(crate::async_storage::object_error)?;
-            }
-            let allocation = match values.allocation {
-                KernelOwnedAllocation::Standalone => None,
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelOwnedAllocation::NativeOriginal(allocation) => Some(allocation),
-            };
-            Ok((values.value, allocation))
-        }
-        .await;
-        context.accept(work.receipt(result))
-    }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.is_native() {
-            return Err(ObjectStoreError::NativeUnavailable);
-        }
-        context
-            .accounting()
-            .charge(cache_probe_work())
-            .map_err(crate::async_storage::object_error)?;
-        if self.cached_contains(object_id)? {
-            return Ok(true);
-        }
-        self.inner.contains(object_id, context).await
-    }
-}
+mod provider;
 
 #[cfg(all(test, feature = "memory"))]
 #[path = "tests/cache/mod.rs"]
 mod tests;
+
+#[cfg(all(test, acyclic_fs_loom))]
+#[path = "cache/decoded_model.rs"]
+mod decoded_model;
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "cache/decoded_properties.rs"]
+mod decoded_properties;

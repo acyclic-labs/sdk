@@ -1,0 +1,6 @@
+{
+  "expect": {
+    "error": "requires nonempty text"
+  },
+  "prompt": "/search"
+}

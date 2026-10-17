@@ -1,0 +1,39 @@
+{
+  "responses":[
+    [
+      "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\ndata: {",
+      "\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\"}}]}\n\ndata: {\"id\":\"run\",\"choi",
+      "ces\":[{\"delta\":{\"content\":\"🦀\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason",
+      "\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n"
+    ]
+  ],
+  "expect":{
+    "events":[
+      [
+        {"kind":"reasoning","delta":"think"},
+        {"kind":"content","delta":"hé"},
+        {"kind":"content","delta":"🦀"},
+        {
+          "kind":"reasoning_block",
+          "block":{
+            "kind":"readable",
+            "text":"think",
+            "origin":{
+              "provider":"chat","model":"model",
+              "credential_scope":[
+                52,23,172,124,246,104,8,138,97,112,233,125,170,80,110,31,20,103,94,98,36,183,16,173,
+                159,180,32,27,76,49,112,206
+              ]
+            },
+            "continuity":[
+              123,34,114,101,97,115,111,110,105,110,103,95,99,111,110,116,101,110,116,34,58,34,116,104,
+              105,110,107,34,125
+            ],
+            "outcome":"preserved-readable"
+          }
+        },
+        {"kind":"completed","metadata":{"usage":{"prompt_tokens":5,"completion_tokens":1}}}
+      ]
+    ]
+  }
+}

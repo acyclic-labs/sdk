@@ -58,13 +58,22 @@ fn version(metadata: &HostStat) -> SourceVersion {
     SourceVersion(*hash.finalize().as_bytes())
 }
 
-/// A file's identity: its device and inode, and its birth time, which
+/// A file's identity: its device and inode, its file handle, which carries
+/// the inode's generation where the file system issues handles, and its
+/// birth time. Either tells a new file apart from a removed one whose inode
+/// the host reused; the birth time alone does not when both were born within
+/// one tick of its clock. Every name of one file shares it. A file system
+/// with neither handles nor birth times (a few) cannot tell reuse apart by
+/// identity alone.
 #[cfg(unix)]
 fn file_identity(metadata: &HostStat) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
     hash.update(&(metadata.raw.st_ino as u64).to_le_bytes());
+    if let Some(handle) = metadata.handle() {
+        hash.update(handle);
+    }
     if let Some(born) = metadata
         .created()
         .ok()

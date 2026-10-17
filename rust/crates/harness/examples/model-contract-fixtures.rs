@@ -25,11 +25,13 @@ fn main() -> Result<()> {
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Part(ModelContentPart::ToolCall {
-                    call_id: "call-1".into(),
-                    name: "echo".into(),
-                    arguments: json!("é"),
-                }),
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness::model::ToolCall::new(
+                        "call-1".into(),
+                        "echo".into(),
+                        json!("é"),
+                    ),
+                )),
             },
             ModelMessage {
                 role: ModelRole::Tool,

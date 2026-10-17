@@ -8,14 +8,12 @@ export function bindModel(identity: Model, provider: ModelProvider): BoundModel 
   for (const label of [identity.provider, identity.name, identity.revision]) {
     if (typeof label !== "string" || !label.trim()) throw new TypeError("model identity requires a provider, name, and revision");
   }
-  const { contextCapacity, countTokens, generate, reconcile } = provider;
-  if (typeof contextCapacity !== "function" || typeof countTokens !== "function"
-    || typeof generate !== "function" || typeof reconcile !== "function") {
-    throw new TypeError("model provider requires contextCapacity, countTokens, generate, and reconcile");
+  const { contextCapacity, prepare, reconcile } = provider;
+  if (typeof contextCapacity !== "function" || typeof prepare !== "function" || typeof reconcile !== "function") {
+    throw new TypeError("model provider requires contextCapacity, prepare, and reconcile");
   }
   const boundProvider = Object.freeze({
-    contextCapacity: contextCapacity.bind(provider), countTokens: countTokens.bind(provider),
-    generate: generate.bind(provider), reconcile: reconcile.bind(provider),
+    contextCapacity: contextCapacity.bind(provider), prepare: prepare.bind(provider), reconcile: reconcile.bind(provider),
   });
   return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider: boundProvider });
 }

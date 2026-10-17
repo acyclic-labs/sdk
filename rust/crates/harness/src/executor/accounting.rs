@@ -28,7 +28,7 @@ pub(super) fn stock_context_capacity(
     provider.context_capacity(model)
 }
 
-pub(super) fn stock_count_tokens(
+pub(super) async fn stock_count_tokens(
     provider: &dyn ModelProvider,
     request: &crate::model::PreparedModelRequest,
     io: Option<&PreparationIo>,
@@ -43,7 +43,9 @@ pub(super) fn stock_count_tokens(
             )
         })?;
         io.check_cancellation()?;
-        let (count, custody) = provider.count_tokens_with_native_work(request, work)?;
+        let (count, custody) = provider
+            .count_tokens_with_native_work(request, work)?
+            .await?;
         io.absorb_native_custody(custody)?;
         return Ok(count);
     }
@@ -55,7 +57,7 @@ pub(super) fn stock_count_tokens(
             "native stock token accounting is unavailable",
         ));
     }
-    provider.count_tokens(request)
+    provider.count_tokens(request).await
 }
 
 pub(super) fn stock_json_bound<T: Serialize>(
@@ -150,10 +152,8 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = with_history_io(self.io, |work| {
-            stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io)?
-                .validate(&prepared, work)
-        })?;
+        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
+        let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(
                 self.io,

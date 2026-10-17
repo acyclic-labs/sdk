@@ -1,0 +1,10 @@
+[package]
+name = "acyclic-fs-control-layout-proof"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+path = "lib.rs"

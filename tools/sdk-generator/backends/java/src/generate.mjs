@@ -1,24 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, endianness } from "node:os";
-import { basename, delimiter, dirname, join, posix, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
+import { runCli, generationOutput, copyGeneratedFiles, inventory, loadAuthority, sha256, stageDescriptorSets } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
-
-function inventory(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
-    if (entry.isDirectory()) return inventory(root, name);
-    if (!entry.isFile()) throw new Error("generated output is not a regular file");
-    return [name];
-  }).sort();
-}
 
 // The command and toolchain injection are for offline staging controls. The CLI
 // always uses spawnSync and the checked-in Maven Central tool pins.
@@ -27,17 +16,8 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   const authority = realpathSync(args.authority);
   const protoc = realpathSync(args.protoc);
   const plugin = realpathSync(args["grpc-java"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const input of [source, authority, protoc, plugin, dirname(directory)]) {
-    if (within(input, output) || within(output, input)) throw new Error("output overlaps protected input");
-  }
+  const output = generationOutput(args.output, [source, authority, protoc, plugin, dirname(directory)]);
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
-  const descriptors = new Map();
-  for (const family of manifest.families) {
-    if (family.descriptor) descriptors.set(family.descriptor_sha256, inputs.get(family.descriptor));
-  }
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
   const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
   metadata["pom.xml"] = readFileSync(join(directory, "../templates/package", "pom.xml"));
@@ -56,11 +36,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
   const temporary = mkdtempSync(join(tmpdir(), "sdk-java-descriptors-"));
   try {
-    const paths = [...descriptors].sort(([a], [b]) => a.localeCompare(b)).map(([digest, bytes]) => {
-      const path = join(temporary, `${digest}.bin`);
-      writeFileSync(path, bytes, { flag: "wx" });
-      return path;
-    });
+    const paths = stageDescriptorSets(manifest, inputs, temporary);
     mkdirSync(output);
     const java = join(output, "src", "main", "java");
     mkdirSync(java, { recursive: true });
@@ -74,14 +50,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
       if (result.error || result.status !== 0) throw new Error(`Java generation failed: ${result.stderr ?? ""}`);
       const files = inventory(familyOutput);
       if (!files.some(file => file.endsWith(".java"))) throw new Error(`generator produced no Java bindings for ${name}`);
-      for (const file of files) {
-        const key = process.platform === "win32" ? file.toLowerCase() : file;
-        if (emitted.has(key)) throw new Error("generated family outputs collide");
-        emitted.add(key);
-        const destination = join(java, file);
-        mkdirSync(dirname(destination), { recursive: true });
-        writeFileSync(destination, readFileSync(join(familyOutput, file)), { flag: "wx" });
-      }
+      copyGeneratedFiles(familyOutput, java, files, emitted);
     }
     const resources = join(output, "src", "main", "resources", "META-INF");
     mkdirSync(resources, { recursive: true });
@@ -109,9 +78,4 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["source-root", "authority", "protoc", "grpc-java", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--source-root, --authority, --protoc, --grpc-java and --output are required");
-  console.log(JSON.stringify(generate(values), null, 2));
-}
+runCli(import.meta.url, generate, ["source-root", "authority", "protoc", "grpc-java", "output"]);

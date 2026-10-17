@@ -243,6 +243,62 @@ impl NativeFile {
         )
     }
 
+    /// Reads into an empty vector's spare capacity, retaining its owner until retirement.
+    pub fn read_spare_bounded_async<G: Send + 'static>(
+        &self,
+        offset: u64,
+        mut storage: (Vec<u8>, G),
+        length: usize,
+        require_full: bool,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> io::Result<NativeCompletion<((Vec<u8>, G), usize)>> {
+        meter.check()?;
+        meter.admit_bytes(length)?;
+        if !storage.0.is_empty() || storage.0.capacity() < length {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        validate_prepared_read_range(offset, length)?;
+        let file = Arc::clone(&self.file);
+        let observer = Arc::clone(&meter);
+        #[cfg(windows)]
+        let overlapped = self.overlapped;
+        task_completion(
+            move || {
+                #[cfg(windows)]
+                let filled = windows::with_overlapped(
+                    &file,
+                    windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+                    overlapped,
+                    Some(observer.as_ref()),
+                    |file| {
+                        super::range::read_bounded_spare(
+                            file,
+                            offset,
+                            &mut storage.0,
+                            length,
+                            require_full,
+                            observer.as_ref(),
+                        )
+                    },
+                )?;
+                #[cfg(not(windows))]
+                let filled = super::range::read_bounded_spare(
+                    &file,
+                    offset,
+                    &mut storage.0,
+                    length,
+                    require_full,
+                    observer.as_ref(),
+                )?;
+                Ok((storage, filled))
+            },
+            Some(meter),
+            None,
+            Some(Arc::clone(&self.health)),
+            &NATIVE_WORKERS,
+        )
+    }
+
     /// Reads a bounded range and returns bytes before their allocation custody.
     pub fn read_bounded_async(
         &self,
@@ -275,11 +331,11 @@ impl NativeFile {
                     data.try_reserve_exact(length)
                         .map_err(|error| observer.allocation_failed(error))?;
                     allocation.reconcile_capacity(data.capacity())?;
-                    data.resize(length, 0);
-                    let filled = super::range::read_bounded_slice(
+                    let filled = super::range::read_bounded_spare(
                         file,
                         offset,
                         &mut data,
+                        length,
                         require_full,
                         observer.as_ref(),
                     )?;
@@ -324,7 +380,7 @@ impl NativeFile {
 
     /// Submits owned writes while retaining this handle.
     pub fn write_all_batch_async(&self, writes: Vec<OwnedWrite>) -> NativeCompletion<()> {
-        let state = Arc::new(Mutex::new(CompletionState::default()));
+        let state = Arc::new(CompletionMutex::new(CompletionState::default()));
         let span = obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
             .sized(writes.len(), || {
                 writes.iter().map(|write| write.bytes.len()).sum()

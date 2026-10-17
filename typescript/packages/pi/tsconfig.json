@@ -1,6 +1,6 @@
 {
   "extends": "../../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "compilerOptions": { "lib": ["ES2022", "DOM", "ESNext.Disposable"], "outDir": "dist", "rootDir": "src" },
   "include": ["src/**/*.ts"],
   "references": [{ "path": "../harness" }]
 }

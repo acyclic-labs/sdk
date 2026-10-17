@@ -1,0 +1,1 @@
+{"type":"socket","connectionId":"app-1","event":{"type":"open","actorId":"a","appChannel":null,"subprotocols":["chat"],"headers":[],"resumeAfter":"0","reconnected":false,"transport":"internal"}}

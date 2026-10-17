@@ -2,34 +2,95 @@
   "name": "@acyclic-labs/harness",
   "version": "0.2.0",
   "description": "Generic durable substrate and fully composable agent runtime",
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/harness" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/harness"
+  },
   "license": "Apache-2.0",
   "private": false,
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "generated", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "generated",
+    "CHANGELOG.md"
+  ],
   "exports": {
-    "./browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./objects": { "types": "./dist/objects.d.ts", "default": "./dist/objects.js" },
-    "./client": { "types": "./dist/client-views.d.ts", "default": "./dist/client-views.js" },
-    "./react": { "types": "./dist/react.d.ts", "default": "./dist/react.js" },
-    "./svelte": { "types": "./dist/svelte.d.ts", "default": "./dist/svelte.js" },
-    "./proto": { "types": "./generated/proto/harness/v2/harness_pb.d.ts", "default": "./generated/proto/harness/v2/harness_pb.js" },
-    "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" },
-    "./worker": { "types": "./dist/client-worker.d.ts", "default": "./dist/client-worker.js" }
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./objects": {
+      "types": "./dist/objects.d.ts",
+      "default": "./dist/objects.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./svelte": {
+      "types": "./dist/svelte.d.ts",
+      "default": "./dist/svelte.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/harness/v2/harness_pb.d.ts",
+      "default": "./generated/proto/harness/v2/harness_pb.js"
+    },
+    "./protocol": {
+      "types": "./generated/proto/protocol/v1/protocol_pb.d.ts",
+      "default": "./generated/proto/protocol/v1/protocol_pb.js"
+    },
+    "./worker": {
+      "types": "./dist/client-worker.d.ts",
+      "default": "./dist/client-worker.js"
+    }
   },
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-wasm.mjs harness",
-    "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
-    "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
+    "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
+    "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
-    "test": "bun run build && bun test test",
+    "test": "bun run generate && bun run build && bun test test",
     "test:browser:mcp": "node test/mcp-http-fixture.mjs",
-    "test:client:browser": "bun test/client-framework-browser.mjs"
+    "test:client:browser": "bun test/client-framework-browser.mjs",
+    "generate": "bun ../../../scripts/generate.mjs harness",
+    "prepack": "bun run generate"
   },
-  "dependencies": { "@acyclic-labs/actors": "0.2.0", "@bufbuild/protobuf": "2.16.0" },
-  "peerDependencies": { "@acyclic-labs/objects": "0.2.0", "react": "^19.0.0" },
-  "peerDependenciesMeta": { "@acyclic-labs/objects": { "optional": true }, "react": { "optional": true } },
-  "devDependencies": { "@types/bun": "1.4.2", "@types/node": "26.6.4", "@types/react": "19.3.0", "@types/react-dom": "19.3.0", "bun-types": "1.4.2", "fake-indexeddb": "6.2.5", "react-dom": "19.3.0", "svelte": "5.57.2", "typescript": "7.0.2", "react": "19.3.0" }
+  "dependencies": {
+    "@acyclic-labs/actors": "0.2.0",
+    "@bufbuild/protobuf": "2.16.0"
+  },
+  "peerDependencies": {
+    "@acyclic-labs/objects": "0.2.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@acyclic-labs/objects": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "bun-types": "1.4.2",
+    "fake-indexeddb": "6.2.5",
+    "react-dom": "19.3.0",
+    "svelte": "5.57.2",
+    "typescript": "7.0.2",
+    "react": "19.3.0"
+  }
 }

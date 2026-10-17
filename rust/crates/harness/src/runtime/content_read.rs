@@ -5,6 +5,37 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 use acyclic_stream::OwnedBytes;
 
+// Journals fence the entire command and authenticate each referenced input against
+// its admission. Reuse the issued context for content reads, including its grants,
+// immutable descriptor verification and original native accounting.
+#[cfg(feature = "filesystem")]
+impl ContentResidencyVerifier for TaskContext {
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
+        self.content_binding(Some(volume))
+            .map_or(Ok(false), |binding| {
+                binding.reader.supports_read(volume, io)
+            })
+    }
+
+    fn read<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Invalid,
+                    "content exceeds the callback byte bound",
+                ));
+            }
+            self.read_file(reference, io).await
+        })
+    }
+}
+
 #[cfg(feature = "filesystem")]
 struct ContextContentVerifier<P: acyclic_stream::StreamProvider> {
     context: Arc<TaskContext>,
@@ -103,10 +134,33 @@ where
             Ok(bytes)
         })
     }
+    fn read_range<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            self.supports_read(reference.volume(), io)?;
+            self.owner.validate_input_file(reference, io)?;
+            let mut history = io.map(ContentIo::history_io);
+            let mut history = history
+                .as_mut()
+                .map(|history| history as &mut dyn crate::store::HistoryIo);
+            self.owner.verify_read_access(&mut history).await?;
+            let bytes = self
+                .context
+                .read_bound_range(reference, range, self.context.scope(), io)
+                .await?;
+            self.owner.validate_input_file(reference, io)?;
+            self.owner.verify_read_access(&mut history).await?;
+            Ok(bytes)
+        })
+    }
 }
 
 impl TaskContext {
-    pub(super) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+    pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         self.output_content
             .as_ref()
             .filter(|binding| {
@@ -118,6 +172,16 @@ impl TaskContext {
                 })
             })
             .or_else(|| self.scope.created_content(volume))
+            .or_else(|| {
+                self.harness.artifacts.as_ref().filter(|binding| {
+                    volume.is_some_and(|volume| {
+                        binding
+                            .writer
+                            .as_ref()
+                            .is_some_and(|writer| writer.volume() == volume)
+                    })
+                })
+            })
             .or(self.harness.content.as_ref())
     }
 
@@ -138,6 +202,57 @@ impl TaskContext {
             io,
         )
         .await
+    }
+
+    pub(super) async fn read_bound_range(
+        &self,
+        file: &FileRef,
+        range: acyclic_fs::ByteRange,
+        scope: &RuntimeScope,
+        io: Option<&ContentIo>,
+    ) -> Result<OwnedBytes> {
+        #[cfg(feature = "filesystem")]
+        let original = if io.is_none() {
+            self.preparation_io()?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let io = io.or(original.as_ref());
+        self.authorize_file_read(file, scope, io)?;
+        if range
+            .offset
+            .checked_add(range.length)
+            .is_none_or(|end| end > file.descriptor().byte_length())
+        {
+            return Err(content_error(
+                io,
+                ErrorCode::Invalid,
+                "range exceeds the source file",
+            ));
+        }
+        #[cfg(feature = "filesystem")]
+        let created = self.scope.created_reference(file);
+        #[cfg(not(feature = "filesystem"))]
+        let created: Option<&Arc<dyn ContentResidencyVerifier>> = None;
+        let reader = created
+            .map(AsRef::as_ref)
+            .or_else(|| {
+                self.content_binding(Some(file.volume()))
+                    .map(|content| content.reader.as_ref())
+            })
+            .ok_or_else(|| {
+                content_error(io, ErrorCode::Unsupported, "content reader is not bound")
+            })?;
+        let bytes = reader.read_range(file, range, io)?.await?;
+        if bytes.len() as u64 != range.length {
+            return Err(content_error(
+                io,
+                ErrorCode::Invalid,
+                "range reader returned an incorrect length",
+            ));
+        }
+        Ok(bytes)
     }
 
     pub(super) fn authorize_file_read(
@@ -320,8 +435,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer =
-            super::content_write::bound_content_writer(self.content_binding(None), scope, io)?;
+        let writer = super::content_write::content_writer(self.content_binding(None), io)?;
         if io.is_some() {
             self.scope.verify_created_write(writer.volume(), io).await?;
         }
@@ -343,11 +457,13 @@ impl TaskContext {
         }
         if let Some(file) = &file {
             crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
-            if file.volume() != writer.volume() {
-                return Err(Error::Storage(
-                    "original publisher receipt belongs to another volume".into(),
-                ));
-            }
+            super::content_write::publication_destination(
+                self.content_binding(Some(file.volume())),
+                scope,
+                Some(file),
+                file.path(),
+                io,
+            )?;
         }
         Ok((file, retained))
     }

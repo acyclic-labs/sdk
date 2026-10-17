@@ -1,0 +1,7 @@
+{
+  "prompt": "@a @a",
+  "seed": {"a":"12345"},
+  "maximum_bytes": 5,
+  "expect":{"mention_files":["12345","12345"],"result":{"kind":"prompt","text":"@a @a","mentions":[{"file":{"path":"a"}}
+    ,{"file":{"path":"a"}}]}}
+}

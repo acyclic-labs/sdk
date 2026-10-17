@@ -41,6 +41,9 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
         |value| value.unsigned_abs() <= MAX_EXACT_JS_INTEGER,
     )
 }
+mod json_value;
+pub(crate) use json_value::validate_json_value;
+
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =
     usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
@@ -348,7 +351,9 @@ fn settle_turn(
     if let Some(parent) = turn_outcome_parent(message) {
         by_id.entry(parent).or_default().1.get_or_insert(position);
     }
-    if (message.kind == MessageKind::Assistant || turn_outcome_parent(message).is_some())
+    if ((message.kind == MessageKind::Assistant
+        && !message.extensions.contains_key("acyclic.model.reasoning"))
+        || turn_outcome_parent(message).is_some())
         && *pending_user == message.reply_to
     {
         *pending_user = None;
@@ -499,3 +504,7 @@ pub fn validate_content_path(
     }
     Ok(())
 }
+
+mod identity;
+pub use identity::assistant_message_id;
+pub(crate) use identity::derived_operation_id;

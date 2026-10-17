@@ -1,0 +1,2 @@
+{"seed":{"AGENTS.md":"bad\u0000text"},"discovery":{"policy":{"instruction_names":[]}},"expect":{"request_files":[[]],
+  "requests":[{"messages":[{"role":"user","content":"Inspect files"}]}]}}

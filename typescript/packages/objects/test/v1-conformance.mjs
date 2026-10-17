@@ -11,7 +11,7 @@ import { MemoryObjectsV1 } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../generated/wasm/acyclic_objects_wasm.js";
 
-const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
+const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "objects/restore", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
 const make = (name, value) => create(wire[`${name}Schema`], value);
 const fail = (code) => error => error.code === code;
 const bytes = new Uint8Array(135000).map((_, index) => index % 251);
@@ -76,12 +76,20 @@ async function fixture() {
 }
 
 test("Objects v1 Rust WASM provider covers every operation and atomic retry semantics", async () => {
-  await lifecycle(await MemoryObjectsV1.create());
+  const provider = await MemoryObjectsV1.create();
+  await lifecycle(provider);
+  await assert.rejects(provider.restore(make("RestoreObjectsRequest", {
+    bucket: { name: "customer.inputs" }, prefix: "", at: { seconds: 42n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
+  })), fail(wire.ErrorCode.UNSUPPORTED));
 });
 test("Objects v1 HTTP covers every operation, frame boundaries, errors and authentication", async () => {
   const server = await fixture();
   try {
-    await lifecycle(new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" }));
+    const provider = new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" });
+    await lifecycle(provider);
+    await assert.rejects(provider.restore(make("RestoreObjectsRequest", {
+      bucket: { name: "customer.inputs" }, prefix: "", at: { seconds: 42n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
+    })), fail(wire.ErrorCode.UNSUPPORTED));
     assert.deepEqual([...server.seen].sort(), expectedRoutes.sort());
     await assert.rejects(new HttpObjectsV1({ endpoint: server.endpoint, token: "wrong" }).headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.ACCESS_DENIED));
   } finally { await server.close(); }

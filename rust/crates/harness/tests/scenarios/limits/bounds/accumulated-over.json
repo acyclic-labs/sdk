@@ -1,0 +1,4 @@
+{"limits":{"file_bytes":3},"turns":[[{"type":"event","kind":"content","delta":"ab"},{"type":"event","kind":"content","delta":"cd"},{
+  "type":"event","kind":"completed","metadata":null}]],"expect":{"text":null,"error":"assistant output exceeds file limit",
+  "request_count":1,"result":null,"events":[{"kind":"model","event":{"kind":"content","delta":"ab"}},{"kind":"model","event":{"kind"
+  :"content","delta":"cd"}},{"kind":"model","event":{"kind":"completed"}}]},"replay":false}

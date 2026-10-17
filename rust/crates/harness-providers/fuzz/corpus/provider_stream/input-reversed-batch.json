@@ -1,0 +1,1 @@
+V{"contents":[{"role":"user","parts":[{"text":"q"}]},{"role":"model","parts":[{"functionCall":{"id":"0","name":"echo","args":{}}},{"functionCall":{"id":"1","name":"echo","args":{}}}]},{"role":"user","parts":[{"functionResponse":{"id":"1","name":"echo","response":{}}},{"functionResponse":{"id":"0","name":"echo","response":{}}}]}]}

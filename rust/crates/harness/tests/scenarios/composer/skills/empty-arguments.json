@@ -1,0 +1,4 @@
+{
+  "prompt": "/audit",
+  "expect": {"result":{"kind":"prompt","text":"Inspect ","mentions":[]}}
+}

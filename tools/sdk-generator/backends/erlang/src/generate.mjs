@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { loadAuthority, sha256, within } from "../../../shared/authority.mjs";
+import { generationOutput, inventory, loadAuthority, sha256 } from "../../../shared/authority.mjs";
 import { verifyRuntime, verifyTools } from "./inventory.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -16,28 +16,13 @@ export const packageTemplates = new Map([
   ["src/acyclic_sdk_transport.app.src", "acyclic_sdk_transport.app.src"],
 ]);
 
-function files(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
-    if (entry.isDirectory()) return files(root, name);
-    if (!entry.isFile()) throw new Error("generated output is not a regular file");
-    return [name];
-  }).sort();
-}
-
 // Native command injection permits small offline staging and integrity controls.
 export function generate(args, { command = spawnSync, toolchain = pins,
   toolIndexBytes = readFileSync(join(directory, "../toolchains/generator-files.json")) } = {}) {
   const source = realpathSync(args["source-root"]), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["runtime-root"]), runtimeIndex = realpathSync(args["runtime-inventory"]);
   const tools = realpathSync(args["tool-home"]);
-  const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(output); throw new Error("output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const protectedInput of [source, authorityRoot, runtime, runtimeIndex, tools, dirname(directory)]) {
-    if (within(protectedInput, output) || within(output, protectedInput)) throw new Error("output overlaps protected input");
-  }
+  const output = generationOutput(args.output, [source, authorityRoot, runtime, runtimeIndex, tools, dirname(directory)]);
   const pin = toolchain.runtime?.[`${process.platform}-${process.arch}`];
   if (!pin) throw new Error("generation runtime host is not admitted");
   const authority = loadAuthority(authorityRoot);
@@ -81,7 +66,7 @@ export function generate(args, { command = spawnSync, toolchain = pins,
     if (otpRelease !== pin.otp_release) throw new Error("OTP release differs");
     const log = run(join(runtime, pin.roots[0], "bin/escript"), [driver, tools, project], project);
     if (!log.split(/\r?\n/).includes("PASS pinned GPB/grpcbox generator")) throw new Error("generation completion marker missing");
-    const generated = files(join(project, "src"));
+    const generated = inventory(join(project, "src"));
     if (generated.length !== authority.manifest.families.length * 3 || generated.some(name => name.includes("/") || !name.endsWith(".erl"))
       || new Set(generated.map(name => name.toLowerCase())).size !== generated.length
       || [...names].some(name => !generated.includes(name.slice(0, -6) + "_pb.erl"))
@@ -95,7 +80,7 @@ export function generate(args, { command = spawnSync, toolchain = pins,
     put("authority/rust-authority.json", authority.bytes);
     for (const [name, bytes] of authority.inputs) put("authority/" + name, bytes);
     guard();
-    const outputs = files(output);
+    const outputs = inventory(output);
     const receipt = { schema: "acyclic.sdk.erlang-producer-receipt.v1", authority: "rust", target: "erlang",
       source_revision: authority.manifest.source_revision, authority_manifest_sha256: sha256(authority.bytes),
       input_sha256: Object.fromEntries([...authority.inputs].map(([name, bytes]) => [name, sha256(bytes)])),

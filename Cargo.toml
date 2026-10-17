@@ -6,26 +6,38 @@ members = [
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
+  "rust/crates/auth",
+  "rust/crates/auth-wasm",
   "rust/crates/conformance",
   "rust/crates/contract-derive",
   "rust/crates/filesystem",
+  "rust/crates/filesystem/fuzz",
   "rust/crates/filesystem-napi",
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
+  "rust/crates/harness/src/bin/graphcoder",
   "rust/crates/harness-conformance",
+  "rust/crates/harness-fuzz",
+  "rust/crates/harness-providers",
   "rust/crates/inference",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
   "rust/crates/machines-wasm",
   "rust/crates/machines-daytona",
+  "rust/crates/markdown",
   "rust/crates/native-runtime",
   "rust/crates/objects",
   "rust/crates/objects-wasm",
   "rust/crates/proto-codegen",
+  "compatibility",
   "rust/crates/stream",
   "rust/crates/stream-napi",
+  "rust/crates/test-support",
+  "rust/crates/harness-tui",
   "rust/crates/workers",
+  "rust/fuzz",
+  "rust/crates/manifest",
   "plugin",
 ]
 exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2"]
@@ -46,15 +58,17 @@ blake3 = "1.8.2"
 clap = { version = "4", features = ["derive", "env"] }
 diffy = "0.5.2"
 divan = "0.1.21"
+dirs = "6.0.0"
 bytes = "1.10.1"
 fs2 = "0.4.3"
 futures = "0.3.31"
+getrandom = "0.3.4"
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 indexed_db_futures = { version = "0.6.4", features = ["typed-arrays"] }
-icu_properties = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
-icu_properties_data = "=2.3.0"
+icu_casemap = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+writeable = "=0.6.4"
 jsonschema = { version = "0.58.6", default-features = false }
 js-sys = "0.3.94"
 napi = { version = "3.14.2", features = ["async", "napi8", "serde-json"] }
@@ -68,7 +82,7 @@ prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
 prost-reflect = "0.16.3"
-protoc-bin-vendored = "3.2.0"
+protoc-bin-vendored = "=3.3.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rmcp = { version = "=3.5.1", default-features = false }
 rusqlite = { version = "0.40", features = ["bundled"] }
@@ -88,6 +102,7 @@ serde_urlencoded = "0.7.1"
 sha2 = "0.11.0"
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.17"
+toml = "1.1.6"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
 time = "0.3.55"
@@ -127,6 +142,7 @@ web-sys = { version = "0.3.94", features = [
 ] }
 
 [workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_fs_loom)", "cfg(acyclic_harness_loom)", "cfg(acyclic_native_runtime_loom)", "cfg(acyclic_loom)"] }
 # Native filesystem and generated FFI crates isolate reviewed platform calls
 # with narrow module-level allowances; every other crate inherits denial.
 unsafe_code = "deny"

@@ -317,7 +317,7 @@ impl ToolExecutor for LocalListFilesTool {
                 if !io.contains_capability(
                     context.effective_scope().grants(),
                     &self.volume,
-                    "volume:read:",
+                    acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                 )? {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,

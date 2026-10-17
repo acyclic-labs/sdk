@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { truncateSync } from "node:fs";
 import test from "node:test";
 import { readPackage } from "../src/package.mjs";
-import { sha256 } from "../../../shared/authority.mjs";
 import { fixture } from "./fixtures/package.mjs";
+import { registerArchiveTests } from "../../../shared/tests/package-admission.mjs";
 
-test("archive admission verifies every payload file against the producer and Rust export", t => {
-  const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, f.payload.size);
-  for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
+registerArchiveTests("Elixir", readPackage, fixture, {
+  extraMember: "extra.ex", metadata: ["mix.exs", "authority/rust-authority.json", "authority/actors/v1/actors.proto"],
+  metadataError: /metadata differs|Rust input differs/,
 });
-
 test("authority, source, template and runtime admission drift reject", t => {
   for (const mutate of [
     f => { f.receipt.source_revision = "b".repeat(40); },
@@ -36,28 +34,8 @@ test("unsafe, duplicate, extra and incomplete receipt inventories reject", t => 
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); assert.throws(() => readPackage(f.args)); }
 });
 
-test("links, traversal, duplicate and unlisted archive entries reject", t => {
-  for (const mutate of [
-    entries => { entries[0].type = "2"; },
-    entries => { entries[0].name = "../outside"; },
-    entries => { entries.push(entries[0]); },
-    entries => { entries.push({ name: "extra.ex", bytes: Buffer.from("extra") }); },
-  ]) { const f = fixture(t), entries = f.entries(); mutate(entries); f.saveArchive(entries); assert.throws(() => readPackage(f.args)); }
-});
-
-test("missing, changed and metadata-substituted archive payloads reject", t => {
-  const missing = fixture(t); missing.saveArchive(missing.entries().slice(1));
-  assert.throws(() => readPackage(missing.args), /inventory differs/);
-  const altered = fixture(t), entries = altered.entries(); entries[0].bytes = Buffer.from("changed"); altered.saveArchive(entries);
-  assert.throws(() => readPackage(altered.args), /payload digest differs/);
-  for (const name of ["mix.exs", "authority/rust-authority.json", "authority/actors/v1/actors.proto"]) {
-    const f = fixture(t); f.payload.set(name, Buffer.from("substituted")); f.receipt.output_sha256[name] = sha256(f.payload.get(name)); f.saveReceipt(); f.saveArchive();
-    assert.throws(() => readPackage(f.args), /metadata differs|Rust input differs/);
-  }
-});
-
-test("external digest, archive size and receipt size bounds are enforced", t => {
-  const f = fixture(t); f.args.sha256 = "0".repeat(64); assert.throws(() => readPackage(f.args), /archive digest differs/);
-  truncateSync(f.args.package, 16 * 1024 * 1024 + 1); assert.throws(() => readPackage(f.args), /size bound/);
-  const large = fixture(t); truncateSync(large.args.receipt, 1024 * 1024 + 1); assert.throws(() => readPackage(large.args), /receipt exceeds size bound/);
+test("receipt size bound is enforced", t => {
+  const f = fixture(t);
+  truncateSync(f.args.receipt, 1024 * 1024 + 1);
+  assert.throws(() => readPackage(f.args), /receipt exceeds size bound/);
 });

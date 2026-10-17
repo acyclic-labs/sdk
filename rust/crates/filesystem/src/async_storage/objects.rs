@@ -17,6 +17,14 @@ pub enum PublicationScope<'a> {
 contract! {
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
 pub trait AsyncObjectStore: ProviderPlatform {
+    /// Whether decoded-cache hooks may retain or reject a decoded page.
+    ///
+    /// Return false only when both hooks have their default no-cache behavior.
+    /// The default preserves existing providers' cache and admission hooks.
+    fn supports_decoded_cache(&self) -> bool {
+        true
+    }
+
     /// Borrows an immutable decoded cache entry.
     fn decoded_cache_get(
         &self,

@@ -95,6 +95,16 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
             let mut previous = None;
             for conflict in conflicts {
                 let path = match conflict {
+                    CommitConflict::Head {
+                        path,
+                        expected,
+                        actual,
+                    } => {
+                        if expected == actual {
+                            return Err(StreamError::InvalidArgument);
+                        }
+                        path
+                    }
                     CommitConflict::Tail {
                         path,
                         expected,

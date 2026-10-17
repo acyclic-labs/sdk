@@ -1,5 +1,6 @@
 use super::*;
 use crate::filesystem::UploadRecord;
+use crate::tool::text::TextRange;
 
 fn total(file: &FileRef, additional: usize) -> Result<u64> {
     file.logical_owned_bytes()?
@@ -7,28 +8,12 @@ fn total(file: &FileRef, additional: usize) -> Result<u64> {
         .ok_or_else(|| super::super::files::native::invalid("text tool DTO ownership overflow"))
 }
 
-impl UploadRecord for ReadInput {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
-    }
-    fn logical_owned_bytes(&self) -> Result<u64> {
-        total(&self.file, 0)
-    }
-}
 impl UploadRecord for SearchInput {
     fn diagnostic_label_bytes() -> u64 {
         crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         total(&self.file, self.query.capacity())
-    }
-}
-impl UploadRecord for ReadResult {
-    fn diagnostic_label_bytes() -> u64 {
-        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
-    }
-    fn logical_owned_bytes(&self) -> Result<u64> {
-        total(&self.file, self.selection.text.capacity())
     }
 }
 impl UploadRecord for SearchResult {

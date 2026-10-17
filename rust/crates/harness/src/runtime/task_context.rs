@@ -56,6 +56,16 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_ordinary_metadata(&self) -> Result<()> {
+        if self.native_custody.is_some() {
+            return Err(Error::Unsupported(
+                "ordinary task files require ordinary ownership".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),
@@ -193,6 +203,22 @@ impl TaskContext {
                 .owned_mailbox
                 .as_ref()
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
+    }
+
+    pub(crate) fn ancestors(
+        &self,
+        task: TaskId,
+    ) -> Result<impl futures::Stream<Item = Result<TaskId>>> {
+        let state = Arc::clone(
+            self.harness
+                .state
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("task state is absent".into()))?,
+        );
+        Ok(ancestor_stream(task, move |task| {
+            let state = Arc::clone(&state);
+            async move { Ok(state.observe_admission(task).await?.parent) }
+        }))
     }
 
     /// Returns this invocation's stable local operation identity.
@@ -335,9 +361,19 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
-    if contains_content_grant_with_work(grants, file, "file:read:", work)?
-        || contains_content_grant_with_work(grants, file.volume(), "volume:read:", work)?
-        || contains_content_grant_with_work(grants, &(file.volume(), ""), "directory:read:", work)?
+    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
+        || contains_content_grant_with_work(
+            grants,
+            file.volume(),
+            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+            work,
+        )?
+        || contains_content_grant_with_work(
+            grants,
+            &(file.volume(), ""),
+            acyclic_fs::access::DIRECTORY_READ_PREFIX,
+            work,
+        )?
     {
         return Ok(true);
     }
@@ -350,7 +386,7 @@ pub(crate) fn read_granted_with_work(
             && contains_content_grant_with_work(
                 grants,
                 &(file.volume(), prefix),
-                "directory:read:",
+                acyclic_fs::access::DIRECTORY_READ_PREFIX,
                 work,
             )?
         {
@@ -393,3 +429,30 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
         grants, prefix, digest,
     ))
 }
+
+fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
+where
+    F: FnMut(TaskId) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<TaskId>>>,
+{
+    futures::stream::try_unfold(
+        (task, true, std::collections::HashSet::new(), parent),
+        |(task, first, mut visited, mut parent)| async move {
+            let current = if first {
+                task
+            } else {
+                let Some(parent) = parent(task).await? else {
+                    return Ok(None);
+                };
+                parent
+            };
+            if !visited.insert(current) {
+                return Err(Error::Invalid("cyclic task lineage".into()));
+            }
+            Ok(Some((current, (current, false, visited, parent))))
+        },
+    )
+}
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "task_context/ancestor_tests.rs"]
+mod ancestor_tests;

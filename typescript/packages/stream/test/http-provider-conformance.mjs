@@ -24,7 +24,6 @@ async function dispatch(route, input) {
     case "append": return provider.append(input.path, input.values, input.options);
     case "fork": return provider.fork(input.source, input.destination, input.options);
     case "read": { const records = []; for await (const record of provider.read(input.path, { from: input.from, limit: input.limit })) records.push(record); return records; }
-    case "children": { const children = []; for await (const child of new StreamClient(provider).children(input.parent, input.limit)) children.push(child); return children; }
     case "children/page": return provider.childrenPage(input);
     case "commit": {
       const result = await provider.commit(input.request, input.options);

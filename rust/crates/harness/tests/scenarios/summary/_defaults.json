@@ -1,0 +1,32 @@
+{
+  "kind": "summary",
+  "instruction": "Summarize this context.",
+  "context": [
+    {
+      "role": "user",
+      "content": "original request"
+    },
+    {
+      "role": "assistant",
+      "content": "original response"
+    }
+  ],
+  "capacity": {
+    "context_tokens": 40,
+    "output_tokens": 10
+  },
+  "message_tokens": 10,
+  "expect": {
+    "request_count": 1,
+    "reconciliation_count": 0,
+    "not_events": [
+      {
+        "kind": "context_compacted"
+      },
+      {
+        "kind": "model_started",
+        "purpose": "response"
+      }
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf 'α🦀\\n' > plans/a.md; printf 'λ🦀'"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"files":{"plans/a.md":"α🦀\n"},"results":{"call":{"content":{"value":{"stdout":"λ🦀"}}}}}}

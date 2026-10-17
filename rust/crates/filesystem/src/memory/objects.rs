@@ -266,6 +266,10 @@ impl MemoryObjectStore {
 }
 
 impl AsyncObjectStore for MemoryObjectStore {
+    fn supports_decoded_cache(&self) -> bool {
+        false
+    }
+
     async fn put(
         &self,
         object_id: ObjectId,

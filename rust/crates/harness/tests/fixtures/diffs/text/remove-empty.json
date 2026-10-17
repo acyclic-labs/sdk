@@ -1,0 +1,6 @@
+{
+  "before":"",
+  "after":null,
+  "render":26,
+  "expect":{"kind":"removed"}
+}

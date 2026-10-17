@@ -77,6 +77,20 @@ impl wire::buckets_service_server::BucketsService for Fixture {
 }
 #[tonic::async_trait]
 impl wire::objects_service_server::ObjectsService for Fixture {
+    async fn restore_objects(
+        &self,
+        request: Request<wire::RestoreObjectsRequest>,
+    ) -> Result<Response<wire::RestoreObjectsResponse>, Status> {
+        let query = authenticated(request)?;
+        super::request::restore(&query).map_err(status)?;
+        if query.at.as_ref().is_some_and(|at| at.seconds == 42) {
+            Ok(Response::new(wire::RestoreObjectsResponse {
+                restored_objects: 2,
+            }))
+        } else {
+            Err(status(wire::ErrorCode::PreconditionFailed.into()))
+        }
+    }
     async fn put_object(
         &self,
         request: Request<tonic::Streaming<wire::PutObjectRequest>>,
@@ -447,7 +461,7 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
             })
             .await
     });
-    let client = GrpcObjects::connect(&endpoint, "exact-token", None).await?;
+    let client = GrpcObjects::connect(&endpoint, "exact-token", None, None).await?;
     client
         .create_bucket(wire::CreateBucketRequest {
             name: "platform.roots".into(),
@@ -456,9 +470,14 @@ async fn platform_roots_come_from_ssl_cert_file_and_a_declared_ca_replaces_them(
         .await?;
     let other = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
     assert!(
-        GrpcObjects::connect(&endpoint, "exact-token", Some(other.cert.pem().as_bytes()))
-            .await
-            .is_err(),
+        GrpcObjects::connect(
+            &endpoint,
+            "exact-token",
+            Some(other.cert.pem().as_bytes()),
+            None
+        )
+        .await
+        .is_err(),
         "a declared CA must be the whole trust"
     );
     let _ = shutdown_tx.send(());
@@ -857,4 +876,65 @@ async fn assert_transport_denied(client: Result<GrpcObjects, super::grpc::Connec
             "unauthenticated TLS peer reached Objects"
         );
     }
+}
+
+#[tokio::test]
+async fn grpc_restore_contract() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+    let pem = certified.cert.pem();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?);
+    let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .tls_config(ServerTlsConfig::new().identity(identity))?
+            .add_service(wire::objects_service_server::ObjectsServiceServer::new(
+                fixture,
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
+    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes()), None).await?;
+    let bucket = wire::BucketRef {
+        name: "namespace.inputs".into(),
+    };
+    let restore = wire::RestoreObjectsRequest {
+        bucket: Some(bucket.clone()),
+        prefix: "orders/".into(),
+        at: Some(prost_types::Timestamp {
+            seconds: 42,
+            nanos: 0,
+        }),
+        mutation: Some(wire::MutationIdentity {
+            idempotency_key: "restore".into(),
+        }),
+    };
+    assert_eq!(client.restore(restore.clone()).await?.restored_objects, 2);
+    assert_eq!(
+        unauthorized
+            .restore(restore.clone())
+            .await
+            .err()
+            .map(|error| error.code),
+        Some(wire::ErrorCode::AccessDenied)
+    );
+    let mut expired = restore.clone();
+    expired.at.as_mut().ok_or("restore time missing")?.seconds = 1;
+    assert_eq!(
+        client.restore(expired).await.err().map(|error| error.code),
+        Some(wire::ErrorCode::PreconditionFailed)
+    );
+    let mut invalid = restore;
+    invalid.at = None;
+    assert_eq!(
+        client.restore(invalid).await.err().map(|error| error.code),
+        Some(wire::ErrorCode::InvalidArgument)
+    );
+    let _ = shutdown_tx.send(());
+    server.await?.map_err(Into::into)
 }
