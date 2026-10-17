@@ -1,11 +1,11 @@
 use crate::{Adapter, invalid};
 use acyclic_harness::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 /// Declarative counting endpoint on the provider's own origin.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct TokenCounterSpec {
     /// Relative path; {model} expands to the selected model name.
     pub path: String,
@@ -19,6 +19,7 @@ pub struct TokenCounterSpec {
 
 /// Count response fields decoded directly as integers, without Value normalization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum TokenCountField {
     /// OpenAI/Anthropic input token count.
     #[serde(rename = "input_tokens")]
@@ -59,22 +60,60 @@ pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Resu
     Ok(resolved.into())
 }
 
+/// Both native admission and browser preparation borrow the same projected input.
 #[derive(Serialize)]
 #[serde(untagged)]
-pub(crate) enum CountBody<'a> {
-    Direct(crate::projection::wire::Body<'a>),
+pub(crate) enum CountBody<'a, 'b> {
+    Direct(CountInput<'a, 'b>),
     Gemini {
         #[serde(rename = "generateContentRequest")]
-        request: crate::projection::wire::Body<'a>,
+        request: CountInput<'a, 'b>,
     },
 }
 
-pub(crate) fn body<'a>(
-    mut generation: crate::projection::wire::Body<'a>,
-    model: &str,
+pub(crate) struct CountInput<'a, 'b> {
+    generation: &'a crate::projection::wire::Body<'b>,
+    model: &'a str,
     adapter: Adapter,
-) -> CountBody<'a> {
-    let fields: &[&str] = match adapter {
+}
+
+pub(crate) fn body<'a, 'b>(
+    generation: &'a crate::projection::wire::Body<'b>,
+    model: &'a str,
+    adapter: Adapter,
+) -> CountBody<'a, 'b> {
+    let input = CountInput {
+        generation,
+        model,
+        adapter,
+    };
+    if adapter == Adapter::Gemini {
+        CountBody::Gemini { request: input }
+    } else {
+        CountBody::Direct(input)
+    }
+}
+
+impl Serialize for CountInput<'_, '_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if self.adapter == Adapter::Gemini {
+            self.generation.serialize_fields(
+                serializer,
+                None,
+                Some(&format!("models/{}", self.model)),
+            )
+        } else {
+            self.generation
+                .serialize_fields(serializer, Some(fields(self.adapter)), None)
+        }
+    }
+}
+
+pub(crate) fn fields(adapter: Adapter) -> &'static [&'static str] {
+    match adapter {
         // OpenAI's count endpoint accepts the same input items, tools and text schema.
         Adapter::Responses => &[
             "model",
@@ -107,20 +146,8 @@ pub(crate) fn body<'a>(
             "tool_choice",
             "add_generation_prompt",
         ],
-        Adapter::Gemini => {
-            // Full GenerateContentRequest includes system instructions, tools and schemas.
-            generation
-                .fields
-                .insert("model".into(), json!(format!("models/{model}")));
-            return CountBody::Gemini {
-                request: generation,
-            };
-        }
-    };
-    generation
-        .fields
-        .retain(|field, _| fields.contains(&field.as_str()));
-    CountBody::Direct(generation)
+        Adapter::Gemini => &[],
+    }
 }
 
 pub(crate) fn response(bytes: &[u8], spec: &TokenCounterSpec) -> Result<u64> {

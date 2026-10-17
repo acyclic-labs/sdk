@@ -3,7 +3,6 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
 };
-
 /// Successful allocations and net live storage within a measurement scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocationInfo {
@@ -31,13 +30,22 @@ struct Scope(Option<AllocationInfo>);
 impl Drop for Scope {
     fn drop(&mut self) {
         if let Some(parent) = &mut self.0 {
-            *parent += COUNTER.get().unwrap_or_default();
+            let child = COUNTER.get().unwrap_or_default();
+            let peak = |live: i64, child: u64| (live + child as i64).max(0) as u64;
+            let count_max = parent
+                .count_max
+                .max(peak(parent.count_current, child.count_max));
+            let bytes_max = parent
+                .bytes_max
+                .max(peak(parent.bytes_current, child.bytes_max));
+            *parent += child;
+            parent.count_max = count_max;
+            parent.bytes_max = bytes_max;
         }
         COUNTER.set(self.0);
     }
 }
-/// Measure this thread only; nested scopes accumulate into their parent.
-/// Unwinding restores the previous scope without allocating bookkeeping.
+/// Measure this thread, including nested scopes; restore on unwind without allocating.
 pub fn measure(run: impl FnOnce()) -> AllocationInfo {
     let scope = Scope(COUNTER.replace(Some(AllocationInfo::default())));
     run();

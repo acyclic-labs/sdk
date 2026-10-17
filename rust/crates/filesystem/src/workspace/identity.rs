@@ -124,10 +124,15 @@ impl WorkspaceName {
         owned.value.extend_from_slice(canonical.as_bytes());
         accounting.record_completed(copied)?;
         let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
-        let control = crate::kernel::allocation::bytes_owner_control_bytes::<(
-            String,
-            KernelOwnedAllocation,
-        )>()?;
+        let control = const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
+                String,
+                KernelOwnedAllocation,
+            )>()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("workspace name Arc layout overflow"),
+            }
+        };
         owned
             .allocation
             .absorb(&mut accounting.claim_owned(control, 1)?)?;

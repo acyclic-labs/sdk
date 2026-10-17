@@ -105,7 +105,7 @@ test("generated provider accounting binds canonical requests, dimensions and por
 test("Rust execution checkpoint wire preserves ref-only observations and rejects malformed admission", () => {
   const file = {
     volume: { provider: { namespace: "test", family: "memory", version: "1" },
-      id: "private", class: "agent_private", owner: { kind: "agent", id: "07070707-0707-0707-0707-070707070707" } },
+      id: "private", class: "agent_private", owner: { kind: "agent", id: contracts.validateIdentity("agent", "07070707-0707-0707-0707-070707070707") } },
     path: "context.json", version: "1",
     descriptor: contracts.fileDescriptor(new TextEncoder().encode("null"), "application/json"),
     display_name: "context.json",

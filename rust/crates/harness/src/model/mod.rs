@@ -70,6 +70,7 @@ pub struct Model {
     pub revision: String,
     /// Provider-specific options.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub options: Value,
 }
 impl Model {

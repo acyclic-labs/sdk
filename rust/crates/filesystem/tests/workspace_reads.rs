@@ -54,6 +54,18 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
     for length in [0, 5, 300] {
         let bytes = Bytes::from(vec![7; length]);
         workspace.write("/entry", bytes.clone()).await?;
+        // Both receipt comparisons start with warm immutable pages. A cold
+        // read can fetch pages that the next read finds in the decoded cache.
+        let warm = workspace
+            .read(
+                "/entry",
+                length as u64,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(warm.value.as_ref(), bytes.as_ref());
+        drop(warm);
         let read = workspace
             .read(
                 "/entry",

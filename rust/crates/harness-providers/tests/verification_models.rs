@@ -114,3 +114,6 @@ fn negative_control_independent_usage_fields_can_tear() {
         task.join().unwrap();
     });
 }
+
+#[path = "models/cancellation.rs"]
+mod cancellation;

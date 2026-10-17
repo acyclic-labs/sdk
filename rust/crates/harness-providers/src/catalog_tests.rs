@@ -10,6 +10,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
+        headers: BTreeMap::new(),
         token_counter: Some(crate::TokenCounterSpec {
             path: "count_tokens".into(),
             adapter: Adapter::Chat,
@@ -275,5 +276,29 @@ proptest! {
         prop_assert_eq!(selected.context_capacity(selected.model()).unwrap(), expected);
         prop_assert!(models.contains(&format!("{}/{}", selected.model().provider, selected.model().name)), "selected model belongs to the stock subset");
         prop_assert!(transport.sent.lock().unwrap().is_empty());
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn explicit_headers_round_trip_and_cannot_replace_credentials(
+        suffix in "[a-z0-9-]{1,16}", value in "[ -~]{0,32}", uppercase in any::<bool>(),
+    ) {
+        let (provider, _) = provider(Adapter::Chat, 200);
+        let mut spec = provider.config.as_ref().clone();
+        let name = format!("x-owner-{suffix}");
+        spec.headers.insert(name.clone(), value.clone());
+        let encoded = serde_json::to_vec(&spec).unwrap();
+        let replay: ProviderSpec = serde_json::from_slice(&encoded).unwrap();
+        prop_assert!(crate::registry::validate_spec("fixture", &replay).is_ok());
+        let mut selected = provider;
+        selected.config = Arc::new(replay);
+        let headers = crate::dispatch::headers(&selected, Some("fixture-key"), None, true);
+        prop_assert_eq!(&headers[&name], &value);
+        prop_assert_eq!(&headers["authorization"], "Bearer fixture-key");
+        let reserved = if uppercase { "AUTHORIZATION" } else { "authorization" };
+        Arc::make_mut(&mut selected.config).headers.insert(reserved.into(), value);
+        prop_assert!(crate::registry::validate_spec("fixture", &selected.config).is_err());
     }
 }

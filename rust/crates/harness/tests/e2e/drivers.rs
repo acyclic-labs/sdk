@@ -54,10 +54,10 @@ impl Driver for TaskQueryCase {
     }
 }
 
-impl Driver for super::diff_case::DiffCase {
+impl Driver for super::local_case::LocalCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        super::diffs::run(case).await
+        super::local_execution::run(case).await
     }
 }
 
@@ -84,22 +84,49 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         .as_object_mut()
         .ok_or("scenario must be an object")?
         .remove("driver");
+    // Keep each selected driver frame out of the shared dispatch frame. Otherwise
+    // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
-        None if driver.is_none() => run_execution(scenario::Scenario::from_value(value)?).await,
-        Some("executor") => run_execution(scenario::Scenario::from_value(value)?).await,
-        Some("composer") => Composer::execute(Composer::parse(value)?).await,
-        Some("notifications") => Notifications::execute(Notifications::parse(value)?).await,
-        Some("task_query") => TaskQueryCase::execute(serde_json::from_value(value)?).await,
+        None if driver.is_none() => {
+            Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
+        }
+        Some("executor") => Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await,
+        Some("composer") => Box::pin(Composer::execute(Composer::parse(value)?)).await,
+        Some("notifications") => {
+            Box::pin(Notifications::execute(Notifications::parse(value)?)).await
+        }
+        Some("task_query") => {
+            Box::pin(TaskQueryCase::execute(serde_json::from_value(value)?)).await
+        }
         Some("provider") => {
-            super::provider_case::ProviderCase::execute(serde_json::from_value(value)?).await
+            Box::pin(super::provider_case::ProviderCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
         }
-        Some("diff") => super::diff_case::DiffCase::execute(serde_json::from_value(value)?).await,
+        Some("local") => {
+            Box::pin(super::local_case::LocalCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
+        }
         Some("swarm") => {
-            super::swarm_case::SwarmCase::execute(serde_json::from_value(value)?).await
+            Box::pin(super::swarm_case::SwarmCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
         }
-        Some("plans") => super::plans::Plans::execute(super::plans::Plans::parse(value)?).await,
+        Some("plans") => {
+            Box::pin(super::plans::Plans::execute(super::plans::Plans::parse(
+                value,
+            )?))
+            .await
+        }
         Some("plan-query") => {
-            super::plan_query::PlanQuery::execute(super::plan_query::PlanQuery::parse(value)?).await
+            Box::pin(super::plan_query::PlanQuery::execute(
+                super::plan_query::PlanQuery::parse(value)?,
+            ))
+            .await
         }
         _ => Err("unknown scenario driver".into()),
     }

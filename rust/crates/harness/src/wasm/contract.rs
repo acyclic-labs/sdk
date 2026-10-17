@@ -68,14 +68,14 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             admit(value, |v: &InteractionResolution| v.validate(&ticket))
         }
         "task_admission" => {
-            let value: serde_json::Value = from_js(value)?;
+            let value = js_json_value(&value)?;
             let request = TaskAdmissionRecord::from_canonical_value(value, &mut None)
                 .map_err(js_error)?
                 .0;
             to_js_admitted(&request.canonical_value())
         }
         "durable_batch_request" => {
-            let value: serde_json::Value = from_js(value)?;
+            let value = js_json_value(&value)?;
             let request = DurableBatchRequest::from_canonical_value(value).map_err(js_error)?;
             to_js_admitted(&request.canonical_value())
         }
@@ -141,8 +141,8 @@ pub fn validate_task_children_page(
 /// Applies the same JSON Schema admission used by Rust tool execution before a TypeScript facade turns an untrusted model value into a typed argument.
 #[wasm_bindgen(js_name = validateToolValue)]
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
-    let schema: serde_json::Value = from_js(schema)?;
-    let value: serde_json::Value = from_js(value)?;
+    let schema = js_json_value(&schema)?;
+    let value = js_json_value(&value)?;
     crate::executor::validate_json_schema_value(&schema, &value, "tool value", &mut None)
         .map_err(js_error)?;
     to_js(&value)

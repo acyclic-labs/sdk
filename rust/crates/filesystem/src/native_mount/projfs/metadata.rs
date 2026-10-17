@@ -162,16 +162,13 @@ fn query_metadata_using<G>(
         MaximumLength: length,
         Buffer: windows::core::PWSTR(path.as_ptr().cast_mut()),
     };
-    match work.attempt_io(charge, || query(&name, volume)) {
-        Ok(Some(metadata)) => Ok(Some(metadata)),
-        Ok(None) => fallback(&mut &work.recheck_admitted()).map(Some),
-        Err(crate::NativeTreeMaterializationError::Io(error))
-            if matches!(error.raw_os_error(), Some(1 | 50 | 87 | 124)) =>
-        {
-            fallback(&mut &work.recheck_admitted()).map(Some)
-        }
-        Err(error) => Err(error),
-    }
+    crate::native_host::query_windows_stat(
+        work,
+        charge,
+        || query(&name, volume),
+        |work| fallback(&mut &work.recheck_admitted()),
+    )
+    .map(Some)
 }
 
 fn stat_leaf_metadata(

@@ -49,6 +49,8 @@ mod admission;
 use admission::*;
 mod content;
 use content::*;
+mod reader;
+pub use reader::BrowserContentReader;
 mod context;
 use context::*;
 mod contract;

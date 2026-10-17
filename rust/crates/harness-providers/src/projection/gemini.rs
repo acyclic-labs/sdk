@@ -89,7 +89,7 @@ pub(crate) fn assert_visible_replay(events: &[acyclic_harness::model::ModelEvent
             ) {
                 let bytes = serde_json::to_vec(&item).unwrap();
                 assert_eq!(bytes, block.continuity, "native part bytes changed");
-                let part: Value = serde_json::from_slice(&bytes).unwrap();
+                let part: Value = crate::projection::arguments::literal(&bytes).unwrap();
                 if part["thought"] != true {
                     if let Some(text) = part["text"].as_str() {
                         native_text.push_str(text);

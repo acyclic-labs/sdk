@@ -79,6 +79,10 @@ fn footprint(request: &PreparedModelRequest, prefix: usize) -> Result<([u8; 32],
         message
             .serialize(&mut serde_json::Serializer::new(&mut writer))
             .map_err(|_| crate::invalid("Codex count encoding failed"))?;
+        writer.bytes = writer
+            .bytes
+            .checked_add(crate::files::extra_bytes(&message.content, u64::MAX)? as u64)
+            .ok_or_else(|| crate::invalid("Codex file input size overflow"))?;
         if index + 1 == prefix {
             digest = *writer.hash.finalize().as_bytes();
         }

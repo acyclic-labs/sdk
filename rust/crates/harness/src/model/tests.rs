@@ -545,3 +545,44 @@ fn short_request_cannot_hide_excess_string_capacity() -> Result<()> {
     }
     Ok(())
 }
+
+proptest::proptest! {
+    #[test]
+    fn pinned_history_requires_the_exact_advertised_revision(revision in "[a-z0-9-]{1,24}", text in ".{0,48}") {
+        let mut input = request()?;
+        input.tools[0].revision = revision.clone();
+        exchange(&mut input);
+        let selector = format!("echo@{revision}");
+        let ModelContent::Part(ModelContentPart::ToolCall(call)) = &mut input.messages[1].content else { unreachable!() };
+        call.name = selector.clone();
+        call.arguments = json!(text);
+        let ModelContent::Part(ModelContentPart::ToolResult {name, content, ..}) = &mut input.messages[2].content else { unreachable!() };
+        *name = selector;
+        *content = ToolResultContent::Json {value:json!(text)};
+        let prepared = PreparedModelRequest::prepare(input.clone(), Limits::default(), None)?;
+        let decoded = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
+        proptest::prop_assert_eq!(decoded.request(), &input);
+        let mut wrong_revision = input.clone();
+        wrong_revision.tools[0].revision.push('x');
+        proptest::prop_assert!(PreparedModelRequest::prepare(wrong_revision, Limits::default(), None).is_err());
+        let mut hidden = input.clone(); hidden.tools.clear();
+        proptest::prop_assert!(PreparedModelRequest::prepare(hidden, Limits::default(), None).is_err());
+        let ModelContent::Part(ModelContentPart::ToolResult {name, ..}) = &mut input.messages[2].content else { unreachable!() };
+        *name = "echo".into();
+        proptest::prop_assert!(PreparedModelRequest::prepare(input, Limits::default(), None).is_err());
+    }
+}
+
+#[test]
+fn pinned_request_fuzz_seed_is_a_valid_exact_exchange() -> Result<()> {
+    let request: ModelRequest = serde_json::from_slice(include_bytes!(
+        "../../../harness-fuzz/corpus/model_request/pinned"
+    ))
+    .expect("model request seed");
+    let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+    assert_eq!(
+        PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?.request(),
+        &request
+    );
+    Ok(())
+}

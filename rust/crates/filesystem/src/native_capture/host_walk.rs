@@ -63,7 +63,7 @@ pub(super) fn collect_host_walk_measured(
             } else {
                 let host_path = namespace_to_host_path_measured(&child, meter)?;
                 let stat = root
-                    .stat(&host_path, &mut meter.clone())
+                    .stat_source(&host_path, &mut meter.clone())
                     .map_err(capture_demand_error)?;
                 capture_drop_host_path(host_path, meter)?;
                 stat
@@ -110,7 +110,7 @@ pub(super) fn observe_host_path(
     host_path: &CaptureHostPath,
     meter: &NativeMaterializationWork,
 ) -> Result<Option<HostStat>, CaptureError> {
-    classify_host_observation(source_root.stat(host_path, &mut meter.clone()))
+    classify_host_observation(source_root.stat_source(host_path, &mut meter.clone()))
 }
 
 pub(super) fn classify_host_observation(

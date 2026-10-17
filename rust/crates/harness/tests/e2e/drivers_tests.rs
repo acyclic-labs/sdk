@@ -283,3 +283,28 @@ async fn composer_byte_boundary_oracles_reject_character_counts_and_expansion_ov
     }
     Ok(())
 }
+
+#[test]
+fn dispatch_retains_only_the_selected_driver_frame() -> TestResult {
+    let baseline = serde_json::from_slice::<serde_json::Value>(include_bytes!(
+        "../../../harness-fuzz/corpus/client_diff/local-read"
+    ))?;
+    let direct = crate::local_execution::run(serde_json::from_value(baseline.clone())?);
+    let dispatched = run(baseline);
+    let bytes = std::mem::size_of_val(&dispatched);
+    let inline = std::mem::size_of_val(&direct);
+    println!("dispatch future: {bytes} bytes; inline native driver: {inline} bytes");
+    // A dispatch frame holds its JSON recipe and a pointer to the selected driver,
+    // not that driver's nested filesystem futures. Bound is independent of inputs.
+    let bounded = |bytes| bytes <= 1024;
+    assert!(
+        bounded(bytes),
+        "every scenario retained a large driver frame: {bytes}"
+    );
+    // Former implementation: inline the real native driver without changing cases.
+    assert!(
+        !bounded(inline),
+        "the inline-driver negative control escaped the bound"
+    );
+    Ok(())
+}

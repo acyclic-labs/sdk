@@ -53,7 +53,8 @@ impl LocalStream {
                         drop(visibility);
                         continue;
                     }
-                    let result = async {
+                    let publication = stream.inner.publication.write().await;
+                    let mut result = async {
                         stream.check_available()?;
                         let command = Command::Commit(request);
                         let frame = if replay {
@@ -73,6 +74,12 @@ impl LocalStream {
                     }
                     .await;
                     stream.inner.commit_clock.unpin();
+                    let _retained = stream.release_publication(publication);
+                    if result.is_ok()
+                        && let Err(error) = stream.compact_if_due().await
+                    {
+                        result = Err(error);
+                    }
                     let required = stream.inner.required();
                     drop(visibility);
                     let result = match required {

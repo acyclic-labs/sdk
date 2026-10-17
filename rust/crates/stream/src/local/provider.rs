@@ -17,30 +17,26 @@ impl StreamProvider for LocalStream {
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.visibility.read().await;
-        let accepted = self.inner.provider.tail(path.clone()).await?;
-        let synced = {
-            let journal = self
+        self.accepted(async {
+            let accepted = self.inner.provider.tail(path.clone()).await?;
+            // Both frame counters are published before publication is released.
+            // Do not borrow the journal: compaction may hold it during device I/O.
+            let synced = *self.inner.synced.borrow() >= *self.inner.revision.borrow();
+            let mut tails = self
                 .inner
-                .journal
+                .durable_tails
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            journal.synced >= journal.appended
-        };
-        let mut tails = self
-            .inner
-            .durable_tails
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.entry(path).or_default();
-        if synced {
-            *durable = (*durable).max(accepted);
-        }
-        Ok(crate::StreamWatermarks {
-            accepted,
-            durable: *durable,
+            let durable = tails.entry(path).or_default();
+            if synced {
+                *durable = (*durable).max(accepted);
+            }
+            Ok(crate::StreamWatermarks {
+                accepted,
+                durable: *durable,
+            })
         })
+        .await?
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

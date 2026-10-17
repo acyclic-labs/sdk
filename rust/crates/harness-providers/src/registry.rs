@@ -8,6 +8,7 @@ pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
+    files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
     codex_login: Option<Arc<crate::CodexLogin>>,
 }
@@ -34,9 +35,23 @@ impl Registry {
             providers,
             credentials,
             transport,
+            files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         }
+    }
+
+    /// Binds the owner's bounded content reader used by every adapter.
+    pub fn with_content(
+        mut self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+        maximum_bytes: u64,
+    ) -> Self {
+        self.files = crate::files::Files {
+            reader: Some(reader),
+            maximum_bytes,
+        };
+        self
     }
 
     /// Supplies a specific native Codex CLI login, including for scripted refresh tests.
@@ -145,6 +160,7 @@ impl Registry {
             return Err(invalid("model provider API key is unavailable"));
         }
         Ok(ResolvedModel {
+            files: self.files.clone(),
             estimator: crate::accounting::TokenEstimator::new(config.adapter),
             model,
             config,
@@ -176,11 +192,32 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
     Ok(url)
 }
 
-fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
+pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
     if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    for (name, value) in &config.headers {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            || value.contains(['\r', '\n'])
+            || [
+                "authorization",
+                "x-api-key",
+                "x-goog-api-key",
+                "cookie",
+                "host",
+                "content-length",
+                "content-type",
+            ]
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        {
+            return Err(invalid("invalid or reserved provider header"));
+        }
+    }
     if let Some(counter) = &config.token_counter {
         if counter.adapter != config.adapter {
             return Err(invalid(

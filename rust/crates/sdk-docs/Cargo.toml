@@ -8,6 +8,9 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 
 [workspace]
 
+[features]
+test-support = []
+
 [dependencies]
 sdk-file-identity = { path = "file-identity" }
 cargo_metadata = "=0.23.1"

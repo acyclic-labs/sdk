@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 use serde_json::Value;
+use serde_json::json;
 
 fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
     let field = match adapter {
@@ -9,7 +10,7 @@ fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
         _ => "messages",
     };
     let generation = crate::projection::wire::Body::fixture(value, field);
-    serde_json::to_value(super::body(generation, model, adapter))
+    serde_json::to_value(super::body(&generation, model, adapter))
         .map_err(|_| invalid("fixture encoding failed"))
 }
 
@@ -20,6 +21,10 @@ fn spec(adapter: Adapter) -> TokenCounterSpec {
         response_field: TokenCountField::InputTokens,
         framing_tokens: 0,
     }
+}
+
+fn assert_count_wire(actual: &Value, expected: &Value) {
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -54,6 +59,33 @@ fn gemini_counts_the_full_generate_request_with_system_tools_and_schema() {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn borrowed_count_serialization_matches_the_protocol_and_preserves_generation(text in ".{0,64}", output in any::<u32>()) {
+        for adapter in [Adapter::Chat, Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
+            let field = match adapter { Adapter::Responses => "input", Adapter::Gemini => "contents", _ => "messages" };
+            let mut original = json!({"model":"model", "stream":true, "max_output_tokens":output,
+                "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
+            original[field] = json!([{"role":"user","content":text}]);
+            let generation = crate::projection::wire::Body::fixture(original.clone(), field);
+            let counted = serde_json::to_value(super::body(&generation, "model", adapter)).unwrap();
+            // Independent wire expectations, rather than comparing two implementations.
+            let mut expected = json!({"model":"model", "tools":[]});
+            expected[field] = original[field].clone();
+            if adapter == Adapter::Responses {
+                expected["reasoning"] = original["reasoning"].clone();
+                expected["text"] = original["text"].clone();
+            }
+            if adapter == Adapter::Gemini {
+                expected = original.clone();
+                expected["model"] = json!("models/model");
+                expected = json!({"generateContentRequest":expected});
+            }
+            assert_count_wire(&counted, &expected);
+            // A missing filter/envelope fails the same independent oracle.
+            prop_assert!(std::panic::catch_unwind(|| assert_count_wire(&original, &expected)).is_err());
+            prop_assert_eq!(serde_json::to_value(&generation).unwrap(), original);
+        }
+    }
     #[test]
     fn admitted_counts_include_the_configured_framing_bound(count in 0u64..=9_007_199_254_740_991, overhead in any::<u32>()) {
         let mut policy = spec(Adapter::Responses);policy.framing_tokens = overhead;

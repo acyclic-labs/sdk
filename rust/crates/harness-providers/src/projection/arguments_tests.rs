@@ -52,8 +52,14 @@ fn assert_projection(value: &Value) {
         ]);
         let names = crate::tool_names::Names::new(&request);
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-        let projected =
-            crate::projection::body_named(&provider, &request, &names, &origin).unwrap();
+        let projected = crate::projection::body_named(
+            &provider,
+            &request,
+            &names,
+            &origin,
+            &mut crate::files::FileText::default(),
+        )
+        .unwrap();
         let ModelContent::Part(ModelContentPart::ToolCall(source)) = &request.messages[2].content
         else {
             unreachable!()
@@ -139,6 +145,7 @@ fn negative_control_default_value_decode_misinterprets_literal_marker_keys() {
     let original = json!({"$serde_json::private::RawValue":"null","nested":[]});
     let bytes = serde_json::to_vec(&original).unwrap();
     assert!(serde_json::from_slice::<Value>(&bytes).is_err());
+    assert!(serde_json::from_value::<Value>(original.clone()).is_err());
     assert_eq!(
         crate::projection::arguments::literal(&bytes).unwrap(),
         original
@@ -204,4 +211,16 @@ fn checked_in_boundary_depth_runs_the_full_codec_fuzz_oracle() {
     crate::fuzzing::assert_stream_invariants(seed);
     let too_deep = format!("{}0{}", "[".repeat(129), "]".repeat(129));
     assert!(crate::projection::arguments::literal(too_deep.as_bytes()).is_err());
+}
+
+#[test]
+fn literal_model_payloads_reject_depth_beyond_the_existing_record_bound() {
+    let arguments = (0..129).fold(json!(0), |inner, _| json!([inner]));
+    let event = acyclic_harness::model::ModelEvent::ToolCall(ToolCall::new(
+        "call".into(),
+        "echo".into(),
+        arguments,
+    ));
+    let value = serde_json::to_value(&event).unwrap();
+    assert!(serde_json::from_value::<acyclic_harness::model::ModelEvent>(value).is_err());
 }

@@ -21,13 +21,29 @@ fn clear<S>(values: &Values<S>) {
     values.borrow_mut().clear();
 }
 
+pub(super) fn with_run<T>(operation: impl FnOnce() -> T) -> T {
+    struct Finish;
+    impl Drop for Finish {
+        fn drop(&mut self) {
+            METADATA.with(|values| METADATA_OBSERVED.with(|recent| finish_metadata(values, recent)));
+        }
+    }
+    begin_run();
+    let _finish = Finish;
+    operation()
+}
+
+fn finish_metadata<S>(values: &Values<S>, recent: &RefCell<BTreeSet<Key>>) {
+    values.borrow_mut().retain(|key, _| recent.borrow().contains(key));
+}
+
 pub(super) fn begin_run() {
     VALUES.with(clear);
     CONCRETE.with_borrow_mut(BTreeSet::clear);
     METADATA.with(|values| METADATA_OBSERVED.with(|recent| retain_metadata(values, recent)));
 }
 
-// Reuse only the preceding command's observed contexts. During a command the
+// Reuse only the preceding operation's observed contexts. During an operation the
 // map contains at most its contexts plus the preceding command's contexts.
 fn retain_metadata<S>(values: &Values<S>, recent: &RefCell<BTreeSet<Key>>) {
     let previous = recent.take();

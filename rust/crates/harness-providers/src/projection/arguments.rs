@@ -21,6 +21,7 @@ impl Serialize for Arguments<'_> {
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_normalization(value: &Value) {
+    crate::fuzzing::assert_model_json_round_trip(value);
     // At most three generated levels: Gemini part, functionCall and _raw.
     assert_normalization_with_depth(value, 3);
 }

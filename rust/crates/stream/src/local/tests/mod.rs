@@ -7,3 +7,6 @@ mod native;
 mod ownership;
 
 mod wakeups;
+
+mod compaction;
+mod watermarks;
