@@ -43,6 +43,12 @@ fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> 
 impl FileViews {
     /// Builds a complete replacement without mutating an existing fold.
     pub fn snapshot(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
+        Self::build(snapshot, limits, true)
+    }
+    pub(super) fn ordinary(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
+        Self::build(snapshot, limits, false)
+    }
+    fn build(snapshot: HeadSnapshot, limits: QueryViewLimits, materialized: bool) -> Result<Self> {
         if snapshot.cursor.schema != crate::task_volume::SCHEMA
             || snapshot.cursor.position == 0
             || snapshot.cursor.volume != snapshot.generation.volume
@@ -69,13 +75,14 @@ impl FileViews {
                     ..
                 }
             );
-            if matches!(
-                file.key,
-                FileKey::Task {
-                    file: TaskFile::Chunk { .. },
-                    ..
-                }
-            ) || text != file.through_sequence.is_some()
+            if materialized
+                && (matches!(
+                    file.key,
+                    FileKey::Task {
+                        file: TaskFile::Chunk { .. },
+                        ..
+                    }
+                ) || text != file.through_sequence.is_some())
                 || file.segments.is_empty()
             {
                 return Err(Error::InvalidSegment);
@@ -157,6 +164,7 @@ impl FileViews {
                 HeadFile {
                     key: file.key.clone(),
                     publication: file.publication,
+                    channel: file.channel,
                     segments: vec![file.bytes.clone()],
                     length: file.bytes.len() as u64,
                     through_sequence: None,
@@ -291,6 +299,7 @@ impl FileViews {
                         entry.insert(HeadFile {
                             key,
                             publication: file.publication,
+                            channel: file.channel,
                             segments: vec![file.bytes.clone()],
                             length,
                             through_sequence: sequence,

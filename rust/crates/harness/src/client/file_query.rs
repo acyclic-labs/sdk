@@ -142,7 +142,7 @@ impl FileQueryView {
         let goal_revision = goal_revision(files.get(&FileKey::Goal));
         let goal_line_starts = goal_line_starts(&goal);
         let progress = super::GoalProgress::from_file(files.get(&FileKey::RequestHead));
-        let storage = super::FileViews::snapshot(
+        let storage = super::FileViews::ordinary(
             crate::task_volume::HeadSnapshot {
                 generation: snapshot.generation,
                 cursor,
@@ -151,6 +151,7 @@ impl FileQueryView {
                     .map(|(_, file)| crate::task_volume::HeadFile {
                         key: file.key,
                         publication: file.publication,
+                        channel: file.channel,
                         length: file.bytes.len() as u64,
                         segments: vec![file.bytes],
                         through_sequence: None,
@@ -260,6 +261,7 @@ impl FileQueryView {
             head.segments.len() == 1
                 && head.segments[0] == file.bytes
                 && head.publication == file.publication
+                && head.channel == file.channel
         })
     }
 

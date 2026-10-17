@@ -88,6 +88,7 @@ impl<'a> State<'a> {
                         .files(&agent)
                         .map(|file| HeadFile {
                             publication: file.publication,
+                            channel: file.channel,
                             key: file.key.clone(),
                             segments: file.segments.clone(),
                             length: file.length,

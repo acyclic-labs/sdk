@@ -438,8 +438,8 @@ async fn editing_one_of_a_hundred_files_reads_only_its_content()
         view.apply(change)?;
         for key in view.files().keys().skip(changed) {
             assert_eq!(
-                view.files()[key].bytes.as_ptr(),
-                before.files()[key].bytes.as_ptr()
+                view.files()[key].segments[0].as_ptr(),
+                before.files()[key].segments[0].as_ptr()
             );
         }
     }
@@ -506,7 +506,7 @@ async fn ordinary_file_query_folds_atomic_replacements_removals_and_duplicate_re
     let pointer = change.files[0].bytes.as_ptr();
     let key = change.files[0].key.clone();
     assert!(view.apply(change)?);
-    assert_eq!(view.files()[&key].bytes.as_ptr(), pointer);
+    assert_eq!(view.files()[&key].segments[0].as_ptr(), pointer);
     fixture
         .write(&[
             ("plans/a.md", None),

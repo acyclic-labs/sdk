@@ -194,7 +194,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let mut tree_tasks = BTreeSet::new();
         for fold in &documents.0 {
             for file in fold.files().values() {
-                let text = std::str::from_utf8(&file.bytes)
+                let text = std::str::from_utf8(&file.segments[0])
                     .map_err(|_| Error::Unsupported("view file is not UTF-8".into()))?;
                 match &file.key {
                     FileKey::Plan(_) | FileKey::Goal if matches!(view, Some("plan" | "goal")) => {
