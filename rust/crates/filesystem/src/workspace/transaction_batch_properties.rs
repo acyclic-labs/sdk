@@ -71,6 +71,7 @@ async fn check(
             b"replacement with a longer tail".to_vec(),
         ),
         ("/out/nested/empty".to_owned(), Vec::new()),
+        ("/out/blob".to_owned(), vec![42; 512]),
     ];
     files.extend(
         history
@@ -168,6 +169,7 @@ proptest! {
         for maximum in [2, 8] {
             runtime.block_on(check(&history, maximum, false, Fault::None))?;
         }
+        runtime.block_on(check_native(&history, Fault::None))?;
     }
 }
 #[tokio::test]
@@ -190,5 +192,121 @@ async fn file_batch_negative_controls() {
         assert!(error.to_string().contains(
             "file batch differs from ordered input bytes or accepts a directory overwrite"
         ));
+    }
+}
+
+async fn check_native(history: &[(u8, Vec<u8>)], fault: Fault) -> TestCaseResult {
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget::UNBOUNDED;
+    let workspace =
+        value!(Fs::memory().create_workspace("native-batch", budget, &cancellation)).unwrap();
+    let mut setup =
+        value!(workspace.begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation))
+            .unwrap();
+    value!(setup.create_dir_all("/out", budget, &cancellation)).unwrap();
+    setup
+        .write_text("/out/item", "original bytes with a tail")
+        .await
+        .unwrap();
+    commit(&mut setup).await;
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::work_budget(1_000_000, 64 * 1024 * 1024),
+        &cancellation,
+    )
+    .unwrap();
+    let mut transaction = workspace
+        .begin_transaction(crate::IdempotencyKey::new(), &original, &cancellation)
+        .await
+        .unwrap();
+    let mut input = vec![("/out/blob".to_owned(), vec![42; 512])];
+    input.extend(
+        history
+            .iter()
+            .map(|(id, bytes)| (format!("/out/f{}", id % 3), bytes.clone())),
+    );
+    input.push(("/out/item".to_owned(), b"exact".to_vec()));
+    let expected: BTreeMap<_, _> = input.iter().cloned().collect();
+    let files: Vec<_> = input
+        .iter()
+        .map(|(path, data)| {
+            let (bytes, custody) = original.copy_bytes(data).unwrap();
+            (
+                path.as_str(),
+                acyclic_stream::OwnedBytes::from_vec_with_guard(
+                    bytes,
+                    custody,
+                    original.runtime_meter(),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let result = match fault {
+        Fault::NoReset => {
+            let mut accounting = KernelAccounting::NativeOriginal {
+                work: &original,
+                cancellation: &cancellation,
+            };
+            transaction
+                .write_batch_with_accounting::<false>(
+                    &["/out"],
+                    &files,
+                    &mut accounting,
+                    &cancellation,
+                )
+                .await
+        }
+        Fault::RejectAll => Err(WorkspaceError::NotFound),
+        _ => {
+            transaction
+                .write_batch(&["/out"], &files, &original, &cancellation)
+                .await
+        }
+    };
+    let published = if result.is_ok() {
+        let committed = transaction
+            .commit_with_native_work::<WorkspaceError, _, _>(
+                None,
+                PublicationPermit::Unrestricted,
+                &original,
+                &cancellation,
+                &mut |_| std::future::ready(Ok(())),
+            )
+            .await;
+        matches!(
+            committed,
+            Ok(TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_))
+        )
+    } else {
+        false
+    };
+    let mut actual = BTreeMap::new();
+    for path in expected.keys() {
+        let bytes = value!(workspace.read(path, 4096, budget, &cancellation))
+            .ok()
+            .map(|bytes| bytes.to_vec());
+        actual.insert(path.clone(), bytes);
+    }
+    let expected: BTreeMap<_, _> = expected
+        .into_iter()
+        .map(|(path, bytes)| (path, Some(bytes)))
+        .collect();
+    prop_assert!(
+        result.is_ok() && published && actual == expected,
+        "native file batch differs from input bytes or loses original custody"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_file_batch_negative_controls() {
+    check_native(&[], Fault::None).await.unwrap();
+    for fault in [Fault::NoReset, Fault::RejectAll] {
+        let error = check_native(&[], fault).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("native file batch differs from input bytes or loses original custody")
+        );
     }
 }

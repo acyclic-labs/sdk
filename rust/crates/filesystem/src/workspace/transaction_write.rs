@@ -108,25 +108,133 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             || self.checkout.volume_config().case_sensitivity
                 != crate::model::CaseSensitivity::Sensitive
         {
-            let mut candidate = Self {
-                workspace: self.workspace.clone(),
-                checkout: self.checkout.private_candidate(accounting, cancellation)?,
-                idempotency_key: self.idempotency_key,
-                requires_rebase: self.requires_rebase,
-            };
-            for directory in directories {
-                candidate
-                    .create_dirs(directory, accounting, cancellation)
-                    .await?;
-            }
-            for (path, bytes) in files {
-                candidate
-                    .write_with_accounting(path, bytes.clone(), accounting, cancellation)
-                    .await?;
-            }
-            self.checkout = candidate.checkout;
-            return Ok(());
+            return self
+                .write_batch_serial(directories, files, accounting, cancellation)
+                .await;
         }
+        let (paths, directory_count) =
+            self.batch_paths(directories, files, accounting, cancellation)?;
+        let mut kinds = self
+            .batch_kinds(&paths.value, accounting, cancellation)
+            .await?;
+        classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
+        let capacity = directory_count
+            .checked_add(
+                files
+                    .len()
+                    .checked_mul(2)
+                    .ok_or(crate::WorkError::Overflow)?,
+            )
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut operations = crate::kernel::Owned::allocate(capacity, accounting)?;
+        // Transfer the original path ownership after all cross-path decisions.
+        // Only resize plus write needs two independently owned copies.
+        let backing = paths.value.capacity() * std::mem::size_of::<NamespacePath>();
+        let mut path_allocation = paths.allocation;
+        let mut paths = paths.value.into_iter();
+        for (index, path) in paths.by_ref().enumerate() {
+            let bytes = path.retained_bytes();
+            let allocation = crate::kernel::split_allocation(&mut path_allocation, bytes)?;
+            let path = crate::kernel::Owned::new(path, allocation, bytes);
+            let existing = kinds.value.get(index).copied().flatten().is_some();
+            let mutation = if index < directory_count {
+                if existing {
+                    path.retire(accounting)?;
+                    continue;
+                }
+                AuthoredMutation::CreateDirectory {
+                    path: path.value,
+                    metadata: FileMetadata::default(),
+                }
+            } else {
+                let (_, content) = files
+                    .get(index - directory_count)
+                    .ok_or(FsError::InvalidDiff)?;
+                if existing && RESET {
+                    let (copy, allocation) =
+                        path.value.clone_with_accounting(accounting, cancellation)?;
+                    let bytes = copy.retained_bytes();
+                    Self::push_mutation(
+                        &mut operations,
+                        crate::kernel::Owned::new(
+                            AuthoredMutation::Resize {
+                                path: copy,
+                                logical_bytes: 0,
+                            },
+                            allocation,
+                            bytes,
+                        ),
+                        accounting,
+                    )?;
+                }
+                if existing {
+                    AuthoredMutation::Write {
+                        path: path.value,
+                        offset: 0,
+                        bytes: content.clone(),
+                    }
+                } else {
+                    AuthoredMutation::CreateFile {
+                        path: path.value,
+                        bytes: content.clone(),
+                        metadata: FileMetadata::default(),
+                    }
+                }
+            };
+            Self::push_mutation(
+                &mut operations,
+                crate::kernel::Owned::new(mutation, path.allocation, path.bytes),
+                accounting,
+            )?;
+        }
+        drop(paths);
+        crate::kernel::retire_allocation(path_allocation, backing as u64, accounting)?;
+        kinds.retire(accounting)?;
+        if operations.value.is_empty() {
+            return operations.retire(accounting).map_err(Into::into);
+        }
+        self.checkout
+            .apply_authored_bulk_transaction_with_accounting(operations, accounting, cancellation)
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn write_batch_serial(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let mut candidate = Self {
+            workspace: self.workspace.clone(),
+            checkout: self.checkout.private_candidate(accounting, cancellation)?,
+            idempotency_key: self.idempotency_key,
+            requires_rebase: self.requires_rebase,
+        };
+        for directory in directories {
+            candidate
+                .create_dirs(directory, accounting, cancellation)
+                .await?;
+        }
+        for (path, bytes) in files {
+            candidate
+                .write_with_accounting(path, bytes.clone(), accounting, cancellation)
+                .await?;
+        }
+        self.checkout = candidate.checkout;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn batch_paths(
+        &self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(crate::kernel::Owned<Vec<NamespacePath>>, usize), WorkspaceError> {
         let config = self.checkout.volume_config();
         let mut paths = crate::kernel::Owned::allocate(0, accounting)?;
         for directory in directories {
@@ -154,11 +262,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             paths.ensure_for_push(usize::MAX, accounting)?;
             Self::push_mutation(&mut paths, path, accounting)?;
         }
-        let mut kinds = crate::kernel::Owned::allocate(paths.value.len(), accounting)?;
+        Ok((paths, directory_count))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn batch_kinds(
+        &mut self,
+        paths: &[NamespacePath],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::Owned<Vec<Option<FileKind>>>, WorkspaceError> {
+        let config = self.checkout.volume_config();
+        let mut kinds = crate::kernel::Owned::allocate(paths.len(), accounting)?;
         let maximum = usize::try_from(config.limits.maximum_paths_per_batch)
             .unwrap_or(usize::MAX)
             .max(1);
-        for chunk in paths.value.chunks(maximum) {
+        for chunk in paths.chunks(maximum) {
             let (lookup, allocation) = self
                 .checkout
                 .lookup_batch_no_follow_with_accounting(chunk, false, accounting, cancellation)
@@ -180,98 +299,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             drop(lookup);
             crate::kernel::retire_allocation(allocation, bytes, accounting)?;
         }
-        let capacity = directory_count
-            .checked_add(
-                files
-                    .len()
-                    .checked_mul(2)
-                    .ok_or(crate::WorkError::Overflow)?,
-            )
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut operations = crate::kernel::Owned::allocate(capacity, accounting)?;
-        for (index, path) in paths.value.iter().take(directory_count).enumerate() {
-            match kinds.value.get(index).copied().flatten() {
-                Some(FileKind::Directory) => continue,
-                Some(_) => return Err(WorkspaceError::NotDirectory),
-                None => {}
-            }
-            if batch_contains(&paths.value[..index], path, accounting)? {
-                continue;
-            }
-            let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
-            let bytes = path.retained_bytes();
-            Self::push_mutation(
-                &mut operations,
-                crate::kernel::Owned::new(
-                    AuthoredMutation::CreateDirectory {
-                        path,
-                        metadata: FileMetadata::default(),
-                    },
-                    allocation,
-                    bytes,
-                ),
-                accounting,
-            )?;
-        }
-        for (index, (_, content)) in files.iter().enumerate() {
-            let offset = directory_count
-                .checked_add(index)
-                .ok_or(crate::WorkError::Overflow)?;
-            let path = paths.value.get(offset).ok_or(FsError::InvalidDiff)?;
-            let kind = kinds.value.get(offset).copied().flatten();
-            if kind.is_some_and(|kind| kind != FileKind::Regular)
-                || batch_contains(&paths.value[..directory_count], path, accounting)?
-            {
-                return Err(WorkspaceError::NotRegularFile);
-            }
-            let existing = kind.is_some()
-                || batch_contains(&paths.value[directory_count..offset], path, accounting)?;
-            if existing && RESET {
-                let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
-                let bytes = path.retained_bytes();
-                Self::push_mutation(
-                    &mut operations,
-                    crate::kernel::Owned::new(
-                        AuthoredMutation::Resize {
-                            path,
-                            logical_bytes: 0,
-                        },
-                        allocation,
-                        bytes,
-                    ),
-                    accounting,
-                )?;
-            }
-            let (path, allocation) = path.clone_with_accounting(accounting, cancellation)?;
-            let bytes = path.retained_bytes();
-            let mutation = if existing {
-                AuthoredMutation::Write {
-                    path,
-                    offset: 0,
-                    bytes: content.clone(),
-                }
-            } else {
-                AuthoredMutation::CreateFile {
-                    path,
-                    bytes: content.clone(),
-                    metadata: FileMetadata::default(),
-                }
-            };
-            Self::push_mutation(
-                &mut operations,
-                crate::kernel::Owned::new(mutation, allocation, bytes),
-                accounting,
-            )?;
-        }
-        paths.retire(accounting)?;
-        kinds.retire(accounting)?;
-        if operations.value.is_empty() {
-            return operations.retire(accounting).map_err(Into::into);
-        }
-        self.checkout
-            .apply_authored_bulk_transaction_with_accounting(operations, accounting, cancellation)
-            .await?;
-        Ok(())
+        Ok(kinds)
     }
 
     /// Creates missing directory prefixes without replacing existing objects.
@@ -511,6 +539,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         )
         .await
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn classify_batch_paths(
+    paths: &[NamespacePath],
+    directory_count: usize,
+    kinds: &mut [Option<FileKind>],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), WorkspaceError> {
+    for (index, path) in paths.iter().enumerate() {
+        let kind = kinds.get_mut(index).ok_or(FsError::InvalidDiff)?;
+        if index < directory_count {
+            match *kind {
+                Some(FileKind::Directory) => continue,
+                Some(_) => return Err(WorkspaceError::NotDirectory),
+                None => {}
+            }
+            if batch_contains(&paths[..index], path, accounting)? {
+                *kind = Some(FileKind::Directory);
+            }
+        } else {
+            if kind.is_some_and(|kind| kind != FileKind::Regular)
+                || batch_contains(&paths[..directory_count], path, accounting)?
+            {
+                return Err(WorkspaceError::NotRegularFile);
+            }
+            if kind.is_some() || batch_contains(&paths[directory_count..index], path, accounting)? {
+                *kind = Some(FileKind::Regular);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
