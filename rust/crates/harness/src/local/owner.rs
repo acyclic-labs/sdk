@@ -31,7 +31,7 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
     };
     let canonical = fs::canonicalize(path).map_err(storage)?;
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.state/v1\0");
+    hash.update(b"acyclic.local.state/v2\0");
     hash.update(if volume.is_some() {
         b"volume\0"
     } else {
@@ -40,8 +40,13 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
     hash.update(path_bytes);
-    if let Some(volume) = volume {
-        hash.update(volume.storage_name(&mut None)?.as_bytes());
+    match volume {
+        Some(volume) => {
+            hash.update(volume.storage_name(&mut None)?.as_bytes());
+        }
+        None => {
+            hash.update(&workspace_identity(&canonical)?);
+        }
     }
     let directory = root.join(hash.finalize().to_hex().as_str());
     let planned = directory::planned_directory(&directory).ok_or_else(|| {
@@ -58,6 +63,17 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
 mod directory;
 pub(super) use directory::separated_directory;
 
+fn workspace_identity(workspace: &Path) -> Result<[u8; 16]> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    Ok(work.root_identity(workspace)?.to_bytes())
+}
+
+
 impl Owner {
     pub(super) fn open(directory: &Path, selection: &LocalProject) -> Result<Self> {
         let workspace = match selection {
@@ -67,15 +83,7 @@ impl Owner {
         let path = directory.join("owner.json");
         let workspace_identity = workspace
             .as_ref()
-            .map(|workspace| {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                Ok::<_, Error>(work.root_identity(workspace)?.to_bytes())
-            })
+            .map(|workspace| workspace_identity(workspace))
             .transpose()?;
         let owner = match Self::load(&path) {
             Ok(owner) => owner,
