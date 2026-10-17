@@ -296,6 +296,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         Arc::new(MemoryStream::default()),
         host.clone(),
         &volume,
+        None,
         &issuer.verifier(&mut None)?,
         &signed,
         &scope,

@@ -104,6 +104,7 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         fixture.stream.clone(),
         fixture.filesystem.clone(),
         &fixture.volume,
+        None,
         &verifier,
         &fixture.signed,
         &fixture.scope,

@@ -123,6 +123,7 @@ pub(super) async fn open(
         config.stream,
         config.files.clone(),
         config.journal,
+        Some(config.scratch),
         config.verifier,
         &signed,
         &scope,
@@ -139,8 +140,7 @@ pub(super) async fn open(
         None,
     )
     .await?
-    .with_output_volume(config.project, None)?
-    .with_private_volume(config.scratch, None)?;
+    .with_output_volume(config.project, None)?;
     runtime.bind_task_files(Some(Arc::clone(&task_files)));
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {

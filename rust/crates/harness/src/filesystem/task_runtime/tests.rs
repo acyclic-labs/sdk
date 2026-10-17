@@ -468,6 +468,7 @@ impl Fixture {
             self.stream.clone(),
             self.filesystem.clone(),
             &self.volume,
+            None,
             &self.issuer.verifier(&mut None)?,
             &self.signed,
             &self.scope,

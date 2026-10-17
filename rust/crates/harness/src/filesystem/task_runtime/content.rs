@@ -12,7 +12,7 @@ where
     }
 
     /// Binds root private files independently of the project's default output.
-    pub fn with_private_volume(
+    pub(super) fn bind_private_volume(
         mut self,
         volume: &VolumeRef,
         io: Option<&super::super::PreparationIo>,

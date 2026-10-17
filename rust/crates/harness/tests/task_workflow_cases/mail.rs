@@ -101,6 +101,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
                 stream,
                 filesystem.clone(),
                 &volume,
+                None,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 &scope,

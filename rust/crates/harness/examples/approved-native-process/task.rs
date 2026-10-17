@@ -143,6 +143,7 @@ where
         stream,
         files,
         &volume,
+        None,
         &issuer.verifier(&mut None)?,
         scope,
         &runtime_scope,
