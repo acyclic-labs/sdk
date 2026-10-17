@@ -29,6 +29,7 @@ serde_json.workspace = true
 acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true
 acyclic-test-support = { path = "../../../../test-support" }
+alacritty_terminal = "0.26"
 
 [[test]]
 name = "cli"

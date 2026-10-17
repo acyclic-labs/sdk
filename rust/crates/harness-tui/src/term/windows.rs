@@ -91,6 +91,49 @@ impl super::Present for Output {
         }
         presented
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if frame.is_empty() {
+            return self.owner.empty_if_current(expected);
+        }
+        let mut observed = expected;
+        let mut rejected = false;
+        let mut began = false;
+        let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
+            if rejected {
+                return Ok(());
+            }
+            let accepted = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+                let count = super::Present::outside_writes(guard);
+                if observed.is_some() && count != observed {
+                    return if began {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        Ok(None)
+                    };
+                }
+                part.apply(guard, cursor_hidden)?;
+                Ok(count)
+            })?;
+            rejected = accepted.is_none();
+            observed = accepted;
+            began = true;
+            Ok(())
+        });
+        if presented.is_err() {
+            let _ = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+                guard.abort_frame()
+            });
+        }
+        presented.map(|()| if rejected { None } else { observed })
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        self.owner.outside_writes()
+    }
 }
 
 impl Write for Output {
