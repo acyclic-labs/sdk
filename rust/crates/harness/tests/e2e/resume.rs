@@ -331,18 +331,19 @@ pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<
     let files = tempfile::tempdir()?;
     let identity = Identity::new(u128::from_be_bytes(*uuid::Uuid::new_v4().as_bytes()));
     let journal = journal(stream, files.path(), &identity, true).await?;
-    let provider = Arc::new(ScriptedModelProvider::new([]).with_reconciliations([
-        ScriptedReconciliation {
-            orphan: true,
-            observed: vec![],
-            continuation: Some(vec![
-                content(REST)?,
-                serde_json::from_value(
-                    json!({"kind": "completed", "metadata": {"finish": "stop"}}),
-                )?,
-            ]),
-        },
-    ]));
+    let provider =
+        Arc::new(
+            ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
+                orphan: true,
+                observed: vec![],
+                continuation: Some(vec![
+                    content(REST)?,
+                    serde_json::from_value(
+                        json!({"kind": "completed", "metadata": {"finish": "stop"}}),
+                    )?,
+                ]),
+            }]),
+        );
     let result = executor(provider.clone())?
         .execute(identity.input(), journal.as_ref())
         .await;
@@ -351,8 +352,10 @@ pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<
     {
         return Err(format!(
             "unjournaled turn: {result:?}, {} requests, {} reconciliations",
-            provider.requests().len(), provider.reconciliations().len(),
-        ).into());
+            provider.requests().len(),
+            provider.reconciliations().len(),
+        )
+        .into());
     }
     Ok(())
 }
