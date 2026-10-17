@@ -12,7 +12,7 @@ async fn model<const BOUND: bool>(events: &[(u8, u8, bool)]) {
         .unwrap(),
     );
     let session = uuid::Uuid::from_bytes([12; 16]);
-    let mut client = CommandSession::open(volume, session, 65536, 128)
+    let mut client = CommandSession::open(volume, session, 65536, 32)
         .await
         .unwrap();
     for (step, &(target, id, outcome)) in events.iter().enumerate() {

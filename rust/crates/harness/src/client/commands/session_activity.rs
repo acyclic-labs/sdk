@@ -96,7 +96,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             || selected.is_some_and(|task| self.pending_tasks.contains_key(&task.to_string())))
     }
 
-    fn fold_pending_execution(&mut self, key: &files::FileKey) {
+    pub(super) fn fold_pending_execution(&mut self, key: &files::FileKey) {
         if self.files.contains_key(key) {
             return;
         }
@@ -145,7 +145,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
             files::FileKey::Task { task, .. } => {
                 if added {
-                    *self.pending_tasks.entry(task.to_string()).or_default() += 1;
+                    *self
+                        .pending_tasks
+                        .entry(task.as_str().to_owned())
+                        .or_default() += 1;
                 } else {
                     let count = self
                         .pending_tasks
