@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::{AppendOutcome, AppendRequest, BoxProviderFuture, MemoryStream, StreamPath};
+use audit::{Audited, witness};
 use loom::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -7,6 +8,8 @@ use loom::{
     },
     thread,
 };
+
+mod audit;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
@@ -60,7 +63,7 @@ fn condition(owner: u64) -> Vec<CommitCondition> {
     }]
 }
 
-fn append_owner(stream: &MemoryStream, expected: u64) {
+fn append_owner<P: StreamProvider>(stream: &Arc<P>, expected: u64) {
     assert!(matches!(
         block_on(stream.append(AppendRequest {
             path: StreamPath::new("owner").unwrap(),
@@ -74,7 +77,10 @@ fn append_owner(stream: &MemoryStream, expected: u64) {
 }
 
 fn initialized() -> (Arc<MemoryStream>, Arc<TaskVolume<MemoryStream>>) {
-    let stream = Arc::new(MemoryStream::default());
+    initialized_on(Arc::new(MemoryStream::default()))
+}
+
+fn initialized_on<P: StreamProvider>(stream: Arc<P>) -> (Arc<P>, Arc<TaskVolume<P>>) {
     append_owner(&stream, 0);
     let volume = Arc::new(
         block_on(TaskVolume::open(
@@ -97,9 +103,9 @@ fn initialized() -> (Arc<MemoryStream>, Arc<TaskVolume<MemoryStream>>) {
     (stream, volume)
 }
 
-fn run_worker(
-    stream: &MemoryStream,
-    volume: &TaskVolume<MemoryStream>,
+fn run_worker<P: StreamProvider>(
+    stream: &Arc<P>,
+    volume: &TaskVolume<P>,
     provider: Arc<Provider>,
     owner: u64,
     broken: bool,
@@ -111,8 +117,10 @@ fn run_worker(
         &fence(if owner == 1 { "old" } else { "new" }),
         &mut || Ok(Some(provider.clone())),
         &|settlement| async move {
+            // Settlement grants name their owner for the publication audit.
+            let named = settlement.then(|| witness(owner));
             if broken && settlement {
-                return Ok(vec![]);
+                return Ok(named.into_iter().collect());
             }
             let tail = stream
                 .watermarks(StreamPath::new("owner").unwrap())
@@ -122,13 +130,13 @@ fn run_worker(
             if tail != owner {
                 return Err(storage(crate::task_volume::Error::FenceConflict));
             }
-            Ok(condition(tail))
+            Ok(condition(tail).into_iter().chain(named).collect())
         },
         None,
     ))
 }
 
-fn outcome(volume: &TaskVolume<MemoryStream>) -> SearchOutcome {
+fn outcome<P: StreamProvider>(volume: &TaskVolume<P>) -> SearchOutcome {
     let snapshot =
         block_on(volume.snapshot(&Query::Task(Component::new("model").unwrap()), 4)).unwrap();
     assert_eq!(snapshot.files.len(), 3, "unfinished search lifecycle");
@@ -174,9 +182,26 @@ fn competing_claims_dispatch_once_and_replay_the_terminal_file() {
     });
 }
 
+fn receipt<P: StreamProvider>(volume: &TaskVolume<P>) -> Option<SearchOutcome> {
+    let key = ready(
+        &Component::new("model").unwrap(),
+        &Component::new("search-one").unwrap(),
+    );
+    // As settlement does: the parent volume first, then the completion volume.
+    let mut snapshot = block_on(volume.snapshot(&Query::File(key.clone()), 1)).unwrap();
+    if snapshot.files.is_empty() {
+        let completion = block_on(volume.file_volume(&key)).unwrap();
+        snapshot = block_on(completion.snapshot(&Query::File(key), 1)).unwrap();
+    }
+    snapshot
+        .files
+        .first()
+        .map(|file| serde_json::from_slice(&file.bytes).unwrap())
+}
+
 fn replacement(broken: bool) {
     model(move || {
-        let (stream, volume) = initialized();
+        let (stream, volume) = initialized_on(Arc::new(Audited::default()));
         let (release, waiting) = mpsc::channel();
         let old = Arc::new(Provider::new(Some(waiting)));
         let new = Arc::new(Provider::new(None));
@@ -205,12 +230,29 @@ fn replacement(broken: bool) {
             old.calls.load(Ordering::SeqCst) + new.calls.load(Ordering::SeqCst) <= 1,
             "replacement redispatched a claimed search"
         );
-        let terminal = outcome(&volume);
+        // Authority: the old owner's response is released only after its
+        // replacement, so none of its settlement commits may land.
         assert_eq!(
-            matches!(terminal, SearchOutcome::Succeeded { .. }),
-            new.calls.load(Ordering::SeqCst) == 1,
+            stream.replaced_settlements(),
+            0,
             "stale search result escaped replacement fence"
         );
+        // Provenance: either owner may publish the one retained response; an
+        // uncertain claim is never redispatched by the replacement.
+        let terminal = outcome(&volume);
+        let retained = receipt(&volume);
+        match &terminal {
+            SearchOutcome::Succeeded { .. } => assert!(
+                old.calls.load(Ordering::SeqCst) + new.calls.load(Ordering::SeqCst) == 1
+                    && retained == Some(terminal.clone()),
+                "search outcome lost its dispatch provenance"
+            ),
+            _ => assert_eq!(
+                new.calls.load(Ordering::SeqCst),
+                0,
+                "search outcome lost its dispatch provenance"
+            ),
+        }
         run_worker(&stream, &volume, new.clone(), 2, false).unwrap();
         assert_eq!(outcome(&volume), terminal);
     });

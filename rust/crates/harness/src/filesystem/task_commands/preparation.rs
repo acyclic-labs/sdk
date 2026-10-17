@@ -64,7 +64,7 @@ where
             #[cfg(target_arch = "wasm32")]
             let owner = Arc::new(owner);
             let mut history = io.map(PreparationIo::history_io);
-            let mut preparation = owner
+            let preparation = owner
                 .resource_preparation(
                     request,
                     &mut history
@@ -73,10 +73,12 @@ where
                 )
                 .await?;
             #[cfg(not(target_arch = "wasm32"))]
+            let mut preparation = preparation;
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 preparation.native_custody = Some(io.take_native_custody(io.owned_bytes()?)?);
             }
-            Arc::new(preparation)
+            break 'preparation Arc::new(preparation);
         };
         let source = if let Some(preparer) = self.fork_preparer.as_ref().filter(|_| io.is_none()) {
             super::super::RetainedSourceBinding {
@@ -163,10 +165,11 @@ where
                     .absorb_native_custody(custody)?;
                     break 'retained retained;
                 }
-                self.runtime
+                break 'retained self
+                    .runtime
                     .task_host()
                     .reconcile_admission(admission.operation_id)
-                    .await?
+                    .await?;
             };
             if retained.is_some_and(|(_, retained)| retained != admission) {
                 return Err(boundary(
@@ -206,10 +209,11 @@ where
                 io.absorb_native_custody(custody)?;
                 break 'admit result;
             }
-            self.runtime
+            break 'admit self
+                .runtime
                 .task_host()
                 .admit_owned(admission, fence.clone())
-                .await?
+                .await?;
         };
         match result {
             crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child), io),
@@ -270,7 +274,8 @@ where
                     )?;
                     break 'admission admission;
                 }
-                self.runtime
+                break 'admission self
+                    .runtime
                     .harness()
                     .registered_admission(
                         operation,
@@ -281,7 +286,7 @@ where
                         None,
                         None,
                     )?
-                    .0
+                    .0;
             };
             return self
                 .admit(

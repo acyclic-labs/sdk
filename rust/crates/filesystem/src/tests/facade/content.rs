@@ -278,8 +278,8 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         )?
         .into_pinned_reader_with_native_work(&original, &cancellation)?;
     let bytes = reader
-        .read_record_range(
-            source,
+        .read_file_range(
+            &path("source")?,
             ByteRange {
                 offset: 0,
                 length: 26,
@@ -321,9 +321,9 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .read_file_record_by_id(destination.file_id, &original, &cancellation)
         .await?;
     assert_eq!(actual.file_id, destination.file_id);
-    let content = reader
-        .read_record_range(
-            actual,
+    let content = candidate
+        .read_file_range(
+            destination.file_id,
             ByteRange {
                 offset: 0,
                 length: 26,

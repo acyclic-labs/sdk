@@ -44,6 +44,7 @@ impl Source {
         self.revision = Some(crate::OperationId::from_bytes([publication; 16]));
         self
     }
+    #[cfg(feature = "tui")]
     fn published(mut self, publication: u8) -> Self {
         self.publication = crate::OperationId::from_bytes([publication; 16]);
         self

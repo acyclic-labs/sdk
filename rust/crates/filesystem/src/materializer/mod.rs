@@ -46,16 +46,22 @@ native_modules! {
     pub paths;
     witness;
     metadata;
-    directories;
 }
 #[cfg(not(target_arch = "wasm32"))]
+mod directories;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(windows, all(feature = "local", feature = "native-mount"))
+))]
+use directories::*;
+#[cfg(not(target_arch = "wasm32"))]
 mod checkout_work;
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
-mod stage_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation_meter;
 #[cfg(not(target_arch = "wasm32"))]
 mod runtime_meter;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+mod stage_state;
 
 #[cfg(all(
     feature = "local",

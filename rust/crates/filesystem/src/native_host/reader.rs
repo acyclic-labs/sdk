@@ -20,6 +20,34 @@ impl HostStatReader {
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
+        self.next_with_handle::<W, true>(work)
+    }
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn next_metadata<W: NativeHostWork>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
+        #[cfg(all(test, windows))]
+        if super::stat_probe::old() {
+            return self.next(work);
+        }
+        #[cfg(all(test, any(target_os = "linux", windows)))]
+        if super::stat_probe::restore_walk() {
+            return self.next(work);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.next_with_handle::<W, false>(work)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.next(work)
+        }
+    }
+    fn next_with_handle<W: NativeHostWork, const HANDLE: bool>(
+        &mut self,
+        work: &mut W,
+    ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
         #[cfg(unix)]
         use std::os::unix::ffi::OsStringExt as _;
         loop {
@@ -58,6 +86,11 @@ impl HostStatReader {
                 work.record(copied)?;
                 #[cfg(unix)]
                 {
+                    #[cfg(target_os = "linux")]
+                    if !HANDLE {
+                        return stat_at_metadata(self.directory.as_raw_fd(), native_name, work)
+                            .map(Some);
+                    }
                     stat_at(self.directory.as_raw_fd(), native_name, work).map(Some)
                 }
                 #[cfg(windows)]
@@ -100,6 +133,8 @@ impl HostStatReader {
             Storage::FileSystem::{FileIdExtdDirectoryInfo, GetFileInformationByHandleEx},
         };
         // SAFETY: the held directory and aligned owned buffer outlive this synchronous query.
+        #[cfg(test)]
+        super::stat_probe::event("GetFileInformationByHandleEx");
         let result = unsafe {
             GetFileInformationByHandleEx(
                 HANDLE(self.directory.as_raw_handle()),
@@ -119,6 +154,8 @@ impl HostStatReader {
     }
     #[cfg(target_os = "linux")]
     fn refill(&mut self) -> io::Result<usize> {
+        #[cfg(test)]
+        super::stat_probe::event("getdents64");
         // SAFETY: getdents64 writes at most BUFFER_BYTES into the aligned owned buffer.
         let count = unsafe {
             libc::syscall(

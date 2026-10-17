@@ -1,0 +1,1 @@
+[{"role":"user","parts":[{"text":"q"}]},{"role":"model","parts":[{"functionCall":{"name":"f0","id":"c2","args":{}}}]},{"role":"user","parts":[{"type":"text","text":" "}]},{"role":"user","parts":[{"functionResponse":{"name":"f0","id":"c2","response":{}}},{"type":"text","text":"t0"},{"functionResponse":{"name":"f1","id":"c3","response":{}}}]}]

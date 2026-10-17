@@ -2,9 +2,9 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport,
-        ratatui::{Terminal, backend::CrosstermBackend},
-        term::{Environment, ScreenMode, Tty},
+        self, PromptBox, PromptInput, Viewport, crossterm,
+        ratatui::layout::Size,
+        term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
 };
 use std::{sync::Arc, time::Instant};
@@ -26,6 +26,7 @@ pub async fn run(
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut tty = Tty::open()?;
+    // Synchronized output follows the probed modes in the session journal.
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
         ScreenMode::Inline
@@ -33,7 +34,9 @@ pub async fn run(
         ScreenMode::Alternate
     })?;
     let (tty, output) = tty.split();
-    let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
+    let terminal_size =
+        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
+    let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
@@ -66,10 +69,10 @@ pub async fn run(
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
         input.busy = renderer.is_busy();
-        let size = terminal.size()?;
+        let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;
-        terminal.draw(|frame| {
+        terminal.draw(size, |frame| {
             maximum_scroll = screen.tail_scroll(frame.area(), &input);
             let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
@@ -80,6 +83,7 @@ pub async fn run(
             &mut completions,
             &mut input,
             &mut commands,
+            areas.animation,
             &mut renderer,
             &mut documents,
         )

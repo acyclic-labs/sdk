@@ -218,3 +218,85 @@ fn broken_terminal_wake_is_detected() {
 fn broken_terminal_accounting_is_detected() {
     terminal(true, Fault::Accounting);
 }
+
+/// The worker publishes and then drops its reference to the shared state; the
+/// observer can take the result in between. The state's charge must already
+/// be retired when the observer returns, so a caller that sees the result
+/// sees its whole budget back.
+fn charge(drop_observer: bool, broken: bool) {
+    let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let early = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let explored = schedules.clone();
+    let raced = early.clone();
+    loom::model(move || {
+        explored.fetch_add(1, Ordering::Relaxed);
+        let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
+        let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
+        let mut task = run_blocking_io(|| 17, Some((observed, false))).unwrap();
+        task.state.as_ref().unwrap().lock().unwrap().broken_charge = broken;
+        assert_ne!(meter.memory.load(Ordering::SeqCst), 0);
+        let job = task.pending.take().unwrap();
+        let worker = thread::spawn(move || wake_capacity_waiter(job.run()));
+        if drop_observer {
+            // Abandoned: the charge stays with the state, and the worker's
+            // last reference retires it.
+            drop(task);
+            worker.join().unwrap();
+            assert_eq!(
+                meter.memory.load(Ordering::SeqCst),
+                0,
+                "abandoned charge leaked"
+            );
+            return;
+        }
+        let flag = Arc::new(Woken(AtomicUsize::new(0)));
+        let waker = Waker::from(flag);
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut worker = Some(worker);
+        match Pin::new(&mut task).poll(&mut cx) {
+            Poll::Ready(result) => {
+                raced.fetch_add(1, Ordering::Relaxed);
+                assert!(matches!(result, Ok(17)));
+            }
+            Poll::Pending => {
+                worker.take().unwrap().join().unwrap();
+                assert!(matches!(
+                    Pin::new(&mut task).poll(&mut cx),
+                    Poll::Ready(Ok(17))
+                ));
+            }
+        }
+        drop(task);
+        assert_eq!(
+            meter.memory.load(Ordering::SeqCst),
+            0,
+            "charge outlived its observer"
+        );
+        if let Some(worker) = worker {
+            worker.join().unwrap();
+        }
+    });
+    if !drop_observer {
+        assert_ne!(
+            early.load(Ordering::Relaxed),
+            0,
+            "no early observation explored"
+        );
+    }
+    eprintln!(
+        "charge schedules (drop={drop_observer}): {}",
+        schedules.load(Ordering::Relaxed)
+    );
+}
+
+#[test]
+fn observer_retires_the_state_charge_before_the_worker_lets_go() {
+    charge(false, false);
+    charge(true, false);
+}
+
+#[test]
+#[should_panic(expected = "charge outlived its observer")]
+fn a_charge_left_on_the_shared_state_is_detected() {
+    charge(false, true);
+}

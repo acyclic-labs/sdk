@@ -2,11 +2,11 @@ use super::*;
 /// Metadata-only selection frozen from an authenticated lazy cut.
 #[derive(Debug)]
 pub struct SelectedImportPlan {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
     pub(crate) source: LazySnapshotRef,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
     pub(crate) source_config: VolumeConfig,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
     pub(crate) source_used: bool,
     pub(crate) roots: Vec<String>,
     pub(crate) entries: Vec<SelectedImportRecord>,
@@ -184,11 +184,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         entries.allocation.absorb(&mut roots.allocation)?;
         Ok((
             SelectedImportPlan {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
                 source: cut,
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
                 source_config: self.workspace.volume.config,
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
                 source_used: _used,
                 roots: roots.value,
                 entries: entries.value,

@@ -9,7 +9,7 @@ native_artifact=$(mktemp "$artifact_dir/graphcoder-native.XXXXXX.jsonl")
 trap 'rm -f "$native_artifact"' EXIT
 cargo test -p acyclic-harness --features filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http --lib --no-run --message-format=json > "$native_artifact"
 python3 scripts/qualify-graphcoder-artifact.py \
-    contract::errors::tests:: client::local_headless::tests:: task_volume::schema::tests:: client::task_files::tests:: task_volume::files:: task_volume::segment::tests:: executor::tests::invocation_bounds:: local::tests::task_files:: local::tests::documents:: local::tests::command_files:: local::tests::headless:: local::tests::live_ui:: client::commands::scheduling::owner_models:: \
+    contract::errors::tests:: client::local_headless::tests:: task_volume::schema::tests:: client::task_files::tests:: task_volume::files:: task_volume::segment::tests:: executor::tests::invocation_bounds:: local::tests::task_files:: local::tests::documents:: local::tests::command_files:: local::tests::headless:: local::tests::live_ui:: client::commands::scheduling::owner::tests:: \
     local::checkout_tools::publisher::tests:: tools::git::view::tests:: < "$native_artifact"
 
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts

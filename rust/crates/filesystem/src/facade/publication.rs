@@ -159,6 +159,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     /// Publishes the unchanged root as the original companion head fence.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) async fn commit_even_if_clean_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,

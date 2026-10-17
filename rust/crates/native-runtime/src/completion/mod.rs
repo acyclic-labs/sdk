@@ -14,7 +14,7 @@ pub struct NativeCompletion<T> {
     #[cfg(feature = "test-support")]
     test_completion: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     pub(crate) pool: &'static LazyLock<io::Result<NativeWorkers>>,
-    pub(crate) prepared_wake: Option<Arc<BlockingWaitWake>>,
+    pub(crate) prepared_wake: Option<PreparedWake>,
     pub(crate) state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     pub(crate) ready: Option<io::Result<T>>,
     pub(crate) pending: Option<NativeJob>,
@@ -210,8 +210,9 @@ impl<T> Future for NativeCompletion<T> {
             && let Some(payload) = state.panic.take()
         {
             let waker = state.waker.take();
+            let charge = state.take_charge();
             drop(state);
-            drop(waker);
+            drop((waker, charge));
             drop(this.pending.take());
             if let Some(waiter) = this.waiter.take()
                 && let Ok(workers) = workers(this.pool, true)
@@ -222,7 +223,15 @@ impl<T> Future for NativeCompletion<T> {
             drop(this.completion.take());
             std::panic::resume_unwind(payload);
         }
-        state.poll_result(context.waker())
+        let result = state.poll_result(context.waker());
+        // The observer retires the state's charge when it takes the result:
+        // the worker may still hold its reference for a moment after
+        // publishing. An abandoned observer leaves the charge in the state,
+        // where the worker's last reference retires it.
+        let charge = result.is_ready().then(|| state.take_charge()).flatten();
+        drop(state);
+        drop(charge);
+        result
     }
 }
 

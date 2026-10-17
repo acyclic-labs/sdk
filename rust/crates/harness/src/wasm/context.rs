@@ -66,7 +66,14 @@ impl WasmProjectionResolver {
                 ));
                 return;
             }
-            files.insert(key, js_sys::Uint8Array::new(&bytes).to_vec());
+            match super::bytes::snapshot(bytes.unchecked_ref(), |_| Ok(())) {
+                Ok((bytes, ())) => {
+                    files.insert(key, bytes);
+                }
+                Err(error) => {
+                    failure = Some(error);
+                }
+            }
         });
         if let Some(error) = failure {
             return Err(error);

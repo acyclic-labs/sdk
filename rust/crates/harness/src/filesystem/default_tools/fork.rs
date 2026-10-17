@@ -1,5 +1,6 @@
 use super::*;
 use crate::executor::stock_string_copy;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::filesystem::PreparationIo;
 use crate::runtime::TaskSpawner as _;
 
@@ -125,10 +126,10 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .absorb_native_custody(custody)?;
                 break 'admit admission;
             }
-            runtime
+            break 'admit runtime
                 .task_host()
                 .admit_owned(record.clone(), journal_owner.task_binding().1.clone())
-                .await?
+                .await?;
         };
         match admission {
             crate::Admission::Accepted(task) => deny(task != record.task_id(), io)?,
@@ -265,10 +266,10 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                 .absorb_native_custody(custody)?;
                 break 'admit admission;
             }
-            runtime
+            break 'admit runtime
                 .task_host()
                 .admit_owned(record.clone(), journal_owner.task_binding().1.clone())
-                .await?
+                .await?;
         };
         match admission {
             crate::Admission::Accepted(task) => deny(task != record.task_id(), io)?,

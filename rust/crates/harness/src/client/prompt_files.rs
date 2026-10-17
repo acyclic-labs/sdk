@@ -15,6 +15,7 @@ pub struct PromptFiles {
     history: Option<FileValue>,
     keymap: Option<FileValue>,
     layout: Option<FileValue>,
+    settings: Option<FileValue>,
 }
 
 fn history(file: Option<&FileValue>) -> Result<PromptHistory> {
@@ -62,6 +63,8 @@ impl PromptFiles {
         let draft = files.state_file(CommandFileRoot::Session, "draft.json")?;
         let entries = files.state_file(CommandFileRoot::Config, "history.json")?;
         let bindings = files.state_file(CommandFileRoot::Config, "keymap.json")?;
+        let settings_file = files.state_file(CommandFileRoot::Config, "settings.json")?;
+        let settings_changed = self.settings.as_ref() != settings_file;
         let layout_file = files.state_file(CommandFileRoot::Session, "layout.json")?;
         let layout_changed = self.layout.as_ref() != layout_file;
         let layout = files
@@ -85,7 +88,12 @@ impl PromptFiles {
         let draft_changed = self.draft.as_ref() != draft;
         let history_changed = self.history.as_ref() != entries;
         let keymap_changed = self.keymap.as_ref() != bindings;
-        if !draft_changed && !history_changed && !keymap_changed && !layout_changed && !mode_changed
+        if !draft_changed
+            && !history_changed
+            && !keymap_changed
+            && !layout_changed
+            && !mode_changed
+            && !settings_changed
         {
             return Ok(());
         }
@@ -101,6 +109,23 @@ impl PromptFiles {
             })
             .transpose()?
             .unwrap_or_default();
+        let settings: serde_json::Value = settings_file
+            .map(|file| serde_json::from_slice(&file.bytes))
+            .transpose()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !settings.is_object() {
+            return Err(Error::Invalid("settings must be an object".into()));
+        }
+        let reduced_motion = settings
+            .get("reduced_motion")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| Error::Invalid("reduced_motion must be a boolean".into()))
+            })
+            .transpose()?
+            .unwrap_or(false);
         if draft_changed {
             input.set_chat_draft(decoded.editor.text());
         }
@@ -111,6 +136,12 @@ impl PromptFiles {
         if keymap_changed {
             input.set_keymap(keymap);
         }
+        if settings_changed {
+            let mut preferences = *input.editor.settings();
+            preferences.reduced_motion = reduced_motion;
+            input.set_settings(preferences);
+        }
+        self.settings = settings_file.cloned();
         self.keymap = bindings.cloned();
         self.draft = draft.cloned();
         self.history = entries.cloned();

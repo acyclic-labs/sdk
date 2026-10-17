@@ -73,7 +73,9 @@ mod tree;
 use tree::*;
 pub use tree::{prepare_native_exchange, publish_native_exchange, recover_native_exchange};
 mod entry;
-pub(crate) use entry::{exchange_native_entries, recover_native_entry_exchange};
+pub(crate) use entry::exchange_native_entries;
+#[cfg(any(windows, test, feature = "native-mount"))]
+pub(crate) use entry::recover_native_entry_exchange;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

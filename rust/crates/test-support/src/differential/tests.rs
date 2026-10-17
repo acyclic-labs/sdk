@@ -1,4 +1,4 @@
-use super::{pair, record};
+use super::{observe, pair, record};
 use proptest::prelude::*;
 use std::{
     cell::Cell,
@@ -23,7 +23,13 @@ proptest! {
         prop_assert_eq!(initializations.get(), 2);
         prop_assert_eq!(&before.0, &events);
         prop_assert_eq!(&before.1, &[vec![0], events.clone()].concat());
-        prop_assert_eq!(before, after);
+        prop_assert_eq!(&before, &after);
+        let single = observe::<_, _, u16>(|| events.clone(), |state| {
+            record(0u16);
+            for event in &state { record(*event); }
+            state
+        });
+        prop_assert_eq!(&single, &before);
         let [before, broken] = run(true);
         prop_assert_eq!(&before.0, &broken.0);
         prop_assert_ne!(before, broken); // Missing preflight violates the same equality.

@@ -42,7 +42,7 @@ pub(super) fn ensure_current_host_node(
 ) -> Result<(), CaptureError> {
     meter.clone().check().map_err(capture_demand_error)?;
     let observed = source_root
-        .stat_source(host_path, &mut meter.clone())
+        .stat_source_metadata(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(expected, &observed)?;
     meter.clone().check().map_err(capture_demand_error)
@@ -125,10 +125,17 @@ pub(super) fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureEr
 }
 
 pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
+    let created = metadata.birth_time();
+    #[cfg(all(test, any(target_os = "linux", windows)))]
+    let created = if crate::native_host::stat_probe::legacy_birth_time() {
+        metadata.created().ok()
+    } else {
+        created
+    };
     let mut result = FileMetadata {
-        created_ns: system_time(&metadata.created()),
-        modified_ns: system_time(&metadata.modified()),
-        accessed_ns: system_time(&metadata.accessed()),
+        created_ns: system_time(created),
+        modified_ns: system_time(metadata.modified().ok()),
+        accessed_ns: system_time(metadata.accessed().ok()),
         ..FileMetadata::default()
     };
     populate_platform_metadata(metadata, &mut result);
@@ -163,10 +170,8 @@ pub(super) fn preserve_unobserved_metadata(
     observed
 }
 
-pub(crate) fn system_time(
-    value: &std::io::Result<cap_std::time::SystemTime>,
-) -> MetadataField<i64> {
-    let Ok(value) = value else {
+pub(crate) fn system_time(value: Option<cap_std::time::SystemTime>) -> MetadataField<i64> {
+    let Some(value) = value else {
         return MetadataField::Unavailable;
     };
     let nanos = match value.into_std().duration_since(std::time::UNIX_EPOCH) {

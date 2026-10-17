@@ -142,86 +142,113 @@ pub(crate) fn shared_file_health(
         meter.admit_read(0)?;
     }
     let identity = file_identity(file)?;
-    let mut registry = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut charged = 0;
-    let result = (|| {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admit(identity, meter)
+}
+
+impl FileHealthRegistry {
+    /// Returns the identity's live owner, or registers a fresh one at its single search position.
+    fn admit(
+        &mut self,
+        identity: FileIdentity,
+        meter: Option<&dyn NativeReadMeter>,
+    ) -> io::Result<Arc<FileHealth>> {
+        let mut charged = 0;
+        let result = self.admit_charged(identity, meter, &mut charged);
+        if let Some(meter) = meter {
+            meter.release(charged as u64);
+        }
+        result
+    }
+    fn admit_charged(
+        &mut self,
+        identity: FileIdentity,
+        meter: Option<&dyn NativeReadMeter>,
+        charged: &mut usize,
+    ) -> io::Result<Arc<FileHealth>> {
         let row = std::mem::size_of::<(FileIdentity, Entry)>();
-        if let Ok(index) = registry.find(identity, meter)? {
-            if let Some(owner) = registry
-                .entries
-                .get(index)
-                .ok_or(io::ErrorKind::InvalidData)?
-                .1
-                .owner()
-            {
-                return Ok(owner);
+        let mut index = match self.find(identity, meter)? {
+            Ok(index) => {
+                let entry = self
+                    .entries
+                    .get_mut(index)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                if let Some(owner) = entry.1.owner() {
+                    return Ok(owner);
+                }
+                // Only a dropped healthy owner expires: reuse its sorted slot without moving rows,
+                // freeing the expired allocation before admitting its replacement.
+                entry.1 = Entry::Healthy(Weak::new());
+                let health = new_health(meter, charged)?;
+                entry.1 = Entry::Healthy(Arc::downgrade(&health));
+                return Ok(health);
             }
-            if let Some(meter) = meter {
-                meter.examine(0, ((registry.entries.len() - index - 1) * row) as u64)?;
+            Err(index) => index,
+        };
+        if self.entries.len() >= self.capacity_limit {
+            let before = self.entries.len();
+            self.sweep_idle(meter)?;
+            if self.entries.len() != before {
+                index = self.find(identity, meter)?.unwrap_or_else(|index| index);
             }
-            registry.entries.remove(index);
         }
-        if registry.entries.len() >= registry.capacity_limit {
-            registry.sweep_idle(meter)?;
-        }
-        if registry.entries.len() >= registry.capacity_limit {
+        if self.entries.len() >= self.capacity_limit {
             return Err(io::Error::other("native file admission capacity exhausted"));
         }
-        if registry.entries.len() == registry.entries.capacity() {
-            let old = registry.entries.capacity() * row;
-            let next = registry
+        if self.entries.len() == self.entries.capacity() {
+            let old = self.entries.capacity() * row;
+            let next = self
                 .entries
                 .capacity()
                 .saturating_mul(2)
                 .max(1)
-                .min(registry.capacity_limit);
+                .min(self.capacity_limit);
             let bytes = next * row;
             if let Some(meter) = meter {
-                meter.admit_examination(0, (registry.entries.len() * row) as u64)?;
+                meter.admit_examination(0, (self.entries.len() * row) as u64)?;
                 meter.adopt(old as u64)?;
-                charged += old;
+                *charged += old;
                 meter.allocate(bytes as u64)?;
-                charged += bytes;
+                *charged += bytes;
             }
             let mut replacement = Vec::new();
             replacement
                 .try_reserve_exact(next)
                 .map_err(io::Error::other)?;
-            replacement.append(&mut registry.entries);
-            registry.entries = replacement;
+            // Appending preserves order, so the search position stays valid.
+            replacement.append(&mut self.entries);
+            self.entries = replacement;
             if let Some(meter) = meter {
                 meter.release(old as u64);
-                charged -= old;
-                meter.record_examination(0, (registry.entries.len() * row) as u64)?;
-                let actual = registry.entries.capacity() * row;
+                *charged -= old;
+                meter.record_examination(0, (self.entries.len() * row) as u64)?;
+                let actual = self.entries.capacity() * row;
                 if actual > bytes {
                     meter.adopt((actual - bytes) as u64)?;
-                    charged += actual - bytes;
+                    *charged += actual - bytes;
                 }
             }
         }
-        let index = registry
-            .find(identity, meter)?
-            .unwrap_or_else(|index| index);
+        let health = new_health(meter, charged)?;
         if let Some(meter) = meter {
-            meter.allocate(std::mem::size_of::<FileHealth>() as u64)?;
-            charged += std::mem::size_of::<FileHealth>();
+            meter.examine(0, ((self.entries.len() - index) * row) as u64)?;
         }
-        let health = Arc::new(FileHealth::default());
-        if let Some(meter) = meter {
-            meter.examine(0, ((registry.entries.len() - index) * row) as u64)?;
-        }
-        registry
-            .entries
+        self.entries
             .insert(index, (identity, Entry::Healthy(Arc::downgrade(&health))));
         Ok(health)
-    })();
-    if let Some(meter) = meter {
-        meter.release(charged as u64);
     }
-    result
+}
+
+fn new_health(
+    meter: Option<&dyn NativeReadMeter>,
+    charged: &mut usize,
+) -> io::Result<Arc<FileHealth>> {
+    if let Some(meter) = meter {
+        meter.allocate(std::mem::size_of::<FileHealth>() as u64)?;
+        *charged += std::mem::size_of::<FileHealth>();
+    }
+    Ok(Arc::new(FileHealth::default()))
 }
 
 pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, health: &Arc<FileHealth>) {
@@ -250,3 +277,7 @@ pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, health: &Arc<Fil
     health.uncertain.store(true, Ordering::Release);
     tracing::debug!(name: "acyclic.runtime.file_uncertain", "file health poisoned");
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod tests;

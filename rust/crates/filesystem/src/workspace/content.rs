@@ -120,7 +120,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                 .ok_or(crate::WorkError::Overflow)?;
             let mut offset = 0_u64;
             for part in parts {
-                accounting.charge(item_work(1))?;
+                accounting.charge_items(1)?;
                 if part.logical_bytes() != 0 {
                     operations.ensure_for_push(maximum, &mut accounting)?;
                     let (copy, allocation) = path

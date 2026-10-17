@@ -241,7 +241,13 @@ impl Fixture {
             context_manifest: None,
             context_read_observer: None,
             #[cfg(feature = "hooks")]
-            hooks: crate::hooks::Hooks::default(),
+            settings: Arc::new(
+                crate::native_settings::SettingsConfig::new(
+                    self.directory.path(),
+                    self.directory.path().join("user-config"),
+                )
+                .codex_home(self.directory.path().join("user-config/.codex")),
+            ),
             limits: Limits::default(),
             compaction: if compact {
                 CompactionPolicy::Threshold(ThresholdCompaction {

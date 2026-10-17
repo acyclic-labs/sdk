@@ -53,7 +53,6 @@ async fn claim_gap<const RECOVER_REQUEST: bool>() -> Result<()> {
     );
     assert_eq!(provider.requests().len(), 1);
     drop(owner);
-    drop(files);
     harness.close().await
 }
 #[tokio::test]

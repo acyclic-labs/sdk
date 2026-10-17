@@ -1,15 +1,21 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::unix_name;
+#[cfg(all(test, acyclic_fs_native_loom))]
+use crate::native_mount::disconnected::kernel::Helper as RecoveryHelper;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
+#[cfg(not(all(test, acyclic_fs_native_loom)))]
+use acyclic_native_runtime::ProcessTree as RecoveryHelper;
 use std::ffi::CStr;
 use std::time::Instant;
 
 /// Crash recovery paired with the original destination fence.
 #[derive(Default)]
 pub(in crate::native_mount) struct FuseRecoveryControl {
-    pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
+    pub(super) helper: Option<RecoveryHelper>,
     pub(super) detached: bool,
+    pub(in crate::native_mount) pinned: Option<std::fs::File>,
+    pub(in crate::native_mount) pinned_parent: Option<std::fs::File>,
 }
 
 impl FuseRecoveryControl {
@@ -37,6 +43,9 @@ impl FuseRecoveryControl {
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
+        if self.pinned.is_some() {
+            return self.recover_pinned(destination, work);
+        }
         self.detached = !fuse_recovery_is_mounted(destination, work)?;
         self.retire_controls(work)?;
         if self.detached {
@@ -60,7 +69,7 @@ impl FuseRecoveryControl {
         }
         let program = fuse_recovery_helper(work)?;
         unix_name(destination.as_os_str(), &mut &*work, |path, work| {
-            acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+            RecoveryHelper::spawn_closed_measured(
                 program,
                 &[c"-u", c"-q", c"-z", c"--", path],
                 work.runtime_meter().as_ref(),
@@ -68,22 +77,7 @@ impl FuseRecoveryControl {
             )
             .map_err(|error| work.runtime_error(error))
         })?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while self
-            .helper
-            .as_mut()
-            .ok_or(NativeMountError::FuseShutdownFailed)?
-            .try_wait(Some(work.runtime_meter().as_ref()))
-            .map_err(|error| work.runtime_error(error))?
-            .is_none()
-        {
-            if Instant::now() >= deadline {
-                self.retire_controls(work)?;
-                return Err(NativeMountError::Lifecycle("fusermount recovery timed out"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        self.retire_controls(work)?;
+        self.wait_helper(work)?;
         self.detached = !fuse_recovery_is_mounted(destination, work)?;
         if self.detached {
             Ok(())
@@ -93,6 +87,113 @@ impl FuseRecoveryControl {
             ))
         }
     }
+    fn wait_helper(
+        &mut self,
+        work: &NativeMaterializationWork,
+    ) -> Result<std::process::ExitStatus, NativeMountError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            let status = self
+                .helper
+                .as_mut()
+                .ok_or(NativeMountError::FuseShutdownFailed)?
+                .try_wait(Some(work.runtime_meter().as_ref()))
+                .map_err(|error| work.runtime_error(error))?;
+            if let Some(status) = status {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                self.retire_controls(work)?;
+                return Err(NativeMountError::Lifecycle("fusermount recovery timed out"));
+            }
+            helper_pause();
+        };
+        self.retire_controls(work)?;
+        Ok(status)
+    }
+
+    fn recover_pinned(
+        &mut self,
+        destination: &Path,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+        let fd = self
+            .pinned
+            .as_ref()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_raw_fd();
+        // The helper is a different process; retain this process's descriptor
+        // through its exit rather than passing a lexical mountpoint to it.
+        let mut buffer = [0u8; 64];
+        work.admit(Copy.delta(buffer.len() as u64))?;
+        let length = {
+            let mut output = std::io::Cursor::new(buffer.as_mut_slice());
+            write!(output, "/proc/{}/fd/{fd}\0", std::process::id())?;
+            output.position() as usize
+        };
+        work.charge(Copy.delta(length as u64))?;
+        let path = CStr::from_bytes_with_nul(&buffer[..length])
+            .map_err(|_| NativeMountError::InvalidDestination)?;
+        work.charge(WriteOperations.delta(1))?;
+        let error = match pinned_umount(path) {
+            Ok(()) => {
+                self.detached = true;
+                return Ok(());
+            }
+            Err(error) => error,
+        };
+        if error.raw_os_error() == Some(libc::EINVAL) {
+            self.detached = true;
+            return Ok(());
+        }
+        if error.raw_os_error() != Some(libc::EPERM) {
+            return Err(error.into());
+        }
+        // fusermount deliberately refuses a final magic link. Its unmount uses
+        // UMOUNT_NOFOLLOW on the leaf; resolve only our held physical parent.
+        // The destination fence remains held from the mount-ID recheck through
+        // helper exit, so another fenced opener cannot replace this mount.
+        let parent = self
+            .pinned_parent
+            .as_ref()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_raw_fd();
+        let leaf = destination
+            .file_name()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_encoded_bytes();
+        let mut buffer = [0u8; libc::NAME_MAX as usize + 64];
+        work.admit(Copy.delta(buffer.len() as u64))?;
+        let length = {
+            let mut output = std::io::Cursor::new(buffer.as_mut_slice());
+            write!(output, "/proc/{}/fd/{parent}/", std::process::id())?;
+            output.write_all(leaf)?;
+            output.write_all(&[0])?;
+            output.position() as usize
+        };
+        work.charge(Copy.delta(length as u64))?;
+        let path = CStr::from_bytes_with_nul(&buffer[..length])
+            .map_err(|_| NativeMountError::InvalidDestination)?;
+        let program = fuse_recovery_helper(work)?;
+        RecoveryHelper::spawn_closed_measured(
+            program,
+            &[c"-u", c"-q", c"-z", c"--", path],
+            work.runtime_meter().as_ref(),
+            &mut self.helper,
+        )
+        .map_err(|error| work.runtime_error(error))?;
+        let status = self.wait_helper(work)?;
+        if !status.success() {
+            return Err(NativeMountError::DriverExit {
+                operation: "pinned FUSE recovery",
+                status,
+            });
+        }
+        self.detached = true;
+        Ok(())
+    }
 }
 
 pub(super) fn fuse_recovery_stat(
@@ -101,11 +202,35 @@ pub(super) fn fuse_recovery_stat(
 ) -> Result<rustix::fs::Stat, NativeTreeMaterializationError> {
     loop {
         work.charge(ReadOperations.delta(1))?;
+        #[cfg(all(test, acyclic_fs_native_loom))]
+        if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
+            return Ok(kernel.helper_stat());
+        }
         match rustix::fs::stat(path) {
             Err(rustix::io::Errno::INTR) => continue,
             result => return result.map_err(|error| std::io::Error::from(error).into()),
         }
     }
+}
+
+fn pinned_umount(path: &CStr) -> std::io::Result<()> {
+    #[cfg(all(test, acyclic_fs_native_loom))]
+    if crate::native_mount::disconnected::kernel::current().is_some() {
+        // Force the unprivileged helper path, whose fence must span helper exit.
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    // SAFETY: the caller retains the descriptor and terminated pathname.
+    if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+fn helper_pause() {
+    // Modeled process observations have their own instrumented transitions.
+    #[cfg(not(all(test, acyclic_fs_native_loom)))]
+    std::thread::sleep(Duration::from_millis(10));
 }
 
 pub(super) fn fuse_recovery_is_mounted(
@@ -143,7 +268,7 @@ fn fuse_recovery_needs_detach(
     }
 }
 
-fn fuse_recovery_helper(
+pub(super) fn fuse_recovery_helper(
     work: &NativeMaterializationWork,
 ) -> Result<&'static CStr, NativeMountError> {
     for candidate in [

@@ -3,6 +3,7 @@ use crate::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
+#[cfg(any(test, feature = "native-watch"))]
 use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),
@@ -38,6 +39,7 @@ impl NativeDemandReadMeter {
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn take_native_io_failure(&self) -> Option<DemandError> {
         self.lock().take_native_io_failure()
     }
@@ -51,9 +53,11 @@ mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
+    #[cfg(any(test, feature = "native-watch"))]
     header: crate::NativeAllocation,
 }
 impl CaptureTransientCustody {
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
@@ -66,12 +70,15 @@ impl CaptureTransientCustody {
             )?,
         }))
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
         self.header.work().shares_allocation_context(work)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn take_retained_bytes(&self) -> u64 {
         self.retained.swap(0, Ordering::AcqRel)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
         self.retained
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {

@@ -286,6 +286,7 @@ impl FileRef {
     }
 
     #[cfg(feature = "filesystem")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
         let owner = match &self.volume.owner {
             VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,

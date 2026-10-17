@@ -140,6 +140,8 @@ impl LocalStream {
                 #[cfg(acyclic_loom)]
                 omit_follow_wake: false,
                 durable_tails: Mutex::new(Default::default()),
+                #[cfg(feature = "test-support")]
+                persistence_cut: Default::default(),
             }),
             work: None,
         })
@@ -220,6 +222,12 @@ impl LocalStream {
 
     /// Writes `frame`, in the order its mutation applied, without waiting for
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let cut = self.inner.persistence_cut.get().cloned();
+        #[cfg(feature = "test-support")]
+        if cut.as_ref().is_some_and(|cut| !cut.admit()) {
+            return Err(self.inner.poison());
+        }
         let required = !deferred();
         let journal = self.inner.journal.clone();
         let persist = spawn_blocking(move || {
@@ -233,6 +241,10 @@ impl LocalStream {
             .map_err(|_| LocalStreamError::Executor)
             .and_then(|result| result);
         if result.is_err() {
+            return Err(self.inner.poison());
+        }
+        #[cfg(feature = "test-support")]
+        if cut.is_some_and(|cut| !cut.acknowledge()) {
             return Err(self.inner.poison());
         }
         self.inner.published();

@@ -2,7 +2,9 @@ use super::*;
 
 use crate::model::{ModelContent, ModelContentPart};
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use std::sync::atomic::Ordering;
 
 pub(super) fn dependency_fixture(requirements: &[(&str, &[&str])]) -> Result<Bindings> {
     let mut bindings = Bindings::local();
@@ -104,11 +106,11 @@ impl ToolPolicy for FixedPolicy {
         &'a self,
         _: &'a ToolInvocation,
         _: &'a RuntimeScope,
-        io: Option<&'a crate::executor::PreparationIo>,
+        _native_io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
     {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = task_original_work(io)? {
+        if let Some(work) = task_original_work(_native_io)? {
             return crate::NativeFutureBundle::new(work, || async move {
                 use crate::store::history::HistoryIo;
                 let mut io = crate::store::HistoryWork::new(

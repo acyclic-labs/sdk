@@ -13,6 +13,7 @@ mod capture;
 mod git;
 #[cfg(all(test, unix, not(acyclic_harness_loom)))]
 mod git_mount_tests;
+mod hooks;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
@@ -126,6 +127,25 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    fn run_hooks<'a>(
+        &'a self,
+        configuration: (&'a crate::hooks::Hooks, [u8; 32]),
+        event: crate::hooks::HookEvent,
+        input: serde_json::Value,
+        registry: &'a ToolRegistry,
+        context: ToolContext,
+        reconcile_only: bool,
+    ) -> BoxProviderFuture<'a, Result<crate::hooks::HookOutput>> {
+        Box::pin(self.configured_hooks(
+            configuration,
+            event,
+            input,
+            registry,
+            context,
+            reconcile_only,
+        ))
+    }
+
     fn authorize(
         &self,
         _scope: Option<&RuntimeScope>,

@@ -6,7 +6,7 @@ pub(super) fn sorted_changed_file_ids(
 ) -> Result<(Vec<FileId>, KernelOwnedAllocation), WorkspaceError> {
     let mut ids = (Vec::<FileId>::new(), accounting.claim_owned(0, 0)?);
     for file_id in file_ids {
-        accounting.charge(item_work(1))?;
+        accounting.charge_items(1)?;
         let Err(low) = binary_search_with_accounting(&ids.0, accounting, |id| id.cmp(&file_id))?
         else {
             continue;
@@ -94,7 +94,7 @@ fn reverse_sort(
         for index in 1..entries.len() {
             let mut current = index;
             while current != 0 {
-                accounting.charge(item_work(1))?;
+                accounting.charge_items(1)?;
                 let left = entries.get(current - 1).ok_or(FsError::InvalidDiff)?;
                 let right = entries.get(current).ok_or(FsError::InvalidDiff)?;
                 if left.0 <= right.0 {
@@ -176,7 +176,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
             let lookup = (lookup, allocation);
             let mut valid = paths.len() == lookup.0.entries.len();
             for ((expected, _), entry) in paths.iter().zip(&lookup.0.entries) {
-                accounting.charge(item_work(1))?;
+                accounting.charge_items(1)?;
                 if entry
                     .record
                     .is_none_or(|record| record.file_id != *expected)
@@ -275,7 +275,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
                 .await?;
             let mut page = (page, allocation);
             for entry in &page.0.entries {
-                accounting.charge(item_work(1))?;
+                accounting.charge_items(1)?;
                 if examined == maximum_entries {
                     reverse_sort(&mut matches.0.records, accounting)?;
                     let page_bytes = workspace_vec_bytes(&page.0.entries)

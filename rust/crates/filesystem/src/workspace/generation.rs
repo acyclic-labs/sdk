@@ -272,7 +272,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                         error => error,
                     })?;
             for entry in lookup.value.entries {
-                accounting.charge(item_work(1))?;
+                accounting.charge_items(1)?;
                 records.value.push(entry.record);
             }
             Ok(records.value)

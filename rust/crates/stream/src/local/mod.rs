@@ -99,6 +99,8 @@ include!("recovered.rs");
 
 include!("local_stream.rs");
 
+include!("persistence_cut.rs");
+
 include!("provider.rs");
 
 include!("read_observation.rs");

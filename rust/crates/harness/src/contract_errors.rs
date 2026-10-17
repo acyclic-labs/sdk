@@ -60,6 +60,9 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The invocation's cancellation token fired before the operation finished.
+    #[error("operation cancelled")]
+    Cancelled,
     /// A bound approval resolved without permission to execute.
     #[error("interaction {0}")]
     InteractionRejected(InteractionRejection),
@@ -67,13 +70,8 @@ pub enum Error {
     #[error("storage failure: {0}")]
     Storage(String),
     /// Native process creation, capture, or hook configuration IO failed.
-    #[error("process {kind}: {message}")]
-    Process {
-        /// Platform-neutral operation failure classification.
-        kind: &'static str,
-        /// Diagnostic returned by the process or IO runtime.
-        message: String,
-    },
+    #[error("process: {0}")]
+    Process(#[from] crate::ProcessError),
     /// An actual SDK buffer reservation failure, without allocating a diagnostic.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
@@ -83,6 +81,10 @@ pub enum Error {
     /// Search publication is retryable; its completed response remains in ready.json.
     #[error("search publication deferred; resume from ready.json")]
     SearchPublicationDeferred,
+    /// A Machines provider failure with no operation receipt, keeping its exact cause.
+    #[cfg(feature = "machines")]
+    #[error("Machines {0}")]
+    Machines(#[source] acyclic_machines::ProviderError),
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -321,12 +323,30 @@ pub(crate) fn native_work_error_code(
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
         Native::UnsupportedRename => ErrorCode::Unsupported,
+        Native::Cancelled => ErrorCode::Cancelled,
         Native::Io(_)
-        | Native::Cancelled
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
         | Native::AllocationFailed(_) => ErrorCode::Storage,
+    }
+}
+
+/// Wire classification of a retained Machines cause.
+#[cfg(feature = "machines")]
+const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
+    use crate::wire::ErrorCode;
+    use acyclic_machines::ProviderError as Machines;
+    match cause {
+        Machines::NotFound(_) => ErrorCode::NotFound,
+        Machines::Conflict(_) => ErrorCode::Conflict,
+        Machines::Unsupported(_) => ErrorCode::Unsupported,
+        Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
+        Machines::Indeterminate(_)
+        | Machines::OperationIndeterminate(_)
+        | Machines::CommandIndeterminate(_) => ErrorCode::Indeterminate,
+        Machines::Cancelled => ErrorCode::Cancelled,
+        Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
     }
 }
 
@@ -336,16 +356,19 @@ impl Error {
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_io(error: std::io::Error) -> Self {
-        let kind = match error.kind() {
-            std::io::ErrorKind::TimedOut => "timeout",
-            std::io::ErrorKind::NotFound => "not_found",
-            std::io::ErrorKind::PermissionDenied => "permission_denied",
-            _ => "io",
-        };
-        Self::Process {
-            kind,
-            message: error.to_string(),
-        }
+        let message = error.to_string();
+        let exit_code = None;
+        Self::Process(match error.kind() {
+            std::io::ErrorKind::TimedOut => crate::ProcessError::Timeout { exit_code, message },
+            std::io::ErrorKind::NotFound => crate::ProcessError::NotFound { exit_code, message },
+            std::io::ErrorKind::PermissionDenied => {
+                crate::ProcessError::PermissionDenied { exit_code, message }
+            }
+            std::io::ErrorKind::FileTooLarge => {
+                crate::ProcessError::OutputLimit { exit_code, message }
+            }
+            _ => crate::ProcessError::Io { exit_code, message },
+        })
     }
 
     /// Stable wire classification from which every adapter derives its status.
@@ -374,6 +397,7 @@ impl Error {
             }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
             }
@@ -385,8 +409,10 @@ impl Error {
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
-            Self::Process { .. } => ErrorCode::Invalid,
+            Self::Process(_) => ErrorCode::Invalid,
             Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            #[cfg(feature = "machines")]
+            Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
@@ -425,8 +451,20 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
+    pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
+        matches!(
+            self,
+            Self::Indeterminate(_) | Self::Storage(_) | Self::Cancelled
+        )
+    }
+
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
+        #[cfg(feature = "machines")]
+        if matches!(self, Self::Machines(_)) {
+            return false;
+        }
         !matches!(
             self,
             Self::TaskFiles(_)
@@ -436,6 +474,7 @@ impl Error {
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::Cancelled
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
@@ -443,6 +482,13 @@ impl Error {
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
         )
+    }
+}
+
+/// The only conversion of a fired cancellation token into a harness error.
+impl From<acyclic_fs::CancellationError> for Error {
+    fn from(_: acyclic_fs::CancellationError) -> Self {
+        Self::Cancelled
     }
 }
 

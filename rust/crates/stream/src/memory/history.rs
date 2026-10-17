@@ -57,6 +57,8 @@ impl<'a> Iterator for HistoryWalk<'a> {
             return None;
         }
         let node = self.next?.as_ref();
+        #[cfg(test)]
+        HISTORY_VISITS.with(|count| count.set(count.get() + 1));
         let ceiling = self.ceiling;
         match node {
             History::Batch {
@@ -74,22 +76,6 @@ impl<'a> Iterator for HistoryWalk<'a> {
         }
         Some((node, ceiling))
     }
-}
-
-fn collect_history_windows(
-    history: Option<&Arc<History>>,
-    tail: u64,
-    from: u64,
-    windows: &mut Vec<HistoryWindow>,
-) {
-    for (node, ceiling) in HistoryWalk::new(history, tail, from) {
-        if let History::Batch { records, .. } = node
-            && let Some(window) = history_window(Arc::clone(records), ceiling, from)
-        {
-            windows.push(window);
-        }
-    }
-    windows.reverse();
 }
 
 fn history_window(records: Arc<RecordBatch>, ceiling: u64, from: u64) -> Option<HistoryWindow> {
@@ -113,3 +99,6 @@ fn history_window(records: Arc<RecordBatch>, ceiling: u64, from: u64) -> Option<
         end,
     })
 }
+
+#[cfg(test)]
+std::thread_local! { static HISTORY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

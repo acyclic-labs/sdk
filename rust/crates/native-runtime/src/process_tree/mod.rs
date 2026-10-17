@@ -473,6 +473,12 @@ impl ProcessTree {
                         self.capture_terminate_descendants(meter)?;
                     }
                     if status.is_some() && stdout.is_none() && stderr.is_none() {
+                        // An exchange the child left before taking all of its
+                        // queued input failed, whether or not a write saw the
+                        // closed pipe before the exit was observed.
+                        if input.as_ref().is_some_and(PendingStdin::undelivered) {
+                            return Err(io::ErrorKind::BrokenPipe.into());
+                        }
                         return Ok(());
                     }
                     if Instant::now() >= deadline {

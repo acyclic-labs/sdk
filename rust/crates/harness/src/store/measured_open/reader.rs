@@ -1,6 +1,7 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_history_pages_preserve_original_provider_prefixes_and_custody() -> Result<()> {
     use acyclic_fs::NativeMaterializationWork;

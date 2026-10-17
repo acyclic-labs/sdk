@@ -196,6 +196,7 @@ dependencies = [
  "loom",
  "napi",
  "napi-derive",
+ "nix 0.31.3",
  "notify",
  "parking_lot",
  "proptest",
@@ -241,8 +242,10 @@ dependencies = [
  "acyclic-fs",
  "libfuzzer-sys",
  "loom",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -459,6 +462,7 @@ dependencies = [
  "image",
  "loom",
  "memchr",
+ "nix 0.31.3",
  "proptest",
  "ratatui",
  "rustix 1.1.5",
@@ -613,6 +617,7 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-grpc-observability",
+ "acyclic-test-support",
  "bytes",
  "compio-buf",
  "compio-driver",
@@ -2888,6 +2893,7 @@ dependencies = [
  "acyclic-harness-providers",
  "acyclic-native-runtime",
  "acyclic-stream",
+ "acyclic-test-support",
  "axum",
  "clap",
  "futures",
@@ -3866,6 +3872,8 @@ dependencies = [
  "generator",
  "pin-utils",
  "scoped-tls",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

@@ -28,7 +28,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         .map_err(capture_demand_error)?;
     let file = file.into_std();
     let metadata = source_root
-        .stat_file(&file, &mut meter.clone())
+        .stat_file_metadata(&file, &mut meter.clone())
         .map_err(capture_demand_error)?;
     if metadata.file_type() != crate::demand::SourceNodeKind::RegularFile {
         return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
@@ -121,11 +121,11 @@ pub(super) fn finish_regular_capture(
     }
     meter.cancellation().check()?;
     let after = source_root
-        .stat_file(file, &mut meter.clone())
+        .stat_file_metadata(file, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &after)?;
     let current = source_root
-        .stat_source(host_path, &mut meter.clone())
+        .stat_source_metadata(host_path, &mut meter.clone())
         .map_err(capture_demand_error)?;
     ensure_same_host_node(snapshot, &current)?;
     meter.clone().check().map_err(capture_demand_error)
