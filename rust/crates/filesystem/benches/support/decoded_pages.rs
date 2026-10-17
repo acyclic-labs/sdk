@@ -70,6 +70,20 @@ fn measured(bencher: Bencher, name: &str, count: u8, operation: impl Fn() + Sync
 fn lookup(bencher: Bencher, count: u8) {
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let store = LogicalObjectStore::new(Arc::new(objects), bucket);
+    lookup_store(bencher, count, store, "lookup");
+}
+
+#[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
+fn lookup_uncached(bencher: Bencher, count: u8) {
+    lookup_store(
+        bencher,
+        count,
+        acyclic_fs::MemoryObjectStore::default(),
+        "lookup_uncached",
+    );
+}
+
+fn lookup_store<S: AsyncObjectStore>(bencher: Bencher, count: u8, store: S, name: &str) {
     let page = page(count);
     let id = file_table_page_id(&page, 64).unwrap_or_else(fail);
     let cancellation = CancellationToken::new();
@@ -94,9 +108,9 @@ fn lookup(bencher: Bencher, count: u8) {
     let receipt = operation();
     assert!(receipt.value.is_some());
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
-        eprintln!("decoded_page_lookup count={count} work={:?}", receipt.work);
+        eprintln!("decoded_page_{name} count={count} work={:?}", receipt.work);
     }
-    measured(bencher, "lookup", count, || {
+    measured(bencher, name, count, || {
         std::hint::black_box(operation());
     });
 }
