@@ -1,7 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-fn file(path: &str, body: &str, label: &str) -> FileRef {
+pub(super) fn file(path: &str, body: &str, label: &str) -> FileRef {
     FileRef::new(
         serde_json::from_value(serde_json::json!({
             "provider":{"namespace":"test","family":"filesystem","version":"2"},
@@ -76,7 +76,11 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
             .unwrap();
         assert!(result.1.bytes_hashed >= body.len() as u64);
         if native {
-            assert_eq!(result.5, acyclic_fs::NativeMaterializationWork::accounting_state_bytes(), "original custody leaked");
+            assert_eq!(
+                result.5,
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+                "original custody leaked"
+            );
         }
     }
 }

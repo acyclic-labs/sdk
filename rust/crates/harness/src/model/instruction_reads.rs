@@ -90,6 +90,9 @@ pub(crate) fn deduplicate_reads(
                     _ => None,
                 });
             let Some(call) = call else { continue };
+            if !call.arguments.get("file").is_some_and(Value::is_object) {
+                continue;
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let work = io.and_then(PreparationIo::original_native_work);
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -100,10 +103,9 @@ pub(crate) fn deduplicate_reads(
             let owned = io.filter(|io| io.original_native_work().is_none());
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let decoded = if let Some(io) = owned {
-                owned_read_input(&call.arguments, io).map(|(input, hold)| {
-                    _owned_hold = Some(hold);
-                    (input, None)
-                })
+                let (input, hold) = owned_read_input(&call.arguments, io)?;
+                _owned_hold = Some(hold);
+                Ok((input, None))
             } else {
                 crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work)
             };
@@ -164,4 +166,20 @@ pub(crate) fn deduplicate_reads(
         }
     }
     Ok(changed)
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
+    let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");
+    let arguments = serde_json::json!({"file":file});
+    let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    budget.bytes_encoded = 0;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = PreparationIo::from_budget(budget, &cancellation).unwrap();
+    assert!(owned_read_input(&arguments, &io).is_err());
+    assert!(
+        crate::tool::decode::<crate::tool::files::ReadFileInput>(&arguments, None).is_ok(),
+        "the unfunded decoder must miss the same exhausted preparation bound"
+    );
 }
