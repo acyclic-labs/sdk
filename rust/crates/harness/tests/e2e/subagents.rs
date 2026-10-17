@@ -50,8 +50,8 @@ pub(super) struct SubagentCase {
 pub(super) struct Expect {
     /// Children discovered under the root, in creation order.
     pub children: Vec<String>,
-    /// Each subagent's reply, as its follow assembled it.
-    pub text: String,
+    /// Each subagent's reply chunks, in order, as its follow delivered them.
+    pub chunks: Vec<String>,
     /// Each subagent's final state, as its follow decoded it.
     pub status: String,
 }
@@ -126,23 +126,31 @@ fn status_of(name: &str, state: &str) -> Value {
 }
 
 /// Checks that `trace`, the follow of agent `name`, delivered exactly that
-/// agent's tagged reply and then exactly its expected status.
+/// agent's tagged chunks, each under its own key and in order, and then
+/// exactly its expected status.
 fn check(name: &str, trace: &[Value], expect: &Expect) -> TestResult {
-    let tag = format!("{name}:");
     let (status, chunks) = trace.split_last().ok_or("an empty follow")?;
-    let mut text = String::new();
-    for seen in chunks {
-        let tagged = seen["text"].as_str().ok_or("a chunk without text")?;
-        let (true, Some(chunk)) = (
-            seen["channel"] == json!(Channel::Text),
-            tagged.strip_prefix(&tag),
-        ) else {
-            return Err(format!("{name} was delivered {seen}").into());
-        };
-        text.push_str(chunk);
-    }
+    let delivered = chunks
+        .iter()
+        .map(|seen| (&seen["key"], &seen["channel"], &seen["text"]))
+        .collect::<Vec<_>>();
+    let expected = expect
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let key = FileKey::parse(&format!("{CHUNKS}/{}", index + 1))?;
+            Ok((
+                json!(key),
+                json!(Channel::Text),
+                json!(format!("{name}:{chunk}")),
+            ))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
     let decoded: Value = serde_json::from_str(status["text"].as_str().ok_or("no status")?)?;
-    if text != expect.text
+    if !delivered.iter().copied().eq(expected
+        .iter()
+        .map(|(key, channel, text)| (key, channel, text)))
         || status["key"] != json!(FileKey::parse(STATUS)?)
         || decoded != status_of(name, &expect.status)
     {
@@ -363,17 +371,17 @@ pub(super) async fn run(case: SubagentCase) -> TestResult {
         .map(drop)
 }
 
-/// The oracle fails a follow that decodes another final state, and one that
-/// receives another agent's deliveries.
+/// The oracle fails a follow that decodes another final state, one that
+/// receives another agent's deliveries, and one whose reply is split differently.
 #[tokio::test]
-async fn the_oracle_rejects_a_wrong_status_and_crossed_deliveries() -> TestResult {
+async fn the_oracle_rejects_a_wrong_status_crossed_deliveries_and_a_resplit_reply() -> TestResult {
     let case = |status: &str, expected: &str| SubagentCase {
         agents: 3,
         chunks: vec!["Plan ".into(), "the work.".into()],
         status: status.into(),
         expect: Expect {
             children: (0..3).map(agent).collect(),
-            text: "Plan the work.".into(),
+            chunks: vec!["Plan ".into(), "the work.".into()],
             status: expected.into(),
         },
     };
@@ -393,6 +401,12 @@ async fn the_oracle_rejects_a_wrong_status_and_crossed_deliveries() -> TestResul
     let crossed = run_publishing(&case("done", "done"), stream(), "control", swapped).await;
     if crossed.is_ok() {
         return Err("a00001 and a00002 swapped deliveries and passed".into());
+    }
+    // The same reply, split differently, is a different delivery.
+    let mut resplit = case("done", "done");
+    resplit.chunks = vec!["Plan t".into(), "he work.".into()];
+    if run_on(&resplit, stream(), "control").await.is_ok() {
+        return Err("a re-split reply passed".into());
     }
     Ok(())
 }
