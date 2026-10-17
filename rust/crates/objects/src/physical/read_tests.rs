@@ -174,7 +174,11 @@ fn baseline_read(
             if prefix.get(..24) != Some(b"ACYCLIC-OBJECT-SEGMENT\0\x02".as_slice()) {
                 return Err(unavailable());
             }
-            let count = u32::from_le_bytes(prefix[24..28].try_into().unwrap()) as usize;
+            let count = prefix
+                .get(24..28)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_le_bytes)
+                .ok_or_else(unavailable)? as usize;
             if count == 0 || count > 1024 || prefix.len() < 28 + count * 40 {
                 return Err(unavailable());
             }
@@ -438,28 +442,189 @@ fn segment_reads_do_exact_uninitialized_work() {
     }
 }
 
+/// Counts forbidden identifiers in every production item of a source file,
+/// skipping only nodes compiled solely for tests.
+fn production_uses(source: &str, forbidden: &str) -> usize {
+    use syn::visit::Visit;
+    fn test_only(attributes: &[syn::Attribute]) -> bool {
+        attributes.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.meta.require_list().is_ok_and(|list| {
+                    let tokens = list.tokens.to_string();
+                    tokens == "test" || tokens.starts_with("all (test ,")
+                })
+        })
+    }
+    fn expression_attributes(expression: &syn::Expr) -> &[syn::Attribute] {
+        match expression {
+            syn::Expr::Block(block) => &block.attrs,
+            syn::Expr::Call(call) => &call.attrs,
+            syn::Expr::MethodCall(call) => &call.attrs,
+            syn::Expr::If(branch) => &branch.attrs,
+            syn::Expr::Macro(invocation) => &invocation.attrs,
+            _ => &[],
+        }
+    }
+    fn item_attributes(item: &syn::Item) -> &[syn::Attribute] {
+        match item {
+            syn::Item::Fn(item) => &item.attrs,
+            syn::Item::Mod(item) => &item.attrs,
+            syn::Item::Impl(item) => &item.attrs,
+            syn::Item::Use(item) => &item.attrs,
+            syn::Item::Const(item) => &item.attrs,
+            syn::Item::Static(item) => &item.attrs,
+            syn::Item::Struct(item) => &item.attrs,
+            syn::Item::Enum(item) => &item.attrs,
+            syn::Item::Type(item) => &item.attrs,
+            _ => &[],
+        }
+    }
+    struct Production<'a> {
+        forbidden: &'a str,
+        uses: usize,
+    }
+    impl<'ast> Visit<'ast> for Production<'_> {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            if !test_only(item_attributes(item)) {
+                syn::visit::visit_item(self, item);
+            }
+        }
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if !test_only(&item.attrs) {
+                syn::visit::visit_impl_item_fn(self, item);
+            }
+        }
+        fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
+            let attributes = match statement {
+                syn::Stmt::Local(local) => &local.attrs[..],
+                syn::Stmt::Macro(invocation) => &invocation.attrs[..],
+                syn::Stmt::Expr(expression, _) => expression_attributes(expression),
+                syn::Stmt::Item(item) => item_attributes(item),
+            };
+            if !test_only(attributes) {
+                syn::visit::visit_stmt(self, statement);
+            }
+        }
+        fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+            if !test_only(expression_attributes(expression)) {
+                syn::visit::visit_expr(self, expression);
+            }
+        }
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if ident == self.forbidden {
+                self.uses += 1;
+            }
+        }
+    }
+    let file = syn::parse_file(source).expect("production source parses");
+    let mut production = Production { forbidden, uses: 0 };
+    production.visit_file(&file);
+    production.uses
+}
+
+const STORAGE_SOURCES: [(&str, &str); 2] = [
+    ("body.rs", include_str!("../body.rs")),
+    ("physical/read.rs", include_str!("read.rs")),
+];
+
+fn storage_gate_violations(sources: &[(&str, String)]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (name, source) in sources {
+        for forbidden in [
+            "PreparedOwnedBytes",
+            "read_prepared_bounded_async",
+            "resize",
+            "try_reserve_exact",
+        ] {
+            let allowed = usize::from(*name == "body.rs" && forbidden == "try_reserve_exact");
+            let uses = production_uses(source, forbidden);
+            if uses != allowed {
+                violations.push(format!(
+                    "{name} uses {forbidden} {uses} times, allowed {allowed}"
+                ));
+            }
+        }
+    }
+    violations
+}
+
 /// Zero-fill cannot return to object reads: every native buffer comes from
 /// one constructor of uninitialized capacity, and the old filled-storage API is gone.
 #[test]
 fn object_reads_have_one_uninitialized_storage_constructor() {
-    let sources = [
-        ("body.rs", include_str!("../body.rs")),
-        ("physical/read.rs", include_str!("read.rs")),
-    ];
-    for (name, source) in sources {
-        let production = source.split("#[cfg(all(test").next().unwrap();
-        for forbidden in [
-            "PreparedOwnedBytes",
-            "read_prepared_bounded_async",
-            "resize(",
-            "try_reserve_exact(",
-        ] {
-            let allowed = usize::from(name == "body.rs" && forbidden == "try_reserve_exact(");
-            assert_eq!(
-                production.matches(forbidden).count(),
-                allowed,
-                "{name} uses {forbidden} outside the shared storage constructor"
+    let sources: Vec<_> = STORAGE_SOURCES
+        .iter()
+        .map(|(name, source)| (*name, (*source).to_owned()))
+        .collect();
+    assert_eq!(storage_gate_violations(&sources), Vec::<String>::new());
+}
+
+/// Negative controls: zero-fill added to any production item, including the
+/// helpers placed after the test-only module, is caught; test-only nodes are not.
+#[test]
+fn storage_gate_scans_every_production_item() {
+    let storage = "    let storage = native_storage(length, meter)?;\n";
+    let publish = "    acyclic_stream::OwnedBytes::from_vec_with_reserved_guard(storage, header)\n";
+    let zero_new = "    let mut zeroed = Vec::<u8>::new();\n    zeroed.resize(length, 0);\n    zeroed.clear();\n";
+    let zero_storage = "    let mut storage = storage;\n    storage.0.resize(storage.0.capacity(), 0);\n    storage.0.clear();\n";
+    for (anchor, injected) in [(storage, zero_new), (publish, zero_storage)] {
+        let sources: Vec<_> = STORAGE_SOURCES
+            .iter()
+            .map(|(name, source)| {
+                if *name == "body.rs" {
+                    assert!(source.contains(anchor), "{anchor} moved");
+                }
+                (
+                    *name,
+                    source.replacen(anchor, &format!("{injected}{anchor}"), 1),
+                )
+            })
+            .collect();
+        assert_eq!(
+            storage_gate_violations(&sources),
+            vec!["body.rs uses resize 1 times, allowed 0".to_owned()],
+        );
+    }
+    let module = "#[cfg(all(test, not(target_arch = \"wasm32\")))]\npub(crate) mod work {\n";
+    let body = include_str!("../body.rs");
+    assert!(body.contains(module));
+    let test_only = body.replacen(
+        module,
+        &format!(
+            "{module}    fn zero(data: &mut Vec<u8>) {{\n        data.resize(1, 0);\n    }}\n"
+        ),
+        1,
+    );
+    assert_eq!(test_only.matches("resize(").count(), 2);
+    assert_eq!(production_uses(&test_only, "resize"), 0);
+}
+
+/// Every segment truncation through the header and table: production and the
+/// baseline agree, and neither panics on a short header.
+#[test]
+fn header_truncations_match_baseline() {
+    let fixture = fixture(&[20, 30], 8);
+    let segment = segment_path_of(&fixture);
+    let original = fs::read(&segment).unwrap();
+    let table = 28 + 2 * 40;
+    for length in (0..=table + 1).chain([original.len() - 1, original.len()]) {
+        fs::write(&segment, &original[..length]).unwrap();
+        for (payload, digest, location) in &fixture.bodies[..2] {
+            let span = (0, payload.len());
+            let expected = baseline_read(
+                fixture.directory.path(),
+                digest,
+                payload.len(),
+                location,
+                span,
             );
+            let ((ordinary, native), _, _) =
+                production_read(&fixture.root, digest, payload.len(), location, span);
+            if length == original.len() {
+                assert_eq!(expected.as_deref(), Ok(payload.as_slice()));
+            }
+            assert_eq!(ordinary, expected, "ordinary at {length}");
+            assert_eq!(native, expected, "native at {length}");
         }
     }
 }
