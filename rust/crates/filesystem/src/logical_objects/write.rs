@@ -149,7 +149,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         };
         let bytes = index_bytes(writes.len())?;
         let mut index_custody = work.claim_owned(bytes, 1)?;
-        let mut index = std::collections::HashMap::new();
+        let mut index: std::collections::HashMap<ObjectId, &T> = std::collections::HashMap::new();
         index
             .try_reserve(writes.len())
             .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
@@ -168,7 +168,6 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             }
             work.charge(WorkCounters {
                 items_examined: 1,
-                bytes_examined: ObjectId::ENCODED_LEN as u64,
                 ..WorkCounters::UNCHARGED
             })?;
             #[cfg(all(test, feature = "memory"))]
@@ -176,10 +175,10 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             match index.entry(id) {
                 std::collections::hash_map::Entry::Occupied(previous) => {
                     work.charge(WorkCounters {
-                        bytes_examined: body.len() as u64,
+                        items_examined: 1,
                         ..WorkCounters::UNCHARGED
                     })?;
-                    if parts(previous.get()).1 != body {
+                    if parts(*previous.get()).1 != body {
                         return Err(ObjectStoreError::DigestMismatch.into());
                     }
                     continue;

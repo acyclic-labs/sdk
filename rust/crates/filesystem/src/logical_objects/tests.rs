@@ -26,7 +26,6 @@ where
         for previous in unique.iter().flatten() {
             work.charge(WorkCounters {
                 items_examined: 1,
-                bytes_examined: ObjectId::ENCODED_LEN as u64,
                 ..WorkCounters::UNCHARGED
             })?;
             if parts(previous).0 == id {
@@ -38,9 +37,7 @@ where
 }
 
 fn linear_batch_work(cost: WorkCounters, count: u64) -> bool {
-    cost.items_examined == count
-        && cost.bytes_examined == ObjectId::ENCODED_LEN as u64 * count
-        && cost.allocation_operations == 3 + 3 * count
+    cost.items_examined == count && cost.allocation_operations == 3 + 3 * count
 }
 
 async fn measured_unique_batch(
