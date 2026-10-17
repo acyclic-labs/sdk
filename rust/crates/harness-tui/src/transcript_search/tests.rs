@@ -46,6 +46,26 @@ proptest! {
         let size = text.chars().default_case_fold().count() + query.chars().default_case_fold().count();
         prop_assert!(work <= 3 * size);
     }
+
+    #[test]
+    fn highlights_preserve_display_text_across_spans_and_widths(
+        text in "[a-zA-ZßΣσςİ日€🦀 ]{0,40}",
+        query in "[a-zA-ZßΣσςİ日€🦀 ]{0,8}",
+        split in 0usize..48,
+        width in 1u16..81,
+    ) {
+        use ratatui::text::{Line,Span};
+        let at = text.char_indices().nth(split).map_or(text.len(), |(at,_)|at);
+        let source = [Line::from(vec![Span::raw(text[..at].to_owned()),Span::raw(text[at..].to_owned())])];
+        let mut view = TranscriptSearch::default();
+        view.update(&source,&query,width);
+        prop_assert_eq!(view.count(),reference(&text,&query).len());
+        let actual: String=view.rows().iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
+        let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
+        let expected: String=layout.rows.iter().flat_map(|row| &row.cells).map(|cell|cell.symbol.as_str()).collect();
+        prop_assert_eq!(actual,expected);
+        if view.count()!=0 {prop_assert!(view.selected_row(-1)<view.rows().len());}
+    }
 }
 
 #[test]
