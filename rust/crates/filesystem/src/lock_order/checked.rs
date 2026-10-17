@@ -110,10 +110,22 @@ pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexG
 }
 
 #[derive(Debug, Default)]
-#[cfg(any(test, all(feature = "native-watch", not(target_arch = "wasm32"))))]
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "native-watch"),
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
-#[cfg(any(test, all(feature = "native-watch", not(target_arch = "wasm32"))))]
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "native-watch"),
+        not(target_arch = "wasm32")
+    )
+))]
 impl<T, const RANK: u16> Mutex<T, RANK> {
     #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new(value: T) -> Self {

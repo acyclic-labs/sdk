@@ -2,7 +2,13 @@
 // observer registry -> source cursor -> original demand leaf -> view gate counters.
 // View gate counters never acquire the leaf. Resource allowances follow the leaf:
 // ancestor resource -> descendant resource (materializer/allowance.rs).
-#[cfg(any(test, all(feature = "native-mount", not(target_arch = "wasm32"))))]
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "native-mount"),
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) const OPERATION: u16 = 10;
 pub(crate) const VIEW: u16 = 20;
 #[cfg(all(
@@ -31,7 +37,13 @@ mod checked;
 pub(crate) use checked::Condvar;
 #[cfg(all(
     any(debug_assertions, test),
-    any(test, all(feature = "native-watch", not(target_arch = "wasm32")))
+    any(
+        test,
+        all(
+            any(feature = "local", feature = "native-watch"),
+            not(target_arch = "wasm32")
+        )
+    )
 ))]
 pub(crate) use checked::Mutex;
 #[cfg(any(debug_assertions, test))]
@@ -39,7 +51,7 @@ pub(crate) use checked::{MutexGuard, lock};
 
 #[cfg(all(
     not(any(debug_assertions, test)),
-    feature = "native-watch",
+    any(feature = "local", feature = "native-watch"),
     not(target_arch = "wasm32")
 ))]
 pub(crate) type Mutex<T, const RANK: u16> = crate::sync::Mutex<T>;

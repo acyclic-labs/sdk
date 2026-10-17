@@ -7,7 +7,7 @@ use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
 };
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
 use crate::performance::WorkBudget;
 use crate::performance::WorkCounters;
 use cap_std::fs::Dir;

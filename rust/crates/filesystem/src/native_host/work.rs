@@ -261,7 +261,7 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 }
 
 /// Creates unbounded native work.
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn ordinary_work() -> DemandWork {
     static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
         std::sync::LazyLock::new(crate::CancellationToken::new);
