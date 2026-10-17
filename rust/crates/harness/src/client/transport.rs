@@ -33,7 +33,7 @@ pub async fn connect_or_spawn<S: ClientStateStore>(
     HarnessClient::connect(api, session).await
 }
 
-/// Thin transport runner; Rust owns retry identities, replay and projection recovery.
+/// Thin transport runner; Rust owns retry identities, replay and cursor recovery.
 pub struct HarnessClient<S> {
     api: Arc<dyn HarnessWireApi>,
     handshake: wire::HandshakeResponse,
@@ -44,42 +44,6 @@ pub struct HarnessClient<S> {
 }
 
 impl<S: ClientStateStore> HarnessClient<S> {
-    /// Resolves a file-backed view selection and starts its atomic snapshot/follow.
-    /// The host folds returned records with `query_change` and redraws shared views.
-    pub async fn select_file_view(
-        &mut self,
-        selection: super::CommandQuery,
-        volume: &(impl crate::task_volume::FileQuerySource + ?Sized),
-        maximum_files: usize,
-        maximum_bytes: usize,
-    ) -> Result<crate::task_volume::ChangeStream> {
-        let query = match selection {
-            super::CommandQuery::Plan => crate::task_volume::Query::Plans,
-            super::CommandQuery::Goal => {
-                crate::task_volume::Query::File(crate::task_volume::FileKey::Goal)
-            }
-            _ => {
-                return Err(Error::Unsupported(
-                    "view does not select a private file query".into(),
-                ));
-            }
-        };
-        let observation = volume
-            .observe_files(query.clone(), None, maximum_files, maximum_bytes)
-            .await
-            .map_err(|error| match error {
-                #[cfg(feature = "filesystem")]
-                crate::task_volume::Error::FileRead(error) => error,
-                error => Error::Storage(error.to_string()),
-            })?;
-        let snapshot = observation
-            .snapshot
-            .ok_or_else(|| Error::Conflict("initial file query has no snapshot".into()))?;
-        self.session
-            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)?;
-        Ok(observation.changes)
-    }
-
     /// Negotiates before sending commands. Opening a client starts no task.
     pub async fn connect(api: Arc<dyn HarnessWireApi>, session: ClientSession<S>) -> Result<Self> {
         let request = wire::HandshakeRequest {
@@ -107,7 +71,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         })
     }
 
-    /// Binds the platform filesystem reader used by both live and recovered views.
+    /// Binds the filesystem reader used to validate live and replayed message references.
     /// Without read authority, content-bearing deliveries fail before cursor commit.
     pub fn with_files(
         mut self,
@@ -275,101 +239,9 @@ impl<S: ClientStateStore> HarnessClient<S> {
         Ok(response)
     }
 
-    /// Feeds one model delta from the followed task records into shared views.
-    pub fn model_event(
-        &mut self,
-        authority: &wire::Authority,
-        turn: crate::OperationId,
-        event: crate::model::ModelEvent,
-    ) -> Result<()> {
-        self.session.model_event(authority, turn, event)
-    }
-
-    /// Feeds one tool output chunk from the followed task records into shared views.
-    pub fn tool_output(
-        &mut self,
-        authority: &wire::Authority,
-        call_id: &str,
-        delta: &str,
-    ) -> Result<()> {
-        self.session.tool_output(authority, call_id, delta)
-    }
-
-    /// Consumes one incoming streaming update and publishes it to the same views as replay.
-    /// The source is the caller's platform stream follow; no second transport or journal.
-    pub async fn next_update(
-        &mut self,
-        source: &mut (impl futures::Stream<Item = Result<super::ViewUpdate>> + Unpin),
-    ) -> Result<bool> {
-        let Some(update) = source.next().await.transpose()? else {
-            return Ok(false);
-        };
-        self.apply_update(update)?;
-        Ok(true)
-    }
-
-    /// Folds an input already selected by the host's existing event source.
-    /// Publication is synchronous so input selection cannot cancel half a fold.
-    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
-        match update {
-            super::ViewUpdate::File(change) => {
-                self.query_change(change)?;
-            }
-            super::ViewUpdate::Model {
-                authority,
-                turn,
-                event,
-            } => self.model_event(&authority, turn, event)?,
-            super::ViewUpdate::ToolOutput {
-                authority,
-                call_id,
-                delta,
-            } => self.tool_output(&authority, &call_id, &delta)?,
-        }
-        Ok(())
-    }
-
-    /// Shared renderer state and outbox.
+    /// Shared cursor and outbox state and outbox.
     pub fn session(&self) -> &ClientSession<S> {
         &self.session
-    }
-
-    /// Accepts an atomic snapshot from the volume query transport.
-    pub fn query_snapshot(
-        &mut self,
-        query: crate::task_volume::Query,
-        snapshot: crate::task_volume::Snapshot,
-        maximum_files: usize,
-        maximum_bytes: usize,
-    ) -> Result<()> {
-        self.session
-            .query_snapshot(query, snapshot, maximum_files, maximum_bytes)
-    }
-
-    /// Accepts one pushed volume record, without adding a semantic wire message.
-    pub fn query_change(&mut self, change: crate::task_volume::Change) -> Result<bool> {
-        self.session.query_change(change)
-    }
-
-    /// Selects both file sources required for goal status and continuation counts.
-    pub async fn select_goal_view(
-        &mut self,
-        goal: &(impl crate::task_volume::FileQuerySource + ?Sized),
-        request: &(impl crate::task_volume::FileQuerySource + ?Sized),
-        maximum_bytes: usize,
-    ) -> Result<crate::task_volume::ChangeStream> {
-        self.session
-            .select_goal_view(goal, request, maximum_bytes)
-            .await
-    }
-
-    /// Associates two ordinary file follows with the same shared goal rendering.
-    pub fn bind_goal_sources(
-        &mut self,
-        goal: ([u8; 32], [u8; 32]),
-        request: ([u8; 32], [u8; 32]),
-    ) -> Result<()> {
-        self.session.bind_goal_sources(goal, request)
     }
 
     /// Negotiated service response, also emitted by JSONL runners.

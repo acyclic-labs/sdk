@@ -7,7 +7,7 @@ use super::{
 };
 use acyclic_harness::{
     Error,
-    client::{SwarmClient, SwarmClientLimits},
+    client::{ClientViewLimits, QueryViewLimits, SwarmClient, SwarmClientLimits},
     task_volume::{Query, TaskVolume},
 };
 use acyclic_stream::MemoryStream;
@@ -23,8 +23,10 @@ pub(super) async fn run_with_fault(
     fault: Fault,
     paced: bool,
 ) -> TestResult<serde_json::Value> {
+    let started = std::time::Instant::now();
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), publish::path("swarm/files")).await?;
     let config = Arc::new(TaskVolume::open(provider.clone(), publish::path("config/files")).await?);
     publish::layout(&config, &case.layouts[0]).await?;
     let mut volumes = Vec::with_capacity(case.agents);
@@ -38,14 +40,32 @@ pub(super) async fn run_with_fault(
         );
         publish::chunk(&volume, 1, &case.turns[0][0]).await?;
         publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
+        let status = acyclic_harness::task_volume::ChildStatus {
+            task: acyclic_harness::TaskId::from_bytes([1; 16]),
+            state: acyclic_harness::task_volume::ChildState::Running,
+            settled: false,
+            inputs: 1,
+        };
+        parent
+            .append(
+                parent.head().await?,
+                &acyclic_harness::task_volume::Write::new(
+                    acyclic_harness::task_volume::FileKey::parse(&format!(
+                        "agents/a{id:05}/status.json"
+                    ))?,
+                    serde_json::to_vec(&status)?,
+                ),
+            )
+            .await?;
         volumes.push(volume);
     }
+    let seeded = started.elapsed();
     let Wire {
-        sink,
-        incoming,
+        client: session,
+        mut runtime,
         sender,
         counts,
-    } = Wire::open(provider.clone(), fault, case.agents)?;
+    } = Wire::open(provider.clone(), fault, case.agents, paced)?;
     let (phases, receive_phases) = mpsc::unbounded();
     let (receipts, receive_receipts) = mpsc::unbounded();
     let (gates, mut paused) = mpsc::unbounded();
@@ -59,12 +79,6 @@ pub(super) async fn run_with_fault(
         .map(|layout| layout.selected().count())
         .max()
         .unwrap();
-    let frames =
-        case.agents * (2 + 4 * case.layouts.len()) + records * selected * case.layouts.len();
-    if paced {
-        counts.lock().unwrap_or_else(|p| p.into_inner()).root_credit = frames;
-        protocol::root_window(&sender, frames as u32)?;
-    }
     let client = SwarmClient::new(
         publish::path("swarm"),
         SwarmClientLimits {
@@ -74,12 +88,28 @@ pub(super) async fn run_with_fault(
             config_files: 1,
             snapshot_files: records,
         },
+        ClientViewLimits {
+            agents: case.agents,
+            selected,
+            overview_values: case.agents,
+            overview_bytes: case.agents as u64 * 256,
+            query: QueryViewLimits {
+                files: 1,
+                segments: records,
+                bytes: case
+                    .turns
+                    .iter()
+                    .flatten()
+                    .map(|text| text.len() as u64)
+                    .sum(),
+            },
+        },
     )?;
+    let views = client.views();
     let consume = client.follow(
-        provider.as_ref(),
         &config,
-        sink,
-        incoming,
+        &parent,
+        &session,
         |agent, maximum| {
             let id = publish::id(&agent).expect("generated agent");
             let volume = volumes[id].clone();
@@ -94,25 +124,26 @@ pub(super) async fn run_with_fault(
                 Ok(snapshot)
             }
         },
-        |update| {
-            let action = state.accept(update);
-            let volumes = &volumes;
-            let config = &config;
-            let layouts = &case.layouts;
-            let phases = &phases;
-            async move {
-                match action? {
-                    Action::None => Ok(()),
-                    Action::Gap { id, sequence, text } => {
-                        publish::chunk(&volumes[id], sequence, &text).await?;
-                        Ok(())
-                    }
-                    Action::Layout(phase) => publish::layout(config, &layouts[phase]).await,
-                    Action::Phase(phase) => phases.unbounded_send(phase).map_err(publish::storage),
-                }
+        async |update| match state.accept(update, &views)? {
+            Action::None => Ok(()),
+            Action::Gap { id, sequence, text } => {
+                publish::chunk(&volumes[id], sequence, &text).await?;
+                Ok(())
             }
+            Action::Layout(phase) => publish::layout(&config, &case.layouts[phase]).await,
+            Action::Phase(phase) => phases.unbounded_send(phase).map_err(publish::storage),
         },
     );
+    let consume = async {
+        let driver = runtime.drive();
+        futures::pin_mut!(consume, driver);
+        match futures::future::select(consume, driver).await {
+            futures::future::Either::Left((outcome, _)) => outcome,
+            futures::future::Either::Right(_) => {
+                Err(Error::Storage("session executor ended".into()))
+            }
+        }
+    };
     // Meter the production subscription pipeline, including the server polled
     // by its incoming stream and snapshot/reducer callbacks. Fixture seeding,
     // producer writes and cold-reopen checks are outside this work boundary.
@@ -152,17 +183,11 @@ pub(super) async fn run_with_fault(
     if gate.phase != 0 {
         return Err("swarm credit phase differs".into());
     }
-    // Ordinary scenarios retain their initial zero-credit conflation exercise.
+    // Ordinary scenarios retain their initial zero-channel-credit conflation.
     // Scaling scenarios acknowledge every status publication with the same finite
     // window, making delivered histories identical at both population sizes.
     if !paced {
-        let mut observed = counts.lock().unwrap_or_else(|p| p.into_inner());
-        if observed.root_credit != 0 {
-            return Err("backpressure did not exhaust root credit".into());
-        }
-        observed.root_credit = frames;
-        drop(observed);
-        protocol::root_window(&sender, frames as u32)?;
+        protocol::release(&sender, &counts)?;
     }
     gate.resume
         .send(())
@@ -186,6 +211,13 @@ pub(super) async fn run_with_fault(
         }
     }
     drop(running);
+    let mut idle = Box::pin(futures::future::pending::<()>());
+    assert!(runtime.until_idle(idle.as_mut()).await.is_none());
+    if counts.lock().unwrap_or_else(|p| p.into_inner()).live_full != 0 {
+        return Err("server retained follows after consumer cancellation".into());
+    }
+    drop(runtime);
+    drop(session);
     if counts.lock().unwrap_or_else(|p| p.into_inner()).live_full != 0 {
         return Err("server retained follows after session drop".into());
     }
@@ -199,6 +231,7 @@ pub(super) async fn run_with_fault(
     if !matchers::subset(&case.expect.wire, &wire) {
         return Err(format!("swarm wire observations differ: {wire}").into());
     }
+    let followed = started.elapsed();
     // Reopen every index from accepted file records, including unselected agents.
     for volume in &volumes {
         let reopened = TaskVolume::open_existing(provider.clone(), volume.path().clone()).await?;
@@ -218,6 +251,12 @@ pub(super) async fn run_with_fault(
             return Err("reopened agent file differs".into());
         }
     }
+    println!(
+        "swarm phases agents={} seed={seeded:?} follow={:?} reopen={:?}",
+        case.agents,
+        followed - seeded,
+        started.elapsed() - followed
+    );
     measured.sort_unstable();
     if !measured.is_empty() {
         println!(

@@ -14,6 +14,7 @@ pub const GOAL_METADATA_HEADROOM: usize =
 /// Validated goal frontmatter status.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum GoalStatus {
     /// Continue after every settled turn, subject to the continuation policy.
     #[default]
@@ -35,6 +36,7 @@ pub enum GoalBlockedReason {
 /// Parsed contents of an observed GOAL.md, without inventing a filesystem reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct GoalState {
     /// Frontmatter status; plain Markdown defaults to active.
     pub status: GoalStatus,

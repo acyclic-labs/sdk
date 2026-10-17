@@ -1,7 +1,7 @@
 use super::*;
 
 #[wasm_bindgen]
-impl WasmClientViews {
+impl WasmHypothesisClient {
     /// Data-only allocation watermark. Never recycles an imported identity.
     pub fn sequence(&self) -> u64 {
         self.client.sequence()

@@ -5,6 +5,11 @@ use crate::{executor::stock_boundary, wire::ErrorCode};
 pub trait ContextStage: acyclic_stream::ProviderPlatform {
     /// Stable stage name used for diagnostics and composition.
     fn name(&self) -> &str;
+    /// Exact configuration files retained by this stage, in declared order.
+    /// These files are execution inputs rather than model messages.
+    fn configuration_sources(&self) -> &[FileRef] {
+        &[]
+    }
     /// Immutable contract under the optional original ledger.
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
     /// Validates a replacement before installation.
@@ -57,6 +62,14 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
+    /// Borrows pinned configuration inputs without copying their references or
+    /// reloading a manifest. Stage order and each file's immutable identity remain intact.
+    pub fn configuration_sources(&self) -> impl Iterator<Item = &FileRef> {
+        self.0
+            .iter()
+            .flat_map(|stage| stage.configuration_sources())
+    }
+
     pub(crate) fn contains_stage(&self, name: &str) -> bool {
         self.0.iter().any(|stage| stage.name() == name)
     }

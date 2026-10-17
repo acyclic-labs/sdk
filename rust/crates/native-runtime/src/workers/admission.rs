@@ -1,10 +1,20 @@
+use crate::sync::{Mutex, mpsc};
 use crate::*;
+
+// Lock order: queue admission, then channel or waiter nodes. Admission serializes
+// edits to adjacent nodes; release notification holds only one node at a time.
+// Wakes run after every lock is released. The Loom model exercises both orders
+// of registration and capacity release on these same locks.
 
 pub(crate) struct AdmissionState {
     pub(crate) head: Option<Arc<CapacityWaiter>>,
     pub(crate) tail: Weak<CapacityWaiter>,
     pub(crate) waiter_count: usize,
     pub(crate) queued_jobs: usize,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_wake: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_accounting: bool,
 }
 
 pub(crate) struct CapacityWaiter {
@@ -26,6 +36,10 @@ impl AdmissionState {
             tail: Weak::new(),
             waiter_count: 0,
             queued_jobs: 0,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_wake: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_accounting: false,
         }
     }
 
@@ -256,12 +270,18 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debug_assert_ne!(admission.queued_jobs, 0, "native queue accounting lost");
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if admission.broken_accounting {
+            return;
+        }
         admission.queued_jobs = admission.queued_jobs.saturating_sub(1);
         let count = if admission.queued_jobs == 0 {
             admission.waiter_count
         } else {
             usize::from(admission.head.is_some())
         };
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        let count = if admission.broken_wake { 0 } else { count };
         (admission.head.clone(), count)
     };
     for _ in 0..count {

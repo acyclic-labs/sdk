@@ -1,4 +1,7 @@
 #![no_main]
+
+#[path = "../../harness/tests/support/client_views.rs"]
+mod client_views_fixture;
 use acyclic_harness::{
     AgentId, Result,
     client::{ClientSession, HarnessClient, MemoryClientState},
@@ -114,7 +117,7 @@ fuzz_target!(|input: &[u8]| {
         let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
         session
             .track(wire::ReplayCursor {
-                authority: Some(authority),
+                authority: Some(authority.clone()),
                 generation: "g".into(),
                 revision: 0,
             })
@@ -127,7 +130,7 @@ fuzz_target!(|input: &[u8]| {
             .with_files(files.clone());
         client.replay().await.unwrap();
         if client.next_delivery().await.is_ok() {
-            let expected = client.session().views().clone();
+            let expected = client.session().replay_revision(&authority);
             let reopened = ClientSession::open(client.into_session().into_store()).unwrap();
             let mut reopened = HarnessClient::connect(host, reopened)
                 .await
@@ -135,10 +138,10 @@ fuzz_target!(|input: &[u8]| {
                 .with_files(files);
             reopened.replay().await.unwrap();
             reopened.next_delivery().await.unwrap();
-            assert_eq!(reopened.session().views(), &expected);
+            assert_eq!(reopened.session().replay_revision(&authority), expected);
         } else {
             assert_eq!(client.session().resume().cursors[0].revision, 0);
-            assert_eq!(client.session().views(), &Default::default());
+            assert_eq!(client.session().replay_revision(&authority), 0);
         }
     });
 });
@@ -196,12 +199,9 @@ impl HarnessWireApi for Host {
 }
 
 fn model_file_view(input: &[u8]) {
-    use acyclic_harness::{
-        client::ClientViews,
-        task_volume::{
-            Change, Component, Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot,
-            TaskFile,
-        },
+    use acyclic_harness::task_volume::{
+        Change, Component, Cursor, FileKey, FileValue, Generation, Query, SCHEMA, Snapshot,
+        TaskFile,
     };
     let key = FileKey::Task {
         task: Component::new("task").unwrap(),
@@ -217,7 +217,7 @@ fn model_file_view(input: &[u8]) {
         durable: 1,
         commit: [1; 32],
     };
-    let mut views = ClientViews::default();
+    let mut views = client_views_fixture::file_views();
     views
         .query_snapshot(
             Query::Root,
@@ -252,7 +252,7 @@ fn model_file_view(input: &[u8]) {
         }
         let encoded =
             serde_json::to_vec(&serde_json::json!({"model":observed[0]["model"]})).unwrap();
-        let mut round_trip = ClientViews::default();
+        let mut round_trip = client_views_fixture::file_views();
         round_trip
             .query_snapshot(
                 Query::Root,
@@ -299,7 +299,7 @@ fn model_file_view(input: &[u8]) {
         cursor.accepted = 3;
         cursor.durable = 3;
         cursor.commit = [3; 32];
-        let mut bounded = ClientViews::default();
+        let mut bounded = client_views_fixture::file_views();
         bounded
             .query_snapshot(
                 Query::Root,

@@ -63,11 +63,15 @@ impl NativeMaterializationWork {
         cancellation: crate::CancellationToken,
         read_credit: NativeResourceCredit,
     ) -> Result<(), NativeTreeMaterializationError> {
-        let metadata = self.claim(
-            std::mem::size_of::<NativeInvocationView>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
+        let bytes = const {
+            match crate::arc_layout::allocation_bytes(
+                std::alloc::Layout::new::<NativeInvocationView>(),
+            ) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("invocation view Arc layout overflow"),
+            }
+        };
+        let metadata = self.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?;
         self.invocation = Some(Arc::new_cyclic(|self_ref| NativeInvocationView {
             cancellation,
             metadata,
@@ -192,3 +196,6 @@ impl NativeMaterializationWork {
         Ok(work)
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+pub(super) mod tests;

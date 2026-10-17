@@ -36,6 +36,7 @@ impl NativeSession {
         operation: OperationId,
     ) -> Result<WorkflowCommand> {
         let bytes = serde_json::to_vec(&acyclic_harness::filesystem::ModelTaskCommand {
+            summary_source: None,
             context_manifest: self.context_manifest.clone(),
             input: ModelContent::Text(text.into()),
             selected_context: None,

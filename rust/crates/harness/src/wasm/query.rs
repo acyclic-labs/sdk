@@ -3,7 +3,9 @@
 use super::json::{from_js, to_js};
 use crate::{
     client::{FileViews, PublishError, QuerySubscription, QueryViewLimits, query_error},
-    task_volume::{Change, Channel, Cursor, FileKey, Generation, Query, TaskVolume, Write},
+    task_volume::{
+        Change, Channel, Cursor, FileKey, FileValue, Generation, HeadFile, Query, TaskVolume, Write,
+    },
 };
 use acyclic_stream::{StreamPath, StreamProvider, WasmStream};
 use futures::FutureExt as _;
@@ -83,7 +85,7 @@ impl WasmTaskVolume {
 
 #[derive(Serialize, Tsify)]
 #[tsify(large_number_types_as_bigints)]
-struct QueryFileInfo<'a> {
+pub(super) struct QueryFileInfo<'a> {
     key: &'a FileKey,
     length: u64,
     #[tsify(type = "bigint | null")]
@@ -91,18 +93,48 @@ struct QueryFileInfo<'a> {
     segments: usize,
 }
 
-fn bytes<S: Serializer>(value: &&[u8], serializer: S) -> Result<S::Ok, S::Error> {
+pub(super) fn bytes<S: Serializer>(value: &&[u8], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_bytes(value)
 }
 
 #[derive(Serialize, Tsify)]
-struct QueryFileDelta<'a> {
+pub(super) struct QueryFileDelta<'a> {
     key: &'a FileKey,
     #[tsify(type = "Channel | null")]
     channel: Option<Channel>,
     #[serde(serialize_with = "bytes")]
     #[tsify(type = "Uint8Array")]
     bytes: &'a [u8],
+}
+
+impl<'a> From<&'a HeadFile> for QueryFileInfo<'a> {
+    fn from(file: &'a HeadFile) -> Self {
+        Self {
+            key: &file.key,
+            length: file.length,
+            through_sequence: file.through_sequence,
+            segments: file.segments.len(),
+        }
+    }
+}
+impl<'a> From<&'a FileValue> for QueryFileDelta<'a> {
+    fn from(file: &'a FileValue) -> Self {
+        Self {
+            key: &file.key,
+            channel: file.channel,
+            bytes: &file.bytes,
+        }
+    }
+}
+pub(super) fn segments(file: Option<&HeadFile>) -> JsValue {
+    let Some(file) = file else {
+        return JsValue::NULL;
+    };
+    let segments = Array::new();
+    for bytes in &file.segments {
+        segments.push(&Uint8Array::from(bytes.as_ref()));
+    }
+    segments.into()
 }
 
 #[derive(Serialize, Tsify)]
@@ -115,11 +147,7 @@ struct QueryDelivery<'a> {
 fn delivery(change: &Change) -> Result<JsValue, JsValue> {
     to_js(&QueryDelivery {
         cursor: &change.cursor,
-        file: change.file.as_ref().map(|file| QueryFileDelta {
-            key: &file.key,
-            channel: file.channel,
-            bytes: &file.bytes,
-        }),
+        file: change.file.as_ref().map(QueryFileDelta::from),
     })
 }
 
@@ -140,15 +168,7 @@ impl WasmQueryViews {
     #[wasm_bindgen(unchecked_return_type = "QueryFileInfo[]")]
     pub fn files(&self) -> Result<JsValue, JsValue> {
         let views = self.views.try_borrow().map_err(error)?;
-        let files: Vec<_> = views
-            .files()
-            .map(|file| QueryFileInfo {
-                key: &file.key,
-                length: file.length,
-                through_sequence: file.through_sequence,
-                segments: file.segments.len(),
-            })
-            .collect();
+        let files: Vec<_> = views.files().map(QueryFileInfo::from).collect();
         to_js(&files)
     }
 
@@ -160,14 +180,7 @@ impl WasmQueryViews {
     ) -> Result<JsValue, JsValue> {
         let key = from_js(key)?;
         let views = self.views.try_borrow().map_err(error)?;
-        let Some(file) = views.file(&key) else {
-            return Ok(JsValue::NULL);
-        };
-        let segments = Array::new();
-        for bytes in &file.segments {
-            segments.push(&Uint8Array::from(bytes.as_ref()));
-        }
-        Ok(segments.into())
+        Ok(segments(views.file(&key)))
     }
 }
 

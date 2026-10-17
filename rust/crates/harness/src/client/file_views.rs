@@ -24,12 +24,13 @@ pub struct QueryViewLimits {
 }
 
 /// One query's materialized files; snapshots and deltas never concatenate text.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileViews {
-    cursor: Cursor,
-    files: Files,
+    pub(super) cursor: Cursor,
+    pub(super) files: Files,
     limits: QueryViewLimits,
     segments: usize,
-    bytes: u64,
+    pub(super) bytes: u64,
 }
 
 fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> Result<()> {
@@ -42,6 +43,12 @@ fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> 
 impl FileViews {
     /// Builds a complete replacement without mutating an existing fold.
     pub fn snapshot(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
+        Self::build(snapshot, limits, true)
+    }
+    pub(super) fn ordinary(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
+        Self::build(snapshot, limits, false)
+    }
+    fn build(snapshot: HeadSnapshot, limits: QueryViewLimits, materialized: bool) -> Result<Self> {
         if snapshot.cursor.schema != crate::task_volume::SCHEMA
             || snapshot.cursor.position == 0
             || snapshot.cursor.volume != snapshot.generation.volume
@@ -68,13 +75,14 @@ impl FileViews {
                     ..
                 }
             );
-            if matches!(
-                file.key,
-                FileKey::Task {
-                    file: TaskFile::Chunk { .. },
-                    ..
-                }
-            ) || text != file.through_sequence.is_some()
+            if materialized
+                && (matches!(
+                    file.key,
+                    FileKey::Task {
+                        file: TaskFile::Chunk { .. },
+                        ..
+                    }
+                ) || text != file.through_sequence.is_some())
                 || file.segments.is_empty()
             {
                 return Err(Error::InvalidSegment);
@@ -114,6 +122,13 @@ impl FileViews {
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
     }
+
+    pub(crate) fn watermark(&mut self, value: acyclic_stream::StreamWatermarks) -> Result<()> {
+        let mut cursor = self.cursor.clone();
+        cursor.advance_watermarks(value)?;
+        self.cursor = cursor;
+        Ok(())
+    }
     /// One materialized file.
     pub fn file(&self, key: &FileKey) -> Option<&HeadFile> {
         self.files.get(key)
@@ -121,6 +136,42 @@ impl FileViews {
     /// Materialized files in canonical key order.
     pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
         self.files.values()
+    }
+
+    pub(super) fn replace(
+        &mut self,
+        change: &Change,
+        rejected: &std::collections::BTreeSet<FileKey>,
+    ) {
+        for key in change
+            .removed
+            .iter()
+            .chain(change.file.iter().chain(&change.files).map(|f| &f.key))
+        {
+            if let Some(old) = self.files.remove(key) {
+                self.bytes -= old.length;
+                self.segments -= old.segments.len();
+            }
+        }
+        for file in change.file.iter().chain(&change.files) {
+            if rejected.contains(&file.key) {
+                continue;
+            }
+            self.bytes += file.bytes.len() as u64;
+            self.segments += 1;
+            self.files.insert(
+                file.key.clone(),
+                HeadFile {
+                    key: file.key.clone(),
+                    publication: file.publication,
+                    channel: file.channel,
+                    segments: vec![file.bytes.clone()],
+                    length: file.bytes.len() as u64,
+                    through_sequence: None,
+                },
+            );
+        }
+        self.cursor = change.cursor.clone();
     }
 
     /// Prepares one change without altering or borrowing the fold across I/O.
@@ -196,7 +247,9 @@ impl FileViews {
                 }
             } else if let Some(before) = before {
                 if !file.key.mutable()
-                    && (before.segments.len() != 1 || before.segments[0] != file.bytes)
+                    && (before.segments.len() != 1
+                        || before.segments[0] != file.bytes
+                        || before.publication != file.publication)
                 {
                     return Err(Error::ImmutableConflict(file.key.clone()));
                 }
@@ -240,10 +293,14 @@ impl FileViews {
                             head.segments = vec![file.bytes.clone()];
                         }
                         head.length = length;
+                        head.publication = file.publication;
+                        head.channel = file.channel;
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(HeadFile {
                             key,
+                            publication: file.publication,
+                            channel: file.channel,
                             segments: vec![file.bytes.clone()],
                             length,
                             through_sequence: sequence,

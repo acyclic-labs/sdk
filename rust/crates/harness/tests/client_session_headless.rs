@@ -213,10 +213,7 @@ async fn successful_idle_exits_at_the_cut_without_a_terminal_event_or_eof() {
                 .unwrap(),
             HeadlessOutcome::Completed
         );
-        assert_eq!(
-            client.session().views().tasks["AGGREGATE_KIND_TASK:task"].status,
-            LifecycleState::Active
-        );
+        assert_eq!(client.session().replay_revision(&owner()), 1);
     }
 }
 
@@ -445,19 +442,19 @@ fn checkpoint_bounds_recovery_after_ten_thousand_deliveries() {
             .receive(frame(delivery(revision, LifecycleState::Active)))
             .unwrap();
     }
-    let views = session.views().clone();
+    let revision = session.replay_revision(&owner());
     let mut store = session.into_store();
     let records = store.load().unwrap();
     assert!(records.len() <= 64, "{} recovery records", records.len());
     assert!(records[0].checkpoint.is_some());
     let mut recovered = ClientSession::open(store).unwrap();
-    assert_eq!(recovered.views(), &Default::default());
+    assert_eq!(recovered.replay_revision(&owner()), 0);
     for revision in 0..10_000 {
         recovered
             .receive(frame(delivery(revision, LifecycleState::Active)))
             .unwrap();
     }
-    assert_eq!(recovered.views(), &views);
+    assert_eq!(recovered.replay_revision(&owner()), revision);
     assert_eq!(recovered.resume().cursors[0].revision, 10_000);
     assert_eq!(
         recovered.pending().cloned().collect::<Vec<_>>(),
@@ -479,7 +476,7 @@ fn native_journal_recovers_a_torn_tail_and_checkpoint_replaces_the_prefix() {
     }
     assert!(FileClientState::open(&path).is_err());
     native.checkpoint().unwrap();
-    let expected = native.views().clone();
+    let expected = native.replay_revision(&owner());
     drop(native);
     let length = std::fs::metadata(&path).unwrap().len();
     OpenOptions::new()
@@ -497,7 +494,7 @@ fn native_journal_recovers_a_torn_tail_and_checkpoint_replaces_the_prefix() {
             .receive(frame(delivery(revision, LifecycleState::Active)))
             .unwrap();
     }
-    assert_eq!(recovered.views(), &expected);
+    assert_eq!(recovered.replay_revision(&owner()), expected);
     assert_eq!(recovered.resume().cursors[0].revision, 128);
     assert_eq!(recovered.pending().count(), 1);
 }

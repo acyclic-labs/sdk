@@ -14,7 +14,7 @@ fn run(n: usize, rebuild: bool, scan: bool) -> [(u64, u64, u64); 5] {
     let mut files = (0..n)
         .map(|turn| (key("task", turn as u64), old.clone()))
         .collect::<BTreeMap<_, _>>();
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     let mut position = 1;
     let (_, initial) = measure(|| {
         views

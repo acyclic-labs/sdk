@@ -61,15 +61,12 @@ fn seed_711_interleaves_the_actual_manifest_and_rejects_the_grouped_control() ->
 }
 
 fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
-    let name = match scenario {
-        Scenario::Text => "text",
-        Scenario::EffectAndContinuation => "effect_goal",
-        Scenario::Compaction => "compaction",
+    let bytes: &[u8] = match scenario {
+        Scenario::Text => include_bytes!("coverage/text.json"),
+        Scenario::EffectAndContinuation => include_bytes!("coverage/effect_goal.json"),
+        Scenario::Compaction => include_bytes!("coverage/compaction.json"),
     };
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "src/local/admission/poll_sweep/coverage/{name}.json"
-    ));
-    serde_json::from_slice(&std::fs::read(path).map_err(storage)?).map_err(storage)
+    serde_json::from_slice(bytes).map_err(storage)
 }
 
 pub(super) fn check_boundaries(

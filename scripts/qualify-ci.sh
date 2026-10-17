@@ -182,6 +182,7 @@ case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
+    node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
@@ -406,7 +407,7 @@ case "$lane" in
         --test main client_public_consumer::identical_public_harness_trace
     harness_tests --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-goal-views
+      harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \

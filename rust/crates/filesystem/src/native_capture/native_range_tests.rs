@@ -161,9 +161,7 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
             let cancellation = CancellationToken::new();
             let setup =
                 NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
-            let native = std::sync::Arc::new(
-                native_positional_file(fixture_file(&file).unwrap(), &setup).unwrap(),
-            );
+            let native = native_positional_file(fixture_file(&file).unwrap(), &setup).unwrap();
             let requested = length.min(maximum);
             let allowance = WorkBudget {
                 source_bytes_read: requested as u64,
@@ -172,8 +170,11 @@ fn owned_native_ranges_preserve_bytes_bounds_custody_and_failure_cursor()
             };
             let original = NativeMaterializationWork::new(allowance, &cancellation).unwrap();
             let initial = original.live_allocation_bytes();
-            let mut source =
-                acyclic_native_runtime::AsyncRangeReader::new(native, offset as u64, length as u64);
+            let mut source = acyclic_native_runtime::AsyncRangeReader::new(
+                &native,
+                offset as u64,
+                length as u64,
+            );
             let expected = body.len().saturating_sub(offset).min(requested);
             let result = runtime.block_on(source.read_owned_with_native_work(
                 maximum,

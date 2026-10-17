@@ -6,6 +6,8 @@ use crate::{
 };
 use proptest::prelude::*;
 
+pub(super) mod compaction_race;
+
 async fn open(directory: &Path) -> Result<LocalHarness> {
     let volume = super::super::tests::volume(directory).await?;
     let config = super::super::tests::volume_config(
@@ -333,9 +335,15 @@ proptest! {
     fn inherited_value_files_preserve_each_source_bound(
         model in prop::collection::vec(any::<char>(), 0..32),
         summary in prop::collection::vec(any::<char>(), 0..32),
+        frozen in any::<bool>(),
     ) {
         let model: String = model.into_iter().collect();
         let summary: String = summary.into_iter().collect();
+        let mut selected: crate::context::SummarySelection = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"), "/fuzz-context/corpus/context_manifest/summary-selection.json"
+        ))).unwrap();
+        selected.continuation.as_mut().unwrap().frozen = frozen;
+        for summary in [json!(summary), serde_json::to_value(selected).unwrap()] {
         let bound = [json!({"model":model}), json!({"summary":summary})]
             .iter().map(|value| serde_json::to_vec(value).unwrap().len()).max().unwrap().max(40) as u64;
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
@@ -348,6 +356,7 @@ proptest! {
             assert_eq!(retain_inheritance(&volume, task, expected.clone(), bound).await.unwrap(), expected);
             assert_eq!(read_inheritance(&volume, task, bound).await.unwrap(), Some(expected));
         });
+        }
     }
 }
 
@@ -510,5 +519,93 @@ async fn legacy_retry_cannot_publish_a_parent_that_disagrees_with_owner_admissio
         }
     })
     .await;
+    Ok(())
+}
+
+fn same_generation(
+    before: &crate::resources::GenerationRef,
+    after: &crate::resources::GenerationRef,
+) -> proptest::test_runner::TestCaseResult {
+    prop_assert_eq!(
+        before,
+        after,
+        "unchanged receive input published another generation"
+    );
+    Ok(())
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(4))]
+    #[test]
+    fn constant_receive_inputs_do_not_publish_per_turn(turns in 2usize..9) {
+        let (before, after, old) = tokio::runtime::Builder::new_current_thread().enable_all()
+            .build().unwrap().block_on(async {
+                let directory = tempfile::tempdir().map_err(storage)?;
+                let local = open(directory.path()).await?;
+                let (receive, model) = local.stage_turn(OperationId::new(), "input").await?;
+                let publisher = local.input_publisher()?;
+                let reference = crate::filesystem::workspace_ref(
+                    local.journal.provider().clone(), &local.journal.storage_name(&mut None)?,
+                )?;
+                let before = local.files.resolve(&reference, None).await?.generation;
+                let mut identities = HashSet::new();
+                for _ in 0..turns {
+                    let (next, _) = local.finish_turn_inputs(OperationId::new(),
+                        model.payload.clone(), publisher.as_ref()).await?;
+                    assert_eq!(next.payload, receive.payload);
+                    assert!(identities.insert(next.operation_id));
+                }
+                let after = local.files.resolve(&reference, None).await?.generation;
+                // The previous production path publishes the same bytes again
+                // under each command identity. It must fail the same assertion.
+                publisher.stage_once(OperationId::new(), "inputs/old.receive.json",
+                    b"{\"after\":0}", "application/json", "mailbox receive", None)?
+                    .await?;
+                let old = local.files.resolve(&reference, None).await?.generation;
+                // Recovery must retain the original stage_once fingerprint checks.
+                let operation = OperationId::new();
+                let bad = format!("{{\"after\":{turns}}}");
+                publisher.stage_once(super::super::turn::receive_operation(operation),
+                    &format!("inputs/{operation}.receive.json"), bad.as_bytes(),
+                    "application/json", "mailbox receive", None)?.await?;
+                assert!(matches!(local.finish_turn_inputs(operation,
+                    model.payload.clone(), publisher.as_ref()).await, Err(Error::Conflict(_))));
+                Ok::<_, Error>((before, after, old))
+            }).unwrap();
+        same_generation(&before, &after)?;
+        prop_assert!(same_generation(&before, &old).is_err());
+    }
+}
+
+#[tokio::test]
+async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let local = open(directory.path()).await?;
+    let operation = OperationId::new();
+    let (receive, model) = local.stage_turn(operation, "input").await?;
+    let publisher = local.input_publisher()?;
+    let legacy = publisher
+        .stage_once(
+            receive.operation_id,
+            &format!("inputs/{operation}.receive.json"),
+            b"{\"after\":0}",
+            "application/json",
+            "mailbox receive",
+            None,
+        )?
+        .await?
+        .0;
+    let (retried, _) = local
+        .finish_turn_inputs(operation, model.payload.clone(), publisher.as_ref())
+        .await?;
+    assert_eq!(retried.payload, legacy);
+    assert_eq!(retried.operation_id, receive.operation_id);
+    drop(publisher);
+    drop(local);
+    let local = open(directory.path()).await?;
+    let (retried, _) = local
+        .finish_turn_inputs(operation, model.payload, local.input_publisher()?.as_ref())
+        .await?;
+    assert_eq!(retried.payload, legacy);
+    assert_eq!(retried.operation_id, receive.operation_id);
     Ok(())
 }

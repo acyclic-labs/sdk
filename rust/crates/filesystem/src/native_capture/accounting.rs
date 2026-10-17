@@ -151,17 +151,6 @@ pub(super) fn capture_sort_by<T>(
     Ok(())
 }
 
-pub(super) fn capture_allocate(
-    meter: &NativeMaterializationWork,
-    bytes: u64,
-) -> Result<(), CaptureError> {
-    meter
-        .with_original_leaf(|work| {
-            work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
-        })
-        .map_err(capture_demand_error)
-}
-
 pub(super) fn capture_charge(
     meter: &NativeMaterializationWork,
     work: WorkCounters,

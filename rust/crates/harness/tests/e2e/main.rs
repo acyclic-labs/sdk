@@ -9,6 +9,8 @@ mod local_admission;
 mod local_case;
 mod local_execution;
 mod local_tests;
+mod local_tool_files;
+mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
 mod notification_history;
@@ -28,6 +30,8 @@ mod swarm;
 mod swarm_case;
 mod swarm_provider;
 mod swarm_publish;
+#[path = "../support/swarm_session.rs"]
+mod swarm_runtime;
 mod swarm_scaling;
 mod swarm_tests;
 mod swarm_views;

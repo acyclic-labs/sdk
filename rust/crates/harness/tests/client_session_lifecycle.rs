@@ -37,10 +37,7 @@ async fn historical_waiting_cannot_settle_a_different_operation() {
         host.complete(wire::CompletionState::Succeeded);
         assert_eq!(run.await.unwrap(), HeadlessOutcome::Completed);
         assert_eq!(client.session().resume().cursors[0].revision, 3);
-        assert_eq!(
-            client.session().views().tasks["AGGREGATE_KIND_TASK:task"].status,
-            LifecycleState::Completed
-        );
+        assert_eq!(client.session().replay_revision(&owner()), 3);
         let revisions = String::from_utf8(output)
             .unwrap()
             .lines()

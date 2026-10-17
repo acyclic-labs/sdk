@@ -18,7 +18,7 @@ async fn goal_state_follows_ordinary_file_publications_and_exports()
     let snapshot = observation.snapshot.ok_or("snapshot missing")?;
     let identity = (snapshot.cursor.volume, snapshot.cursor.query);
     let mut changes = observation.changes;
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     assert!(views.goal(identity.0, identity.1).is_none());
     views.query_snapshot(query.clone(), snapshot, 1, 4096)?;
     assert_eq!(
@@ -172,7 +172,7 @@ proptest! {
             prop_assert!(!view.apply(change(cursor.clone(), file, removed))?);
             let fresh = FileQueryView::from_snapshot(query.clone(), snapshot(cursor.clone(), &bytes), 1, 4096)?;
             prop_assert_eq!(&view, &fresh);
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             views.query_snapshot(query.clone(), snapshot(cursor.clone(), &bytes), 1, 4096)?;
             prop_assert_eq!(views.goal(volume, cursor.query), Some(view.goal()));
             let exported = serde_json::to_value(&views)?;
@@ -185,7 +185,7 @@ proptest! {
 fn unrelated_queries_do_not_export_a_missing_goal() -> Result<()> {
     let query = Query::Plans;
     let cursor = cut(&query, [2; 32], 1);
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     views.query_snapshot(query, snapshot(cursor.clone(), &None), 1, 4096)?;
     assert!(views.goal(cursor.volume, cursor.query).is_none());
     assert!(
@@ -199,7 +199,7 @@ fn unrelated_queries_do_not_export_a_missing_goal() -> Result<()> {
 
 #[test]
 fn goals_remain_scoped_to_the_observed_volume_and_query() -> Result<()> {
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     for (volume, query, text) in [
         ([1; 32], Query::Root, "first"),
         ([1; 32], Query::File(FileKey::Goal), "second"),
@@ -233,7 +233,7 @@ fn goal_read_bounds_do_not_reserve_a_future_write() -> Result<()> {
     let query = Query::File(FileKey::Goal);
     let cursor = cut(&query, [3; 32], 1);
     let body = "Read only";
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     views.query_snapshot(
         query,
         snapshot(cursor.clone(), &Some(body.as_bytes().to_vec())),
@@ -245,4 +245,22 @@ fn goal_read_bounds_do_not_reserve_a_future_write() -> Result<()> {
     );
     assert!(GoalState::from_bytes(body.as_bytes(), (body.len() - 1) as u64).is_err());
     Ok(())
+}
+
+pub(super) fn new_views() -> ClientViews {
+    ClientViews::new(
+        acyclic_stream::StreamPath::new("swarm").unwrap(),
+        acyclic_harness::client::ClientViewLimits {
+            agents: 0,
+            selected: 0,
+            overview_values: 0,
+            overview_bytes: 0,
+            query: acyclic_harness::client::QueryViewLimits {
+                files: 0,
+                segments: 0,
+                bytes: 0,
+            },
+        },
+    )
+    .unwrap()
 }
